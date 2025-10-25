@@ -1,0 +1,27 @@
+{
+  "grammars": [
+    {
+      "name": "ahoy",
+      "camelcase": "Ahoy",
+      "scope": "source.ahoy",
+      "path": ".",
+      "file-types": [
+        "ahoy"
+      ],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Ahoy grammar for tree-sitter",
+    "authors": [],
+    "links": {
+      "repository": "https://github.com/yourusername/tree-sitter-ahoy"
+    }
+  },
+  "bindings": {
+    "c": true,
+    "node": true
+  }
+}

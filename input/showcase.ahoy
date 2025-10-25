@@ -23,8 +23,10 @@ if b lesser_than a then
 
 ? Recursion
 func fact|n int| int then
-    if n <= 1 then return 1
-    else return n times fact|n minus 1|
+    if n <= 1 then
+     return 1
+    else
+	    return n times fact|n minus 1|
 
 result: fact|5|; ahoy|"5! = %d\n", result|
 

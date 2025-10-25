@@ -19,7 +19,7 @@ A modern programming language with Python-like syntax that compiles to C for hig
 ### Installation
 
 Requires:
-- Go 1.21+
+- Go 1.25+
 - GCC compiler
 
 ### Build
