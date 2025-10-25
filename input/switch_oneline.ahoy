@@ -1,0 +1,10 @@
+? Switch test - single line
+import "stdio.h"
+
+day: 3
+switch day then 1:ahoy|"Monday\n"| then 2:ahoy|"Tuesday\n"| then 3:ahoy|"Wednesday\n"|
+
+grade: 'B'
+switch grade then 'A':ahoy|"Excellent!\n"| then 'B':ahoy|"Good!\n"| then 'C':ahoy|"Average\n"|
+
+ahoy|"Done!\n"|

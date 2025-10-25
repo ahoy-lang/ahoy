@@ -1,0 +1,49 @@
+? Ahoy Language - New Features Showcase
+import "stdio.h"
+
+? 1. Comments with ? instead of #
+ahoy|"1. Comments now use ? instead of #\n"|
+
+? 2. Strings with both '' and ""
+message1: "Double quotes work"
+message2: 'Single quotes work too'
+ahoy|"2. String support: %s and %s\n", message1, message2|
+
+? 3. Character type (single char in quotes)
+letter: 'A'
+digit: '7'
+ahoy|"3. Char type: %c and %c\n", letter, digit|
+
+? 4. elseif chains and else without then
+score: 85
+if score greater_than 90 then
+    ahoy|"4. Grade: A\n"|
+elseif score greater_than 80 then
+    ahoy|"4. Grade: B (elseif works!)\n"|
+elseif score greater_than 70 then
+    ahoy|"4. Grade: C\n"|
+else
+    ahoy|"4. Grade: F (else without then!)\n"|
+
+? 5. Switch statements (single-line format)
+day: 3
+switch day then 1:ahoy|"5. Monday\n"| then 2:ahoy|"5. Tuesday\n"| then 3:ahoy|"5. Wednesday (switch works!)\n"|
+
+? 6. Switch with chars
+grade: 'B'
+switch grade then 'A':ahoy|"6. Excellent!\n"| then 'B':ahoy|"6. Good job! (char switch works!)\n"| then 'C':ahoy|"6. Average\n"|
+
+? 7. All together: chars, elseif, and switch
+level: 2
+status: 'R'
+
+if level is 1 then
+    ahoy|"7. Beginner level\n"|
+elseif level is 2 then
+    ahoy|"7. Intermediate level\n"|
+else
+    ahoy|"7. Advanced level\n"|
+
+switch status then 'R':ahoy|"7. Status: Ready\n"| then 'W':ahoy|"7. Status: Waiting\n"| then 'D':ahoy|"7. Status: Done\n"|
+
+ahoy|"\nAll new features working! ✓\n"|

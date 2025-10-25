@@ -1,0 +1,24 @@
+? Switch statement test in Ahoy
+import "stdio.h"
+
+day: 3
+
+? Switch with inline cases
+switch day then 1:ahoy|"Monday\n"| then 2:ahoy|"Tuesday\n"| then 3:ahoy|"Wednesday\n"| then 4:ahoy|"Thursday\n"| then 5:ahoy|"Friday\n"|
+
+? Test with char type (single quotes)
+grade: 'B'
+switch grade then 'A':ahoy|"Excellent!\n"| then 'B':ahoy|"Good job!\n"| then 'C':ahoy|"Average\n"|
+
+? Test elseif
+score: 85
+if score greater_than 90 then
+    ahoy|"Grade: A\n"|
+elseif score greater_than 80 then
+    ahoy|"Grade: B\n"|
+elseif score greater_than 70 then
+    ahoy|"Grade: C\n"|
+else
+    ahoy|"Grade: F\n"|
+
+ahoy|"Done!\n"|

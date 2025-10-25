@@ -1,0 +1,13 @@
+? Test loop key,value in dict syntax
+import "stdio.h"
+
+? Create a dictionary
+config: {"name":"Ahoy", "language":"Go", "fast":"yes"}
+
+ahoy|"Looping through dictionary:\n"|
+
+? Loop through dictionary with 'loop key,value in dict'
+loop k,v in config then
+    ahoy|"Key: %s, Value: %s\n", k, v|
+
+ahoy|"\nDictionary loop test completed!\n"|

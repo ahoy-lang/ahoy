@@ -1,0 +1,21 @@
+? Quick demonstration of inline conditionals
+import "stdio.h"
+
+? Traditional multi-line style
+x: 5
+if x is 5 then
+    ahoy|"Traditional: x is 5\n"|
+
+? New inline style
+y: 5
+if y is 5 then ahoy|"Inline: y is 5\n"|
+
+? Inline if-else
+age: 17
+if age greater_than 18 then ahoy|"Adult\n"| else ahoy|"Minor\n"|
+
+? Using anif for chains
+level: 2
+if level is 1 then ahoy|"Beginner\n"| anif level is 2 then ahoy|"Intermediate\n"| anif level is 3 then ahoy|"Advanced\n"| else ahoy|"Expert\n"|
+
+ahoy|"\nAll inline styles work!\n"|

@@ -1,0 +1,31 @@
+? Comprehensive test of inline conditionals with anif
+import "stdio.h"
+
+? Simple inline if
+count: 1
+if count is 1 then ahoy|"Count is one\n"|
+
+? Inline if-else chain using anif
+temperature: 22
+if temperature greater_than 30 then ahoy|"Hot\n"| anif temperature greater_than 20 then ahoy|"Warm\n"| anif temperature greater_than 10 then ahoy|"Cool\n"| else ahoy|"Cold\n"|
+
+? Mix of inline and multi-line with anif
+size: 15
+if size is 10 then ahoy|"Exactly 10\n"| anif size lesser_than 20 then
+    ahoy|"Between 10 and 20\n"|
+    ahoy|"Size is: %d\n", size|
+else ahoy|"20 or more\n"|
+
+? Using both elseif and anif in different contexts
+a: 100
+if a is 100 then
+    ahoy|"a is 100\n"|
+elseif a is 200 then
+    ahoy|"a is 200\n"|
+else
+    ahoy|"a is something else\n"|
+
+b: 200
+if b is 100 then ahoy|"b is 100\n"| anif b is 200 then ahoy|"b is 200\n"| else ahoy|"b is something else\n"|
+
+ahoy|"\nAll inline conditional tests passed!\n"|

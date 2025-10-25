@@ -1,0 +1,31 @@
+? Test program for Ahoy language
+import "stdio.h"
+
+func fibonacci|n int| int then
+    if n <= 1 then
+        return n
+    else
+        return fibonacci|n - 1| + fibonacci|n - 2|
+
+x: 10; y: 20; result: x + y
+
+if result greater_than 25 then
+    ahoy|"Result is greater than 25: %d\n", result|
+else
+    print|"Result is 25 or less: %d\n", result|
+
+? Test boolean operations
+flag: true; other_flag: false
+
+if flag and not other_flag then
+    ahoy|"Boolean logic works!\n"|
+
+? Test loop
+i: 0
+loop i lesser_than 5 then
+    ahoy|"Loop iteration: %d\n", i|
+    i: i + 1
+
+? Test fibonacci
+fib_result: fibonacci|8|
+ahoy|"Fibonacci of 8 is: %d\n", fib_result|

@@ -1,0 +1,19 @@
+? Test elseif and else without then
+import "stdio.h"
+
+score: 85
+
+if score greater_than 90 then
+    ahoy|"Grade: A\n"|
+anif score greater_than 80 then
+    ahoy|"Grade: B\n"|
+anif score greater_than 70 then
+    ahoy|"Grade: C\n"|
+else
+    ahoy|"Grade: F\n"|
+
+? Test char type
+grade: 'B'
+ahoy|"Your grade is: %c\n", grade|
+
+ahoy|"Done!\n"|

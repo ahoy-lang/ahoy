@@ -1,0 +1,31 @@
+? Test inline conditionals and anif keyword
+import "stdio.h"
+
+? Test inline if statement
+x: 10
+if x is 10 then ahoy|"x is 10\n"|
+
+? Test inline if-else
+y: 5
+if y greater_than 10 then ahoy|"Big\n"| else ahoy|"Small\n"|
+
+? Test inline if-anif-else chain
+score: 85
+if score greater_than 90 then ahoy|"Grade: A\n"| anif score greater_than 80 then ahoy|"Grade: B\n"| anif score greater_than 70 then ahoy|"Grade: C\n"| else ahoy|"Grade: F\n"|
+
+? Test inline if-elseif-else (should still work)
+grade: 75
+if grade greater_than 90 then ahoy|"Excellent\n"| elseif grade greater_than 70 then ahoy|"Good\n"| else ahoy|"Needs improvement\n"|
+
+? Test multi-line if with anif
+value: 50
+if value greater_than 100 then
+    ahoy|"Very large\n"|
+anif value greater_than 50 then
+    ahoy|"Large\n"|
+anif value greater_than 25 then
+    ahoy|"Medium\n"|
+else
+    ahoy|"Small\n"|
+
+ahoy|"All tests completed!\n"|

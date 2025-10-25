@@ -1,0 +1,10 @@
+*.c
+*.o
+*.so
+*.a
+test
+simple
+raylib_test
+*.exe
+output/
+repos/

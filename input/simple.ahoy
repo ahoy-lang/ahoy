@@ -1,0 +1,20 @@
+? Ahoy language - Simple test
+import "stdio.h"
+
+? Simple test showing basic language features with semicolons
+x: 42; name: "Ahoy"; active: true
+
+ahoy|"Language: %s\n", name|
+ahoy|"Version: %d\n", x|
+
+if active then
+    ahoy|"Status: Active\n"|
+
+? Test arithmetic with word operators
+a: 10; b: 5
+sum: a plus b; diff: a minus b; prod: a times b; quot: a div b
+
+ahoy|"Math: %d + %d = %d\n", a, b, sum|
+ahoy|"Math: %d - %d = %d\n", a, b, diff|
+ahoy|"Math: %d * %d = %d\n", a, b, prod|
+ahoy|"Math: %d / %d = %d\n", a, b, quot|

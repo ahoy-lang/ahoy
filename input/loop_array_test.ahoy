@@ -1,0 +1,13 @@
+? Test loop element in array syntax
+import "stdio.h"
+
+? Create an array
+numbers: <10, 20, 30, 40, 50>
+
+ahoy|"Looping through array:\n"|
+
+? Loop through array with 'loop element in array'
+loop num in numbers then
+    ahoy|"Number: %d\n", num|
+
+ahoy|"\nArray loop test completed!\n"|

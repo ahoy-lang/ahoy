@@ -1,0 +1,42 @@
+? Ahoy Language Showcase - All Features
+import "stdio.h"
+
+? Single-line declarations with semicolons
+name: "Ahoy"; version: 1; active: true
+
+? ahoy keyword (shorthand for print)
+ahoy|"Welcome to %s v%d!\n", name, version|
+
+? Word-based operators
+a: 10; b: 3
+ahoy|"%d plus %d = %d\n", a, b, a plus b|
+ahoy|"%d times %d = %d\n", a, b, a times b|
+ahoy|"%d div %d = %d\n", a, b, a div b|
+ahoy|"%d mod %d = %d\n", a, b, a mod b|
+
+? Comparison with words
+if a greater_than b then
+    ahoy|"%d > %d\n", a, b|
+
+if b lesser_than a then
+    ahoy|"%d < %d\n", b, a|
+
+? Recursion
+func fact|n int| int then
+    if n <= 1 then return 1
+    else return n times fact|n minus 1|
+
+result: fact|5|; ahoy|"5! = %d\n", result|
+
+? Dynamic arrays with single-line access
+nums: <100, 200, 300>; ahoy|"Array: %d, %d, %d\n", nums<0>, nums<1>, nums<2>|
+
+? Dictionaries
+config: {"debug":true, "max":99}
+if config{"debug"} then
+    ahoy|"Debug ON (max: %d)\n", config{"max"}|
+
+? Multiple statements on one line
+x: 5; y: 7; z: x plus y; ahoy|"Result: %d\n", z|
+
+ahoy|"Ahoy! 🏴‍☠️\n"|
