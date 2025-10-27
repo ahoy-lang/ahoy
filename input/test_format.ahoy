@@ -1,5 +1,0 @@
-# Test file with tabs and bad formatting
-x:42
-y:   5
-result:x+y
-ahoy|"Result: %d\n",result|

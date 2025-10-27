@@ -1,7 +1,7 @@
 # Inline Conditionals and anif Keyword
 
 ## Overview
-The Ahoy language now supports inline conditionals and the `anif` keyword for more concise and readable code.
+The Ahoy language supports inline conditionals and uses the `anif` keyword for else-if statements.
 
 ## Features
 
@@ -18,12 +18,12 @@ if y greater 10 then ahoy|"Big\n"| else ahoy|"Small\n"|
 ```
 
 ### 3. The anif Keyword
-Use `anif` as a cleaner alternative to `elseif`:
+Use `anif` for else-if statements (no more `elseif`):
 ```ahoy
 if score greater 90 then ahoy|"A\n"| anif score greater 80 then ahoy|"B\n"| else ahoy|"C\n"|
 ```
 
-Both `elseif` and `anif` work - use whichever you prefer!
+**Note:** Only `anif` is supported for else-if statements. The keyword `elseif` is not available.
 
 ### 4. Mixed Inline and Multi-line
 Combine inline and multi-line formats in the same conditional chain:
@@ -48,13 +48,13 @@ else ahoy|"Grade: F\n"|
 ### After (Inline with anif):
 ```ahoy
 score: 85
-ifth score greater_than 90 then ahoy|"Grade: A\n"| anif score greater_than 80 then ahoy|"Grade: B\n"| anif score greater_than 70 then ahoy|"Grade: C\n"| else ahoy|"Grade: F\n"|
+if score greater_than 90 then ahoy|"Grade: A\n"| anif score greater_than 80 then ahoy|"Grade: B\n"| anif score greater_than 70 then ahoy|"Grade: C\n"| else ahoy|"Grade: F\n"|
 ```
 
 ### Mixed Style:
 ```ahoy
 size: 15
-if size is 10 then ahoy|"Exactly 10\n"| anif size lesser_than 20 then
+if size is 10 then ahoy|"Exactly 10\n"| anif size less_than 20 then
     ahoy|"Between 10 and 20\n"|
     ahoy|"Size is: %d\n", size|
 else ahoy|"20 or more\n"|
@@ -81,7 +81,6 @@ One-line conditionals stay on one line, multi-line conditionals stay multi-line.
 - Better readability for longer code blocks
 
 ## Compatibility
-- Fully backward compatible
-- All existing code continues to work
-- `elseif` and `anif` are interchangeable
+- Fully backward compatible with most code
+- Only `anif` is supported for else-if (not `elseif`)
 - Multi-line format still fully supported
