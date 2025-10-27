@@ -67,8 +67,18 @@ const (
 	TOKEN_STRING_TYPE
 	TOKEN_BOOL_TYPE
 	TOKEN_DICT_TYPE
+	TOKEN_VECTOR2_TYPE
+	TOKEN_COLOR_TYPE
 	TOKEN_TRUE
 	TOKEN_FALSE
+	TOKEN_ENUM
+	TOKEN_STRUCT
+	TOKEN_TYPE
+	TOKEN_DO
+	TOKEN_BREAK
+	TOKEN_SKIP
+	TOKEN_DOUBLE_COLON // ::
+	TOKEN_QUESTION     // ? (loop counter variable)
 )
 
 type Token struct {
@@ -109,13 +119,22 @@ func tokenize(input string) []Token {
 		"mod":          TOKEN_MOD_WORD,
 		"greater_than": TOKEN_GREATER_WORD,
 		"lesser_than":  TOKEN_LESSER_WORD,
+		"less_than":    TOKEN_LESSER_WORD,
 		"int":          TOKEN_INT_TYPE,
 		"float":        TOKEN_FLOAT_TYPE,
 		"string":       TOKEN_STRING_TYPE,
 		"bool":         TOKEN_BOOL_TYPE,
 		"dict":         TOKEN_DICT_TYPE,
+		"vector2":      TOKEN_VECTOR2_TYPE,
+		"color":        TOKEN_COLOR_TYPE,
 		"true":         TOKEN_TRUE,
 		"false":        TOKEN_FALSE,
+		"enum":         TOKEN_ENUM,
+		"struct":       TOKEN_STRUCT,
+		"type":         TOKEN_TYPE,
+		"do":           TOKEN_DO,
+		"break":        TOKEN_BREAK,
+		"skip":         TOKEN_SKIP,
 	}
 
 	for lineNum, line := range lines {
@@ -148,15 +167,18 @@ func tokenize(input string) []Token {
 		// Tokenize the line content
 		content := strings.TrimSpace(line)
 		i := 0
+		
+		// Check if line starts with comment
+		if len(content) > 0 && (content[0] == '?' || content[0] == '#') {
+			// Skip this line - it's a comment
+			tokens = append(tokens, Token{Type: TOKEN_NEWLINE, Line: lineNum + 1})
+			continue
+		}
+		
 		for i < len(content) {
 			if unicode.IsSpace(rune(content[i])) {
 				i++
 				continue
-			}
-
-			// Comments
-			if content[i] == '?' || content[i] == '#' {
-				break
 			}
 
 			// Numbers
@@ -232,6 +254,10 @@ func tokenize(input string) []Token {
 			if i+1 < len(content) {
 				twoChar := content[i : i+2]
 				switch twoChar {
+				case "::":
+					tokens = append(tokens, Token{Type: TOKEN_DOUBLE_COLON, Value: "::", Line: lineNum + 1, Column: i + 1})
+					i += 2
+					continue
 				case "<=":
 					tokens = append(tokens, Token{Type: TOKEN_LESS_EQUAL, Value: "<=", Line: lineNum + 1, Column: i + 1})
 					i += 2
@@ -277,6 +303,8 @@ func tokenize(input string) []Token {
 				tokens = append(tokens, Token{Type: TOKEN_DOT, Value: ".", Line: lineNum + 1, Column: i + 1})
 			case ';':
 				tokens = append(tokens, Token{Type: TOKEN_SEMICOLON, Value: ";", Line: lineNum + 1, Column: i + 1})
+			case '?':
+				tokens = append(tokens, Token{Type: TOKEN_QUESTION, Value: "?", Line: lineNum + 1, Column: i + 1})
 			default:
 				fmt.Printf("Unknown character: %c at line %d, column %d\n", content[i], lineNum+1, i+1)
 			}

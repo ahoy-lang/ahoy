@@ -21,20 +21,23 @@ func snakeToPascal(s string) string {
 }
 
 type CodeGenerator struct {
-	output      strings.Builder
-	indent      int
-	varCounter  int
-	funcDecls   strings.Builder
-	includes    map[string]bool
-	variables   map[string]string // variable name -> type
-	arrayImpls  bool              // Track if we've added array implementation
+	output         strings.Builder
+	indent         int
+	varCounter     int
+	funcDecls      strings.Builder
+	includes       map[string]bool
+	variables      map[string]string // variable name -> type
+	arrayImpls     bool              // Track if we've added array implementation
+	arrayMethods   map[string]bool   // Track which array methods are used
+	loopCounters   []string          // Stack of loop counter variable names
 }
 
 func generateC(ast *ASTNode) string {
 	gen := &CodeGenerator{
-		includes:   make(map[string]bool),
-		variables:  make(map[string]string),
-		arrayImpls: false,
+		includes:     make(map[string]bool),
+		variables:    make(map[string]string),
+		arrayImpls:   false,
+		arrayMethods: make(map[string]bool),
 	}
 	
 	// Add standard includes
@@ -49,6 +52,9 @@ func generateC(ast *ASTNode) string {
 	
 	// Generate main code
 	gen.generateNode(ast)
+	
+	// Generate array helper functions if any array methods were used
+	gen.writeArrayHelperFunctions()
 	
 	// Build final output
 	var result strings.Builder
@@ -297,10 +303,15 @@ func (gen *CodeGenerator) generateNodeInternal(node *ASTNode, isStatement bool) 
 		gen.generateUnaryOp(node)
 		
 	case NODE_IDENTIFIER:
-		// Check if it's a known constant/macro from raylib or other C libraries
-		// These will be passed through directly to C
-		// Don't convert variable names, only function names are converted
-		gen.output.WriteString(node.Value)
+		// Check if it's the loop counter variable
+		if node.Value == "__loop_counter" && len(gen.loopCounters) > 0 {
+			gen.output.WriteString(gen.loopCounters[len(gen.loopCounters)-1])
+		} else {
+			// Check if it's a known constant/macro from raylib or other C libraries
+			// These will be passed through directly to C
+			// Don't convert variable names, only function names are converted
+			gen.output.WriteString(node.Value)
+		}
 		
 	case NODE_NUMBER:
 		gen.output.WriteString(node.Value)
@@ -334,6 +345,24 @@ func (gen *CodeGenerator) generateNodeInternal(node *ASTNode, isStatement bool) 
 		for _, child := range node.Children {
 			gen.generateNodeInternal(child, true)
 		}
+	case NODE_ENUM_DECLARATION:
+		gen.generateEnum(node)
+	case NODE_CONSTANT_DECLARATION:
+		gen.generateConstant(node)
+	case NODE_TUPLE_ASSIGNMENT:
+		gen.generateTupleAssignment(node)
+	case NODE_STRUCT_DECLARATION:
+		gen.generateStruct(node)
+	case NODE_METHOD_CALL:
+		gen.generateMethodCall(node)
+	case NODE_MEMBER_ACCESS:
+		gen.generateMemberAccess(node)
+	case NODE_BREAK:
+		gen.writeIndent()
+		gen.output.WriteString("break;\n")
+	case NODE_SKIP:
+		gen.writeIndent()
+		gen.output.WriteString("continue;\n")
 	}
 }
 
@@ -549,6 +578,9 @@ func (gen *CodeGenerator) generateForRangeLoop(node *ASTNode) {
 	loopVar := fmt.Sprintf("__loop_i_%d", gen.varCounter)
 	gen.varCounter++
 	
+	// Push loop counter onto stack
+	gen.loopCounters = append(gen.loopCounters, loopVar)
+	
 	var startVal, endVal string
 	if len(node.Children) == 3 {
 		// Variable start: node.Children[0] is start expr, [1] is end expr, [2] is body
@@ -574,6 +606,9 @@ func (gen *CodeGenerator) generateForRangeLoop(node *ASTNode) {
 		gen.indent--
 	}
 	
+	// Pop loop counter from stack
+	gen.loopCounters = gen.loopCounters[:len(gen.loopCounters)-1]
+	
 	gen.writeIndent()
 	gen.output.WriteString("}\n")
 }
@@ -584,6 +619,9 @@ func (gen *CodeGenerator) generateForCountLoop(node *ASTNode) {
 	// Generate loop variable
 	loopVar := fmt.Sprintf("__loop_i_%d", gen.varCounter)
 	gen.varCounter++
+	
+	// Push loop counter onto stack
+	gen.loopCounters = append(gen.loopCounters, loopVar)
 	
 	startVal := node.Value
 	if startVal == "" {
@@ -596,6 +634,9 @@ func (gen *CodeGenerator) generateForCountLoop(node *ASTNode) {
 	gen.indent++
 	gen.generateNodeInternal(node.Children[0], false)
 	gen.indent--
+	
+	// Pop loop counter from stack
+	gen.loopCounters = gen.loopCounters[:len(gen.loopCounters)-1]
 	
 	gen.writeIndent()
 	gen.output.WriteString("}\n")
@@ -712,13 +753,53 @@ func (gen *CodeGenerator) generateCall(node *ASTNode) {
 	switch node.Value {
 	case "print":
 		gen.output.WriteString("printf(")
-		for i, arg := range node.Children {
-			if i > 0 {
+		
+		// Process format string if first argument is a string literal
+		if len(node.Children) > 0 && node.Children[0].Type == NODE_STRING {
+			formatStr := node.Children[0].Value
+			args := node.Children[1:]
+			
+			// Process %v and %t in format string
+			processedFormat, processedArgs := gen.processFormatString(formatStr, args)
+			
+			// Output processed format string
+			gen.output.WriteString(fmt.Sprintf("\"%s\"", processedFormat))
+			
+			// Output processed arguments
+			for _, arg := range processedArgs {
 				gen.output.WriteString(", ")
+				gen.generateNode(arg)
 			}
-			gen.generateNode(arg)
+		} else {
+			// No format string, just output arguments as-is
+			for i, arg := range node.Children {
+				if i > 0 {
+					gen.output.WriteString(", ")
+				}
+				gen.generateNode(arg)
+			}
 		}
 		gen.output.WriteString(")")
+	
+	case "sprintf":
+		// sprintf returns a string - need to allocate buffer
+		gen.output.WriteString("({ char* __str_buf = malloc(256); sprintf(__str_buf")
+		
+		// Process format string
+		if len(node.Children) > 0 && node.Children[0].Type == NODE_STRING {
+			formatStr := node.Children[0].Value
+			args := node.Children[1:]
+			
+			processedFormat, processedArgs := gen.processFormatString(formatStr, args)
+			
+			gen.output.WriteString(fmt.Sprintf(", \"%s\"", processedFormat))
+			
+			for _, arg := range processedArgs {
+				gen.output.WriteString(", ")
+				gen.generateNode(arg)
+			}
+		}
+		gen.output.WriteString("); __str_buf; })")
 		
 	default:
 		gen.output.WriteString(fmt.Sprintf("%s(", funcName))
@@ -788,7 +869,7 @@ func (gen *CodeGenerator) generateBinaryOp(node *ASTNode) {
 		gen.output.WriteString(" > ")
 		gen.generateNode(node.Children[1])
 		gen.output.WriteString(")")
-	case "lesser_than":
+	case "lesser_than", "less_than":
 		gen.output.WriteString("(")
 		gen.generateNode(node.Children[0])
 		gen.output.WriteString(" < ")
@@ -820,23 +901,27 @@ func (gen *CodeGenerator) generateArrayLiteral(node *ASTNode) {
 	arrName := fmt.Sprintf("arr_%d", gen.varCounter)
 	gen.varCounter++
 	
-	gen.output.WriteString(fmt.Sprintf("({ DynamicArray* %s = createArray(%d); ", 
-		arrName, len(node.Children)))
+	// Use simple C array initialization
+	gen.output.WriteString("({ ")
+	gen.output.WriteString(fmt.Sprintf("AhoyArray* %s = malloc(sizeof(AhoyArray)); ", arrName))
+	gen.output.WriteString(fmt.Sprintf("%s->length = %d; ", arrName, len(node.Children)))
+	gen.output.WriteString(fmt.Sprintf("%s->capacity = %d; ", arrName, len(node.Children)))
+	gen.output.WriteString(fmt.Sprintf("%s->data = malloc(%d * sizeof(int)); ", arrName, len(node.Children)))
 	
 	// Add elements
-	for _, child := range node.Children {
-		gen.output.WriteString(fmt.Sprintf("arrayPush(%s, (void*)(intptr_t)", arrName))
+	for i, child := range node.Children {
+		gen.output.WriteString(fmt.Sprintf("%s->data[%d] = ", arrName, i))
 		gen.generateNode(child)
-		gen.output.WriteString("); ")
+		gen.output.WriteString("; ")
 	}
 	
 	gen.output.WriteString(fmt.Sprintf("%s; })", arrName))
 }
 
 func (gen *CodeGenerator) generateArrayAccess(node *ASTNode) {
-	gen.output.WriteString(fmt.Sprintf("((intptr_t)arrayGet(%s, ", node.Value))
+	gen.output.WriteString(fmt.Sprintf("%s->data[", node.Value))
 	gen.generateNode(node.Children[0])
-	gen.output.WriteString("))")
+	gen.output.WriteString("]")
 }
 
 func (gen *CodeGenerator) generateDictAccess(node *ASTNode) {
@@ -879,7 +964,7 @@ func (gen *CodeGenerator) mapType(langType string) string {
 	case "dict":
 		return "HashMap*"
 	case "array":
-		return "DynamicArray*"
+		return "AhoyArray*"
 	default:
 		return "int"
 	}
@@ -900,6 +985,26 @@ func (gen *CodeGenerator) inferType(node *ASTNode) string {
 		return "dict"
 	case NODE_ARRAY_LITERAL:
 		return "array"
+	case NODE_CALL:
+		// Infer return type of function calls
+		if node.Value == "sprintf" {
+			return "string"
+		}
+		return "int"
+	case NODE_METHOD_CALL:
+		// Array methods that return arrays
+		if node.Value == "map" || node.Value == "filter" || 
+		   node.Value == "sort" || node.Value == "reverse" || 
+		   node.Value == "shuffle" || node.Value == "push" {
+			return "array"
+		}
+		// Methods that return int
+		if node.Value == "length" || node.Value == "sum" || 
+		   node.Value == "pop" || node.Value == "pick" || 
+		   node.Value == "has" {
+			return "int"
+		}
+		return "int"
 	case NODE_BINARY_OP:
 		// Simple inference - could be more sophisticated
 		leftType := gen.inferType(node.Children[0])
@@ -925,4 +1030,412 @@ func (gen *CodeGenerator) nodeToString(node *ASTNode) string {
 	result := gen.output.String()
 	gen.output = oldOutput
 	return result
+}
+
+// Generate enum declaration
+func (gen *CodeGenerator) generateEnum(node *ASTNode) {
+	enumName := node.Value
+
+gen.writeIndent()
+gen.output.WriteString(fmt.Sprintf("typedef enum {\n"))
+gen.indent++
+
+for i, member := range node.Children {
+gen.writeIndent()
+gen.output.WriteString(fmt.Sprintf("%s_%s = %d,\n", enumName, member.Value, i))
+}
+
+gen.indent--
+gen.writeIndent()
+gen.output.WriteString(fmt.Sprintf("} %s;\n\n", enumName))
+}
+
+// Generate constant declaration
+func (gen *CodeGenerator) generateConstant(node *ASTNode) {
+constantName := node.Value
+value := node.Children[0]
+
+// Generate as #define
+gen.output.WriteString("#define ")
+gen.output.WriteString(constantName)
+gen.output.WriteString(" ")
+gen.generateNodeInternal(value, false)
+gen.output.WriteString("\n")
+}
+
+// Generate tuple assignment
+func (gen *CodeGenerator) generateTupleAssignment(node *ASTNode) {
+leftSide := node.Children[0]
+rightSide := node.Children[1]
+
+// Generate temporary variables for swap
+temps := make([]string, len(rightSide.Children))
+for i, expr := range rightSide.Children {
+tempVar := fmt.Sprintf("__temp_%d", gen.varCounter)
+gen.varCounter++
+temps[i] = tempVar
+
+// Infer type from the expression
+exprType := gen.inferType(expr)
+gen.writeIndent()
+gen.output.WriteString(fmt.Sprintf("%s %s = ", exprType, tempVar))
+gen.generateNodeInternal(expr, false)
+gen.output.WriteString(";\n")
+}
+
+// Assign temps to left side variables
+for i, target := range leftSide.Children {
+if i < len(temps) {
+gen.writeIndent()
+gen.output.WriteString(fmt.Sprintf("%s = %s;\n", target.Value, temps[i]))
+}
+}
+}
+
+// Generate struct declaration
+func (gen *CodeGenerator) generateStruct(node *ASTNode) {
+structName := node.Value
+
+gen.writeIndent()
+gen.output.WriteString(fmt.Sprintf("typedef struct {\n"))
+gen.indent++
+
+for _, field := range node.Children {
+fieldType := gen.mapType(field.DataType)
+gen.writeIndent()
+gen.output.WriteString(fmt.Sprintf("%s %s;\n", fieldType, field.Value))
+}
+
+gen.indent--
+gen.writeIndent()
+gen.output.WriteString(fmt.Sprintf("} %s;\n\n", structName))
+}
+
+// Generate method call
+func (gen *CodeGenerator) generateMethodCall(node *ASTNode) {
+	object := node.Children[0]
+	args := node.Children[1]
+	methodName := node.Value
+	
+	// Handle map and filter with inline code generation
+	if methodName == "map" || methodName == "filter" {
+		if len(args.Children) > 0 && args.Children[0].Type == NODE_LAMBDA {
+			if methodName == "map" {
+				gen.generateMapInline(object, args.Children[0])
+			} else {
+				gen.generateFilterInline(object, args.Children[0])
+			}
+			return
+		}
+	}
+	
+	// Track which array method is used
+	gen.arrayMethods[methodName] = true
+	
+	// Generate function call
+	gen.output.WriteString(fmt.Sprintf("ahoy_array_%s(", methodName))
+	gen.generateNodeInternal(object, false)
+	
+	if len(args.Children) > 0 {
+		gen.output.WriteString(", ")
+		for i, arg := range args.Children {
+			if i > 0 {
+				gen.output.WriteString(", ")
+			}
+			gen.generateNodeInternal(arg, false)
+		}
+	}
+	gen.output.WriteString(")")
+}
+
+// Generate member access
+func (gen *CodeGenerator) generateMemberAccess(node *ASTNode) {
+object := node.Children[0]
+memberName := node.Value
+
+gen.generateNodeInternal(object, false)
+gen.output.WriteString(".")
+gen.output.WriteString(memberName)
+}
+
+// Generate array helper functions
+func (gen *CodeGenerator) writeArrayHelperFunctions() {
+if len(gen.arrayMethods) == 0 {
+return
+}
+
+gen.includes["time.h"] = true // For shuffle
+
+// Array structure definition
+gen.funcDecls.WriteString("\n// Array Helper Structure\n")
+gen.funcDecls.WriteString("typedef struct {\n")
+gen.funcDecls.WriteString("    int* data;\n")
+gen.funcDecls.WriteString("    int length;\n")
+gen.funcDecls.WriteString("    int capacity;\n")
+gen.funcDecls.WriteString("} AhoyArray;\n\n")
+
+// length method
+if gen.arrayMethods["length"] {
+gen.funcDecls.WriteString("int ahoy_array_length(AhoyArray* arr) {\n")
+gen.funcDecls.WriteString("    return arr->length;\n")
+gen.funcDecls.WriteString("}\n\n")
+}
+
+// push method
+if gen.arrayMethods["push"] {
+gen.funcDecls.WriteString("AhoyArray* ahoy_array_push(AhoyArray* arr, int value) {\n")
+gen.funcDecls.WriteString("    if (arr->length >= arr->capacity) {\n")
+gen.funcDecls.WriteString("        arr->capacity = arr->capacity == 0 ? 4 : arr->capacity * 2;\n")
+gen.funcDecls.WriteString("        arr->data = realloc(arr->data, arr->capacity * sizeof(int));\n")
+gen.funcDecls.WriteString("    }\n")
+gen.funcDecls.WriteString("    arr->data[arr->length++] = value;\n")
+gen.funcDecls.WriteString("    return arr;\n")
+gen.funcDecls.WriteString("}\n\n")
+}
+
+// pop method
+if gen.arrayMethods["pop"] {
+gen.funcDecls.WriteString("int ahoy_array_pop(AhoyArray* arr) {\n")
+gen.funcDecls.WriteString("    if (arr->length == 0) return 0;\n")
+gen.funcDecls.WriteString("    return arr->data[--arr->length];\n")
+gen.funcDecls.WriteString("}\n\n")
+}
+
+// sum method
+if gen.arrayMethods["sum"] {
+gen.funcDecls.WriteString("int ahoy_array_sum(AhoyArray* arr) {\n")
+gen.funcDecls.WriteString("    int total = 0;\n")
+gen.funcDecls.WriteString("    for (int i = 0; i < arr->length; i++) {\n")
+gen.funcDecls.WriteString("        total += arr->data[i];\n")
+gen.funcDecls.WriteString("    }\n")
+gen.funcDecls.WriteString("    return total;\n")
+gen.funcDecls.WriteString("}\n\n")
+}
+
+// has method
+if gen.arrayMethods["has"] {
+gen.funcDecls.WriteString("int ahoy_array_has(AhoyArray* arr, int value) {\n")
+gen.funcDecls.WriteString("    for (int i = 0; i < arr->length; i++) {\n")
+gen.funcDecls.WriteString("        if (arr->data[i] == value) return 1;\n")
+gen.funcDecls.WriteString("    }\n")
+gen.funcDecls.WriteString("    return 0;\n")
+gen.funcDecls.WriteString("}\n\n")
+}
+
+// sort method
+if gen.arrayMethods["sort"] {
+gen.funcDecls.WriteString("int __ahoy_compare_ints(const void* a, const void* b) {\n")
+gen.funcDecls.WriteString("    return (*(int*)a - *(int*)b);\n")
+gen.funcDecls.WriteString("}\n\n")
+gen.funcDecls.WriteString("AhoyArray* ahoy_array_sort(AhoyArray* arr) {\n")
+gen.funcDecls.WriteString("    qsort(arr->data, arr->length, sizeof(int), __ahoy_compare_ints);\n")
+gen.funcDecls.WriteString("    return arr;\n")
+gen.funcDecls.WriteString("}\n\n")
+}
+
+// reverse method
+if gen.arrayMethods["reverse"] {
+gen.funcDecls.WriteString("AhoyArray* ahoy_array_reverse(AhoyArray* arr) {\n")
+gen.funcDecls.WriteString("    for (int i = 0; i < arr->length / 2; i++) {\n")
+gen.funcDecls.WriteString("        int temp = arr->data[i];\n")
+gen.funcDecls.WriteString("        arr->data[i] = arr->data[arr->length - 1 - i];\n")
+gen.funcDecls.WriteString("        arr->data[arr->length - 1 - i] = temp;\n")
+gen.funcDecls.WriteString("    }\n")
+gen.funcDecls.WriteString("    return arr;\n")
+gen.funcDecls.WriteString("}\n\n")
+}
+
+// shuffle method
+if gen.arrayMethods["shuffle"] {
+gen.funcDecls.WriteString("AhoyArray* ahoy_array_shuffle(AhoyArray* arr) {\n")
+gen.funcDecls.WriteString("    srand(time(NULL));\n")
+gen.funcDecls.WriteString("    for (int i = arr->length - 1; i > 0; i--) {\n")
+gen.funcDecls.WriteString("        int j = rand() % (i + 1);\n")
+gen.funcDecls.WriteString("        int temp = arr->data[i];\n")
+gen.funcDecls.WriteString("        arr->data[i] = arr->data[j];\n")
+gen.funcDecls.WriteString("        arr->data[j] = temp;\n")
+gen.funcDecls.WriteString("    }\n")
+gen.funcDecls.WriteString("    return arr;\n")
+gen.funcDecls.WriteString("}\n\n")
+}
+
+// pick method
+if gen.arrayMethods["pick"] {
+gen.funcDecls.WriteString("int ahoy_array_pick(AhoyArray* arr) {\n")
+gen.funcDecls.WriteString("    if (arr->length == 0) return 0;\n")
+gen.funcDecls.WriteString("    srand(time(NULL));\n")
+gen.funcDecls.WriteString("    return arr->data[rand() % arr->length];\n")
+gen.funcDecls.WriteString("}\n\n")
+}
+}
+
+// Process format string to replace %v and %t with appropriate C format specifiers
+func (gen *CodeGenerator) processFormatString(formatStr string, args []*ASTNode) (string, []*ASTNode) {
+result := ""
+newArgs := []*ASTNode{}
+argIndex := 0
+i := 0
+
+for i < len(formatStr) {
+if formatStr[i] == '%' && i+1 < len(formatStr) {
+if formatStr[i+1] == 'v' {
+// %v - replace with appropriate format specifier based on argument type
+if argIndex < len(args) {
+argType := gen.getNodeType(args[argIndex])
+result += gen.getFormatSpec(argType)
+newArgs = append(newArgs, args[argIndex])
+argIndex++
+} else {
+result += "%v" // Keep if no argument
+}
+i += 2
+} else if formatStr[i+1] == 't' {
+// %t - replace with type name as string
+if argIndex < len(args) {
+argType := gen.getNodeType(args[argIndex])
+result += "%s"
+// Create a string literal node for the type name
+typeNode := &ASTNode{
+Type:  NODE_STRING,
+Value: argType,
+}
+newArgs = append(newArgs, typeNode)
+argIndex++
+} else {
+result += "%t" // Keep if no argument
+}
+i += 2
+} else {
+// Regular format specifier or escaped %
+result += string(formatStr[i])
+if i+1 < len(formatStr) {
+result += string(formatStr[i+1])
+}
+// Add the corresponding argument
+if argIndex < len(args) {
+newArgs = append(newArgs, args[argIndex])
+argIndex++
+}
+i += 2
+}
+} else {
+result += string(formatStr[i])
+i++
+}
+}
+
+// Add any remaining arguments
+for argIndex < len(args) {
+newArgs = append(newArgs, args[argIndex])
+argIndex++
+}
+
+return result, newArgs
+}
+
+// Get the type of a node
+func (gen *CodeGenerator) getNodeType(node *ASTNode) string {
+if node.DataType != "" {
+return node.DataType
+}
+
+switch node.Type {
+case NODE_NUMBER:
+if strings.Contains(node.Value, ".") {
+return "float"
+}
+return "int"
+case NODE_STRING:
+return "string"
+case NODE_CHAR:
+return "char"
+case NODE_BOOLEAN:
+return "bool"
+case NODE_ARRAY_LITERAL:
+return "array"
+case NODE_DICT_LITERAL:
+return "dict"
+case NODE_IDENTIFIER:
+// Look up in variables map
+if varType, ok := gen.variables[node.Value]; ok {
+return varType
+}
+return "int" // Default
+default:
+return "int" // Default
+}
+}
+
+// Get C format specifier for a type
+func (gen *CodeGenerator) getFormatSpec(typeName string) string {
+switch typeName {
+case "int":
+return "%d"
+case "float":
+return "%f"
+case "string":
+return "%s"
+case "char":
+return "%c"
+case "bool":
+return "%d" // C prints bool as 0/1
+case "array":
+return "%p" // Pointer
+case "dict":
+return "%p" // Pointer
+default:
+return "%d" // Default to int
+}
+}
+
+// Generate inline map code
+func (gen *CodeGenerator) generateMapInline(arrayNode *ASTNode, lambda *ASTNode) {
+paramName := lambda.Value
+bodyExpr := lambda.Children[0]
+
+// Generate inline statement expression
+gen.output.WriteString("({ ")
+gen.output.WriteString("AhoyArray* __src = ")
+gen.generateNodeInternal(arrayNode, false)
+gen.output.WriteString("; ")
+gen.output.WriteString("AhoyArray* __result = malloc(sizeof(AhoyArray)); ")
+gen.output.WriteString("__result->length = __src->length; ")
+gen.output.WriteString("__result->capacity = __src->length; ")
+gen.output.WriteString("__result->data = malloc(__src->length * sizeof(int)); ")
+gen.output.WriteString("for (int __i = 0; __i < __src->length; __i++) { ")
+gen.output.WriteString(fmt.Sprintf("int %s = __src->data[__i]; ", paramName))
+gen.output.WriteString("__result->data[__i] = (")
+
+// Generate lambda body expression
+gen.generateNodeInternal(bodyExpr, false)
+
+gen.output.WriteString("); } ")
+gen.output.WriteString("__result; })")
+}
+
+// Generate inline filter code
+func (gen *CodeGenerator) generateFilterInline(arrayNode *ASTNode, lambda *ASTNode) {
+paramName := lambda.Value
+condExpr := lambda.Children[0]
+
+// Generate inline statement expression
+gen.output.WriteString("({ ")
+gen.output.WriteString("AhoyArray* __src = ")
+gen.generateNodeInternal(arrayNode, false)
+gen.output.WriteString("; ")
+gen.output.WriteString("AhoyArray* __result = malloc(sizeof(AhoyArray)); ")
+gen.output.WriteString("__result->capacity = __src->length; ")
+gen.output.WriteString("__result->data = malloc(__src->length * sizeof(int)); ")
+gen.output.WriteString("__result->length = 0; ")
+gen.output.WriteString("for (int __i = 0; __i < __src->length; __i++) { ")
+gen.output.WriteString(fmt.Sprintf("int %s = __src->data[__i]; ", paramName))
+gen.output.WriteString("if (")
+
+// Generate lambda condition expression
+gen.generateNodeInternal(condExpr, false)
+
+gen.output.WriteString(") { ")
+gen.output.WriteString(fmt.Sprintf("__result->data[__result->length++] = %s; ", paramName))
+gen.output.WriteString("} } ")
+gen.output.WriteString("__result; })")
 }

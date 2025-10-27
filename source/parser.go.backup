@@ -39,15 +39,6 @@ const (
 	NODE_DICT_ACCESS
 	NODE_BLOCK
 	NODE_TYPE
-	NODE_ENUM_DECLARATION
-	NODE_CONSTANT_DECLARATION
-	NODE_TUPLE_ASSIGNMENT
-	NODE_STRUCT_DECLARATION
-	NODE_METHOD_CALL
-	NODE_MEMBER_ACCESS
-	NODE_BREAK
-	NODE_SKIP
-	NODE_LAMBDA
 )
 
 type ASTNode struct {
@@ -76,20 +67,6 @@ func (p *Parser) current() Token {
 		return Token{Type: TOKEN_EOF}
 	}
 	return p.tokens[p.pos]
-}
-
-func (p *Parser) peek(offset int) Token {
-	pos := p.pos + offset
-	if pos >= len(p.tokens) {
-		return Token{Type: TOKEN_EOF}
-	}
-	return p.tokens[pos]
-}
-
-func (p *Parser) skipNewlines() {
-	for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_SEMICOLON {
-		p.advance()
-	}
 }
 
 func (p *Parser) advance() {
@@ -132,8 +109,6 @@ func (p *Parser) parseProgram() *ASTNode {
 
 func (p *Parser) parseStatement() *ASTNode {
 	switch p.current().Type {
-	case TOKEN_STRUCT:
-		return p.parseStructDeclaration()
 	case TOKEN_FUNC:
 		return p.parseFunction()
 	case TOKEN_IF:
@@ -148,35 +123,10 @@ func (p *Parser) parseStatement() *ASTNode {
 		return p.parseAhoyStatement()
 	case TOKEN_RETURN:
 		return p.parseReturnStatement()
-	case TOKEN_BREAK:
-		p.advance()
-		return &ASTNode{Type: NODE_BREAK, Line: p.current().Line}
-	case TOKEN_SKIP:
-		p.advance()
-		return &ASTNode{Type: NODE_SKIP, Line: p.current().Line}
 	case TOKEN_IMPORT:
 		return p.parseImportStatement()
 	case TOKEN_IDENTIFIER:
-		// Check for enum declaration (name enum:)
-		nextType := p.peek(1).Type
-		if nextType == TOKEN_ENUM {
-			return p.parseEnumDeclaration()
-		}
-		// Check for constant declaration (name ::)
-		if nextType == TOKEN_DOUBLE_COLON {
-			return p.parseConstantDeclaration()
-		}
-		// Check for tuple assignment (name, name :)
-		if nextType == TOKEN_COMMA {
-			return p.parseTupleAssignment()
-		}
 		return p.parseAssignmentOrExpression()
-	case TOKEN_COLOR_TYPE, TOKEN_VECTOR2_TYPE:
-		// These could be enum names
-		if p.peek(1).Type == TOKEN_ENUM {
-			return p.parseEnumDeclaration()
-		}
-		return p.parseExpression()
 	case TOKEN_NEWLINE, TOKEN_SEMICOLON:
 		p.advance()
 		return nil
@@ -429,7 +379,7 @@ func (p *Parser) parseLoop() *ASTNode {
 				// Range loop: loop:10 to 20 then
 				p.advance() // consume 'to'
 				endNum := p.expect(TOKEN_NUMBER)
-				p.expect(TOKEN_DO)
+				p.expect(TOKEN_THEN)
 				p.expect(TOKEN_NEWLINE)
 				p.expect(TOKEN_INDENT)
 				body := p.parseBlock()
@@ -442,7 +392,7 @@ func (p *Parser) parseLoop() *ASTNode {
 				}
 			} else {
 				// Count loop: loop:10 then (starts at 10)
-				p.expect(TOKEN_DO)
+				p.expect(TOKEN_THEN)
 				p.expect(TOKEN_NEWLINE)
 				p.expect(TOKEN_INDENT)
 				body := p.parseBlock()
@@ -456,7 +406,7 @@ func (p *Parser) parseLoop() *ASTNode {
 		} else if p.current().Type == TOKEN_TRUE || p.current().Type == TOKEN_FALSE {
 			// While loop: loop:true then
 			condition := p.parseExpression()
-			p.expect(TOKEN_DO)
+			p.expect(TOKEN_THEN)
 			p.expect(TOKEN_NEWLINE)
 			p.expect(TOKEN_INDENT)
 			body := p.parseBlock()
@@ -473,7 +423,7 @@ func (p *Parser) parseLoop() *ASTNode {
 			if p.current().Type == TOKEN_TO {
 				p.advance() // consume 'to'
 				endExpr := p.parseExpression()
-				p.expect(TOKEN_DO)
+				p.expect(TOKEN_THEN)
 				p.expect(TOKEN_NEWLINE)
 				p.expect(TOKEN_INDENT)
 				body := p.parseBlock()
@@ -484,7 +434,7 @@ func (p *Parser) parseLoop() *ASTNode {
 				}
 			}
 
-			p.expect(TOKEN_DO)
+			p.expect(TOKEN_THEN)
 			p.expect(TOKEN_NEWLINE)
 			p.expect(TOKEN_INDENT)
 			body := p.parseBlock()
@@ -504,7 +454,7 @@ func (p *Parser) parseLoop() *ASTNode {
 			secondIdent := p.expect(TOKEN_IDENTIFIER)
 			p.expect(TOKEN_IN)
 			dictExpr := p.parseExpression()
-			p.expect(TOKEN_DO)
+			p.expect(TOKEN_THEN)
 			p.expect(TOKEN_NEWLINE)
 			p.expect(TOKEN_INDENT)
 			body := p.parseBlock()
@@ -520,7 +470,7 @@ func (p *Parser) parseLoop() *ASTNode {
 			// loop element in array
 			p.advance() // consume 'in'
 			arrayExpr := p.parseExpression()
-			p.expect(TOKEN_DO)
+			p.expect(TOKEN_THEN)
 			p.expect(TOKEN_NEWLINE)
 			p.expect(TOKEN_INDENT)
 			body := p.parseBlock()
@@ -538,7 +488,7 @@ func (p *Parser) parseLoop() *ASTNode {
 
 			// Continue parsing the rest of the expression
 			condition := p.parseExpressionContinuation(identNode)
-			p.expect(TOKEN_DO)
+			p.expect(TOKEN_THEN)
 			p.expect(TOKEN_NEWLINE)
 			p.expect(TOKEN_INDENT)
 			body := p.parseBlock()
@@ -550,7 +500,7 @@ func (p *Parser) parseLoop() *ASTNode {
 		}
 	} else {
 		// Default: loop then (infinite loop, same as loop:0 then)
-		p.expect(TOKEN_DO)
+		p.expect(TOKEN_THEN)
 		p.expect(TOKEN_NEWLINE)
 		p.expect(TOKEN_INDENT)
 		body := p.parseBlock()
@@ -879,54 +829,21 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			Line:     token.Line,
 		}
 
-	case TOKEN_QUESTION:
-		// Loop counter variable ?
-		token := p.current()
-		p.advance()
-		return &ASTNode{
-			Type:  NODE_IDENTIFIER,
-			Value: "__loop_counter",
-			Line:  token.Line,
-		}
-
 	case TOKEN_IDENTIFIER:
 		token := p.current()
 		p.advance()
 
-		// Check for array access identifier[index]
-		if p.current().Type == TOKEN_LBRACKET {
-			p.advance()
-			index := p.parseExpression()
-			p.expect(TOKEN_RBRACKET)
-			node := &ASTNode{
-				Type:     NODE_ARRAY_ACCESS,
-				Value:    token.Value,
-				Children: []*ASTNode{index},
-				Line:     token.Line,
-			}
-			// Check for member access after array access
-			if p.current().Type == TOKEN_DOT {
-				return p.parseMemberAccessChain(node)
-			}
-			return node
-		}
-
-		// Check for old-style array access identifier<index>
+		// Check for array access identifier<index>
 		if p.current().Type == TOKEN_LANGLE {
 			p.advance()
-			index := p.parseCallArgument()
+			index := p.parseCallArgument() // Use call argument to avoid consuming >
 			p.expect(TOKEN_RANGLE)
-			node := &ASTNode{
+			return &ASTNode{
 				Type:     NODE_ARRAY_ACCESS,
 				Value:    token.Value,
 				Children: []*ASTNode{index},
 				Line:     token.Line,
 			}
-			// Check for member access
-			if p.current().Type == TOKEN_DOT {
-				return p.parseMemberAccessChain(node)
-			}
-			return node
 		}
 
 		// Check for dict access identifier{"key"}
@@ -975,16 +892,6 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			return call
 		}
 
-		// Check for member access (property or method)
-		if p.current().Type == TOKEN_DOT {
-			node := &ASTNode{
-				Type:  NODE_IDENTIFIER,
-				Value: token.Value,
-				Line:  token.Line,
-			}
-			return p.parseMemberAccessChain(node)
-		}
-
 		return &ASTNode{
 			Type:  NODE_IDENTIFIER,
 			Value: token.Value,
@@ -996,9 +903,6 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 
 	case TOKEN_LANGLE:
 		return p.parseArrayLiteral()
-
-	case TOKEN_LBRACKET:
-		return p.parseArrayLiteralBracket()
 
 	default:
 		panic(fmt.Sprintf("Unexpected token: %d at line %d", p.current().Type, p.current().Line))
@@ -1028,12 +932,6 @@ func (p *Parser) parseArrayLiteral() *ASTNode {
 
 	p.inArrayLiteral = false
 	p.expect(TOKEN_RANGLE)
-	
-	// Check for member access after array literal
-	if p.current().Type == TOKEN_DOT {
-		return p.parseMemberAccessChain(array)
-	}
-	
 	return array
 }
 
@@ -1065,323 +963,5 @@ func (p *Parser) parseDictLiteral() *ASTNode {
 
 	p.inDictLiteral = false
 	p.expect(TOKEN_RBRACE)
-	
-	// Check for member access after dict literal
-	if p.current().Type == TOKEN_DOT {
-		return p.parseMemberAccessChain(dict)
-	}
-	
 	return dict
-}
-
-// Parse enum declaration
-func (p *Parser) parseEnumDeclaration() *ASTNode {
-	// First token is the enum name (might be identifier or type keyword being repurposed)
-	var name Token
-	if p.current().Type == TOKEN_IDENTIFIER ||
-		p.current().Type == TOKEN_COLOR_TYPE ||
-		p.current().Type == TOKEN_VECTOR2_TYPE ||
-		p.current().Type == TOKEN_INT_TYPE ||
-		p.current().Type == TOKEN_FLOAT_TYPE ||
-		p.current().Type == TOKEN_STRING_TYPE ||
-		p.current().Type == TOKEN_BOOL_TYPE {
-		name = p.current()
-		p.advance()
-	} else {
-		panic(fmt.Sprintf("Expected identifier for enum name at line %d", p.current().Line))
-	}
-	
-	p.expect(TOKEN_ENUM)
-	p.expect(TOKEN_ASSIGN)
-
-p.skipNewlines()
-if p.current().Type == TOKEN_INDENT {
-p.advance()
-}
-
-enum := &ASTNode{
-Type:  NODE_ENUM_DECLARATION,
-Value: name.Value,
-Line:  name.Line,
-}
-
-// Parse enum members
-for p.current().Type == TOKEN_IDENTIFIER {
-member := &ASTNode{
-Type:  NODE_IDENTIFIER,
-Value: p.current().Value,
-Line:  p.current().Line,
-}
-enum.Children = append(enum.Children, member)
-p.advance()
-p.skipNewlines()
-}
-
-if p.current().Type == TOKEN_DEDENT {
-p.advance()
-}
-
-return enum
-}
-
-// Parse constant declaration (NAME :: value)
-func (p *Parser) parseConstantDeclaration() *ASTNode {
-name := p.expect(TOKEN_IDENTIFIER)
-p.expect(TOKEN_DOUBLE_COLON)
-
-value := p.parseExpression()
-
-return &ASTNode{
-Type:     NODE_CONSTANT_DECLARATION,
-Value:    name.Value,
-Line:     name.Line,
-Children: []*ASTNode{value},
-}
-}
-
-// Parse tuple assignment (a, b : c, d)
-func (p *Parser) parseTupleAssignment() *ASTNode {
-// Parse left side (identifiers)
-leftSide := &ASTNode{Type: NODE_BLOCK}
-
-for {
-name := p.expect(TOKEN_IDENTIFIER)
-leftSide.Children = append(leftSide.Children, &ASTNode{
-Type:  NODE_IDENTIFIER,
-Value: name.Value,
-Line:  name.Line,
-})
-
-if p.current().Type == TOKEN_COMMA {
-p.advance()
-} else {
-break
-}
-}
-
-p.expect(TOKEN_ASSIGN)
-
-// Parse right side (expressions)
-rightSide := &ASTNode{Type: NODE_BLOCK}
-
-for {
-expr := p.parseExpression()
-rightSide.Children = append(rightSide.Children, expr)
-
-if p.current().Type == TOKEN_COMMA {
-p.advance()
-} else {
-break
-}
-}
-
-return &ASTNode{
-Type:     NODE_TUPLE_ASSIGNMENT,
-Line:     leftSide.Children[0].Line,
-Children: []*ASTNode{leftSide, rightSide},
-}
-}
-
-// Parse struct declaration
-func (p *Parser) parseStructDeclaration() *ASTNode {
-p.expect(TOKEN_STRUCT)
-name := p.expect(TOKEN_IDENTIFIER)
-p.expect(TOKEN_ASSIGN)
-
-p.skipNewlines()
-if p.current().Type == TOKEN_INDENT {
-p.advance()
-}
-
-struc := &ASTNode{
-Type:  NODE_STRUCT_DECLARATION,
-Value: name.Value,
-Line:  name.Line,
-}
-
-// Parse struct fields
-for p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_TYPE {
-if p.current().Type == TOKEN_TYPE {
-// Nested type - skip for now
-p.advance()
-p.expect(TOKEN_IDENTIFIER)
-p.expect(TOKEN_ASSIGN)
-p.skipNewlines()
-if p.current().Type == TOKEN_INDENT {
-p.advance()
-for p.current().Type != TOKEN_DEDENT && p.current().Type != TOKEN_EOF {
-p.advance()
-}
-if p.current().Type == TOKEN_DEDENT {
-p.advance()
-}
-}
-} else {
-// Regular field
-fieldName := p.expect(TOKEN_IDENTIFIER)
-p.expect(TOKEN_ASSIGN)
-
-// Get type
-fieldType := p.current().Value
-if p.current().Type == TOKEN_IDENTIFIER ||
-p.current().Type == TOKEN_INT_TYPE ||
-p.current().Type == TOKEN_FLOAT_TYPE ||
-p.current().Type == TOKEN_STRING_TYPE ||
-p.current().Type == TOKEN_BOOL_TYPE ||
-p.current().Type == TOKEN_VECTOR2_TYPE ||
-p.current().Type == TOKEN_COLOR_TYPE {
-p.advance()
-}
-
-field := &ASTNode{
-Type:     NODE_IDENTIFIER,
-Value:    fieldName.Value,
-DataType: fieldType,
-Line:     fieldName.Line,
-}
-struc.Children = append(struc.Children, field)
-}
-
-p.skipNewlines()
-}
-
-if p.current().Type == TOKEN_DEDENT {
-p.advance()
-}
-
-return struc
-}
-
-// Parse member access chain (obj.prop or obj.method||)
-func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
-for p.current().Type == TOKEN_DOT {
-p.advance()
-member := p.expect(TOKEN_IDENTIFIER)
-
-// Check if this is a method call
-if p.current().Type == TOKEN_PIPE {
-p.advance()
-
-// Parse arguments
-args := &ASTNode{Type: NODE_BLOCK}
-if p.current().Type != TOKEN_PIPE {
-// Check if this is a lambda (param: expression)
-if p.isLambda() {
-lambda := p.parseLambda()
-args.Children = append(args.Children, lambda)
-} else {
-for {
-arg := p.parseExpression()
-args.Children = append(args.Children, arg)
-
-if p.current().Type == TOKEN_COMMA {
-p.advance()
-} else {
-break
-}
-}
-}
-}
-p.expect(TOKEN_PIPE)
-
-object = &ASTNode{
-Type:     NODE_METHOD_CALL,
-Value:    member.Value,
-Line:     member.Line,
-Children: []*ASTNode{object, args},
-}
-} else {
-// Simple member access
-object = &ASTNode{
-Type:     NODE_MEMBER_ACCESS,
-Value:    member.Value,
-Line:     member.Line,
-Children: []*ASTNode{object},
-}
-}
-}
-
-return object
-}
-
-// Parse array literal with brackets [...]
-func (p *Parser) parseArrayLiteralBracket() *ASTNode {
-p.expect(TOKEN_LBRACKET)
-
-array := &ASTNode{
-Type:     NODE_ARRAY_LITERAL,
-DataType: "array",
-}
-
-p.inArrayLiteral = true
-
-for p.current().Type != TOKEN_RBRACKET {
-element := p.parseExpression()
-array.Children = append(array.Children, element)
-
-if p.current().Type == TOKEN_COMMA {
-p.advance()
-} else if p.current().Type != TOKEN_RBRACKET {
-break
-}
-}
-
-p.inArrayLiteral = false
-p.expect(TOKEN_RBRACKET)
-
-// Check for member access after array literal
-if p.current().Type == TOKEN_DOT {
-return p.parseMemberAccessChain(array)
-}
-
-return array
-}
-
-// Check if the current position is a lambda expression (param: expr)
-func (p *Parser) isLambda() bool {
-// Look ahead for pattern: IDENTIFIER ASSIGN expression
-if p.current().Type == TOKEN_IDENTIFIER {
-// Save position
-saved := p.pos
-p.advance()
-
-// Check for colon (ASSIGN)
-isLambdaSyntax := p.current().Type == TOKEN_ASSIGN
-
-// Restore position
-p.pos = saved
-return isLambdaSyntax
-}
-return false
-}
-
-// Parse lambda expression: param: expression
-func (p *Parser) parseLambda() *ASTNode {
-// Get parameter name
-param := p.expect(TOKEN_IDENTIFIER)
-
-// Expect colon
-p.expect(TOKEN_ASSIGN)
-
-// Parse expression until we hit PIPE
-expr := p.parseLambdaBody()
-
-return &ASTNode{
-Type:     NODE_LAMBDA,
-Value:    param.Value, // Parameter name
-Children: []*ASTNode{expr}, // Lambda body
-Line:     param.Line,
-}
-}
-
-// Parse lambda body - stops at PIPE
-func (p *Parser) parseLambdaBody() *ASTNode {
-// Save the inFunctionCall flag
-savedFlag := p.inFunctionCall
-p.inFunctionCall = true // Prevent parseExpression from consuming PIPE
-
-expr := p.parseOrExpression()
-
-p.inFunctionCall = savedFlag
-return expr
 }
