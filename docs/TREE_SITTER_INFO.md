@@ -6,7 +6,7 @@ A complete tree-sitter grammar implementation has been added to enable modern ed
 
 ## Location
 
-All tree-sitter files are in the `tree-sitter/` directory.
+All tree-sitter files are in the `ahoy-lang/tree-sitter-ahoy` repository.
 
 ## What You Get
 
@@ -166,7 +166,7 @@ The grammar now follows official tree-sitter conventions as documented at https:
 
 ✅ **tree-sitter.json** - Configuration matching official format
 ✅ **bindings/node/** - Node.js bindings with node-addon-api
-✅ **queries/highlights.scm** - Syntax highlighting queries  
+✅ **queries/highlights.scm** - Syntax highlighting queries
 ✅ **LICENSE** - MIT license
 ✅ **Proper package.json** - Ready for npm publishing
 

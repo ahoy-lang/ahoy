@@ -28,22 +28,37 @@ else
 ? 5. Switch statements (single-line format)
 day: 3
 switch day then 1:ahoy|"5. Monday\n"| then 2:ahoy|"5. Tuesday\n"| then 3:ahoy|"5. Wednesday (switch works!)\n"|
-
 ? 6. Switch with chars
 grade: 'B'
-switch grade then 'A':ahoy|"6. Excellent!\n"| then 'B':ahoy|"6. Good job! (char switch works!)\n"| then 'C':ahoy|"6. Average\n"|
+switch grade then
+	'A':ahoy|"6. Excellent!\n"|
+	'B':ahoy|"6. Good job! (char switch works!)\n"|
+  'C':ahoy|"6. Average\n"|
+	_: ahoy|"6. Needs improvement\n"|
+	ahoy||
+	ahoy<jkladjsf,akdlsfjlka,ajdsklfjlkajs>
+
+loop : cow in cows then
+
+
+
 
 ? 7. All together: chars, elseif, and switch
 level: 2
 status: 'R'
 
-if level is 1 then
+if level less_than 1 then
     ahoy|"7. Beginner level\n"|
-elseif level is 2 then
-    ahoy|"7. Intermediate level\n"|
+anif level is 2 then
+    ahoy<"7. Intermediate level\n">
 else
-    ahoy|"7. Advanced level\n"|
+    ahoy<"7. Advanced level\n">
+    arraay: [212,23,12|
 
-switch status then 'R':ahoy|"7. Status: Ready\n"| then 'W':ahoy|"7. Status: Waiting\n"| then 'D':ahoy|"7. Status: Done\n"|
+    ahoy|0|
+switch status then
+	'R':ahoy["7. Status: Ready\n"] then
+	'W':ahoy["7. Status: Waiting\n"] then
+	'D':ahoy["7. Status: Done\n"]
 
-ahoy|"\nAll new features working! ✓\n"|
+ahoy["\nAll new features working! ✓\n"]

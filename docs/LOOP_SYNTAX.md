@@ -14,7 +14,7 @@ loop:0 to 5 then
     ahoy|"Iteration\n"|
 
 ? Loop from 10 to 15
-loop:10 to 15 then
+loop:i from:10 to 15 then
     ahoy|"Count\n"|
 ```
 

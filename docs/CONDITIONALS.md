@@ -39,20 +39,16 @@ else default||
 ### Before (Multi-line only):
 ```ahoy
 score: 85
-if score greater_than 90 then
-    ahoy|"Grade: A\n"|
-elseif score greater_than 80 then
-    ahoy|"Grade: B\n"|
-elseif score greater_than 70 then
-    ahoy|"Grade: C\n"|
-else
-    ahoy|"Grade: F\n"|
+if score greater_than 90 then ahoy|"Grade: A\n"|
+anif score greater_than 80 then ahoy|"Grade: B\n"|
+anif score greater_than 70 then ahoy|"Grade: C\n"|
+else ahoy|"Grade: F\n"|
 ```
 
 ### After (Inline with anif):
 ```ahoy
 score: 85
-if score greater_than 90 then ahoy|"Grade: A\n"| anif score greater_than 80 then ahoy|"Grade: B\n"| anif score greater_than 70 then ahoy|"Grade: C\n"| else ahoy|"Grade: F\n"|
+ifth score greater_than 90 then ahoy|"Grade: A\n"| anif score greater_than 80 then ahoy|"Grade: B\n"| anif score greater_than 70 then ahoy|"Grade: C\n"| else ahoy|"Grade: F\n"|
 ```
 
 ### Mixed Style:

@@ -24,44 +24,7 @@ if count greater 10 then
     print|"Too many!"|
 ```
 
-### 2. Dynamic Arrays
 
-Arrays with automatic resizing, compiled to efficient C code.
-
-**Syntax:**
-```python
-# Declaration with angle brackets
-my_array: <100, 200, 300, 400>
-
-# Access with angle brackets
-first: my_array<0>
-last: my_array<3>
-```
-
-**Features:**
-- Zero-indexed
-- Automatic capacity management
-- Compiled to C with malloc/realloc
-
-### 3. Python-Like Dictionaries
-
-Hash maps with Python-style syntax.
-
-**Syntax:**
-```python
-# Declaration
-config: {"name":"PyLang", "version":2, "active":true}
-
-# Access with curly braces
-app_name: config{"name"}
-version_num: config{"version"}
-is_active: config{"active"}
-```
-
-**Features:**
-- String keys
-- Mixed value types
-- HashMap implementation in C
 
 ### 4. Inline Conditionals & anif Keyword
 
@@ -76,7 +39,9 @@ if condition then statement
 if condition then statement else other_statement
 
 # Inline if-anif-else chain
-if x greater 90 then ahoy|"A"| anif x greater 80 then ahoy|"B"| else ahoy|"C"|
+if x greater 90 then ahoy|"A"|
+anif x greater 80 then ahoy|"B"|
+else ahoy|"C"|
 
 # Mix inline and multi-line
 if simple_condition then simple_action|| anif complex_condition then
@@ -206,18 +171,15 @@ result: this or that
 ```
 
 ### Control Flow
-```python
+```ahoy
 # Multi-line conditionals
-if condition then
-    action||
-elseif other_condition then
-    other_action||
-else
-    default_action||
+if condition then action||
+anif other_condition then other_action||
+else default_action||
 
 # Inline conditionals (one-line)
 if x is 10 then ahoy|"x is 10\n"|
-if y greater 10 then ahoy|"Big\n"| else ahoy|"Small\n"|
+if y greater_than 10 then ahoy|"Big\n"| else ahoy|"Small\n"|
 
 # Using anif (alternative to elseif)
 if score greater 90 then ahoy|"A\n"| anif score greater 80 then ahoy|"B\n"| else ahoy|"F\n"|
@@ -293,7 +255,7 @@ gcc -DDEBUG -o output/program output/program.c -lm
 
 ## Notes
 
-- `<` and `>` symbols work for both comparisons and arrays
+<!--- `<` and `>` symbols work for both comparisons and arrays-->
 - When ambiguity exists, use `lesser` and `greater` keywords
 - Arrays and dictionaries are zero-indexed
 - All code compiles to optimized C
