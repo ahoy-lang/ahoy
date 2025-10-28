@@ -65,7 +65,15 @@ func main() {
 	// Determine output file name
 	baseName := filepath.Base(sourceFile)
 	baseName = strings.TrimSuffix(baseName, filepath.Ext(baseName))
+	
+	// Determine output directory based on source file location
 	outputDir := "output"
+	sourceDir := filepath.Dir(sourceFile)
+	if strings.Contains(sourceDir, "test/input") || strings.Contains(sourceDir, "test\\input") {
+		// If source is in test/input, output to test/output
+		outputDir = filepath.Join(filepath.Dir(filepath.Dir(sourceDir)), "test", "output")
+	}
+	
 	outputFile := filepath.Join(outputDir, baseName+".c")
 	executable := filepath.Join(outputDir, baseName)
 

@@ -479,18 +479,68 @@ func (gen *CodeGenerator) generateSwitchStatement(node *ASTNode) {
 	for i := 1; i < len(node.Children); i++ {
 		caseNode := node.Children[i]
 		if caseNode.Type == NODE_SWITCH_CASE {
-			gen.indent++
-			gen.writeIndent()
-			gen.output.WriteString("case ")
-			gen.generateNode(caseNode.Children[0]) // Case value
-			gen.output.WriteString(":\n")
+			caseValue := caseNode.Children[0]
+			
+			// Check if it's a list of cases or a range
+			if caseValue.Type == NODE_SWITCH_CASE_LIST {
+				// Multiple cases - generate multiple case labels
+				for _, val := range caseValue.Children {
+					gen.indent++
+					gen.writeIndent()
+					gen.output.WriteString("case ")
+					gen.generateNode(val)
+					gen.output.WriteString(":\n")
+					gen.indent--
+				}
+				// Generate body after all case labels
+				gen.indent++
+				gen.indent++
+				gen.generateNodeInternal(caseNode.Children[1], true) // Case body
+				gen.writeIndent()
+				gen.output.WriteString("break;\n")
+				gen.indent--
+				gen.indent--
+			} else if caseValue.Type == NODE_SWITCH_CASE_RANGE {
+				// Range case - generate if-else ladder
+				// We'll convert this to a default case with if statement
+				gen.indent++
+				gen.writeIndent()
+				gen.output.WriteString("default:\n")
+				gen.indent++
+				gen.writeIndent()
+				gen.output.WriteString("if (")
+				gen.generateNode(node.Children[0]) // Switch expr
+				gen.output.WriteString(" >= ")
+				gen.generateNode(caseValue.Children[0]) // Start
+				gen.output.WriteString(" && ")
+				gen.generateNode(node.Children[0]) // Switch expr
+				gen.output.WriteString(" <= ")
+				gen.generateNode(caseValue.Children[1]) // End
+				gen.output.WriteString(") {\n")
+				gen.indent++
+				gen.generateNodeInternal(caseNode.Children[1], true) // Case body
+				gen.writeIndent()
+				gen.output.WriteString("break;\n")
+				gen.indent--
+				gen.writeIndent()
+				gen.output.WriteString("}\n")
+				gen.indent--
+				gen.indent--
+			} else {
+				// Single case value
+				gen.indent++
+				gen.writeIndent()
+				gen.output.WriteString("case ")
+				gen.generateNode(caseValue) // Case value
+				gen.output.WriteString(":\n")
 
-			gen.indent++
-			gen.generateNodeInternal(caseNode.Children[1], true) // Case body
-			gen.writeIndent()
-			gen.output.WriteString("break;\n")
-			gen.indent--
-			gen.indent--
+				gen.indent++
+				gen.generateNodeInternal(caseNode.Children[1], true) // Case body
+				gen.writeIndent()
+				gen.output.WriteString("break;\n")
+				gen.indent--
+				gen.indent--
+			}
 		}
 	}
 
@@ -762,6 +812,11 @@ func (gen *CodeGenerator) generateCall(node *ASTNode) {
 			// Process %v and %t in format string
 			processedFormat, processedArgs := gen.processFormatString(formatStr, args)
 
+			// Auto-add newline if not present
+			if !strings.HasSuffix(processedFormat, "\\n") {
+				processedFormat += "\\n"
+			}
+
 			// Output processed format string
 			gen.output.WriteString(fmt.Sprintf("\"%s\"", processedFormat))
 
@@ -800,6 +855,17 @@ func (gen *CodeGenerator) generateCall(node *ASTNode) {
 			}
 		}
 		gen.output.WriteString("); __str_buf; })")
+
+	case "__print_array_helper":
+		// Special case for array printing - don't convert to PascalCase
+		gen.output.WriteString("print_array_helper(")
+		for i, arg := range node.Children {
+			if i > 0 {
+				gen.output.WriteString(", ")
+			}
+			gen.generateNode(arg)
+		}
+		gen.output.WriteString(")")
 
 	default:
 		gen.output.WriteString(fmt.Sprintf("%s(", funcName))
@@ -1267,6 +1333,22 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 		gen.funcDecls.WriteString("    return arr->data[rand() % arr->length];\n")
 		gen.funcDecls.WriteString("}\n\n")
 	}
+
+	// print_array helper - formats array for printing
+	if gen.arrayMethods["print_array"] {
+		gen.funcDecls.WriteString("char* print_array_helper(AhoyArray* arr) {\n")
+		gen.funcDecls.WriteString("    if (arr == NULL || arr->length == 0) return \"[]\";\n")
+		gen.funcDecls.WriteString("    char* buffer = malloc(1024);\n")
+		gen.funcDecls.WriteString("    int offset = 0;\n")
+		gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \"[\");\n")
+		gen.funcDecls.WriteString("    for (int i = 0; i < arr->length; i++) {\n")
+		gen.funcDecls.WriteString("        if (i > 0) offset += sprintf(buffer + offset, \", \");\n")
+		gen.funcDecls.WriteString("        offset += sprintf(buffer + offset, \"%d\", arr->data[i]);\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \"]\");\n")
+		gen.funcDecls.WriteString("    return buffer;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
 }
 
 // Process format string to replace %v and %t with appropriate C format specifiers
@@ -1282,8 +1364,21 @@ func (gen *CodeGenerator) processFormatString(formatStr string, args []*ASTNode)
 				// %v - replace with appropriate format specifier based on argument type
 				if argIndex < len(args) {
 					argType := gen.getNodeType(args[argIndex])
-					result += gen.getFormatSpec(argType)
-					newArgs = append(newArgs, args[argIndex])
+					if argType == "array" {
+						// For arrays, we need to call a helper function
+						gen.arrayMethods["print_array"] = true
+						result += "%s"
+						// Mark this argument as needing array helper
+						arrayArg := &ASTNode{
+							Type:     NODE_CALL,
+							Value:    "__print_array_helper", // Special marker
+							Children: []*ASTNode{args[argIndex]},
+						}
+						newArgs = append(newArgs, arrayArg)
+					} else {
+						result += gen.getFormatSpec(argType)
+						newArgs = append(newArgs, args[argIndex])
+					}
 					argIndex++
 				} else {
 					result += "%v" // Keep if no argument

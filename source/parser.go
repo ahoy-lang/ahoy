@@ -15,6 +15,8 @@ const (
 	NODE_IF_STATEMENT
 	NODE_SWITCH_STATEMENT
 	NODE_SWITCH_CASE
+	NODE_SWITCH_CASE_LIST   // Multiple cases like 'A','B','C'
+	NODE_SWITCH_CASE_RANGE  // Range case like 'a' to 'z'
 	NODE_WHILE_LOOP
 	NODE_FOR_LOOP
 	NODE_FOR_RANGE_LOOP    // loop:start to end
@@ -324,7 +326,15 @@ func (p *Parser) parseIfStatement() *ASTNode {
 func (p *Parser) parseSwitchStatement() *ASTNode {
 	p.expect(TOKEN_SWITCH)
 	expr := p.parseExpression()
-	p.expect(TOKEN_THEN)
+	
+	// Accept either "then" or "on" keyword
+	if p.current().Type == TOKEN_ON {
+		p.advance()
+	} else if p.current().Type == TOKEN_THEN {
+		p.advance()
+	} else {
+		panic(fmt.Sprintf("Expected 'on' or 'then' after switch expression at line %d", p.current().Line))
+	}
 
 	switchStmt := &ASTNode{
 		Type:     NODE_SWITCH_STATEMENT,
@@ -332,7 +342,7 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 	}
 
 	// Parse cases: value:statement then value:statement then ...
-	// Cases can be on the same line or on new lines
+	// Now supports: 'A','B','C':statement or 'a' to 'z':statement or 'A' or 'B':statement
 	for {
 		// Skip newlines and semicolons
 		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_SEMICOLON {
@@ -347,41 +357,87 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 			break
 		}
 
-		// Check if we have a number or char (case value)
+		// Check if we have a case value (number, char, string, or underscore for default)
 		if p.current().Type != TOKEN_NUMBER && p.current().Type != TOKEN_STRING &&
 			p.current().Type != TOKEN_CHAR && p.current().Type != TOKEN_IDENTIFIER {
 			break
 		}
 
-		// Parse case value - just the literal value
-		caseValue := &ASTNode{}
-		if p.current().Type == TOKEN_NUMBER {
-			tok := p.current()
-			p.advance()
-			caseValue = &ASTNode{
-				Type:  NODE_NUMBER,
-				Value: tok.Value,
+		// Parse case values - could be single, list (with commas), list (with 'or'), or range (with 'to')
+		caseValues := []*ASTNode{}
+		
+		for {
+			// Parse single case value
+			var caseValue *ASTNode
+			if p.current().Type == TOKEN_NUMBER {
+				tok := p.current()
+				p.advance()
+				caseValue = &ASTNode{
+					Type:  NODE_NUMBER,
+					Value: tok.Value,
+				}
+			} else if p.current().Type == TOKEN_CHAR {
+				tok := p.current()
+				p.advance()
+				caseValue = &ASTNode{
+					Type:  NODE_CHAR,
+					Value: tok.Value,
+				}
+			} else if p.current().Type == TOKEN_STRING {
+				tok := p.current()
+				p.advance()
+				caseValue = &ASTNode{
+					Type:  NODE_STRING,
+					Value: tok.Value,
+				}
+			} else if p.current().Type == TOKEN_IDENTIFIER {
+				tok := p.current()
+				p.advance()
+				caseValue = &ASTNode{
+					Type:  NODE_IDENTIFIER,
+					Value: tok.Value,
+				}
 			}
-		} else if p.current().Type == TOKEN_CHAR {
-			tok := p.current()
-			p.advance()
-			caseValue = &ASTNode{
-				Type:  NODE_CHAR,
-				Value: tok.Value,
-			}
-		} else if p.current().Type == TOKEN_STRING {
-			tok := p.current()
-			p.advance()
-			caseValue = &ASTNode{
-				Type:  NODE_STRING,
-				Value: tok.Value,
-			}
-		} else if p.current().Type == TOKEN_IDENTIFIER {
-			tok := p.current()
-			p.advance()
-			caseValue = &ASTNode{
-				Type:  NODE_IDENTIFIER,
-				Value: tok.Value,
+
+			caseValues = append(caseValues, caseValue)
+
+			// Check for range ('to' keyword) or multiple values (',' or 'or')
+			if p.current().Type == TOKEN_TO {
+				// This is a range: 'a' to 'z'
+				p.advance()
+				var endValue *ASTNode
+				if p.current().Type == TOKEN_NUMBER {
+					tok := p.current()
+					p.advance()
+					endValue = &ASTNode{
+						Type:  NODE_NUMBER,
+						Value: tok.Value,
+					}
+				} else if p.current().Type == TOKEN_CHAR {
+					tok := p.current()
+					p.advance()
+					endValue = &ASTNode{
+						Type:  NODE_CHAR,
+						Value: tok.Value,
+					}
+				} else {
+					panic(fmt.Sprintf("Expected end value for range at line %d", p.current().Line))
+				}
+
+				// Create range node
+				rangeNode := &ASTNode{
+					Type:     NODE_SWITCH_CASE_RANGE,
+					Children: []*ASTNode{caseValue, endValue},
+				}
+				caseValues = []*ASTNode{rangeNode}
+				break
+			} else if p.current().Type == TOKEN_COMMA || p.current().Type == TOKEN_OR {
+				// Multiple values: 'A','B','C' or 'A' or 'B'
+				p.advance()
+				continue
+			} else {
+				// Single value or end of value list
+				break
 			}
 		}
 
@@ -393,9 +449,23 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 			caseBody = p.parseExpression()
 		}
 
-		caseNode := &ASTNode{
-			Type:     NODE_SWITCH_CASE,
-			Children: []*ASTNode{caseValue, caseBody},
+		// Create case node
+		var caseNode *ASTNode
+		if len(caseValues) == 1 {
+			caseNode = &ASTNode{
+				Type:     NODE_SWITCH_CASE,
+				Children: []*ASTNode{caseValues[0], caseBody},
+			}
+		} else {
+			// Multiple case values
+			listNode := &ASTNode{
+				Type:     NODE_SWITCH_CASE_LIST,
+				Children: caseValues,
+			}
+			caseNode = &ASTNode{
+				Type:     NODE_SWITCH_CASE,
+				Children: []*ASTNode{listNode, caseBody},
+			}
 		}
 
 		switchStmt.Children = append(switchStmt.Children, caseNode)

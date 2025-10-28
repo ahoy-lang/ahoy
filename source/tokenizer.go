@@ -20,6 +20,7 @@ const (
 	TOKEN_OR     // or (||)
 	TOKEN_AND    // and (&&)
 	TOKEN_THEN   // then
+	TOKEN_ON     // on (for switch statements)
 	TOKEN_IF
 	TOKEN_ELSE
 	TOKEN_ELSEIF
@@ -112,6 +113,7 @@ func tokenize(input string) []Token {
 		"or":           TOKEN_OR,
 		"and":          TOKEN_AND,
 		"then":         TOKEN_THEN,
+		"on":           TOKEN_ON,
 		"plus":         TOKEN_PLUS_WORD,
 		"minus":        TOKEN_MINUS_WORD,
 		"times":        TOKEN_TIMES_WORD,
