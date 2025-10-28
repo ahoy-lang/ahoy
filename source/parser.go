@@ -60,17 +60,31 @@ type ASTNode struct {
 	Line     int
 }
 
+type ParseError struct {
+	Message string
+	Line    int
+	Column  int
+}
+
 type Parser struct {
 	tokens         []Token
 	pos            int
 	inFunctionCall bool
 	inArrayLiteral bool
 	inDictLiteral  bool
+	LintMode       bool
+	Errors         []ParseError
 }
 
 func parse(tokens []Token) *ASTNode {
-	parser := &Parser{tokens: tokens, pos: 0}
+	parser := &Parser{tokens: tokens, pos: 0, LintMode: false, Errors: []ParseError{}}
 	return parser.parseProgram()
+}
+
+func parseLint(tokens []Token) (*ASTNode, []ParseError) {
+	parser := &Parser{tokens: tokens, pos: 0, LintMode: true, Errors: []ParseError{}}
+	ast := parser.parseProgram()
+	return ast, parser.Errors
 }
 
 func (p *Parser) current() Token {
@@ -94,6 +108,15 @@ func (p *Parser) skipNewlines() {
 	}
 }
 
+func (p *Parser) recordError(message string) {
+	token := p.current()
+	p.Errors = append(p.Errors, ParseError{
+		Message: message,
+		Line:    token.Line,
+		Column:  token.Column,
+	})
+}
+
 func (p *Parser) advance() {
 	if p.pos < len(p.tokens) {
 		p.pos++
@@ -102,7 +125,16 @@ func (p *Parser) advance() {
 
 func (p *Parser) expect(tokenType TokenType) Token {
 	if p.current().Type != tokenType {
-		panic(fmt.Sprintf("Expected token type %d, got %d at line %d", tokenType, p.current().Type, p.current().Line))
+		errMsg := fmt.Sprintf("Expected token type %d, got %d at line %d", tokenType, p.current().Type, p.current().Line)
+		if p.LintMode {
+			p.recordError(errMsg)
+			// In lint mode, return current token and advance to continue parsing
+			token := p.current()
+			p.advance()
+			return token
+		} else {
+			panic(errMsg)
+		}
 	}
 	token := p.current()
 	p.advance()
@@ -333,7 +365,12 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 	} else if p.current().Type == TOKEN_THEN {
 		p.advance()
 	} else {
-		panic(fmt.Sprintf("Expected 'on' or 'then' after switch expression at line %d", p.current().Line))
+		errMsg := fmt.Sprintf("Expected 'on' or 'then' after switch expression at line %d", p.current().Line)
+		if p.LintMode {
+			p.recordError(errMsg)
+		} else {
+			panic(errMsg)
+		}
 	}
 
 	switchStmt := &ASTNode{
@@ -421,7 +458,17 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 						Value: tok.Value,
 					}
 				} else {
-					panic(fmt.Sprintf("Expected end value for range at line %d", p.current().Line))
+					errMsg := fmt.Sprintf("Expected end value for range at line %d", p.current().Line)
+					if p.LintMode {
+						p.recordError(errMsg)
+						// Create a dummy node to continue parsing
+						endValue = &ASTNode{
+							Type:  NODE_NUMBER,
+							Value: "0",
+						}
+					} else {
+						panic(errMsg)
+					}
 				}
 
 				// Create range node
@@ -1071,7 +1118,18 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 		return p.parseArrayLiteralBracket()
 
 	default:
-		panic(fmt.Sprintf("Unexpected token: %d at line %d", p.current().Type, p.current().Line))
+		errMsg := fmt.Sprintf("Unexpected token: %d at line %d", p.current().Type, p.current().Line)
+		if p.LintMode {
+			p.recordError(errMsg)
+			// Return a dummy node to continue parsing
+			p.advance()
+			return &ASTNode{
+				Type:  NODE_IDENTIFIER,
+				Value: "error",
+			}
+		} else {
+			panic(errMsg)
+		}
 	}
 }
 
@@ -1158,7 +1216,14 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 		name = p.current()
 		p.advance()
 	} else {
-		panic(fmt.Sprintf("Expected identifier for enum name at line %d", p.current().Line))
+		errMsg := fmt.Sprintf("Expected identifier for enum name at line %d", p.current().Line)
+		if p.LintMode {
+			p.recordError(errMsg)
+			// Use a dummy name to continue parsing
+			name = Token{Type: TOKEN_IDENTIFIER, Value: "error_enum", Line: p.current().Line}
+		} else {
+			panic(errMsg)
+		}
 	}
 
 	p.expect(TOKEN_ENUM)

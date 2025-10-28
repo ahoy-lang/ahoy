@@ -14,6 +14,7 @@ func main() {
 	fileFlag := flag.String("f", "", "Input .ahoy source file")
 	runFlag := flag.Bool("r", false, "Run the compiled C program after compilation")
 	formatFlag := flag.Bool("format", false, "Format the source file")
+	lintFlag := flag.Bool("lint", false, "Run linter to check for errors without compiling")
 	helpFlag := flag.Bool("h", false, "Show help")
 
 	flag.Parse()
@@ -55,6 +56,21 @@ func main() {
 
 	// Tokenize
 	tokens := tokenize(formattedContent)
+
+	// Lint mode
+	if *lintFlag {
+		_, errors := parseLint(tokens)
+		if len(errors) > 0 {
+			fmt.Printf("Found %d error(s) in %s:\n", len(errors), sourceFile)
+			for _, err := range errors {
+				fmt.Printf("  Line %d, Column %d: %s\n", err.Line, err.Column, err.Message)
+			}
+			os.Exit(1)
+		} else {
+			fmt.Printf("✓ No errors found in %s\n", sourceFile)
+		}
+		return
+	}
 
 	// Parse
 	ast := parse(tokens)
@@ -127,10 +143,12 @@ func showHelp() {
 	fmt.Println("  -f <file>     Input .ahoy source file (required)")
 	fmt.Println("  -r            Run the compiled C program")
 	fmt.Println("  -format       Format the source file")
+	fmt.Println("  -lint         Check for syntax errors without compiling")
 	fmt.Println("  -h            Show this help message")
 	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  go run main.go -f input/main.ahoy")
 	fmt.Println("  go run main.go -f input/main.ahoy -r")
 	fmt.Println("  go run main.go -f input/main.ahoy -format")
+	fmt.Println("  go run main.go -f input/main.ahoy -lint")
 }
