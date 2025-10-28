@@ -23,7 +23,7 @@ const (
 	TOKEN_IF
 	TOKEN_ELSE
 	TOKEN_ELSEIF
-	TOKEN_ANIF   // anif (alternative to elseif)
+	TOKEN_ANIF // anif (alternative to elseif)
 	TOKEN_SWITCH
 	TOKEN_LOOP // loop (replaces while/for)
 	TOKEN_IN   // in (for loop element in array)
@@ -167,14 +167,14 @@ func tokenize(input string) []Token {
 		// Tokenize the line content
 		content := strings.TrimSpace(line)
 		i := 0
-		
+
 		// Check if line starts with comment
 		if len(content) > 0 && (content[0] == '?' || content[0] == '#') {
 			// Skip this line - it's a comment
 			tokens = append(tokens, Token{Type: TOKEN_NEWLINE, Line: lineNum + 1})
 			continue
 		}
-		
+
 		for i < len(content) {
 			if unicode.IsSpace(rune(content[i])) {
 				i++

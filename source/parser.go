@@ -1028,12 +1028,12 @@ func (p *Parser) parseArrayLiteral() *ASTNode {
 
 	p.inArrayLiteral = false
 	p.expect(TOKEN_RANGLE)
-	
+
 	// Check for member access after array literal
 	if p.current().Type == TOKEN_DOT {
 		return p.parseMemberAccessChain(array)
 	}
-	
+
 	return array
 }
 
@@ -1065,12 +1065,12 @@ func (p *Parser) parseDictLiteral() *ASTNode {
 
 	p.inDictLiteral = false
 	p.expect(TOKEN_RBRACE)
-	
+
 	// Check for member access after dict literal
 	if p.current().Type == TOKEN_DOT {
 		return p.parseMemberAccessChain(dict)
 	}
-	
+
 	return dict
 }
 
@@ -1090,298 +1090,298 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 	} else {
 		panic(fmt.Sprintf("Expected identifier for enum name at line %d", p.current().Line))
 	}
-	
+
 	p.expect(TOKEN_ENUM)
 	p.expect(TOKEN_ASSIGN)
 
-p.skipNewlines()
-if p.current().Type == TOKEN_INDENT {
-p.advance()
-}
+	p.skipNewlines()
+	if p.current().Type == TOKEN_INDENT {
+		p.advance()
+	}
 
-enum := &ASTNode{
-Type:  NODE_ENUM_DECLARATION,
-Value: name.Value,
-Line:  name.Line,
-}
+	enum := &ASTNode{
+		Type:  NODE_ENUM_DECLARATION,
+		Value: name.Value,
+		Line:  name.Line,
+	}
 
-// Parse enum members
-for p.current().Type == TOKEN_IDENTIFIER {
-member := &ASTNode{
-Type:  NODE_IDENTIFIER,
-Value: p.current().Value,
-Line:  p.current().Line,
-}
-enum.Children = append(enum.Children, member)
-p.advance()
-p.skipNewlines()
-}
+	// Parse enum members
+	for p.current().Type == TOKEN_IDENTIFIER {
+		member := &ASTNode{
+			Type:  NODE_IDENTIFIER,
+			Value: p.current().Value,
+			Line:  p.current().Line,
+		}
+		enum.Children = append(enum.Children, member)
+		p.advance()
+		p.skipNewlines()
+	}
 
-if p.current().Type == TOKEN_DEDENT {
-p.advance()
-}
+	if p.current().Type == TOKEN_DEDENT {
+		p.advance()
+	}
 
-return enum
+	return enum
 }
 
 // Parse constant declaration (NAME :: value)
 func (p *Parser) parseConstantDeclaration() *ASTNode {
-name := p.expect(TOKEN_IDENTIFIER)
-p.expect(TOKEN_DOUBLE_COLON)
+	name := p.expect(TOKEN_IDENTIFIER)
+	p.expect(TOKEN_DOUBLE_COLON)
 
-value := p.parseExpression()
+	value := p.parseExpression()
 
-return &ASTNode{
-Type:     NODE_CONSTANT_DECLARATION,
-Value:    name.Value,
-Line:     name.Line,
-Children: []*ASTNode{value},
-}
+	return &ASTNode{
+		Type:     NODE_CONSTANT_DECLARATION,
+		Value:    name.Value,
+		Line:     name.Line,
+		Children: []*ASTNode{value},
+	}
 }
 
 // Parse tuple assignment (a, b : c, d)
 func (p *Parser) parseTupleAssignment() *ASTNode {
-// Parse left side (identifiers)
-leftSide := &ASTNode{Type: NODE_BLOCK}
+	// Parse left side (identifiers)
+	leftSide := &ASTNode{Type: NODE_BLOCK}
 
-for {
-name := p.expect(TOKEN_IDENTIFIER)
-leftSide.Children = append(leftSide.Children, &ASTNode{
-Type:  NODE_IDENTIFIER,
-Value: name.Value,
-Line:  name.Line,
-})
+	for {
+		name := p.expect(TOKEN_IDENTIFIER)
+		leftSide.Children = append(leftSide.Children, &ASTNode{
+			Type:  NODE_IDENTIFIER,
+			Value: name.Value,
+			Line:  name.Line,
+		})
 
-if p.current().Type == TOKEN_COMMA {
-p.advance()
-} else {
-break
-}
-}
+		if p.current().Type == TOKEN_COMMA {
+			p.advance()
+		} else {
+			break
+		}
+	}
 
-p.expect(TOKEN_ASSIGN)
+	p.expect(TOKEN_ASSIGN)
 
-// Parse right side (expressions)
-rightSide := &ASTNode{Type: NODE_BLOCK}
+	// Parse right side (expressions)
+	rightSide := &ASTNode{Type: NODE_BLOCK}
 
-for {
-expr := p.parseExpression()
-rightSide.Children = append(rightSide.Children, expr)
+	for {
+		expr := p.parseExpression()
+		rightSide.Children = append(rightSide.Children, expr)
 
-if p.current().Type == TOKEN_COMMA {
-p.advance()
-} else {
-break
-}
-}
+		if p.current().Type == TOKEN_COMMA {
+			p.advance()
+		} else {
+			break
+		}
+	}
 
-return &ASTNode{
-Type:     NODE_TUPLE_ASSIGNMENT,
-Line:     leftSide.Children[0].Line,
-Children: []*ASTNode{leftSide, rightSide},
-}
+	return &ASTNode{
+		Type:     NODE_TUPLE_ASSIGNMENT,
+		Line:     leftSide.Children[0].Line,
+		Children: []*ASTNode{leftSide, rightSide},
+	}
 }
 
 // Parse struct declaration
 func (p *Parser) parseStructDeclaration() *ASTNode {
-p.expect(TOKEN_STRUCT)
-name := p.expect(TOKEN_IDENTIFIER)
-p.expect(TOKEN_ASSIGN)
+	p.expect(TOKEN_STRUCT)
+	name := p.expect(TOKEN_IDENTIFIER)
+	p.expect(TOKEN_ASSIGN)
 
-p.skipNewlines()
-if p.current().Type == TOKEN_INDENT {
-p.advance()
-}
+	p.skipNewlines()
+	if p.current().Type == TOKEN_INDENT {
+		p.advance()
+	}
 
-struc := &ASTNode{
-Type:  NODE_STRUCT_DECLARATION,
-Value: name.Value,
-Line:  name.Line,
-}
+	struc := &ASTNode{
+		Type:  NODE_STRUCT_DECLARATION,
+		Value: name.Value,
+		Line:  name.Line,
+	}
 
-// Parse struct fields
-for p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_TYPE {
-if p.current().Type == TOKEN_TYPE {
-// Nested type - skip for now
-p.advance()
-p.expect(TOKEN_IDENTIFIER)
-p.expect(TOKEN_ASSIGN)
-p.skipNewlines()
-if p.current().Type == TOKEN_INDENT {
-p.advance()
-for p.current().Type != TOKEN_DEDENT && p.current().Type != TOKEN_EOF {
-p.advance()
-}
-if p.current().Type == TOKEN_DEDENT {
-p.advance()
-}
-}
-} else {
-// Regular field
-fieldName := p.expect(TOKEN_IDENTIFIER)
-p.expect(TOKEN_ASSIGN)
+	// Parse struct fields
+	for p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_TYPE {
+		if p.current().Type == TOKEN_TYPE {
+			// Nested type - skip for now
+			p.advance()
+			p.expect(TOKEN_IDENTIFIER)
+			p.expect(TOKEN_ASSIGN)
+			p.skipNewlines()
+			if p.current().Type == TOKEN_INDENT {
+				p.advance()
+				for p.current().Type != TOKEN_DEDENT && p.current().Type != TOKEN_EOF {
+					p.advance()
+				}
+				if p.current().Type == TOKEN_DEDENT {
+					p.advance()
+				}
+			}
+		} else {
+			// Regular field
+			fieldName := p.expect(TOKEN_IDENTIFIER)
+			p.expect(TOKEN_ASSIGN)
 
-// Get type
-fieldType := p.current().Value
-if p.current().Type == TOKEN_IDENTIFIER ||
-p.current().Type == TOKEN_INT_TYPE ||
-p.current().Type == TOKEN_FLOAT_TYPE ||
-p.current().Type == TOKEN_STRING_TYPE ||
-p.current().Type == TOKEN_BOOL_TYPE ||
-p.current().Type == TOKEN_VECTOR2_TYPE ||
-p.current().Type == TOKEN_COLOR_TYPE {
-p.advance()
-}
+			// Get type
+			fieldType := p.current().Value
+			if p.current().Type == TOKEN_IDENTIFIER ||
+				p.current().Type == TOKEN_INT_TYPE ||
+				p.current().Type == TOKEN_FLOAT_TYPE ||
+				p.current().Type == TOKEN_STRING_TYPE ||
+				p.current().Type == TOKEN_BOOL_TYPE ||
+				p.current().Type == TOKEN_VECTOR2_TYPE ||
+				p.current().Type == TOKEN_COLOR_TYPE {
+				p.advance()
+			}
 
-field := &ASTNode{
-Type:     NODE_IDENTIFIER,
-Value:    fieldName.Value,
-DataType: fieldType,
-Line:     fieldName.Line,
-}
-struc.Children = append(struc.Children, field)
-}
+			field := &ASTNode{
+				Type:     NODE_IDENTIFIER,
+				Value:    fieldName.Value,
+				DataType: fieldType,
+				Line:     fieldName.Line,
+			}
+			struc.Children = append(struc.Children, field)
+		}
 
-p.skipNewlines()
-}
+		p.skipNewlines()
+	}
 
-if p.current().Type == TOKEN_DEDENT {
-p.advance()
-}
+	if p.current().Type == TOKEN_DEDENT {
+		p.advance()
+	}
 
-return struc
+	return struc
 }
 
 // Parse member access chain (obj.prop or obj.method||)
 func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
-for p.current().Type == TOKEN_DOT {
-p.advance()
-member := p.expect(TOKEN_IDENTIFIER)
+	for p.current().Type == TOKEN_DOT {
+		p.advance()
+		member := p.expect(TOKEN_IDENTIFIER)
 
-// Check if this is a method call
-if p.current().Type == TOKEN_PIPE {
-p.advance()
+		// Check if this is a method call
+		if p.current().Type == TOKEN_PIPE {
+			p.advance()
 
-// Parse arguments
-args := &ASTNode{Type: NODE_BLOCK}
-if p.current().Type != TOKEN_PIPE {
-// Check if this is a lambda (param: expression)
-if p.isLambda() {
-lambda := p.parseLambda()
-args.Children = append(args.Children, lambda)
-} else {
-for {
-arg := p.parseExpression()
-args.Children = append(args.Children, arg)
+			// Parse arguments
+			args := &ASTNode{Type: NODE_BLOCK}
+			if p.current().Type != TOKEN_PIPE {
+				// Check if this is a lambda (param: expression)
+				if p.isLambda() {
+					lambda := p.parseLambda()
+					args.Children = append(args.Children, lambda)
+				} else {
+					for {
+						arg := p.parseExpression()
+						args.Children = append(args.Children, arg)
 
-if p.current().Type == TOKEN_COMMA {
-p.advance()
-} else {
-break
-}
-}
-}
-}
-p.expect(TOKEN_PIPE)
+						if p.current().Type == TOKEN_COMMA {
+							p.advance()
+						} else {
+							break
+						}
+					}
+				}
+			}
+			p.expect(TOKEN_PIPE)
 
-object = &ASTNode{
-Type:     NODE_METHOD_CALL,
-Value:    member.Value,
-Line:     member.Line,
-Children: []*ASTNode{object, args},
-}
-} else {
-// Simple member access
-object = &ASTNode{
-Type:     NODE_MEMBER_ACCESS,
-Value:    member.Value,
-Line:     member.Line,
-Children: []*ASTNode{object},
-}
-}
-}
+			object = &ASTNode{
+				Type:     NODE_METHOD_CALL,
+				Value:    member.Value,
+				Line:     member.Line,
+				Children: []*ASTNode{object, args},
+			}
+		} else {
+			// Simple member access
+			object = &ASTNode{
+				Type:     NODE_MEMBER_ACCESS,
+				Value:    member.Value,
+				Line:     member.Line,
+				Children: []*ASTNode{object},
+			}
+		}
+	}
 
-return object
+	return object
 }
 
 // Parse array literal with brackets [...]
 func (p *Parser) parseArrayLiteralBracket() *ASTNode {
-p.expect(TOKEN_LBRACKET)
+	p.expect(TOKEN_LBRACKET)
 
-array := &ASTNode{
-Type:     NODE_ARRAY_LITERAL,
-DataType: "array",
-}
+	array := &ASTNode{
+		Type:     NODE_ARRAY_LITERAL,
+		DataType: "array",
+	}
 
-p.inArrayLiteral = true
+	p.inArrayLiteral = true
 
-for p.current().Type != TOKEN_RBRACKET {
-element := p.parseExpression()
-array.Children = append(array.Children, element)
+	for p.current().Type != TOKEN_RBRACKET {
+		element := p.parseExpression()
+		array.Children = append(array.Children, element)
 
-if p.current().Type == TOKEN_COMMA {
-p.advance()
-} else if p.current().Type != TOKEN_RBRACKET {
-break
-}
-}
+		if p.current().Type == TOKEN_COMMA {
+			p.advance()
+		} else if p.current().Type != TOKEN_RBRACKET {
+			break
+		}
+	}
 
-p.inArrayLiteral = false
-p.expect(TOKEN_RBRACKET)
+	p.inArrayLiteral = false
+	p.expect(TOKEN_RBRACKET)
 
-// Check for member access after array literal
-if p.current().Type == TOKEN_DOT {
-return p.parseMemberAccessChain(array)
-}
+	// Check for member access after array literal
+	if p.current().Type == TOKEN_DOT {
+		return p.parseMemberAccessChain(array)
+	}
 
-return array
+	return array
 }
 
 // Check if the current position is a lambda expression (param: expr)
 func (p *Parser) isLambda() bool {
-// Look ahead for pattern: IDENTIFIER ASSIGN expression
-if p.current().Type == TOKEN_IDENTIFIER {
-// Save position
-saved := p.pos
-p.advance()
+	// Look ahead for pattern: IDENTIFIER ASSIGN expression
+	if p.current().Type == TOKEN_IDENTIFIER {
+		// Save position
+		saved := p.pos
+		p.advance()
 
-// Check for colon (ASSIGN)
-isLambdaSyntax := p.current().Type == TOKEN_ASSIGN
+		// Check for colon (ASSIGN)
+		isLambdaSyntax := p.current().Type == TOKEN_ASSIGN
 
-// Restore position
-p.pos = saved
-return isLambdaSyntax
-}
-return false
+		// Restore position
+		p.pos = saved
+		return isLambdaSyntax
+	}
+	return false
 }
 
 // Parse lambda expression: param: expression
 func (p *Parser) parseLambda() *ASTNode {
-// Get parameter name
-param := p.expect(TOKEN_IDENTIFIER)
+	// Get parameter name
+	param := p.expect(TOKEN_IDENTIFIER)
 
-// Expect colon
-p.expect(TOKEN_ASSIGN)
+	// Expect colon
+	p.expect(TOKEN_ASSIGN)
 
-// Parse expression until we hit PIPE
-expr := p.parseLambdaBody()
+	// Parse expression until we hit PIPE
+	expr := p.parseLambdaBody()
 
-return &ASTNode{
-Type:     NODE_LAMBDA,
-Value:    param.Value, // Parameter name
-Children: []*ASTNode{expr}, // Lambda body
-Line:     param.Line,
-}
+	return &ASTNode{
+		Type:     NODE_LAMBDA,
+		Value:    param.Value,      // Parameter name
+		Children: []*ASTNode{expr}, // Lambda body
+		Line:     param.Line,
+	}
 }
 
 // Parse lambda body - stops at PIPE
 func (p *Parser) parseLambdaBody() *ASTNode {
-// Save the inFunctionCall flag
-savedFlag := p.inFunctionCall
-p.inFunctionCall = true // Prevent parseExpression from consuming PIPE
+	// Save the inFunctionCall flag
+	savedFlag := p.inFunctionCall
+	p.inFunctionCall = true // Prevent parseExpression from consuming PIPE
 
-expr := p.parseOrExpression()
+	expr := p.parseOrExpression()
 
-p.inFunctionCall = savedFlag
-return expr
+	p.inFunctionCall = savedFlag
+	return expr
 }

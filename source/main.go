@@ -15,29 +15,29 @@ func main() {
 	runFlag := flag.Bool("r", false, "Run the compiled C program after compilation")
 	formatFlag := flag.Bool("format", false, "Format the source file")
 	helpFlag := flag.Bool("h", false, "Show help")
-	
+
 	flag.Parse()
-	
+
 	if *helpFlag || (*fileFlag == "" && !*formatFlag) {
 		showHelp()
 		return
 	}
-	
+
 	sourceFile := *fileFlag
-	
+
 	// Check if file exists
 	if _, err := os.Stat(sourceFile); os.IsNotExist(err) {
 		fmt.Printf("Error: File '%s' not found\n", sourceFile)
 		os.Exit(1)
 	}
-	
+
 	// Read source file
 	content, err := os.ReadFile(sourceFile)
 	if err != nil {
 		fmt.Printf("Error reading file: %v\n", err)
 		os.Exit(1)
 	}
-	
+
 	// Format if requested
 	if *formatFlag {
 		formatted := formatSource(string(content))
@@ -49,38 +49,38 @@ func main() {
 		fmt.Printf("Formatted %s\n", sourceFile)
 		return
 	}
-	
+
 	// Format source before compiling (tabs to spaces, etc)
 	formattedContent := formatSource(string(content))
-	
+
 	// Tokenize
 	tokens := tokenize(formattedContent)
-	
+
 	// Parse
 	ast := parse(tokens)
-	
+
 	// Generate C code
 	cCode := generateC(ast)
-	
+
 	// Determine output file name
 	baseName := filepath.Base(sourceFile)
 	baseName = strings.TrimSuffix(baseName, filepath.Ext(baseName))
 	outputDir := "output"
 	outputFile := filepath.Join(outputDir, baseName+".c")
 	executable := filepath.Join(outputDir, baseName)
-	
+
 	// Create output directory if it doesn't exist
 	os.MkdirAll(outputDir, 0755)
-	
+
 	// Write C file
 	err = os.WriteFile(outputFile, []byte(cCode), 0644)
 	if err != nil {
 		fmt.Printf("Error writing C file: %v\n", err)
 		os.Exit(1)
 	}
-	
+
 	fmt.Printf("✓ Compiled %s to %s\n", sourceFile, outputFile)
-	
+
 	// Compile C code if run flag is set
 	if *runFlag {
 		fmt.Println("Compiling C code...")
@@ -90,11 +90,11 @@ func main() {
 			fmt.Printf("Error compiling C code:\n%s\n", output)
 			os.Exit(1)
 		}
-		
+
 		fmt.Printf("✓ Compiled C code to %s\n", executable)
 		fmt.Println("Running program:")
 		fmt.Println("==================")
-		
+
 		// Run the executable
 		runCmd := exec.Command(executable)
 		runCmd.Stdout = os.Stdout
