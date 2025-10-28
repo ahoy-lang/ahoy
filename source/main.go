@@ -1,6 +1,7 @@
 package main
 
 import (
+	"ahoy"
 	"flag"
 	"fmt"
 	"os"
@@ -55,11 +56,11 @@ func main() {
 	formattedContent := formatSource(string(content))
 
 	// Tokenize
-	tokens := tokenize(formattedContent)
+	tokens := ahoy.Tokenize(formattedContent)
 
 	// Lint mode
 	if *lintFlag {
-		_, errors := parseLint(tokens)
+		_, errors := ahoy.ParseLint(tokens)
 		if len(errors) > 0 {
 			fmt.Printf("Found %d error(s) in %s:\n", len(errors), sourceFile)
 			for _, err := range errors {
@@ -73,7 +74,7 @@ func main() {
 	}
 
 	// Parse
-	ast := parse(tokens)
+	ast := ahoy.Parse(tokens)
 
 	// Generate C code
 	cCode := generateC(ast)
@@ -81,7 +82,7 @@ func main() {
 	// Determine output file name
 	baseName := filepath.Base(sourceFile)
 	baseName = strings.TrimSuffix(baseName, filepath.Ext(baseName))
-	
+
 	// Determine output directory based on source file location
 	outputDir := "output"
 	sourceDir := filepath.Dir(sourceFile)
@@ -89,7 +90,7 @@ func main() {
 		// If source is in test/input, output to test/output
 		outputDir = filepath.Join(filepath.Dir(filepath.Dir(sourceDir)), "test", "output")
 	}
-	
+
 	outputFile := filepath.Join(outputDir, baseName+".c")
 	executable := filepath.Join(outputDir, baseName)
 

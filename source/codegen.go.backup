@@ -234,11 +234,11 @@ func (gen *CodeGenerator) writeIndent() {
 	}
 }
 
-func (gen *CodeGenerator) generateNode(node *ahoy.ASTNode) {
+func (g *CodeGenerator) generate(node *ahoy.ASTNode) {
 	gen.generateNodeInternal(node, false)
 }
 
-func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement bool) {
+func (gen *CodeGenerator) generateNodeInternal(node *ASTNode, isStatement bool) {
 	if node == nil {
 		return
 	}
@@ -264,7 +264,7 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 	case ahoy.NODE_WHILE_LOOP:
 		gen.generateWhileLoop(node)
 
-	case ahoy.NODE_FOR_LOOP:
+	case NODE_FOR_LOOP:
 		gen.generateForLoop(node)
 
 	case ahoy.NODE_FOR_RANGE_LOOP:
@@ -297,13 +297,13 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 			gen.output.WriteString(";\n")
 		}
 
-	case ahoy.NODE_BINARY_OP:
+	case NODE_BINARY_OP:
 		gen.generateBinaryOp(node)
 
 	case ahoy.NODE_UNARY_OP:
 		gen.generateUnaryOp(node)
 
-	case ahoy.NODE_IDENTIFIER:
+	case NODE_IDENTIFIER:
 		// Check if it's the loop counter variable
 		if node.Value == "__loop_counter" && len(gen.loopCounters) > 0 {
 			gen.output.WriteString(gen.loopCounters[len(gen.loopCounters)-1])
@@ -314,26 +314,26 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 			gen.output.WriteString(node.Value)
 		}
 
-	case ahoy.NODE_NUMBER:
+	case NODE_NUMBER:
 		gen.output.WriteString(node.Value)
 
-	case ahoy.NODE_STRING:
+	case NODE_STRING:
 		gen.output.WriteString(fmt.Sprintf("\"%s\"", node.Value))
 
-	case ahoy.NODE_CHAR:
+	case NODE_CHAR:
 		gen.output.WriteString(fmt.Sprintf("'%s'", node.Value))
 
-	case ahoy.NODE_BOOLEAN:
+	case NODE_BOOLEAN:
 		if node.Value == "true" {
 			gen.output.WriteString("true")
 		} else {
 			gen.output.WriteString("false")
 		}
 
-	case ahoy.NODE_DICT_LITERAL:
+	case NODE_DICT_LITERAL:
 		gen.generateDictLiteral(node)
 
-	case ahoy.NODE_ARRAY_LITERAL:
+	case NODE_ARRAY_LITERAL:
 		gen.generateArrayLiteral(node)
 
 	case ahoy.NODE_ARRAY_ACCESS:
@@ -342,7 +342,7 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 	case ahoy.NODE_DICT_ACCESS:
 		gen.generateDictAccess(node)
 
-	case ahoy.NODE_BLOCK:
+	case NODE_BLOCK:
 		for _, child := range node.Children {
 			gen.generateNodeInternal(child, true)
 		}
@@ -354,7 +354,7 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 		gen.generateTupleAssignment(node)
 	case ahoy.NODE_STRUCT_DECLARATION:
 		gen.generateStruct(node)
-	case ahoy.NODE_METHOD_CALL:
+	case NODE_METHOD_CALL:
 		gen.generateMethodCall(node)
 	case ahoy.NODE_MEMBER_ACCESS:
 		gen.generateMemberAccess(node)
@@ -367,7 +367,7 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 	}
 }
 
-func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
+func (g *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 	returnType := "void"
 	if node.DataType != "" {
 		returnType = gen.mapType(node.DataType)
@@ -405,7 +405,7 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	gen.output = oldOutput
 }
 
-func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
+func (g *CodeGenerator) generateSwitchStatement(node *ahoy.ASTNode) {
 	gen.writeIndent()
 
 	// Check if variable already exists
@@ -427,7 +427,7 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 	}
 }
 
-func (gen *CodeGenerator) generateIfStatement(node *ahoy.ASTNode) {
+func (gen *CodeGenerator) generateIfStatement(node *ASTNode) {
 	gen.writeIndent()
 	gen.output.WriteString("if (")
 	gen.generateNode(node.Children[0])
@@ -470,7 +470,7 @@ func (gen *CodeGenerator) generateIfStatement(node *ahoy.ASTNode) {
 	gen.output.WriteString("\n")
 }
 
-func (gen *CodeGenerator) generateSwitchStatement(node *ahoy.ASTNode) {
+func (gen *CodeGenerator) generateSwitchStatement(node *ASTNode) {
 	gen.writeIndent()
 	gen.output.WriteString("switch (")
 	gen.generateNode(node.Children[0]) // Generate switch expression
@@ -479,11 +479,11 @@ func (gen *CodeGenerator) generateSwitchStatement(node *ahoy.ASTNode) {
 	// Generate cases (skip first child which is the switch expression)
 	for i := 1; i < len(node.Children); i++ {
 		caseNode := node.Children[i]
-		if caseNode.Type == ahoy.NODE_SWITCH_CASE {
+		if caseNode.Type == NODE_SWITCH_CASE {
 			caseValue := caseNode.Children[0]
 
 			// Check if it's a list of cases or a range
-			if caseValue.Type == ahoy.NODE_SWITCH_CASE_LIST {
+			if caseValue.Type == NODE_SWITCH_CASE_LIST {
 				// Multiple cases - generate multiple case labels
 				for _, val := range caseValue.Children {
 					gen.indent++
@@ -501,7 +501,7 @@ func (gen *CodeGenerator) generateSwitchStatement(node *ahoy.ASTNode) {
 				gen.output.WriteString("break;\n")
 				gen.indent--
 				gen.indent--
-			} else if caseValue.Type == ahoy.NODE_SWITCH_CASE_RANGE {
+			} else if caseValue.Type == NODE_SWITCH_CASE_RANGE {
 				// Range case - generate if-else ladder
 				// We'll convert this to a default case with if statement
 				gen.indent++
@@ -549,7 +549,7 @@ func (gen *CodeGenerator) generateSwitchStatement(node *ahoy.ASTNode) {
 	gen.output.WriteString("}\n")
 }
 
-func (gen *CodeGenerator) generateWhenStatement(node *ahoy.ASTNode) {
+func (g *CodeGenerator) generateWhileLoop(node *ahoy.ASTNode) {
 	gen.writeIndent()
 	gen.output.WriteString(fmt.Sprintf("#ifdef %s\n", node.Value))
 
@@ -561,7 +561,7 @@ func (gen *CodeGenerator) generateWhenStatement(node *ahoy.ASTNode) {
 	gen.output.WriteString("#endif\n")
 }
 
-func (gen *CodeGenerator) generateWhileLoop(node *ahoy.ASTNode) {
+func (g *CodeGenerator) generateForRangeLoop(node *ahoy.ASTNode) {
 	gen.writeIndent()
 	gen.output.WriteString("while (")
 	gen.generateNode(node.Children[0])
@@ -575,7 +575,7 @@ func (gen *CodeGenerator) generateWhileLoop(node *ahoy.ASTNode) {
 	gen.output.WriteString("}\n")
 }
 
-func (gen *CodeGenerator) generateForLoop(node *ahoy.ASTNode) {
+func (g *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 	gen.writeIndent()
 	gen.output.WriteString("for (")
 
@@ -600,8 +600,8 @@ func (gen *CodeGenerator) generateForLoop(node *ahoy.ASTNode) {
 	gen.output.WriteString("}\n")
 }
 
-func (gen *CodeGenerator) generateAssignmentForFor(node *ahoy.ASTNode) {
-	if node.Type == ahoy.NODE_ASSIGNMENT {
+func (gen *CodeGenerator) generateAssignmentForFor(node *ASTNode) {
+	if node.Type == NODE_ASSIGNMENT {
 		// Type inference
 		valueNode := node.Children[0]
 		varType := gen.inferType(valueNode)
@@ -613,15 +613,15 @@ func (gen *CodeGenerator) generateAssignmentForFor(node *ahoy.ASTNode) {
 	}
 }
 
-func (gen *CodeGenerator) generateAssignmentForUpdate(node *ahoy.ASTNode) {
-	if node.Type == ahoy.NODE_ASSIGNMENT {
+func (gen *CodeGenerator) generateAssignmentForUpdate(node *ASTNode) {
+	if node.Type == NODE_ASSIGNMENT {
 		// Just assignment, no declaration
 		gen.output.WriteString(fmt.Sprintf("%s = ", node.Value))
 		gen.generateNode(node.Children[0])
 	}
 }
 
-func (gen *CodeGenerator) generateForRangeLoop(node *ahoy.ASTNode) {
+func (g *CodeGenerator) generateForInArrayLoop(node *ahoy.ASTNode) {
 	gen.writeIndent()
 	gen.output.WriteString("for (")
 
@@ -664,7 +664,7 @@ func (gen *CodeGenerator) generateForRangeLoop(node *ahoy.ASTNode) {
 	gen.output.WriteString("}\n")
 }
 
-func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
+func (g *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
 	gen.writeIndent()
 
 	// Generate loop variable
@@ -693,7 +693,7 @@ func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 	gen.output.WriteString("}\n")
 }
 
-func (gen *CodeGenerator) generateForInArrayLoop(node *ahoy.ASTNode) {
+func (gen *CodeGenerator) generateForInArrayLoop(node *ASTNode) {
 	gen.writeIndent()
 
 	// node.Children[0] is element variable name
@@ -728,7 +728,7 @@ func (gen *CodeGenerator) generateForInArrayLoop(node *ahoy.ASTNode) {
 	gen.output.WriteString("}\n")
 }
 
-func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
+func (gen *CodeGenerator) generateForInDictLoop(node *ASTNode) {
 	gen.writeIndent()
 
 	// node.Children[0] is key variable name
@@ -780,7 +780,7 @@ func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
 	gen.output.WriteString("}\n")
 }
 
-func (gen *CodeGenerator) generateReturnStatement(node *ahoy.ASTNode) {
+func (g *CodeGenerator) generateWhenStatement(node *ahoy.ASTNode) {
 	gen.writeIndent()
 	gen.output.WriteString("return")
 	if len(node.Children) > 0 {
@@ -790,13 +790,13 @@ func (gen *CodeGenerator) generateReturnStatement(node *ahoy.ASTNode) {
 	gen.output.WriteString(";\n")
 }
 
-func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
+func (gen *CodeGenerator) generateImportStatement(node *ASTNode) {
 	// Add include - check if it's a local or system include
 	headerName := node.Value
 	gen.includes[headerName] = true
 }
 
-func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
+func (gen *CodeGenerator) generateCall(node *ASTNode) {
 	// Convert snake_case function names to PascalCase for C
 	funcName := snakeToPascal(node.Value)
 
@@ -806,7 +806,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 		gen.output.WriteString("printf(")
 
 		// Process format string if first argument is a string literal
-		if len(node.Children) > 0 && node.Children[0].Type == ahoy.NODE_STRING {
+		if len(node.Children) > 0 && node.Children[0].Type == NODE_STRING {
 			formatStr := node.Children[0].Value
 			args := node.Children[1:]
 
@@ -842,7 +842,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 		gen.output.WriteString("({ char* __str_buf = malloc(256); sprintf(__str_buf")
 
 		// Process format string
-		if len(node.Children) > 0 && node.Children[0].Type == ahoy.NODE_STRING {
+		if len(node.Children) > 0 && node.Children[0].Type == NODE_STRING {
 			formatStr := node.Children[0].Value
 			args := node.Children[1:]
 
@@ -880,7 +880,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 	}
 }
 
-func (gen *CodeGenerator) generateBinaryOp(node *ahoy.ASTNode) {
+func (g *CodeGenerator) generateCall(node *ahoy.ASTNode) string {
 	switch node.Value {
 	case "is":
 		gen.output.WriteString("(")
@@ -951,7 +951,7 @@ func (gen *CodeGenerator) generateBinaryOp(node *ahoy.ASTNode) {
 	}
 }
 
-func (gen *CodeGenerator) generateUnaryOp(node *ahoy.ASTNode) {
+func (gen *CodeGenerator) generateUnaryOp(node *ASTNode) {
 	switch node.Value {
 	case "not":
 		gen.output.WriteString("!")
@@ -961,7 +961,7 @@ func (gen *CodeGenerator) generateUnaryOp(node *ahoy.ASTNode) {
 	gen.generateNode(node.Children[0])
 }
 
-func (gen *CodeGenerator) generateArrayLiteral(node *ahoy.ASTNode) {
+func (gen *CodeGenerator) generateArrayLiteral(node *ASTNode) {
 	gen.arrayImpls = true
 
 	// Create array with initial capacity
@@ -985,19 +985,19 @@ func (gen *CodeGenerator) generateArrayLiteral(node *ahoy.ASTNode) {
 	gen.output.WriteString(fmt.Sprintf("%s; })", arrName))
 }
 
-func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
+func (gen *CodeGenerator) generateArrayAccess(node *ASTNode) {
 	gen.output.WriteString(fmt.Sprintf("%s->data[", node.Value))
 	gen.generateNode(node.Children[0])
 	gen.output.WriteString("]")
 }
 
-func (gen *CodeGenerator) generateDictAccess(node *ahoy.ASTNode) {
+func (gen *CodeGenerator) generateDictAccess(node *ASTNode) {
 	gen.output.WriteString(fmt.Sprintf("hashMapGet(%s, ", node.Value))
 	gen.generateNode(node.Children[0])
 	gen.output.WriteString(")")
 }
 
-func (gen *CodeGenerator) generateDictLiteral(node *ahoy.ASTNode) {
+func (gen *CodeGenerator) generateDictLiteral(node *ASTNode) {
 	dictName := fmt.Sprintf("dict_%d", gen.varCounter)
 	gen.varCounter++
 
@@ -1037,20 +1037,20 @@ func (gen *CodeGenerator) mapType(langType string) string {
 	}
 }
 
-func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
+func (gen *CodeGenerator) inferType(node *ASTNode) string {
 	switch node.Type {
-	case ahoy.NODE_NUMBER:
+	case NODE_NUMBER:
 		if strings.Contains(node.Value, ".") {
 			return "float"
 		}
 		return "int"
-	case ahoy.NODE_STRING:
+	case NODE_STRING:
 		return "string"
-	case ahoy.NODE_BOOLEAN:
+	case NODE_BOOLEAN:
 		return "bool"
-	case ahoy.NODE_DICT_LITERAL:
+	case NODE_DICT_LITERAL:
 		return "dict"
-	case ahoy.NODE_ARRAY_LITERAL:
+	case NODE_ARRAY_LITERAL:
 		return "array"
 	case ahoy.NODE_CALL:
 		// Infer return type of function calls
@@ -1058,7 +1058,7 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			return "string"
 		}
 		return "int"
-	case ahoy.NODE_METHOD_CALL:
+	case NODE_METHOD_CALL:
 		// Array methods that return arrays
 		if node.Value == "map" || node.Value == "filter" ||
 			node.Value == "sort" || node.Value == "reverse" ||
@@ -1072,7 +1072,7 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			return "int"
 		}
 		return "int"
-	case ahoy.NODE_BINARY_OP:
+	case NODE_BINARY_OP:
 		// Simple inference - could be more sophisticated
 		leftType := gen.inferType(node.Children[0])
 		rightType := gen.inferType(node.Children[1])
@@ -1080,7 +1080,7 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			return "float"
 		}
 		return "int"
-	case ahoy.NODE_IDENTIFIER:
+	case NODE_IDENTIFIER:
 		if varType, exists := gen.variables[node.Value]; exists {
 			return varType
 		}
@@ -1090,7 +1090,7 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 	}
 }
 
-func (gen *CodeGenerator) nodeToString(node *ahoy.ASTNode) string {
+func (gen *CodeGenerator) nodeToString(node *ASTNode) string {
 	oldOutput := gen.output
 	gen.output = strings.Builder{}
 	gen.generateNodeInternal(node, false)
@@ -1100,7 +1100,7 @@ func (gen *CodeGenerator) nodeToString(node *ahoy.ASTNode) string {
 }
 
 // Generate enum declaration
-func (gen *CodeGenerator) generateEnum(node *ahoy.ASTNode) {
+func (gen *CodeGenerator) generateEnum(node *ASTNode) {
 	enumName := node.Value
 
 	gen.writeIndent()
@@ -1118,7 +1118,7 @@ func (gen *CodeGenerator) generateEnum(node *ahoy.ASTNode) {
 }
 
 // Generate constant declaration
-func (gen *CodeGenerator) generateConstant(node *ahoy.ASTNode) {
+func (g *CodeGenerator) generateEnumDeclaration(node *ahoy.ASTNode) {
 	constantName := node.Value
 	value := node.Children[0]
 
@@ -1131,7 +1131,7 @@ func (gen *CodeGenerator) generateConstant(node *ahoy.ASTNode) {
 }
 
 // Generate tuple assignment
-func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
+func (gen *CodeGenerator) generateTupleAssignment(node *ASTNode) {
 	leftSide := node.Children[0]
 	rightSide := node.Children[1]
 
@@ -1160,7 +1160,7 @@ func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 }
 
 // Generate struct declaration
-func (gen *CodeGenerator) generateStruct(node *ahoy.ASTNode) {
+func (gen *CodeGenerator) generateStruct(node *ASTNode) {
 	structName := node.Value
 
 	gen.writeIndent()
@@ -1179,14 +1179,14 @@ func (gen *CodeGenerator) generateStruct(node *ahoy.ASTNode) {
 }
 
 // Generate method call
-func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
+func (g *CodeGenerator) generateDictLiteral(node *ahoy.ASTNode) string {
 	object := node.Children[0]
 	args := node.Children[1]
 	methodName := node.Value
 
 	// Handle map and filter with inline code generation
 	if methodName == "map" || methodName == "filter" {
-		if len(args.Children) > 0 && args.Children[0].Type == ahoy.NODE_LAMBDA {
+		if len(args.Children) > 0 && args.Children[0].Type == NODE_LAMBDA {
 			if methodName == "map" {
 				gen.generateMapInline(object, args.Children[0])
 			} else {
@@ -1216,7 +1216,7 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 }
 
 // Generate member access
-func (gen *CodeGenerator) generateMemberAccess(node *ahoy.ASTNode) {
+func (g *CodeGenerator) generateMemberAccess(node *ahoy.ASTNode) string {
 	object := node.Children[0]
 	memberName := node.Value
 
@@ -1353,9 +1353,9 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 }
 
 // Process format string to replace %v and %t with appropriate C format specifiers
-func (gen *CodeGenerator) processFormatString(formatStr string, args []*ahoy.ASTNode) (string, []*ahoy.ASTNode) {
+func (gen *CodeGenerator) processFormatString(formatStr string, args []*ASTNode) (string, []*ASTNode) {
 	result := ""
-	newArgs := []*ahoy.ASTNode{}
+	newArgs := []*ASTNode{}
 	argIndex := 0
 	i := 0
 
@@ -1370,10 +1370,10 @@ func (gen *CodeGenerator) processFormatString(formatStr string, args []*ahoy.AST
 						gen.arrayMethods["print_array"] = true
 						result += "%s"
 						// Mark this argument as needing array helper
-						arrayArg := &ahoy.ASTNode{
-							Type:     ahoy.NODE_CALL,
+						arrayArg := &ASTNode{
+							Type:     NODE_CALL,
 							Value:    "__print_array_helper", // Special marker
-							Children: []*ahoy.ASTNode{args[argIndex]},
+							Children: []*ASTNode{args[argIndex]},
 						}
 						newArgs = append(newArgs, arrayArg)
 					} else {
@@ -1391,8 +1391,8 @@ func (gen *CodeGenerator) processFormatString(formatStr string, args []*ahoy.AST
 					argType := gen.getNodeType(args[argIndex])
 					result += "%s"
 					// Create a string literal node for the type name
-					typeNode := &ahoy.ASTNode{
-						Type:  ahoy.NODE_STRING,
+					typeNode := &ASTNode{
+						Type:  NODE_STRING,
 						Value: argType,
 					}
 					newArgs = append(newArgs, typeNode)
@@ -1430,28 +1430,28 @@ func (gen *CodeGenerator) processFormatString(formatStr string, args []*ahoy.AST
 }
 
 // Get the type of a node
-func (gen *CodeGenerator) getNodeType(node *ahoy.ASTNode) string {
+func (gen *CodeGenerator) getNodeType(node *ASTNode) string {
 	if node.DataType != "" {
 		return node.DataType
 	}
 
 	switch node.Type {
-	case ahoy.NODE_NUMBER:
+	case NODE_NUMBER:
 		if strings.Contains(node.Value, ".") {
 			return "float"
 		}
 		return "int"
-	case ahoy.NODE_STRING:
+	case NODE_STRING:
 		return "string"
-	case ahoy.NODE_CHAR:
+	case NODE_CHAR:
 		return "char"
-	case ahoy.NODE_BOOLEAN:
+	case NODE_BOOLEAN:
 		return "bool"
-	case ahoy.NODE_ARRAY_LITERAL:
+	case NODE_ARRAY_LITERAL:
 		return "array"
-	case ahoy.NODE_DICT_LITERAL:
+	case NODE_DICT_LITERAL:
 		return "dict"
-	case ahoy.NODE_IDENTIFIER:
+	case NODE_IDENTIFIER:
 		// Look up in variables map
 		if varType, ok := gen.variables[node.Value]; ok {
 			return varType
@@ -1485,7 +1485,7 @@ func (gen *CodeGenerator) getFormatSpec(typeName string) string {
 }
 
 // Generate inline map code
-func (gen *CodeGenerator) generateMapInline(arrayNode *ahoy.ASTNode, lambda *ahoy.ASTNode) {
+func (gen *CodeGenerator) generateMapInline(arrayNode *ASTNode, lambda *ASTNode) {
 	paramName := lambda.Value
 	bodyExpr := lambda.Children[0]
 
@@ -1510,7 +1510,7 @@ func (gen *CodeGenerator) generateMapInline(arrayNode *ahoy.ASTNode, lambda *aho
 }
 
 // Generate inline filter code
-func (gen *CodeGenerator) generateFilterInline(arrayNode *ahoy.ASTNode, lambda *ahoy.ASTNode) {
+func (gen *CodeGenerator) generateFilterInline(arrayNode *ASTNode, lambda *ASTNode) {
 	paramName := lambda.Value
 	condExpr := lambda.Children[0]
 
