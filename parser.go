@@ -1,4 +1,4 @@
-package main
+package ahoy
 
 import (
 	"fmt"
@@ -15,8 +15,8 @@ const (
 	NODE_IF_STATEMENT
 	NODE_SWITCH_STATEMENT
 	NODE_SWITCH_CASE
-	NODE_SWITCH_CASE_LIST   // Multiple cases like 'A','B','C'
-	NODE_SWITCH_CASE_RANGE  // Range case like 'a' to 'z'
+	NODE_SWITCH_CASE_LIST  // Multiple cases like 'A','B','C'
+	NODE_SWITCH_CASE_RANGE // Range case like 'a' to 'z'
 	NODE_WHILE_LOOP
 	NODE_FOR_LOOP
 	NODE_FOR_RANGE_LOOP    // loop:start to end
@@ -33,6 +33,7 @@ const (
 	NODE_IDENTIFIER
 	NODE_NUMBER
 	NODE_STRING
+	NODE_F_STRING // f-string with interpolation
 	NODE_CHAR
 	NODE_BOOLEAN
 	NODE_DICT_LITERAL
@@ -76,12 +77,12 @@ type Parser struct {
 	Errors         []ParseError
 }
 
-func parse(tokens []Token) *ASTNode {
+func Parse(tokens []Token) *ASTNode {
 	parser := &Parser{tokens: tokens, pos: 0, LintMode: false, Errors: []ParseError{}}
 	return parser.parseProgram()
 }
 
-func parseLint(tokens []Token) (*ASTNode, []ParseError) {
+func ParseLint(tokens []Token) (*ASTNode, []ParseError) {
 	parser := &Parser{tokens: tokens, pos: 0, LintMode: true, Errors: []ParseError{}}
 	ast := parser.parseProgram()
 	return ast, parser.Errors
@@ -149,6 +150,10 @@ func (p *Parser) parseProgram() *ASTNode {
 			p.advance()
 			continue
 		}
+		
+		// Save position to detect if we're stuck
+		oldPos := p.pos
+		
 		stmt := p.parseStatement()
 		if stmt != nil {
 			program.Children = append(program.Children, stmt)
@@ -158,6 +163,12 @@ func (p *Parser) parseProgram() *ASTNode {
 		if p.current().Type == TOKEN_SEMICOLON {
 			p.advance()
 			// Continue to parse next statement on same line
+		}
+		
+		// Safety check: if position hasn't advanced, force advance to prevent infinite loop
+		if p.pos == oldPos && p.current().Type != TOKEN_EOF {
+			// We're stuck - skip this token to avoid infinite loop
+			p.advance()
 		}
 	}
 
@@ -180,6 +191,9 @@ func (p *Parser) parseStatement() *ASTNode {
 		return p.parseWhenStatement()
 	case TOKEN_AHOY:
 		return p.parseAhoyStatement()
+
+	case TOKEN_PRINT:
+		return p.parsePrintStatement()
 	case TOKEN_RETURN:
 		return p.parseReturnStatement()
 	case TOKEN_BREAK:
@@ -229,47 +243,109 @@ func (p *Parser) parseFunction() *ASTNode {
 		Line:  name.Line,
 	}
 
-	p.expect(TOKEN_PIPE)
-
-	// Parameters
+	// Check for pipe-based syntax |params| or space-separated params
 	params := &ASTNode{Type: NODE_BLOCK}
-	for p.current().Type != TOKEN_PIPE {
-		paramName := p.expect(TOKEN_IDENTIFIER)
-		var paramType string
-
-		// Check for type annotation
-		if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
-			p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE {
-			paramType = p.current().Value
-			p.advance()
-		}
-
-		param := &ASTNode{
-			Type:     NODE_IDENTIFIER,
-			Value:    paramName.Value,
-			DataType: paramType,
-		}
-		params.Children = append(params.Children, param)
-
-		if p.current().Type == TOKEN_COMMA {
-			p.advance()
-		}
-	}
-	p.expect(TOKEN_PIPE)
-
-	// Return type
-	var returnType string
-	if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
-		p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE {
-		returnType = p.current().Value
+	
+	if p.current().Type == TOKEN_PIPE {
+		// Old syntax: func name |param1 type1, param2 type2| then
 		p.advance()
+		
+		for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
+			paramName := p.expect(TOKEN_IDENTIFIER)
+			var paramType string
+
+			// Check for type annotation
+			if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
+				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
+				p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE {
+				paramType = p.current().Value
+				p.advance()
+			}
+
+			param := &ASTNode{
+				Type:     NODE_IDENTIFIER,
+				Value:    paramName.Value,
+				DataType: paramType,
+			}
+			params.Children = append(params.Children, param)
+
+			if p.current().Type == TOKEN_COMMA {
+				p.advance()
+			}
+		}
+		p.expect(TOKEN_PIPE)
+	} else {
+		// New syntax: func name param1 type1 param2 type2 do
+		for p.current().Type == TOKEN_IDENTIFIER {
+			paramName := p.current()
+			p.advance()
+			
+			var paramType string
+			// Check for type annotation
+			if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
+				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
+				p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
+				p.current().Type == TOKEN_IDENTIFIER {
+				paramType = p.current().Value
+				p.advance()
+			}
+
+			param := &ASTNode{
+				Type:     NODE_IDENTIFIER,
+				Value:    paramName.Value,
+				DataType: paramType,
+			}
+			params.Children = append(params.Children, param)
+		}
 	}
 
-	p.expect(TOKEN_THEN)
-	p.expect(TOKEN_NEWLINE)
-	p.expect(TOKEN_INDENT)
+	// Return type (optional, using -> syntax)
+	var returnType string
+	if p.current().Type == TOKEN_MINUS {
+		// Check for -> (minus followed by greater)
+		if p.peek(1).Type == TOKEN_GREATER {
+			p.advance() // skip -
+			p.advance() // skip >
+			if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
+				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
+				p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
+				p.current().Type == TOKEN_IDENTIFIER {
+				returnType = p.current().Value
+				p.advance()
+			}
+		}
+	}
 
-	body := p.parseBlock()
+	// Accept either 'then' or 'do'
+	if p.current().Type == TOKEN_THEN {
+		p.advance()
+	} else if p.current().Type == TOKEN_DO {
+		p.advance()
+	} else {
+		errMsg := fmt.Sprintf("Expected 'then' or 'do' in function, got %v at line %d", p.current().Type, p.current().Line)
+		if p.LintMode {
+			p.recordError(errMsg)
+		} else {
+			panic(errMsg)
+		}
+	}
+
+	// Parse body
+	var body *ASTNode
+	if p.current().Type == TOKEN_NEWLINE {
+		p.advance()
+		if p.current().Type == TOKEN_INDENT {
+			p.advance()
+		}
+		body = p.parseBlock()
+	} else {
+		// Inline function body
+		body = &ASTNode{Type: NODE_BLOCK}
+		stmt := p.parseStatement()
+		if stmt != nil {
+			body.Children = append(body.Children, stmt)
+		}
+	}
 
 	fn.Children = append(fn.Children, params)
 	fn.Children = append(fn.Children, body)
@@ -281,7 +357,15 @@ func (p *Parser) parseFunction() *ASTNode {
 func (p *Parser) parseIfStatement() *ASTNode {
 	p.expect(TOKEN_IF)
 	condition := p.parseExpression()
-	p.expect(TOKEN_THEN)
+
+	// Accept either 'then' or 'do'
+	if p.current().Type == TOKEN_THEN {
+		p.advance()
+	} else if p.current().Type == TOKEN_DO {
+		p.advance()
+	} else {
+		panic(fmt.Sprintf("Expected 'then' or 'do', got %v at line %d", p.current().Type, p.current().Line))
+	}
 
 	// Check for inline if statement (no newline after then)
 	var ifBody *ASTNode
@@ -308,7 +392,15 @@ func (p *Parser) parseIfStatement() *ASTNode {
 	for p.current().Type == TOKEN_ELSEIF || p.current().Type == TOKEN_ANIF {
 		p.advance()
 		elseifCondition := p.parseExpression()
-		p.expect(TOKEN_THEN)
+
+		// Accept either 'then' or 'do'
+		if p.current().Type == TOKEN_THEN {
+			p.advance()
+		} else if p.current().Type == TOKEN_DO {
+			p.advance()
+		} else {
+			panic(fmt.Sprintf("Expected 'then' or 'do', got %v at line %d", p.current().Type, p.current().Line))
+		}
 
 		// Check for inline elseif/anif
 		var elseifBody *ASTNode
@@ -358,7 +450,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 func (p *Parser) parseSwitchStatement() *ASTNode {
 	p.expect(TOKEN_SWITCH)
 	expr := p.parseExpression()
-	
+
 	// Accept either "then" or "on" keyword
 	if p.current().Type == TOKEN_ON {
 		p.advance()
@@ -402,8 +494,11 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 
 		// Parse case values - could be single, list (with commas), list (with 'or'), or range (with 'to')
 		caseValues := []*ASTNode{}
-		
+
 		for {
+			// Save position to detect stuck loop
+			oldPos := p.pos
+			
 			// Parse single case value
 			var caseValue *ASTNode
 			if p.current().Type == TOKEN_NUMBER {
@@ -434,6 +529,9 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 					Type:  NODE_IDENTIFIER,
 					Value: tok.Value,
 				}
+			} else {
+				// Unexpected token - break out to avoid infinite loop
+				break
 			}
 
 			caseValues = append(caseValues, caseValue)
@@ -486,6 +584,11 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 				// Single value or end of value list
 				break
 			}
+			
+			// Safety check: if position hasn't advanced, break to avoid infinite loop
+			if p.pos == oldPos {
+				break
+			}
 		}
 
 		p.expect(TOKEN_ASSIGN) // Expect :
@@ -533,9 +636,42 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 func (p *Parser) parseLoop() *ASTNode {
 	p.expect(TOKEN_LOOP)
 
-	// Check for colon (loop:number or loop:true)
+	// Check for colon first (loop:i or loop i:)
 	if p.current().Type == TOKEN_ASSIGN {
 		p.advance() // consume ':'
+
+		// Check if it's a forever loop: loop i:
+		if p.current().Type == TOKEN_IDENTIFIER {
+			loopVar := p.expect(TOKEN_IDENTIFIER)
+
+			// Check if followed by 'till' for conditional: loop:i till condition
+			if p.current().Type == TOKEN_TILL {
+				p.advance() // consume 'till'
+				condition := p.parseExpression()
+				p.expect(TOKEN_DO)
+				p.expect(TOKEN_NEWLINE)
+				p.expect(TOKEN_INDENT)
+				body := p.parseBlock()
+
+				loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
+				return &ASTNode{
+					Type:     NODE_WHILE_LOOP,
+					Children: []*ASTNode{loopVarNode, condition, body},
+				}
+			}
+
+			// Forever loop with variable: loop:i
+			p.expect(TOKEN_NEWLINE)
+			p.expect(TOKEN_INDENT)
+			body := p.parseBlock()
+
+			loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
+			return &ASTNode{
+				Type:     NODE_FOR_COUNT_LOOP,
+				Value:    loopVar.Value,
+				Children: []*ASTNode{loopVarNode, body},
+			}
+		}
 
 		// Check what comes after the colon
 		if p.current().Type == TOKEN_NUMBER {
@@ -612,7 +748,7 @@ func (p *Parser) parseLoop() *ASTNode {
 			}
 		}
 	} else if p.current().Type == TOKEN_IDENTIFIER {
-		// Could be loop element in array or loop key,value in dict
+		// Could be: loop i from 1 to 5, loop i to 5, loop i till condition, loop element in array, loop key,value in dict
 		firstIdent := p.expect(TOKEN_IDENTIFIER)
 
 		if p.current().Type == TOKEN_COMMA {
@@ -632,6 +768,64 @@ func (p *Parser) parseLoop() *ASTNode {
 			return &ASTNode{
 				Type:     NODE_FOR_IN_DICT_LOOP,
 				Children: []*ASTNode{keyNode, valueNode, dictExpr, body},
+			}
+		} else if p.current().Type == TOKEN_FROM {
+			// loop i from 1 to 5 do
+			p.advance() // consume 'from'
+			startExpr := p.parseExpression()
+			p.expect(TOKEN_TO)
+			endExpr := p.parseExpression()
+			p.expect(TOKEN_DO)
+			p.expect(TOKEN_NEWLINE)
+			p.expect(TOKEN_INDENT)
+			body := p.parseBlock()
+
+			loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: firstIdent.Value}
+			return &ASTNode{
+				Type:     NODE_FOR_RANGE_LOOP,
+				Children: []*ASTNode{loopVarNode, startExpr, endExpr, body},
+			}
+		} else if p.current().Type == TOKEN_TO {
+			// loop i to 5 do (starts from 0)
+			p.advance() // consume 'to'
+			endExpr := p.parseExpression()
+			p.expect(TOKEN_DO)
+			p.expect(TOKEN_NEWLINE)
+			p.expect(TOKEN_INDENT)
+			body := p.parseBlock()
+
+			loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: firstIdent.Value}
+			startNode := &ASTNode{Type: NODE_NUMBER, Value: "0"}
+			return &ASTNode{
+				Type:     NODE_FOR_RANGE_LOOP,
+				Children: []*ASTNode{loopVarNode, startNode, endExpr, body},
+			}
+		} else if p.current().Type == TOKEN_TILL {
+			// loop i till condition do
+			p.advance() // consume 'till'
+			condition := p.parseExpression()
+			p.expect(TOKEN_DO)
+			p.expect(TOKEN_NEWLINE)
+			p.expect(TOKEN_INDENT)
+			body := p.parseBlock()
+
+			loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: firstIdent.Value}
+			return &ASTNode{
+				Type:     NODE_WHILE_LOOP,
+				Children: []*ASTNode{loopVarNode, condition, body},
+			}
+		} else if p.current().Type == TOKEN_ASSIGN {
+			// loop i: (forever loop with variable)
+			p.advance() // consume ':'
+			p.expect(TOKEN_NEWLINE)
+			p.expect(TOKEN_INDENT)
+			body := p.parseBlock()
+
+			loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: firstIdent.Value}
+			return &ASTNode{
+				Type:     NODE_FOR_COUNT_LOOP,
+				Value:    firstIdent.Value,
+				Children: []*ASTNode{loopVarNode, body},
 			}
 		} else if p.current().Type == TOKEN_IN {
 			// loop element in array
@@ -665,8 +859,19 @@ func (p *Parser) parseLoop() *ASTNode {
 				Children: []*ASTNode{condition, body},
 			}
 		}
+	} else if p.current().Type == TOKEN_NEWLINE {
+		// loop: (forever loop without explicit variable)
+		p.advance() // consume newline
+		p.expect(TOKEN_INDENT)
+		body := p.parseBlock()
+
+		return &ASTNode{
+			Type:     NODE_FOR_COUNT_LOOP,
+			Value:    "0",
+			Children: []*ASTNode{body},
+		}
 	} else {
-		// Default: loop then (infinite loop, same as loop:0 then)
+		// Default: loop do (infinite loop)
 		p.expect(TOKEN_DO)
 		p.expect(TOKEN_NEWLINE)
 		p.expect(TOKEN_INDENT)
@@ -705,6 +910,42 @@ func (p *Parser) parseAhoyStatement() *ASTNode {
 	call := &ASTNode{
 		Type:  NODE_CALL,
 		Value: "print", // Translate ahoy to print
+		Line:  p.current().Line,
+	}
+
+	// Set flag to prevent nested parsing issues
+	p.inFunctionCall = true
+
+	// Parse arguments until closing pipe
+	for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_NEWLINE && p.current().Type != TOKEN_EOF {
+		arg := p.parseCallArgument()
+		call.Children = append(call.Children, arg)
+
+		if p.current().Type == TOKEN_COMMA {
+			p.advance()
+		} else {
+			break
+		}
+	}
+
+	// Consume closing pipe
+	if p.current().Type == TOKEN_PIPE {
+		p.advance()
+	}
+
+	p.inFunctionCall = false
+	return call
+}
+
+func (p *Parser) parsePrintStatement() *ASTNode {
+	p.expect(TOKEN_PRINT)
+
+	// print is similar to ahoy
+	p.expect(TOKEN_PIPE)
+
+	call := &ASTNode{
+		Type:  NODE_CALL,
+		Value: "print",
 		Line:  p.current().Line,
 	}
 
@@ -971,6 +1212,16 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 		p.advance()
 		return &ASTNode{
 			Type:     NODE_STRING,
+			Value:    token.Value,
+			DataType: "string",
+			Line:     token.Line,
+		}
+
+	case TOKEN_F_STRING:
+		token := p.current()
+		p.advance()
+		return &ASTNode{
+			Type:     NODE_F_STRING,
 			Value:    token.Value,
 			DataType: "string",
 			Line:     token.Line,
@@ -1280,6 +1531,7 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 	leftSide := &ASTNode{Type: NODE_BLOCK}
 
 	for {
+		oldPos := p.pos
 		name := p.expect(TOKEN_IDENTIFIER)
 		leftSide.Children = append(leftSide.Children, &ASTNode{
 			Type:  NODE_IDENTIFIER,
@@ -1292,6 +1544,11 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 		} else {
 			break
 		}
+		
+		// Safety check
+		if p.pos == oldPos {
+			break
+		}
 	}
 
 	p.expect(TOKEN_ASSIGN)
@@ -1300,12 +1557,18 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 	rightSide := &ASTNode{Type: NODE_BLOCK}
 
 	for {
+		oldPos := p.pos
 		expr := p.parseExpression()
 		rightSide.Children = append(rightSide.Children, expr)
 
 		if p.current().Type == TOKEN_COMMA {
 			p.advance()
 		} else {
+			break
+		}
+		
+		// Safety check
+		if p.pos == oldPos {
 			break
 		}
 	}
@@ -1406,12 +1669,18 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 					args.Children = append(args.Children, lambda)
 				} else {
 					for {
+						oldPos := p.pos
 						arg := p.parseExpression()
 						args.Children = append(args.Children, arg)
 
 						if p.current().Type == TOKEN_COMMA {
 							p.advance()
 						} else {
+							break
+						}
+						
+						// Safety check
+						if p.pos == oldPos {
 							break
 						}
 					}

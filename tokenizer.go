@@ -1,4 +1,4 @@
-package main
+package ahoy
 
 import (
 	"fmt"
@@ -14,13 +14,14 @@ const (
 	TOKEN_NUMBER
 	TOKEN_STRING
 	TOKEN_CHAR
-	TOKEN_ASSIGN // :
-	TOKEN_IS     // is (==)
-	TOKEN_NOT    // not (!)
-	TOKEN_OR     // or (||)
-	TOKEN_AND    // and (&&)
-	TOKEN_THEN   // then
-	TOKEN_ON     // on (for switch statements)
+	TOKEN_F_STRING // f"string with {vars}"
+	TOKEN_ASSIGN   // :
+	TOKEN_IS       // is (==)
+	TOKEN_NOT      // not (!)
+	TOKEN_OR       // or (||)
+	TOKEN_AND      // and (&&)
+	TOKEN_THEN     // then
+	TOKEN_ON       // on (for switch statements)
 	TOKEN_IF
 	TOKEN_ELSE
 	TOKEN_ELSEIF
@@ -29,11 +30,14 @@ const (
 	TOKEN_LOOP // loop (replaces while/for)
 	TOKEN_IN   // in (for loop element in array)
 	TOKEN_TO   // to (for loop range)
+	TOKEN_FROM // from (for loop start)
+	TOKEN_TILL // till (for loop condition)
 	TOKEN_FUNC
 	TOKEN_RETURN
 	TOKEN_IMPORT
 	TOKEN_WHEN          // when (compile time)
 	TOKEN_AHOY          // ahoy (print shorthand)
+	TOKEN_PRINT         // print
 	TOKEN_PLUS          // +
 	TOKEN_MINUS         // -
 	TOKEN_MULTIPLY      // *
@@ -89,7 +93,7 @@ type Token struct {
 	Column int
 }
 
-func tokenize(input string) []Token {
+func Tokenize(input string) []Token {
 	var tokens []Token
 	lines := strings.Split(input, "\n")
 	indentStack := []int{0}
@@ -103,11 +107,14 @@ func tokenize(input string) []Token {
 		"loop":         TOKEN_LOOP,
 		"in":           TOKEN_IN,
 		"to":           TOKEN_TO,
+		"from":         TOKEN_FROM,
+		"till":         TOKEN_TILL,
 		"func":         TOKEN_FUNC,
 		"return":       TOKEN_RETURN,
 		"import":       TOKEN_IMPORT,
 		"when":         TOKEN_WHEN,
 		"ahoy":         TOKEN_AHOY,
+		"print":        TOKEN_PRINT,
 		"is":           TOKEN_IS,
 		"not":          TOKEN_NOT,
 		"or":           TOKEN_OR,
@@ -198,8 +205,18 @@ func tokenize(input string) []Token {
 				continue
 			}
 
-			// Strings and chars
+			// Strings and chars (including f-strings)
 			if content[i] == '"' || content[i] == '\'' {
+				// Check for f-string prefix
+				isFString := false
+				if i > 0 && content[i-1] == 'f' {
+					// Remove the previously added 'f' identifier token
+					if len(tokens) > 0 && tokens[len(tokens)-1].Type == TOKEN_IDENTIFIER && tokens[len(tokens)-1].Value == "f" {
+						tokens = tokens[:len(tokens)-1]
+						isFString = true
+					}
+				}
+
 				quote := content[i]
 				i++
 				start := i
@@ -212,10 +229,14 @@ func tokenize(input string) []Token {
 				if i < len(content) {
 					value := content[start:i]
 					tokenType := TOKEN_STRING
-					// Single character strings become chars
-					if len(value) == 1 || (len(value) == 2 && value[0] == '\\') {
+
+					if isFString {
+						tokenType = TOKEN_F_STRING
+					} else if len(value) == 1 || (len(value) == 2 && value[0] == '\\') {
+						// Single character strings become chars
 						tokenType = TOKEN_CHAR
 					}
+
 					tokens = append(tokens, Token{
 						Type:   tokenType,
 						Value:  value,

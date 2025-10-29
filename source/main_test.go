@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"ahoy"
 )
 
 func TestTokenizer(t *testing.T) {
@@ -15,13 +17,13 @@ func TestTokenizer(t *testing.T) {
 if x greater_than 3 then
     ahoy|"hello"|`
 
-	tokens := tokenize(input)
+	tokens := ahoy.Tokenize(input)
 
-	expectedTypes := []TokenType{
-		TOKEN_IDENTIFIER, TOKEN_ASSIGN, TOKEN_NUMBER, TOKEN_NEWLINE,
-		TOKEN_IF, TOKEN_IDENTIFIER, TOKEN_GREATER_WORD, TOKEN_NUMBER, TOKEN_THEN, TOKEN_NEWLINE,
-		TOKEN_INDENT, TOKEN_AHOY, TOKEN_PIPE, TOKEN_STRING, TOKEN_PIPE, TOKEN_NEWLINE,
-		TOKEN_DEDENT, TOKEN_EOF,
+	expectedTypes := []ahoy.TokenType{
+		ahoy.TOKEN_IDENTIFIER, ahoy.TOKEN_ASSIGN, ahoy.TOKEN_NUMBER, ahoy.TOKEN_NEWLINE,
+		ahoy.TOKEN_IF, ahoy.TOKEN_IDENTIFIER, ahoy.TOKEN_GREATER_WORD, ahoy.TOKEN_NUMBER, ahoy.TOKEN_THEN, ahoy.TOKEN_NEWLINE,
+		ahoy.TOKEN_INDENT, ahoy.TOKEN_AHOY, ahoy.TOKEN_PIPE, ahoy.TOKEN_STRING, ahoy.TOKEN_PIPE, ahoy.TOKEN_NEWLINE,
+		ahoy.TOKEN_DEDENT, ahoy.TOKEN_EOF,
 	}
 
 	if len(tokens) != len(expectedTypes) {
@@ -40,10 +42,10 @@ func TestParser(t *testing.T) {
 if x greater_than 3 then
     return x`
 
-	tokens := tokenize(input)
-	ast := parse(tokens)
+	tokens := ahoy.Tokenize(input)
+	ast := ahoy.Parse(tokens)
 
-	if ast.Type != NODE_PROGRAM {
+	if ast.Type != ahoy.NODE_PROGRAM {
 		t.Errorf("Expected program node, got %d", ast.Type)
 	}
 
@@ -53,7 +55,7 @@ if x greater_than 3 then
 
 	// Test assignment
 	assignment := ast.Children[0]
-	if assignment.Type != NODE_ASSIGNMENT {
+	if assignment.Type != ahoy.NODE_ASSIGNMENT {
 		t.Errorf("Expected assignment node, got %d", assignment.Type)
 	}
 
@@ -63,7 +65,7 @@ if x greater_than 3 then
 
 	// Test if statement
 	ifStmt := ast.Children[1]
-	if ifStmt.Type != NODE_IF_STATEMENT {
+	if ifStmt.Type != ahoy.NODE_IF_STATEMENT {
 		t.Errorf("Expected if statement node, got %d", ifStmt.Type)
 	}
 }
@@ -74,8 +76,8 @@ y: 10
 result: x + y
 print|"Result: %d\n", result|`
 
-	tokens := tokenize(input)
-	ast := parse(tokens)
+	tokens := ahoy.Tokenize(input)
+	ast := ahoy.Parse(tokens)
 	cCode := generateC(ast)
 
 	// Check that C code contains expected elements
@@ -100,8 +102,8 @@ func TestLanguageFeatures(t *testing.T) {
 if flag and not false then
     x: 1`
 
-	tokens := tokenize(input)
-	ast := parse(tokens)
+	tokens := ahoy.Tokenize(input)
+	ast := ahoy.Parse(tokens)
 	cCode := generateC(ast)
 
 	// Should translate 'and' to '&&' and 'not' to '!'
@@ -127,8 +129,8 @@ print|"The answer is: %d\n", x|`
 	defer os.Remove("simple_test.py")
 
 	// Compile
-	tokens := tokenize(testContent)
-	ast := parse(tokens)
+	tokens := ahoy.Tokenize(testContent)
+	ast := ahoy.Parse(tokens)
 	cCode := generateC(ast)
 
 	// Write C file to output directory
@@ -166,8 +168,8 @@ func compileAndRun(t *testing.T, ahoyFile string) (string, error) {
 
 	// Format, tokenize, and parse
 	formattedContent := formatSource(string(content))
-	tokens := tokenize(formattedContent)
-	ast := parse(tokens)
+	tokens := ahoy.Tokenize(formattedContent)
+	ast := ahoy.Parse(tokens)
 
 	// Generate C code
 	cCode := generateC(ast)
@@ -263,12 +265,12 @@ Map [1-5] * 2: [2,4,6,8,10]
 Filter evens: [2,4,6]
 Chain filter>2 then *10: [30,40,50]
 [1,2,3].push(4).push(5): length 5
-Loop 0-10 break at 5: 0 1 2 3 4 
-Loop 0-6 skip evens: 1 3 5 
+Loop 0-10 break at 5: 0 1 2 3 4
+Loop 0-6 skip evens: 1 3 5
 Tuple x=100, y=200
 Constant MAX_SIZE: 1000
 Filter>5 then *2: length 4
-Values: 20 16 24 14 
+Values: 20 16 24 14
 === All Features Working! ===
 `,
 		},
@@ -421,5 +423,3 @@ func TestProgramCompilation(t *testing.T) {
 		})
 	}
 }
-
-

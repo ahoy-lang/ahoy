@@ -1,4 +1,10 @@
+//go:build ignore
 // +build ignore
+
+// This file is meant to be run with `go run generate_tests.go <ahoy_file>`.
+// When run this way, Go compiles all .go files in the package together,
+// making formatSource and generateC available from formatter.go and codegen.go.
+// The gopls errors about undefined functions can be ignored.
 
 package main
 
@@ -9,6 +15,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"ahoy"
 )
 
 // captureOutput compiles and runs an Ahoy file, returning the program output
@@ -21,8 +29,8 @@ func captureOutput(ahoyFile string) (string, error) {
 
 	// Format, tokenize, and parse
 	formattedContent := formatSource(string(content))
-	tokens := tokenize(formattedContent)
-	ast := parse(tokens)
+	tokens := ahoy.Tokenize(formattedContent)
+	ast := ahoy.Parse(tokens)
 
 	// Generate C code
 	cCode := generateC(ast)

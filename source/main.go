@@ -1,13 +1,14 @@
 package main
 
 import (
-	"ahoy"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"ahoy"
 )
 
 func main() {

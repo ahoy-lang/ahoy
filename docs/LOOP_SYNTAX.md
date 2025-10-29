@@ -146,7 +146,7 @@ loop:i less_than 10 do
 
 ? Option 3: Array iteration (if using array)
 values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-loop val in values do
+loop:val in values do
     ahoy|"Value: %d\n", val|
 ```
 
