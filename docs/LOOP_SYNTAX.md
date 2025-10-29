@@ -1,177 +1,103 @@
-# Enhanced Loop Syntax
 
-## Overview
-The Ahoy language now supports multiple loop syntaxes for different use cases, making iteration more intuitive and expressive.
+# New Loop Syntax - IMPLEMENTED ✓
 
-## Loop Syntax Options
+This document describes the new loop syntax that has been implemented in Ahoy.
 
-### 1. Range Loop: `loop:start to end do`
-Loop from a start value to an end value (exclusive).
+## Status
 
-```ahoy
-? Loop from 0 to 5
-loop:0 to 5 do
-    ahoy|"Iteration\n"|
+**Implementation Complete**: The new loop syntax and f-strings have been successfully implemented.
 
-? Loop from 10 to 15
-loop:i from:10 to 15 do
-    ahoy|"Count\n"|
-```
+### Working Features ✓
+- `loop i from 1 to 5 do` - Range loop with explicit start and end
+- `loop i to 5 do` - Range loop from 0 to end
+- `loop i till condition do` - Conditional loop with explicit counter variable
+- `loop i:` - Forever loop with explicit counter (use with break)
+- `loop:` or `loop do` - Forever loop without counter
+- F-strings: `print|f"hello{i}\n"|` - String interpolation with variables
+- Support for both `then` and `do` keywords in if statements
 
-### 2. While Loop: `loop:condition do`
-Loop while a condition is true (traditional while loop).
-
-```ahoy
-x: 0
-loop:x less_than 10 do
-    ahoy|"x is %d\n", x|
-    x: x plus 1
-
-? Or use boolean directly
-flag: true
-loop:flag do
-    ? Do something
-    flag: false
-```
-
-### 3. Count Loop: `loop:number do`
-Loop starting from a specific number (infinite, or use with break).
-
-```ahoy
-? Start counting from 5
-loop:5 to 10 do
-    ahoy|"Counting\n"|
-```
-
-### 4. Default Loop: `loop`
-Default loop (starts at 0, equivalent to `loop do0`).
-
-```ahoy
-? Defaults to starting at 0
-loop:0 to 5 do
-    ahoy|"Default loop\n"|
-```
-
-### 5. Array Iteration: `loop element in array do`
-Iterate through array elements.
-
-```ahoy
-numbers: [10, 20, 30, 40, 50]
-
-loop num in numbers do
-    ahoy|"Number: %d\n", num|
-```
-
-### 6. Dictionary Iteration: `loop key,value in dict do`
-Iterate through dictionary key-value pairs.
-
-```ahoy
-config: {"name":"Ahoy", "version":"1.0", "active":"yes"}
-
-loop key,val in config do
-    ahoy|"Key: %s, Value: %s\n", key, val|
-```
+### Known Issues
+- Array iteration (`loop val in values do`) has a type mismatch bug between `AhoyArray` and `DynamicArray`
+- Dictionary iteration f-string format specifiers need adjustment for string types
+- F-string compilation produces warnings (format security) but works correctly
 
 ## Examples
 
-### Example 1: Different Range Loops
 ```ahoy
-? Print numbers 0 to 4
-loop:0 to 5 do
-    ahoy|"Number\n"|
+? Loop range from 1 to 5
+loop i from 1 to 5 do
+    print|f"Iteration {i}\n"|
 
-? Print numbers 10 to 14
-loop:10 to 15 do
-    ahoy|"Number\n"|
-```
+struct test:
+	type sample:
+		data:int
 
-### Example 2: While Loop with Condition
-```ahoy
-counter: 0
-loop:counter less_than 10 do
-    ahoy|"Counter: %d\n", counter|
-    counter: counter plus 1
-```
+? Loop range from 0 to 5
+loop i to 5 do
+    print|f"Count {i}\n"|
 
-### Example 3: Array Iteration
-```ahoy
-scores: [95, 87, 92, 88, 91]
+? Loop conditional with word operators
+loop i till i less_than 5 do
+    print|f"Value: {i}\n"|
 
-loop score in scores do
-    if score greater_than 90 then
-        ahoy|"Excellent: %d\n", score|
-    else
-        ahoy|"Good: %d\n", score|
-```
+? Loop conditional with symbol operators
+loop i till i <= 5 do
+    ahoy|"Count\n"|
 
-### Example 4: Dictionary Iteration
-```ahoy
-user: {"name":"Alice", "role":"admin", "status":"active"}
+? Loop forever with explicit counter
+loop i do
+    print|f"Loop {i}\n"|
+    if i is 5 do break
 
-loop k,v in user do
-    ahoy|"%s: %s\n", k, v|
-```
+? Loop forever without counter
+loop do
+    ahoy|"Forever!\n"|
+    break
 
-### Example 5: Nested Loops
-```ahoy
-? Nested range loops
-loop:0 to 3 do
-    loop:0 to 2 do
-        ahoy|"Inner loop\n"|
-    ahoy|"Outer loop\n"|
-```
+? Alternative syntax (also works)
+loop i till i less_than 5 do
+    ahoy|"Count\n"|
 
-## Comparison with Old Syntax
-
-### Before:
-```ahoy
-? Old while loop style
-i: 0
-loop i less_than 10 then
-    ahoy|"Value: %d\n", i|
-    i: i plus 1
-```
-
-### After (Multiple Options):
-```ahoy
-? Option 1: Range loop
-loop:0 to 10 do
-    ahoy|"Value\n"|
-
-? Option 2: While loop (still supported)
-i: 0
-loop:i less_than 10 do
-    ahoy|"Value: %d\n", i|
-    i: i plus 1
-
-? Option 3: Array iteration (if using array)
+? Array iteration (TODO: Fix type mismatch)
 values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-loop:val in values do
-    ahoy|"Value: %d\n", val|
+loop val in values do
+    print|f"Value: {val}\n"|
+
+? Dictionary Iteration
+config: {"name":"Ahoy", "version":"1.0", "active":"yes"}
+loop key,val in config do
+    print|f"Key: {key}, Value: {val}\n"|
 ```
 
-## Notes
+## F-String Syntax
 
-- **Range loops** use `loop:start to end do` where end is exclusive
-- **While loops** use `loop:condition do` where condition is any boolean expression
-- **Array iteration** automatically extracts elements (no indexing needed)
-- **Dictionary iteration** provides both key and value
-- Old loop syntax (`loop condition then`) still works for backward compatibility
-- Loop variables in array/dict iteration are automatically declared
-- Use `:` instead of `then` to mark the end of loop declaration
+F-strings provide Python-like string interpolation:
 
-## Generated C Code
+```ahoy
+name: "World"
+count: 42
+print|f"Hello {name}, count is {count}\n"|
+```
 
-The new loop syntax generates efficient C code do
+Format specifiers are automatically determined based on variable type:
+- `int` → `%d`
+- `float` → `%f`
+- `string` → `%s`
+- `char` → `%c`
 
-- Range loops → `for (int i = start; i < end; i++)`
-- While loops → `while (condition)`
-- Array iteration → `for` loop with array size check
-- Dict iteration → nested loops through hash map buckets
+## Implementation Details
 
-## Compatibility
+### Parser Changes
+- Added `TOKEN_FROM`, `TOKEN_TILL`, `TOKEN_PRINT`, `TOKEN_F_STRING` tokens
+- Updated `parseLoop()` to handle all new syntax variations
+- Added `parsePrintStatement()` for print statements
+- Updated if statements to accept both `then` and `do` keywords
 
-- ✅ Fully backward compatible
-- ✅ All existing loop code continues to work
-- ✅ New syntax can be mixed with old syntax
-- ✅ No breaking changes
+### Codegen Changes
+- Updated `generateWhileLoop()` to handle explicit loop variables
+- Updated `generateForRangeLoop()` to handle new 4-child pattern
+- Updated `generateForCountLoop()` to handle forever loops
+- Added `generateFString()` to convert f-strings to sprintf calls
+
+### Test Coverage
+See `test/input/new_loop_syntax_test.ahoy` for working examples.

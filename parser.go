@@ -118,6 +118,42 @@ func (p *Parser) recordError(message string) {
 	})
 }
 
+// Helper function to get readable token name
+func tokenTypeName(t TokenType) string {
+	names := map[TokenType]string{
+		TOKEN_EOF: "EOF", TOKEN_IDENTIFIER: "identifier", TOKEN_NUMBER: "number",
+		TOKEN_STRING: "string", TOKEN_CHAR: "char", TOKEN_F_STRING: "f-string",
+		TOKEN_ASSIGN: "':'", TOKEN_IS: "'is'", TOKEN_NOT: "'not'",
+		TOKEN_OR: "'or'", TOKEN_AND: "'and'", TOKEN_THEN: "'then'",
+		TOKEN_ON: "'on'", TOKEN_IF: "'if'", TOKEN_ELSE: "'else'",
+		TOKEN_ELSEIF: "'elseif'", TOKEN_ANIF: "'anif'", TOKEN_SWITCH: "'switch'",
+		TOKEN_LOOP: "'loop'", TOKEN_IN: "'in'", TOKEN_TO: "'to'",
+		TOKEN_FROM: "'from'", TOKEN_TILL: "'till'", TOKEN_FUNC: "'func'",
+		TOKEN_RETURN: "'return'", TOKEN_IMPORT: "'import'", TOKEN_WHEN: "'when'",
+		TOKEN_AHOY: "'ahoy'", TOKEN_PRINT: "'print'", TOKEN_PLUS: "'+'",
+		TOKEN_MINUS: "'-'", TOKEN_MULTIPLY: "'*'", TOKEN_DIVIDE: "'/'",
+		TOKEN_MODULO: "'%'", TOKEN_PLUS_WORD: "'plus'", TOKEN_MINUS_WORD: "'minus'",
+		TOKEN_TIMES_WORD: "'times'", TOKEN_DIV_WORD: "'div'", TOKEN_MOD_WORD: "'mod'",
+		TOKEN_LESS: "'<'", TOKEN_GREATER: "'>'", TOKEN_LESS_EQUAL: "'<='",
+		TOKEN_GREATER_EQUAL: "'>='", TOKEN_LESSER_WORD: "'lesser'", TOKEN_GREATER_WORD: "'greater'",
+		TOKEN_PIPE: "'|'", TOKEN_LBRACE: "'{'", TOKEN_RBRACE: "'}'",
+		TOKEN_LBRACKET: "'['", TOKEN_RBRACKET: "']'", TOKEN_LANGLE: "'<'",
+		TOKEN_RANGLE: "'>'", TOKEN_COMMA: "','", TOKEN_DOT: "'.'",
+		TOKEN_SEMICOLON: "';'", TOKEN_NEWLINE: "newline", TOKEN_INDENT: "indent",
+		TOKEN_DEDENT: "dedent", TOKEN_INT_TYPE: "type 'int'", TOKEN_FLOAT_TYPE: "type 'float'",
+		TOKEN_STRING_TYPE: "type 'string'", TOKEN_BOOL_TYPE: "type 'bool'",
+		TOKEN_DICT_TYPE: "type 'dict'", TOKEN_VECTOR2_TYPE: "type 'vector2'",
+		TOKEN_COLOR_TYPE: "type 'color'", TOKEN_TRUE: "'true'", TOKEN_FALSE: "'false'",
+		TOKEN_ENUM: "'enum'", TOKEN_STRUCT: "'struct'", TOKEN_TYPE: "'type'",
+		TOKEN_DO: "'do'", TOKEN_BREAK: "'break'", TOKEN_SKIP: "'skip'",
+		TOKEN_DOUBLE_COLON: "'::'", TOKEN_QUESTION: "'?'",
+	}
+	if name, ok := names[t]; ok {
+		return name
+	}
+	return fmt.Sprintf("token(%d)", t)
+}
+
 func (p *Parser) advance() {
 	if p.pos < len(p.tokens) {
 		p.pos++
@@ -126,7 +162,12 @@ func (p *Parser) advance() {
 
 func (p *Parser) expect(tokenType TokenType) Token {
 	if p.current().Type != tokenType {
-		errMsg := fmt.Sprintf("Expected token type %d, got %d at line %d", tokenType, p.current().Type, p.current().Line)
+		current := p.current()
+		errMsg := fmt.Sprintf("Expected %s, got %s at line %d:%d", 
+			tokenTypeName(tokenType), 
+			tokenTypeName(current.Type), 
+			current.Line, 
+			current.Column)
 		if p.LintMode {
 			p.recordError(errMsg)
 			// In lint mode, return current token and advance to continue parsing
@@ -322,7 +363,9 @@ func (p *Parser) parseFunction() *ASTNode {
 	} else if p.current().Type == TOKEN_DO {
 		p.advance()
 	} else {
-		errMsg := fmt.Sprintf("Expected 'then' or 'do' in function, got %v at line %d", p.current().Type, p.current().Line)
+		current := p.current()
+		errMsg := fmt.Sprintf("Expected 'then' or 'do' in function, got %s at line %d:%d", 
+			tokenTypeName(current.Type), current.Line, current.Column)
 		if p.LintMode {
 			p.recordError(errMsg)
 		} else {
@@ -364,7 +407,14 @@ func (p *Parser) parseIfStatement() *ASTNode {
 	} else if p.current().Type == TOKEN_DO {
 		p.advance()
 	} else {
-		panic(fmt.Sprintf("Expected 'then' or 'do', got %v at line %d", p.current().Type, p.current().Line))
+		current := p.current()
+		errMsg := fmt.Sprintf("Expected 'then' or 'do', got %s at line %d:%d", 
+			tokenTypeName(current.Type), current.Line, current.Column)
+		if p.LintMode {
+			p.recordError(errMsg)
+		} else {
+			panic(errMsg)
+		}
 	}
 
 	// Check for inline if statement (no newline after then)
@@ -399,7 +449,14 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		} else if p.current().Type == TOKEN_DO {
 			p.advance()
 		} else {
-			panic(fmt.Sprintf("Expected 'then' or 'do', got %v at line %d", p.current().Type, p.current().Line))
+			current := p.current()
+			errMsg := fmt.Sprintf("Expected 'then' or 'do', got %s at line %d:%d", 
+				tokenTypeName(current.Type), current.Line, current.Column)
+			if p.LintMode {
+				p.recordError(errMsg)
+			} else {
+				panic(errMsg)
+			}
 		}
 
 		// Check for inline elseif/anif
@@ -1369,7 +1426,9 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 		return p.parseArrayLiteralBracket()
 
 	default:
-		errMsg := fmt.Sprintf("Unexpected token: %d at line %d", p.current().Type, p.current().Line)
+		current := p.current()
+		errMsg := fmt.Sprintf("Unexpected token %s at line %d:%d", 
+			tokenTypeName(current.Type), current.Line, current.Column)
 		if p.LintMode {
 			p.recordError(errMsg)
 			// Return a dummy node to continue parsing

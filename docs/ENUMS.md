@@ -2,7 +2,7 @@
 
 
 ```ahoy
-color enum:
+enum colors:
 	RED
 	GREEN
 	BLUE

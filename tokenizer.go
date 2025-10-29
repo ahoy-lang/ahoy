@@ -190,6 +190,11 @@ func Tokenize(input string) []Token {
 				continue
 			}
 
+			// Check for inline comment (? or #) - skip rest of line
+			if content[i] == '?' || content[i] == '#' {
+				break // Skip rest of line
+			}
+
 			// Numbers
 			if unicode.IsDigit(rune(content[i])) {
 				start := i
@@ -326,8 +331,7 @@ func Tokenize(input string) []Token {
 				tokens = append(tokens, Token{Type: TOKEN_DOT, Value: ".", Line: lineNum + 1, Column: i + 1})
 			case ';':
 				tokens = append(tokens, Token{Type: TOKEN_SEMICOLON, Value: ";", Line: lineNum + 1, Column: i + 1})
-			case '?':
-				tokens = append(tokens, Token{Type: TOKEN_QUESTION, Value: "?", Line: lineNum + 1, Column: i + 1})
+			// Remove TOKEN_QUESTION case - now handled as comment marker above
 			default:
 				fmt.Printf("Unknown character: %c at line %d, column %d\n", content[i], lineNum+1, i+1)
 			}
