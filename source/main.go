@@ -74,8 +74,32 @@ func main() {
 		return
 	}
 
-	// Parse
-	ast := ahoy.Parse(tokens)
+	// Get absolute path for source file
+	absPath, err := filepath.Abs(sourceFile)
+	if err != nil {
+		fmt.Printf("Error resolving file path: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Initialize package manager
+	pm := NewPackageManager(filepath.Dir(absPath))
+	
+	// Load the package
+	pkg, err := pm.LoadPackageFromFile(absPath)
+	if err != nil {
+		fmt.Printf("Error loading package: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Resolve imports recursively
+	imports, err := resolveImports(pkg, pm, absPath)
+	if err != nil {
+		fmt.Printf("Error resolving imports: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Merge package with all imports into one AST
+	ast := MergeWithImports(pkg, imports)
 
 	// Generate C code
 	cCode := generateC(ast)
@@ -105,7 +129,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("✓ Compiled %s to %s\n", sourceFile, outputFile)
+	if len(pkg.Files) > 1 {
+		fmt.Printf("✓ Compiled package '%s' (%d files) to %s\n", pkg.Name, len(pkg.Files), outputFile)
+	} else {
+		fmt.Printf("✓ Compiled %s to %s\n", sourceFile, outputFile)
+	}
 
 	// Compile C code if run flag is set
 	if *runFlag {
@@ -132,6 +160,144 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+// resolveImports recursively resolves all imports in a package
+// and merges them into a unified set of imports
+func resolveImports(pkg *Package, pm *PackageManager, fromFile string) (map[string]*Package, error) {
+	allImports := make(map[string]*Package)
+	
+	for _, file := range pkg.Files {
+		if file.AST != nil {
+			for _, child := range file.AST.Children {
+				if child.Type == ahoy.NODE_IMPORT_STATEMENT {
+					importPath := child.Value
+					importedPkg, err := pm.ResolveImport(importPath, fromFile)
+					if err != nil {
+						return nil, fmt.Errorf("failed to resolve import '%s': %v", importPath, err)
+					}
+					
+					// Store with namespace key
+					namespace := child.DataType
+					if namespace == "" {
+						namespace = importedPkg.Name
+					}
+					allImports[namespace] = importedPkg
+					
+					// Recursively resolve imports in the imported package
+					nestedImports, err := resolveImports(importedPkg, pm, file.Path)
+					if err != nil {
+						return nil, err
+					}
+					
+					// Merge nested imports
+					for ns, nestedPkg := range nestedImports {
+						if _, exists := allImports[ns]; !exists {
+							allImports[ns] = nestedPkg
+						}
+					}
+				}
+			}
+		}
+	}
+	return allImports, nil
+}
+
+// MergeWithImports merges the package with all imported packages into a single AST
+func MergeWithImports(pkg *Package, imports map[string]*Package) *ahoy.ASTNode {
+	merged := &ahoy.ASTNode{Type: ahoy.NODE_PROGRAM}
+	processedFunctions := make(map[string]bool) // Deduplicate functions
+	processedStructs := make(map[string]bool)   // Deduplicate structs
+	processedEnums := make(map[string]bool)     // Deduplicate enums
+	
+	// First, add all declarations from imported packages
+	for _, importedPkg := range imports {
+		for _, file := range importedPkg.Files {
+			if file.AST != nil {
+				for _, child := range file.AST.Children {
+					// Skip program declarations and imports
+					if child.Type == ahoy.NODE_PROGRAM_DECLARATION || child.Type == ahoy.NODE_IMPORT_STATEMENT {
+						continue
+					}
+					
+					// Deduplicate by name
+					name := child.Value
+					shouldAdd := false
+					
+					switch child.Type {
+					case ahoy.NODE_FUNCTION:
+						if !processedFunctions[name] {
+							processedFunctions[name] = true
+							shouldAdd = true
+						}
+					case ahoy.NODE_STRUCT_DECLARATION:
+						if !processedStructs[name] {
+							processedStructs[name] = true
+							shouldAdd = true
+						}
+					case ahoy.NODE_ENUM_DECLARATION:
+						if !processedEnums[name] {
+							processedEnums[name] = true
+							shouldAdd = true
+						}
+					default:
+						shouldAdd = true
+					}
+					
+					if shouldAdd {
+						merged.Children = append(merged.Children, child)
+					}
+				}
+			}
+		}
+	}
+	
+	// Then add declarations from the main package
+	for _, file := range pkg.Files {
+		if file.AST != nil {
+			for _, child := range file.AST.Children {
+				// Skip program declarations
+				if child.Type == ahoy.NODE_PROGRAM_DECLARATION {
+					continue
+				}
+				
+				// Skip imports (we've already processed them)
+				if child.Type == ahoy.NODE_IMPORT_STATEMENT {
+					continue
+				}
+				
+				// Deduplicate by name
+				name := child.Value
+				shouldAdd := false
+				
+				switch child.Type {
+				case ahoy.NODE_FUNCTION:
+					if !processedFunctions[name] {
+						processedFunctions[name] = true
+						shouldAdd = true
+					}
+				case ahoy.NODE_STRUCT_DECLARATION:
+					if !processedStructs[name] {
+						processedStructs[name] = true
+						shouldAdd = true
+					}
+				case ahoy.NODE_ENUM_DECLARATION:
+					if !processedEnums[name] {
+						processedEnums[name] = true
+						shouldAdd = true
+					}
+				default:
+					shouldAdd = true
+				}
+				
+				if shouldAdd {
+					merged.Children = append(merged.Children, child)
+				}
+			}
+		}
+	}
+	
+	return merged
 }
 
 func showHelp() {

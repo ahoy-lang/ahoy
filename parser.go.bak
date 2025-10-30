@@ -9,7 +9,6 @@ type NodeType int
 
 const (
 	NODE_PROGRAM NodeType = iota
-	NODE_PROGRAM_DECLARATION
 	NODE_FUNCTION
 	NODE_VARIABLE_DECLARATION
 	NODE_ASSIGNMENT
@@ -130,7 +129,7 @@ func tokenTypeName(t TokenType) string {
 		TOKEN_ELSEIF: "'elseif'", TOKEN_ANIF: "'anif'", TOKEN_SWITCH: "'switch'",
 		TOKEN_LOOP: "'loop'", TOKEN_IN: "'in'", TOKEN_TO: "'to'",
 		TOKEN_FROM: "'from'", TOKEN_TILL: "'till'", TOKEN_FUNC: "'func'",
-		TOKEN_RETURN: "'return'", TOKEN_IMPORT: "'import'", TOKEN_PROGRAM: "'program'", TOKEN_WHEN: "'when'",
+		TOKEN_RETURN: "'return'", TOKEN_IMPORT: "'import'", TOKEN_WHEN: "'when'",
 		TOKEN_AHOY: "'ahoy'", TOKEN_PRINT: "'print'", TOKEN_PLUS: "'+'",
 		TOKEN_MINUS: "'-'", TOKEN_MULTIPLY: "'*'", TOKEN_DIVIDE: "'/'",
 		TOKEN_MODULO: "'%'", TOKEN_PLUS_WORD: "'plus'", TOKEN_MINUS_WORD: "'minus'",
@@ -195,7 +194,7 @@ func (p *Parser) parseProgram() *ASTNode {
 	program := &ASTNode{Type: NODE_PROGRAM}
 
 	for p.current().Type != TOKEN_EOF {
-		if p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_SEMICOLON || p.current().Type == TOKEN_DEDENT {
+		if p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_SEMICOLON {
 			p.advance()
 			continue
 		}
@@ -226,10 +225,6 @@ func (p *Parser) parseProgram() *ASTNode {
 
 func (p *Parser) parseStatement() *ASTNode {
 	switch p.current().Type {
-	case TOKEN_PROGRAM:
-		return p.parseProgramDeclaration()
-	case TOKEN_ENUM:
-		return p.parseEnumDeclaration()
 	case TOKEN_STRUCT:
 		return p.parseStructDeclaration()
 	case TOKEN_FUNC:
@@ -258,8 +253,12 @@ func (p *Parser) parseStatement() *ASTNode {
 	case TOKEN_IMPORT:
 		return p.parseImportStatement()
 	case TOKEN_IDENTIFIER:
-		// Check for constant declaration (name ::)
+		// Check for enum declaration (name enum:)
 		nextType := p.peek(1).Type
+		if nextType == TOKEN_ENUM {
+			return p.parseEnumDeclaration()
+		}
+		// Check for constant declaration (name ::)
 		if nextType == TOKEN_DOUBLE_COLON {
 			return p.parseConstantDeclaration()
 		}
@@ -269,6 +268,10 @@ func (p *Parser) parseStatement() *ASTNode {
 		}
 		return p.parseAssignmentOrExpression()
 	case TOKEN_COLOR_TYPE, TOKEN_VECTOR2_TYPE:
+		// These could be enum names
+		if p.peek(1).Type == TOKEN_ENUM {
+			return p.parseEnumDeclaration()
+		}
 		return p.parseExpression()
 	case TOKEN_NEWLINE, TOKEN_SEMICOLON:
 		p.advance()
@@ -521,26 +524,18 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 	p.expect(TOKEN_SWITCH)
 	expr := p.parseExpression()
 
-	// Accept either "then", "on", or ":" keyword
+	// Accept either "then" or "on" keyword
 	if p.current().Type == TOKEN_ON {
 		p.advance()
 	} else if p.current().Type == TOKEN_THEN {
 		p.advance()
-	} else if p.current().Type == TOKEN_ASSIGN { // colon
-		p.advance()
 	} else {
-		errMsg := fmt.Sprintf("Expected 'on', 'then', or ':' after switch expression at line %d", p.current().Line)
+		errMsg := fmt.Sprintf("Expected 'on' or 'then' after switch expression at line %d", p.current().Line)
 		if p.LintMode {
 			p.recordError(errMsg)
 		} else {
 			panic(errMsg)
 		}
-	}
-
-	// Expect and consume indent after switch keyword
-	p.skipNewlines()
-	if p.current().Type == TOKEN_INDENT {
-		p.advance()
 	}
 
 	switchStmt := &ASTNode{
@@ -560,7 +555,7 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 		if p.current().Type == TOKEN_DEDENT || p.current().Type == TOKEN_EOF ||
 			p.current().Type == TOKEN_IF || p.current().Type == TOKEN_LOOP ||
 			p.current().Type == TOKEN_FUNC || p.current().Type == TOKEN_RETURN ||
-			p.current().Type == TOKEN_SWITCH {
+			p.current().Type == TOKEN_SWITCH || p.current().Type == TOKEN_IDENTIFIER {
 			break
 		}
 
@@ -671,33 +666,9 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 
 		p.expect(TOKEN_ASSIGN) // Expect :
 
-		// Skip optional whitespace/indent after colon  
-		p.skipWhitespace()
-
-		// Parse case body - must be a statement or call, not an assignment
-		// We need to be careful here because parseStatement might misinterpret
-		// patterns like "ahoy|...|" if preceded by an identifier
-		var caseBody *ASTNode
-		
-		// Explicitly handle known statement types
-		switch p.current().Type {
-		case TOKEN_AHOY:
-			caseBody = p.parseAhoyStatement()
-		case TOKEN_PRINT:
-			caseBody = p.parsePrintStatement()
-		case TOKEN_RETURN:
-			caseBody = p.parseReturnStatement()
-		case TOKEN_IF:
-			caseBody = p.parseIfStatement()
-		case TOKEN_SWITCH:
-			caseBody = p.parseSwitchStatement()
-		case TOKEN_LOOP:
-			caseBody = p.parseLoop()
-		case TOKEN_IDENTIFIER:
-			// Could be a function call or method call
-			caseBody = p.parseExpression()
-		default:
-			// Try to parse as expression
+		// Parse case body (single statement or expression)
+		caseBody := p.parseStatement()
+		if caseBody == nil {
 			caseBody = p.parseExpression()
 		}
 
@@ -722,16 +693,14 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 
 		switchStmt.Children = append(switchStmt.Children, caseNode)
 
-		// Skip newlines between cases
-		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_SEMICOLON {
-			p.advance()
-		}
-
-		// Check for "then" separator (optional now with newlines)
+		// Check for "then" separator
 		if p.current().Type == TOKEN_THEN {
 			p.advance()
+			// Continue to next case
+		} else {
+			// No more cases
+			break
 		}
-		// Continue to next case (don't break - newlines separate cases now)
 	}
 
 	return switchStmt
@@ -753,7 +722,8 @@ func (p *Parser) parseLoop() *ASTNode {
 				p.advance() // consume 'till'
 				condition := p.parseExpression()
 				p.expect(TOKEN_DO)
-		p.skipWhitespace()
+				p.expect(TOKEN_NEWLINE)
+				p.expect(TOKEN_INDENT)
 				body := p.parseBlock()
 
 				loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
@@ -786,7 +756,8 @@ func (p *Parser) parseLoop() *ASTNode {
 				p.advance() // consume 'to'
 				endNum := p.expect(TOKEN_NUMBER)
 				p.expect(TOKEN_DO)
-		p.skipWhitespace()
+				p.expect(TOKEN_NEWLINE)
+				p.expect(TOKEN_INDENT)
 				body := p.parseBlock()
 
 				return &ASTNode{
@@ -798,7 +769,8 @@ func (p *Parser) parseLoop() *ASTNode {
 			} else {
 				// Count loop: loop:10 then (starts at 10)
 				p.expect(TOKEN_DO)
-		p.skipWhitespace()
+				p.expect(TOKEN_NEWLINE)
+				p.expect(TOKEN_INDENT)
 				body := p.parseBlock()
 
 				return &ASTNode{
@@ -811,7 +783,8 @@ func (p *Parser) parseLoop() *ASTNode {
 			// While loop: loop:true then
 			condition := p.parseExpression()
 			p.expect(TOKEN_DO)
-		p.skipWhitespace()
+			p.expect(TOKEN_NEWLINE)
+			p.expect(TOKEN_INDENT)
 			body := p.parseBlock()
 
 			return &ASTNode{
@@ -827,7 +800,8 @@ func (p *Parser) parseLoop() *ASTNode {
 				p.advance() // consume 'to'
 				endExpr := p.parseExpression()
 				p.expect(TOKEN_DO)
-		p.skipWhitespace()
+				p.expect(TOKEN_NEWLINE)
+				p.expect(TOKEN_INDENT)
 				body := p.parseBlock()
 
 				return &ASTNode{
@@ -837,7 +811,8 @@ func (p *Parser) parseLoop() *ASTNode {
 			}
 
 			p.expect(TOKEN_DO)
-		p.skipWhitespace()
+			p.expect(TOKEN_NEWLINE)
+			p.expect(TOKEN_INDENT)
 			body := p.parseBlock()
 
 			return &ASTNode{
@@ -856,7 +831,8 @@ func (p *Parser) parseLoop() *ASTNode {
 			p.expect(TOKEN_IN)
 			dictExpr := p.parseExpression()
 			p.expect(TOKEN_DO)
-		p.skipWhitespace()
+			p.expect(TOKEN_NEWLINE)
+			p.expect(TOKEN_INDENT)
 			body := p.parseBlock()
 
 			keyNode := &ASTNode{Type: NODE_IDENTIFIER, Value: firstIdent.Value}
@@ -873,7 +849,8 @@ func (p *Parser) parseLoop() *ASTNode {
 			p.expect(TOKEN_TO)
 			endExpr := p.parseExpression()
 			p.expect(TOKEN_DO)
-		p.skipWhitespace()
+			p.expect(TOKEN_NEWLINE)
+			p.expect(TOKEN_INDENT)
 			body := p.parseBlock()
 
 			loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: firstIdent.Value}
@@ -886,7 +863,8 @@ func (p *Parser) parseLoop() *ASTNode {
 			p.advance() // consume 'to'
 			endExpr := p.parseExpression()
 			p.expect(TOKEN_DO)
-		p.skipWhitespace()
+			p.expect(TOKEN_NEWLINE)
+			p.expect(TOKEN_INDENT)
 			body := p.parseBlock()
 
 			loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: firstIdent.Value}
@@ -900,7 +878,8 @@ func (p *Parser) parseLoop() *ASTNode {
 			p.advance() // consume 'till'
 			condition := p.parseExpression()
 			p.expect(TOKEN_DO)
-		p.skipWhitespace()
+			p.expect(TOKEN_NEWLINE)
+			p.expect(TOKEN_INDENT)
 			body := p.parseBlock()
 
 			loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: firstIdent.Value}
@@ -926,7 +905,8 @@ func (p *Parser) parseLoop() *ASTNode {
 			p.advance() // consume 'in'
 			arrayExpr := p.parseExpression()
 			p.expect(TOKEN_DO)
-		p.skipWhitespace()
+			p.expect(TOKEN_NEWLINE)
+			p.expect(TOKEN_INDENT)
 			body := p.parseBlock()
 
 			elementNode := &ASTNode{Type: NODE_IDENTIFIER, Value: firstIdent.Value}
@@ -943,7 +923,8 @@ func (p *Parser) parseLoop() *ASTNode {
 			// Continue parsing the rest of the expression
 			condition := p.parseExpressionContinuation(identNode)
 			p.expect(TOKEN_DO)
-		p.skipWhitespace()
+			p.expect(TOKEN_NEWLINE)
+			p.expect(TOKEN_INDENT)
 			body := p.parseBlock()
 
 			return &ASTNode{
@@ -965,7 +946,8 @@ func (p *Parser) parseLoop() *ASTNode {
 	} else {
 		// Default: loop do (infinite loop)
 		p.expect(TOKEN_DO)
-		p.skipWhitespace()
+		p.expect(TOKEN_NEWLINE)
+		p.expect(TOKEN_INDENT)
 		body := p.parseBlock()
 
 		return &ASTNode{
@@ -1079,43 +1061,11 @@ func (p *Parser) parseReturnStatement() *ASTNode {
 
 func (p *Parser) parseImportStatement() *ASTNode {
 	p.expect(TOKEN_IMPORT)
-	
-	// Check if there's an identifier (namespace) before the string path
-	var namespace string
-	var path string
-	
-	if p.current().Type == TOKEN_IDENTIFIER {
-		namespace = p.current().Value
-		p.advance()
-		path = p.expect(TOKEN_STRING).Value
-	} else if p.current().Type == TOKEN_STRING {
-		path = p.expect(TOKEN_STRING).Value
-		namespace = "" // No namespace means import all into global scope
-	} else {
-		if p.LintMode {
-			p.recordError(fmt.Sprintf("Expected identifier or string path after import at line %d", p.current().Line))
-			return &ASTNode{Type: NODE_IMPORT_STATEMENT}
-		}
-		panic(fmt.Sprintf("Expected identifier or string path after import at line %d", p.current().Line))
-	}
+	name := p.expect(TOKEN_STRING)
 
 	return &ASTNode{
 		Type:  NODE_IMPORT_STATEMENT,
-		Value: path,
-		DataType: namespace, // Use DataType field to store namespace
-	}
-}
-
-func (p *Parser) parseProgramDeclaration() *ASTNode {
-	p.expect(TOKEN_PROGRAM)
-	name := p.expect(TOKEN_IDENTIFIER)
-	
-	// Don't skip newlines here - let parseProgram handle them
-	
-	return &ASTNode{
-		Type:  NODE_PROGRAM_DECLARATION,
 		Value: name.Value,
-		Line:  name.Line,
 	}
 }
 
@@ -1580,10 +1530,7 @@ func (p *Parser) parseDictLiteral() *ASTNode {
 
 // Parse enum declaration
 func (p *Parser) parseEnumDeclaration() *ASTNode {
-	// Expect 'enum' keyword
-	p.expect(TOKEN_ENUM)
-	
-	// Get the enum name
+	// First token is the enum name (might be identifier or type keyword being repurposed)
 	var name Token
 	if p.current().Type == TOKEN_IDENTIFIER ||
 		p.current().Type == TOKEN_COLOR_TYPE ||
@@ -1605,7 +1552,8 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 		}
 	}
 
-	p.expect(TOKEN_ASSIGN) // colon
+	p.expect(TOKEN_ENUM)
+	p.expect(TOKEN_ASSIGN)
 
 	p.skipNewlines()
 	if p.current().Type == TOKEN_INDENT {
@@ -1618,7 +1566,7 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 		Line:  name.Line,
 	}
 
-	// Parse enum members - support multiple lines
+	// Parse enum members
 	for p.current().Type == TOKEN_IDENTIFIER {
 		member := &ASTNode{
 			Type:  NODE_IDENTIFIER,
@@ -1712,15 +1660,8 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 
 	p.expect(TOKEN_ASSIGN) // :
 	
-	// Skip newline after :
-	if p.current().Type == TOKEN_NEWLINE {
-		p.advance()
-	}
-	
-	// Expect indent for function body
-	if p.current().Type == TOKEN_INDENT {
-		p.advance()
-	}
+	// Skip optional whitespace/indent
+	p.skipWhitespace()
 
 	// Parse body
 	body := p.parseBlock()

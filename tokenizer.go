@@ -35,8 +35,9 @@ const (
 	TOKEN_FUNC
 	TOKEN_RETURN
 	TOKEN_IMPORT
-	TOKEN_WHEN          // when (compile time)
-	TOKEN_AHOY          // ahoy (print shorthand)
+	TOKEN_PROGRAM // program (package declaration)
+	TOKEN_WHEN    // when (compile time)
+	TOKEN_AHOY    // ahoy (print shorthand)
 	TOKEN_PRINT         // print
 	TOKEN_PLUS          // +
 	TOKEN_MINUS         // -
@@ -112,6 +113,7 @@ func Tokenize(input string) []Token {
 		"func":         TOKEN_FUNC,
 		"return":       TOKEN_RETURN,
 		"import":       TOKEN_IMPORT,
+		"program":      TOKEN_PROGRAM,
 		"when":         TOKEN_WHEN,
 		"ahoy":         TOKEN_AHOY,
 		"print":        TOKEN_PRINT,

@@ -293,6 +293,10 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 	case ahoy.NODE_IMPORT_STATEMENT:
 		gen.generateImportStatement(node)
 
+	case ahoy.NODE_PROGRAM_DECLARATION:
+		// Skip program declarations in code generation
+		return
+
 	case ahoy.NODE_CALL:
 		if isStatement {
 			gen.writeIndent()
