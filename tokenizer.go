@@ -56,6 +56,8 @@ const (
 	TOKEN_LESSER_WORD   // lesser
 	TOKEN_GREATER_WORD  // greater
 	TOKEN_PIPE          // |
+	TOKEN_LPAREN        // (
+	TOKEN_RPAREN        // )
 	TOKEN_LBRACE        // {
 	TOKEN_RBRACE        // }
 	TOKEN_LBRACKET      // [
@@ -73,6 +75,7 @@ const (
 	TOKEN_STRING_TYPE
 	TOKEN_BOOL_TYPE
 	TOKEN_DICT_TYPE
+	TOKEN_ARRAY_TYPE
 	TOKEN_VECTOR2_TYPE
 	TOKEN_COLOR_TYPE
 	TOKEN_TRUE
@@ -81,10 +84,16 @@ const (
 	TOKEN_STRUCT
 	TOKEN_TYPE
 	TOKEN_DO
-	TOKEN_BREAK
-	TOKEN_SKIP
+	TOKEN_HALT         // halt (break from loop)
+	TOKEN_NEXT         // next (continue to next iteration)
+	TOKEN_ASSERT       // assert (runtime assertion)
+	TOKEN_DEFER        // defer (deferred execution)
 	TOKEN_DOUBLE_COLON // ::
 	TOKEN_QUESTION     // ? (loop counter variable)
+	TOKEN_TERNARY      // ?? (ternary operator)
+	TOKEN_EQUALS       // = (for default arguments)
+	TOKEN_INFER        // infer (inferred return type)
+	TOKEN_VOID         // void (no return value)
 )
 
 type Token struct {
@@ -136,6 +145,7 @@ func Tokenize(input string) []Token {
 		"string":       TOKEN_STRING_TYPE,
 		"bool":         TOKEN_BOOL_TYPE,
 		"dict":         TOKEN_DICT_TYPE,
+		"array":        TOKEN_ARRAY_TYPE,
 		"vector2":      TOKEN_VECTOR2_TYPE,
 		"color":        TOKEN_COLOR_TYPE,
 		"true":         TOKEN_TRUE,
@@ -144,8 +154,12 @@ func Tokenize(input string) []Token {
 		"struct":       TOKEN_STRUCT,
 		"type":         TOKEN_TYPE,
 		"do":           TOKEN_DO,
-		"break":        TOKEN_BREAK,
-		"skip":         TOKEN_SKIP,
+		"halt":         TOKEN_HALT,
+		"next":         TOKEN_NEXT,
+		"assert":       TOKEN_ASSERT,
+		"defer":        TOKEN_DEFER,
+		"infer":        TOKEN_INFER,
+		"void":         TOKEN_VOID,
 	}
 
 	for lineNum, line := range lines {
@@ -189,6 +203,13 @@ func Tokenize(input string) []Token {
 		for i < len(content) {
 			if unicode.IsSpace(rune(content[i])) {
 				i++
+				continue
+			}
+
+			// Check for ?? (ternary operator) first
+			if i+1 < len(content) && content[i] == '?' && content[i+1] == '?' {
+				tokens = append(tokens, Token{Type: TOKEN_TERNARY, Value: "??", Line: lineNum + 1, Column: i + 1})
+				i += 2
 				continue
 			}
 
@@ -239,10 +260,9 @@ func Tokenize(input string) []Token {
 
 					if isFString {
 						tokenType = TOKEN_F_STRING
-					} else if len(value) == 1 || (len(value) == 2 && value[0] == '\\') {
-						// Single character strings become chars
-						tokenType = TOKEN_CHAR
 					}
+					// Note: Removed automatic CHAR conversion to fix dictionary keys
+					// Single-character strings remain as STRING tokens
 
 					tokens = append(tokens, Token{
 						Type:   tokenType,
@@ -319,6 +339,10 @@ func Tokenize(input string) []Token {
 				tokens = append(tokens, Token{Type: TOKEN_ASSIGN, Value: ":", Line: lineNum + 1, Column: i + 1})
 			case '|':
 				tokens = append(tokens, Token{Type: TOKEN_PIPE, Value: "|", Line: lineNum + 1, Column: i + 1})
+			case '(':
+				tokens = append(tokens, Token{Type: TOKEN_LPAREN, Value: "(", Line: lineNum + 1, Column: i + 1})
+			case ')':
+				tokens = append(tokens, Token{Type: TOKEN_RPAREN, Value: ")", Line: lineNum + 1, Column: i + 1})
 			case '{':
 				tokens = append(tokens, Token{Type: TOKEN_LBRACE, Value: "{", Line: lineNum + 1, Column: i + 1})
 			case '}':
@@ -333,6 +357,8 @@ func Tokenize(input string) []Token {
 				tokens = append(tokens, Token{Type: TOKEN_DOT, Value: ".", Line: lineNum + 1, Column: i + 1})
 			case ';':
 				tokens = append(tokens, Token{Type: TOKEN_SEMICOLON, Value: ";", Line: lineNum + 1, Column: i + 1})
+			case '=':
+				tokens = append(tokens, Token{Type: TOKEN_EQUALS, Value: "=", Line: lineNum + 1, Column: i + 1})
 			// Remove TOKEN_QUESTION case - now handled as comment marker above
 			default:
 				fmt.Printf("Unknown character: %c at line %d, column %d\n", content[i], lineNum+1, i+1)

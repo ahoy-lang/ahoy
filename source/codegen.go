@@ -23,23 +23,27 @@ func snakeToPascal(s string) string {
 }
 
 type CodeGenerator struct {
-	output       strings.Builder
-	indent       int
-	varCounter   int
-	funcDecls    strings.Builder
-	includes     map[string]bool
-	variables    map[string]string // variable name -> type
-	arrayImpls   bool              // Track if we've added array implementation
-	arrayMethods map[string]bool   // Track which array methods are used
-	loopCounters []string          // Stack of loop counter variable names
+	output        strings.Builder
+	indent        int
+	varCounter    int
+	funcDecls     strings.Builder
+	includes      map[string]bool
+	variables     map[string]string // variable name -> type
+	arrayImpls    bool              // Track if we've added array implementation
+	arrayMethods  map[string]bool   // Track which array methods are used
+	stringMethods map[string]bool   // Track which string methods are used
+	dictMethods   map[string]bool   // Track which dict methods are used
+	loopCounters  []string          // Stack of loop counter variable names
 }
 
 func generateC(ast *ahoy.ASTNode) string {
 	gen := &CodeGenerator{
-		includes:     make(map[string]bool),
-		variables:    make(map[string]string),
-		arrayImpls:   false,
-		arrayMethods: make(map[string]bool),
+		includes:      make(map[string]bool),
+		variables:     make(map[string]string),
+		arrayImpls:    false,
+		arrayMethods:  make(map[string]bool),
+		stringMethods: make(map[string]bool),
+		dictMethods:   make(map[string]bool),
 	}
 
 	// Add standard includes
@@ -57,6 +61,12 @@ func generateC(ast *ahoy.ASTNode) string {
 
 	// Generate array helper functions if any array methods were used
 	gen.writeArrayHelperFunctions()
+
+	// Generate dict helper functions if any dict methods were used
+	gen.writeDictHelperFunctions()
+
+	// Generate string helper functions if any string methods were used
+	gen.writeStringHelperFunctions()
 
 	// Build final output
 	var result strings.Builder
@@ -312,6 +322,9 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 	case ahoy.NODE_UNARY_OP:
 		gen.generateUnaryOp(node)
 
+	case ahoy.NODE_TERNARY:
+		gen.generateTernary(node)
+
 	case ahoy.NODE_IDENTIFIER:
 		// Check if it's the loop counter variable
 		if node.Value == "__loop_counter" && len(gen.loopCounters) > 0 {
@@ -370,10 +383,10 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 		gen.generateMethodCall(node)
 	case ahoy.NODE_MEMBER_ACCESS:
 		gen.generateMemberAccess(node)
-	case ahoy.NODE_BREAK:
+	case ahoy.NODE_HALT:
 		gen.writeIndent()
 		gen.output.WriteString("break;\n")
-	case ahoy.NODE_SKIP:
+	case ahoy.NODE_NEXT:
 		gen.writeIndent()
 		gen.output.WriteString("continue;\n")
 	}
@@ -778,8 +791,8 @@ func (gen *CodeGenerator) generateForInArrayLoop(node *ahoy.ASTNode) {
 	// Get array variable name for accessing size
 	arrayName := gen.nodeToString(arrayExpr)
 
-	// For now, assume arrays are DynamicArray* type
-	gen.output.WriteString(fmt.Sprintf("for (int %s = 0; %s < %s->size; %s++) {\n",
+	// AhoyArray uses 'length', not 'size'
+	gen.output.WriteString(fmt.Sprintf("for (int %s = 0; %s < %s->length; %s++) {\n",
 		loopVar, loopVar, arrayName, loopVar))
 
 	gen.indent++
@@ -895,13 +908,37 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 				gen.generateNode(arg)
 			}
 		} else {
-			// No format string, just output arguments as-is
-			for i, arg := range node.Children {
-				if i > 0 {
-					gen.output.WriteString(", ")
+			// No format string, infer format from argument types
+			if len(node.Children) > 0 {
+				for i, arg := range node.Children {
+					if i > 0 {
+						gen.output.WriteString("; printf(")
+					}
+					
+					// Infer type and generate appropriate printf call
+					argType := gen.inferType(arg)
+					formatSpec := ""
+					switch argType {
+					case "string":
+						formatSpec = "%s"
+					case "int":
+						formatSpec = "%d"
+					case "float":
+						formatSpec = "%f"
+					case "bool":
+						formatSpec = "%d"
+					case "char":
+						formatSpec = "%c"
+					default:
+						formatSpec = "%d"
+					}
+					
+					gen.output.WriteString(fmt.Sprintf("\"%s\\n\", ", formatSpec))
+					gen.generateNode(arg)
+					gen.output.WriteString(")")
 				}
-				gen.generateNode(arg)
 			}
+			return
 		}
 		gen.output.WriteString(")")
 
@@ -1044,23 +1081,93 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 		}
 	}
 
-	// Track which array method is used
-	gen.arrayMethods[methodName] = true
+	// List of string methods
+	stringMethodsList := []string{
+		"length", "upper", "lower", "replace", "contains",
+		"camel_case", "snake_case", "pascal_case", "kebab_case",
+		"match", "split", "count", "lpad", "rpad", "pad",
+		"strip", "get_file",
+	}
 
-	// Generate function call
-	gen.output.WriteString(fmt.Sprintf("ahoy_array_%s(", methodName))
-	gen.generateNodeInternal(object, false)
+	// List of dictionary methods
+	dictMethodsList := []string{
+		"size", "clear", "has", "has_all", "keys", "values",
+		"sort", "stable_sort", "merge",
+	}
 
-	if len(args.Children) > 0 {
-		gen.output.WriteString(", ")
-		for i, arg := range args.Children {
-			if i > 0 {
-				gen.output.WriteString(", ")
-			}
-			gen.generateNodeInternal(arg, false)
+	// Check if this is a string method
+	isStringMethod := false
+	for _, m := range stringMethodsList {
+		if methodName == m {
+			isStringMethod = true
+			break
 		}
 	}
-	gen.output.WriteString(")")
+
+	// Check if this is a dictionary method
+	isDictMethod := false
+	for _, m := range dictMethodsList {
+		if methodName == m {
+			isDictMethod = true
+			break
+		}
+	}
+
+	if isStringMethod {
+		// Track which string method is used
+		gen.stringMethods[methodName] = true
+
+		// Generate string method function call
+		gen.output.WriteString(fmt.Sprintf("ahoy_string_%s(", methodName))
+		gen.generateNodeInternal(object, false)
+
+		if len(args.Children) > 0 {
+			gen.output.WriteString(", ")
+			for i, arg := range args.Children {
+				if i > 0 {
+					gen.output.WriteString(", ")
+				}
+				gen.generateNodeInternal(arg, false)
+			}
+		}
+		gen.output.WriteString(")")
+	} else if isDictMethod {
+		// Track which dict method is used
+		gen.dictMethods[methodName] = true
+
+		// Generate dict method function call
+		gen.output.WriteString(fmt.Sprintf("ahoy_dict_%s(", methodName))
+		gen.generateNodeInternal(object, false)
+
+		if len(args.Children) > 0 {
+			gen.output.WriteString(", ")
+			for i, arg := range args.Children {
+				if i > 0 {
+					gen.output.WriteString(", ")
+				}
+				gen.generateNodeInternal(arg, false)
+			}
+		}
+		gen.output.WriteString(")")
+	} else {
+		// Track which array method is used
+		gen.arrayMethods[methodName] = true
+
+		// Generate array method function call
+		gen.output.WriteString(fmt.Sprintf("ahoy_array_%s(", methodName))
+		gen.generateNodeInternal(object, false)
+
+		if len(args.Children) > 0 {
+			gen.output.WriteString(", ")
+			for i, arg := range args.Children {
+				if i > 0 {
+					gen.output.WriteString(", ")
+				}
+				gen.generateNodeInternal(arg, false)
+			}
+		}
+		gen.output.WriteString(")")
+	}
 }
 
 func (gen *CodeGenerator) generateUnaryOp(node *ahoy.ASTNode) {
@@ -1071,6 +1178,17 @@ func (gen *CodeGenerator) generateUnaryOp(node *ahoy.ASTNode) {
 		gen.output.WriteString(node.Value)
 	}
 	gen.generateNode(node.Children[0])
+}
+
+func (gen *CodeGenerator) generateTernary(node *ahoy.ASTNode) {
+	// C ternary: condition ? true_expr : false_expr
+	gen.output.WriteString("(")
+	gen.generateNode(node.Children[0]) // condition
+	gen.output.WriteString(" ? ")
+	gen.generateNode(node.Children[1]) // true branch
+	gen.output.WriteString(" : ")
+	gen.generateNode(node.Children[2]) // false branch
+	gen.output.WriteString(")")
 }
 
 func (gen *CodeGenerator) generateArrayLiteral(node *ahoy.ASTNode) {
@@ -1173,16 +1291,59 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		}
 		return "int"
 	case ahoy.NODE_METHOD_CALL:
+		// Check the object type to determine if it's a dict or array method
+		objectType := ""
+		if len(node.Children) > 0 {
+			objectType = gen.inferType(node.Children[0])
+		}
+
+		// String methods that return string
+		if node.Value == "upper" || node.Value == "lower" ||
+			node.Value == "replace" || node.Value == "camel_case" ||
+			node.Value == "snake_case" || node.Value == "pascal_case" ||
+			node.Value == "kebab_case" || node.Value == "strip" ||
+			node.Value == "lpad" || node.Value == "rpad" ||
+			node.Value == "pad" || node.Value == "get_file" {
+			return "string"
+		}
+		// String methods that return int
+		if node.Value == "length" || node.Value == "count" {
+			return "int"
+		}
+		// String methods that return bool
+		if node.Value == "contains" || node.Value == "match" {
+			return "bool"
+		}
+		// String method split returns array
+		if node.Value == "split" {
+			return "array"
+		}
+
+		// Dictionary-specific methods
+		if objectType == "dict" {
+			if node.Value == "size" {
+				return "int"
+			}
+			if node.Value == "has" || node.Value == "has_all" {
+				return "bool"
+			}
+			if node.Value == "keys" || node.Value == "values" {
+				return "array"
+			}
+			if node.Value == "sort" || node.Value == "stable_sort" || node.Value == "merge" {
+				return "dict"
+			}
+		}
+
 		// Array methods that return arrays
 		if node.Value == "map" || node.Value == "filter" ||
 			node.Value == "sort" || node.Value == "reverse" ||
 			node.Value == "shuffle" || node.Value == "push" {
 			return "array"
 		}
-		// Methods that return int
-		if node.Value == "length" || node.Value == "sum" ||
-			node.Value == "pop" || node.Value == "pick" ||
-			node.Value == "has" {
+		// Array methods that return int
+		if node.Value == "sum" || node.Value == "pop" ||
+			node.Value == "pick" || node.Value == "has" {
 			return "int"
 		}
 		return "int"
@@ -1194,6 +1355,18 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			return "float"
 		}
 		return "int"
+	case ahoy.NODE_TERNARY:
+		// Ternary returns the type of its branches (assume both branches have same type)
+		trueType := gen.inferType(node.Children[1])
+		falseType := gen.inferType(node.Children[2])
+		// If types differ, try to find common type
+		if trueType == "float" || falseType == "float" {
+			return "float"
+		}
+		if trueType == "string" || falseType == "string" {
+			return "string"
+		}
+		return trueType
 	case ahoy.NODE_IDENTIFIER:
 		if varType, exists := gen.variables[node.Value]; exists {
 			return varType
@@ -1515,6 +1688,186 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 	}
 }
 
+// Generate dictionary helper functions
+func (gen *CodeGenerator) writeDictHelperFunctions() {
+	if len(gen.dictMethods) == 0 {
+		return
+	}
+
+	// HashMap structure (if not already defined - should be in stdlib)
+	gen.funcDecls.WriteString("\n// Dictionary Helper Methods\n")
+
+	// Check if we need array support for keys() or values() methods
+	if gen.dictMethods["keys"] || gen.dictMethods["values"] {
+		// Ensure AhoyArray structure is defined
+		gen.arrayImpls = true
+		if !gen.arrayMethods["__dummy__"] {
+			// Add array structure if not already added
+			gen.funcDecls.WriteString("// Array Helper Structure\n")
+			gen.funcDecls.WriteString("typedef struct {\n")
+			gen.funcDecls.WriteString("    int* data;\n")
+			gen.funcDecls.WriteString("    int length;\n")
+			gen.funcDecls.WriteString("    int capacity;\n")
+			gen.funcDecls.WriteString("} AhoyArray;\n\n")
+		}
+	}
+
+	// size method
+	if gen.dictMethods["size"] {
+		gen.funcDecls.WriteString("int ahoy_dict_size(HashMap* dict) {\n")
+		gen.funcDecls.WriteString("    if (dict == NULL) return 0;\n")
+		gen.funcDecls.WriteString("    return dict->size;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// clear method
+	if gen.dictMethods["clear"] {
+		gen.funcDecls.WriteString("void ahoy_dict_clear(HashMap* dict) {\n")
+		gen.funcDecls.WriteString("    if (dict == NULL) return;\n")
+		gen.funcDecls.WriteString("    for (int i = 0; i < dict->capacity; i++) {\n")
+		gen.funcDecls.WriteString("        HashMapEntry* entry = dict->buckets[i];\n")
+		gen.funcDecls.WriteString("        while (entry != NULL) {\n")
+		gen.funcDecls.WriteString("            HashMapEntry* temp = entry;\n")
+		gen.funcDecls.WriteString("            entry = entry->next;\n")
+		gen.funcDecls.WriteString("            free(temp->key);\n")
+		gen.funcDecls.WriteString("            free(temp);\n")
+		gen.funcDecls.WriteString("        }\n")
+		gen.funcDecls.WriteString("        dict->buckets[i] = NULL;\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    dict->size = 0;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// has method
+	if gen.dictMethods["has"] {
+		gen.funcDecls.WriteString("int ahoy_dict_has(HashMap* dict, char* key) {\n")
+		gen.funcDecls.WriteString("    if (dict == NULL || key == NULL) return 0;\n")
+		gen.funcDecls.WriteString("    return hashMapGet(dict, key) != NULL ? 1 : 0;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// has_all method
+	if gen.dictMethods["has_all"] {
+		gen.funcDecls.WriteString("int ahoy_dict_has_all(HashMap* dict, AhoyArray* keys) {\n")
+		gen.funcDecls.WriteString("    if (dict == NULL || keys == NULL) return 0;\n")
+		gen.funcDecls.WriteString("    for (int i = 0; i < keys->length; i++) {\n")
+		gen.funcDecls.WriteString("        char* key = (char*)(intptr_t)keys->data[i];\n")
+		gen.funcDecls.WriteString("        if (hashMapGet(dict, key) == NULL) return 0;\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    return 1;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// keys method
+	if gen.dictMethods["keys"] {
+		gen.funcDecls.WriteString("AhoyArray* ahoy_dict_keys(HashMap* dict) {\n")
+		gen.funcDecls.WriteString("    AhoyArray* arr = malloc(sizeof(AhoyArray));\n")
+		gen.funcDecls.WriteString("    arr->length = 0;\n")
+		gen.funcDecls.WriteString("    arr->capacity = dict->size;\n")
+		gen.funcDecls.WriteString("    arr->data = malloc(arr->capacity * sizeof(int));\n")
+		gen.funcDecls.WriteString("    \n")
+		gen.funcDecls.WriteString("    for (int i = 0; i < dict->capacity; i++) {\n")
+		gen.funcDecls.WriteString("        HashMapEntry* entry = dict->buckets[i];\n")
+		gen.funcDecls.WriteString("        while (entry != NULL) {\n")
+		gen.funcDecls.WriteString("            arr->data[arr->length++] = (int)(intptr_t)entry->key;\n")
+		gen.funcDecls.WriteString("            entry = entry->next;\n")
+		gen.funcDecls.WriteString("        }\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    return arr;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// values method
+	if gen.dictMethods["values"] {
+		gen.funcDecls.WriteString("AhoyArray* ahoy_dict_values(HashMap* dict) {\n")
+		gen.funcDecls.WriteString("    AhoyArray* arr = malloc(sizeof(AhoyArray));\n")
+		gen.funcDecls.WriteString("    arr->length = 0;\n")
+		gen.funcDecls.WriteString("    arr->capacity = dict->size;\n")
+		gen.funcDecls.WriteString("    arr->data = malloc(arr->capacity * sizeof(int));\n")
+		gen.funcDecls.WriteString("    \n")
+		gen.funcDecls.WriteString("    for (int i = 0; i < dict->capacity; i++) {\n")
+		gen.funcDecls.WriteString("        HashMapEntry* entry = dict->buckets[i];\n")
+		gen.funcDecls.WriteString("        while (entry != NULL) {\n")
+		gen.funcDecls.WriteString("            arr->data[arr->length++] = (int)(intptr_t)entry->value;\n")
+		gen.funcDecls.WriteString("            entry = entry->next;\n")
+		gen.funcDecls.WriteString("        }\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    return arr;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// sort method
+	if gen.dictMethods["sort"] {
+		gen.funcDecls.WriteString("int __ahoy_compare_keys(const void* a, const void* b) {\n")
+		gen.funcDecls.WriteString("    return strcmp((char*)a, (char*)b);\n")
+		gen.funcDecls.WriteString("}\n\n")
+		gen.funcDecls.WriteString("HashMap* ahoy_dict_sort(HashMap* dict) {\n")
+		gen.funcDecls.WriteString("    if (dict == NULL || dict->size == 0) return dict;\n")
+		gen.funcDecls.WriteString("    \n")
+		gen.funcDecls.WriteString("    // Get all keys\n")
+		gen.funcDecls.WriteString("    char** keys = malloc(dict->size * sizeof(char*));\n")
+		gen.funcDecls.WriteString("    int idx = 0;\n")
+		gen.funcDecls.WriteString("    for (int i = 0; i < dict->capacity; i++) {\n")
+		gen.funcDecls.WriteString("        HashMapEntry* entry = dict->buckets[i];\n")
+		gen.funcDecls.WriteString("        while (entry != NULL) {\n")
+		gen.funcDecls.WriteString("            keys[idx++] = entry->key;\n")
+		gen.funcDecls.WriteString("            entry = entry->next;\n")
+		gen.funcDecls.WriteString("        }\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    \n")
+		gen.funcDecls.WriteString("    // Sort keys\n")
+		gen.funcDecls.WriteString("    qsort(keys, dict->size, sizeof(char*), __ahoy_compare_keys);\n")
+		gen.funcDecls.WriteString("    \n")
+		gen.funcDecls.WriteString("    // Create new sorted dict\n")
+		gen.funcDecls.WriteString("    HashMap* sorted = createHashMap(dict->capacity);\n")
+		gen.funcDecls.WriteString("    for (int i = 0; i < dict->size; i++) {\n")
+		gen.funcDecls.WriteString("        void* value = hashMapGet(dict, keys[i]);\n")
+		gen.funcDecls.WriteString("        hashMapPut(sorted, keys[i], value);\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    \n")
+		gen.funcDecls.WriteString("    free(keys);\n")
+		gen.funcDecls.WriteString("    return sorted;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// stable_sort method (same as sort for dictionaries)
+	if gen.dictMethods["stable_sort"] {
+		gen.funcDecls.WriteString("HashMap* ahoy_dict_stable_sort(HashMap* dict) {\n")
+		gen.funcDecls.WriteString("    return ahoy_dict_sort(dict);\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// merge method
+	if gen.dictMethods["merge"] {
+		gen.funcDecls.WriteString("HashMap* ahoy_dict_merge(HashMap* dict1, HashMap* dict2) {\n")
+		gen.funcDecls.WriteString("    if (dict1 == NULL) return dict2;\n")
+		gen.funcDecls.WriteString("    if (dict2 == NULL) return dict1;\n")
+		gen.funcDecls.WriteString("    \n")
+		gen.funcDecls.WriteString("    HashMap* merged = createHashMap(dict1->capacity + dict2->capacity);\n")
+		gen.funcDecls.WriteString("    \n")
+		gen.funcDecls.WriteString("    // Copy all from dict1\n")
+		gen.funcDecls.WriteString("    for (int i = 0; i < dict1->capacity; i++) {\n")
+		gen.funcDecls.WriteString("        HashMapEntry* entry = dict1->buckets[i];\n")
+		gen.funcDecls.WriteString("        while (entry != NULL) {\n")
+		gen.funcDecls.WriteString("            hashMapPut(merged, entry->key, entry->value);\n")
+		gen.funcDecls.WriteString("            entry = entry->next;\n")
+		gen.funcDecls.WriteString("        }\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    \n")
+		gen.funcDecls.WriteString("    // Copy all from dict2 (overrides if keys exist)\n")
+		gen.funcDecls.WriteString("    for (int i = 0; i < dict2->capacity; i++) {\n")
+		gen.funcDecls.WriteString("        HashMapEntry* entry = dict2->buckets[i];\n")
+		gen.funcDecls.WriteString("        while (entry != NULL) {\n")
+		gen.funcDecls.WriteString("            hashMapPut(merged, entry->key, entry->value);\n")
+		gen.funcDecls.WriteString("            entry = entry->next;\n")
+		gen.funcDecls.WriteString("        }\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    \n")
+		gen.funcDecls.WriteString("    return merged;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+}
+
 // Process format string to replace %v and %t with appropriate C format specifiers
 func (gen *CodeGenerator) processFormatString(formatStr string, args []*ahoy.ASTNode) (string, []*ahoy.ASTNode) {
 	result := ""
@@ -1699,4 +2052,312 @@ func (gen *CodeGenerator) generateFilterInline(arrayNode *ahoy.ASTNode, lambda *
 	gen.output.WriteString(fmt.Sprintf("__result->data[__result->length++] = %s; ", paramName))
 	gen.output.WriteString("} } ")
 	gen.output.WriteString("__result; })")
+}
+
+func (gen *CodeGenerator) writeStringHelperFunctions() {
+	if len(gen.stringMethods) == 0 {
+		return
+	}
+
+	gen.includes["ctype.h"] = true  // For tolower/toupper
+	gen.includes["regex.h"] = true  // For regex matching
+
+	// Helper function to duplicate strings
+	gen.funcDecls.WriteString("\n// String Helper Functions\n")
+	gen.funcDecls.WriteString("char* ahoy_string_dup(const char* src) {\n")
+	gen.funcDecls.WriteString("    if (!src) return NULL;\n")
+	gen.funcDecls.WriteString("    char* dest = malloc(strlen(src) + 1);\n")
+	gen.funcDecls.WriteString("    strcpy(dest, src);\n")
+	gen.funcDecls.WriteString("    return dest;\n")
+	gen.funcDecls.WriteString("}\n\n")
+
+	// length method
+	if gen.stringMethods["length"] {
+		gen.funcDecls.WriteString("int ahoy_string_length(const char* str) {\n")
+		gen.funcDecls.WriteString("    return str ? strlen(str) : 0;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// upper method
+	if gen.stringMethods["upper"] {
+		gen.funcDecls.WriteString("char* ahoy_string_upper(const char* str) {\n")
+		gen.funcDecls.WriteString("    if (!str) return NULL;\n")
+		gen.funcDecls.WriteString("    char* result = ahoy_string_dup(str);\n")
+		gen.funcDecls.WriteString("    for (int i = 0; result[i]; i++) {\n")
+		gen.funcDecls.WriteString("        result[i] = toupper(result[i]);\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    return result;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// lower method
+	if gen.stringMethods["lower"] {
+		gen.funcDecls.WriteString("char* ahoy_string_lower(const char* str) {\n")
+		gen.funcDecls.WriteString("    if (!str) return NULL;\n")
+		gen.funcDecls.WriteString("    char* result = ahoy_string_dup(str);\n")
+		gen.funcDecls.WriteString("    for (int i = 0; result[i]; i++) {\n")
+		gen.funcDecls.WriteString("        result[i] = tolower(result[i]);\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    return result;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// replace method
+	if gen.stringMethods["replace"] {
+		gen.funcDecls.WriteString("char* ahoy_string_replace(const char* str, const char* old, const char* new_str) {\n")
+		gen.funcDecls.WriteString("    if (!str || !old || !new_str) return ahoy_string_dup(str);\n")
+		gen.funcDecls.WriteString("    int count = 0;\n")
+		gen.funcDecls.WriteString("    const char* tmp = str;\n")
+		gen.funcDecls.WriteString("    while ((tmp = strstr(tmp, old))) {\n")
+		gen.funcDecls.WriteString("        count++;\n")
+		gen.funcDecls.WriteString("        tmp += strlen(old);\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    int old_len = strlen(old);\n")
+		gen.funcDecls.WriteString("    int new_len = strlen(new_str);\n")
+		gen.funcDecls.WriteString("    int result_len = strlen(str) + count * (new_len - old_len);\n")
+		gen.funcDecls.WriteString("    char* result = malloc(result_len + 1);\n")
+		gen.funcDecls.WriteString("    char* ptr = result;\n")
+		gen.funcDecls.WriteString("    while (*str) {\n")
+		gen.funcDecls.WriteString("        if (strstr(str, old) == str) {\n")
+		gen.funcDecls.WriteString("            strcpy(ptr, new_str);\n")
+		gen.funcDecls.WriteString("            ptr += new_len;\n")
+		gen.funcDecls.WriteString("            str += old_len;\n")
+		gen.funcDecls.WriteString("        } else {\n")
+		gen.funcDecls.WriteString("            *ptr++ = *str++;\n")
+		gen.funcDecls.WriteString("        }\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    *ptr = '\\0';\n")
+		gen.funcDecls.WriteString("    return result;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// contains method
+	if gen.stringMethods["contains"] {
+		gen.funcDecls.WriteString("bool ahoy_string_contains(const char* str, const char* substr) {\n")
+		gen.funcDecls.WriteString("    if (!str || !substr) return false;\n")
+		gen.funcDecls.WriteString("    return strstr(str, substr) != NULL;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// strip method
+	if gen.stringMethods["strip"] {
+		gen.funcDecls.WriteString("char* ahoy_string_strip(const char* str) {\n")
+		gen.funcDecls.WriteString("    if (!str) return NULL;\n")
+		gen.funcDecls.WriteString("    while (*str && isspace(*str)) str++;\n")
+		gen.funcDecls.WriteString("    if (!*str) return ahoy_string_dup(\"\");\n")
+		gen.funcDecls.WriteString("    const char* end = str + strlen(str) - 1;\n")
+		gen.funcDecls.WriteString("    while (end > str && isspace(*end)) end--;\n")
+		gen.funcDecls.WriteString("    int len = end - str + 1;\n")
+		gen.funcDecls.WriteString("    char* result = malloc(len + 1);\n")
+		gen.funcDecls.WriteString("    strncpy(result, str, len);\n")
+		gen.funcDecls.WriteString("    result[len] = '\\0';\n")
+		gen.funcDecls.WriteString("    return result;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// count method
+	if gen.stringMethods["count"] {
+		gen.funcDecls.WriteString("int ahoy_string_count(const char* str, const char* substr) {\n")
+		gen.funcDecls.WriteString("    if (!str || !substr) return 0;\n")
+		gen.funcDecls.WriteString("    int count = 0;\n")
+		gen.funcDecls.WriteString("    const char* tmp = str;\n")
+		gen.funcDecls.WriteString("    while ((tmp = strstr(tmp, substr))) {\n")
+		gen.funcDecls.WriteString("        count++;\n")
+		gen.funcDecls.WriteString("        tmp += strlen(substr);\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    return count;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// lpad method
+	if gen.stringMethods["lpad"] {
+		gen.funcDecls.WriteString("char* ahoy_string_lpad(const char* str, int length, const char* pad) {\n")
+		gen.funcDecls.WriteString("    if (!str || !pad) return ahoy_string_dup(str);\n")
+		gen.funcDecls.WriteString("    int str_len = strlen(str);\n")
+		gen.funcDecls.WriteString("    if (str_len >= length) return ahoy_string_dup(str);\n")
+		gen.funcDecls.WriteString("    int pad_len = length - str_len;\n")
+		gen.funcDecls.WriteString("    char* result = malloc(length + 1);\n")
+		gen.funcDecls.WriteString("    int pad_char_len = strlen(pad);\n")
+		gen.funcDecls.WriteString("    for (int i = 0; i < pad_len; i++) {\n")
+		gen.funcDecls.WriteString("        result[i] = pad[i % pad_char_len];\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    strcpy(result + pad_len, str);\n")
+		gen.funcDecls.WriteString("    return result;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// rpad method
+	if gen.stringMethods["rpad"] {
+		gen.funcDecls.WriteString("char* ahoy_string_rpad(const char* str, int length, const char* pad) {\n")
+		gen.funcDecls.WriteString("    if (!str || !pad) return ahoy_string_dup(str);\n")
+		gen.funcDecls.WriteString("    int str_len = strlen(str);\n")
+		gen.funcDecls.WriteString("    if (str_len >= length) return ahoy_string_dup(str);\n")
+		gen.funcDecls.WriteString("    int pad_len = length - str_len;\n")
+		gen.funcDecls.WriteString("    char* result = malloc(length + 1);\n")
+		gen.funcDecls.WriteString("    strcpy(result, str);\n")
+		gen.funcDecls.WriteString("    int pad_char_len = strlen(pad);\n")
+		gen.funcDecls.WriteString("    for (int i = 0; i < pad_len; i++) {\n")
+		gen.funcDecls.WriteString("        result[str_len + i] = pad[i % pad_char_len];\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    result[length] = '\\0';\n")
+		gen.funcDecls.WriteString("    return result;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// pad method
+	if gen.stringMethods["pad"] {
+		gen.funcDecls.WriteString("char* ahoy_string_pad(const char* str, int length, const char* pad) {\n")
+		gen.funcDecls.WriteString("    if (!str || !pad) return ahoy_string_dup(str);\n")
+		gen.funcDecls.WriteString("    int str_len = strlen(str);\n")
+		gen.funcDecls.WriteString("    if (str_len >= length) return ahoy_string_dup(str);\n")
+		gen.funcDecls.WriteString("    int total_pad = length - str_len;\n")
+		gen.funcDecls.WriteString("    int left_pad = total_pad / 2;\n")
+		gen.funcDecls.WriteString("    int right_pad = total_pad - left_pad;\n")
+		gen.funcDecls.WriteString("    char* result = malloc(length + 1);\n")
+		gen.funcDecls.WriteString("    int pad_char_len = strlen(pad);\n")
+		gen.funcDecls.WriteString("    for (int i = 0; i < left_pad; i++) {\n")
+		gen.funcDecls.WriteString("        result[i] = pad[i % pad_char_len];\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    strcpy(result + left_pad, str);\n")
+		gen.funcDecls.WriteString("    for (int i = 0; i < right_pad; i++) {\n")
+		gen.funcDecls.WriteString("        result[left_pad + str_len + i] = pad[i % pad_char_len];\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    result[length] = '\\0';\n")
+		gen.funcDecls.WriteString("    return result;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// match method (regex)
+	if gen.stringMethods["match"] {
+		gen.funcDecls.WriteString("bool ahoy_string_match(const char* str, const char* pattern) {\n")
+		gen.funcDecls.WriteString("    if (!str || !pattern) return false;\n")
+		gen.funcDecls.WriteString("    regex_t regex;\n")
+		gen.funcDecls.WriteString("    int ret = regcomp(&regex, pattern, REG_EXTENDED | REG_NOSUB);\n")
+		gen.funcDecls.WriteString("    if (ret) return false;\n")
+		gen.funcDecls.WriteString("    ret = regexec(&regex, str, 0, NULL, 0);\n")
+		gen.funcDecls.WriteString("    regfree(&regex);\n")
+		gen.funcDecls.WriteString("    return ret == 0;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// get_file method
+	if gen.stringMethods["get_file"] {
+		gen.funcDecls.WriteString("char* ahoy_string_get_file(const char* path) {\n")
+		gen.funcDecls.WriteString("    if (!path) return NULL;\n")
+		gen.funcDecls.WriteString("    const char* filename = strrchr(path, '/');\n")
+		gen.funcDecls.WriteString("    if (!filename) filename = strrchr(path, '\\\\');\n")
+		gen.funcDecls.WriteString("    if (!filename) return ahoy_string_dup(path);\n")
+		gen.funcDecls.WriteString("    return ahoy_string_dup(filename + 1);\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// Case conversion methods - these are more complex, so provide simplified versions
+	if gen.stringMethods["camel_case"] {
+		gen.funcDecls.WriteString("char* ahoy_string_camel_case(const char* str) {\n")
+		gen.funcDecls.WriteString("    if (!str) return NULL;\n")
+		gen.funcDecls.WriteString("    char* result = malloc(strlen(str) + 1);\n")
+		gen.funcDecls.WriteString("    int j = 0;\n")
+		gen.funcDecls.WriteString("    bool capitalize_next = false;\n")
+		gen.funcDecls.WriteString("    bool first = true;\n")
+		gen.funcDecls.WriteString("    for (int i = 0; str[i]; i++) {\n")
+		gen.funcDecls.WriteString("        if (str[i] == ' ' || str[i] == '_' || str[i] == '-') {\n")
+		gen.funcDecls.WriteString("            capitalize_next = true;\n")
+		gen.funcDecls.WriteString("        } else if (capitalize_next) {\n")
+		gen.funcDecls.WriteString("            result[j++] = toupper(str[i]);\n")
+		gen.funcDecls.WriteString("            capitalize_next = false;\n")
+		gen.funcDecls.WriteString("        } else if (first) {\n")
+		gen.funcDecls.WriteString("            result[j++] = tolower(str[i]);\n")
+		gen.funcDecls.WriteString("            first = false;\n")
+		gen.funcDecls.WriteString("        } else {\n")
+		gen.funcDecls.WriteString("            result[j++] = str[i];\n")
+		gen.funcDecls.WriteString("        }\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    result[j] = '\\0';\n")
+		gen.funcDecls.WriteString("    return result;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	if gen.stringMethods["snake_case"] {
+		gen.funcDecls.WriteString("char* ahoy_string_snake_case(const char* str) {\n")
+		gen.funcDecls.WriteString("    if (!str) return NULL;\n")
+		gen.funcDecls.WriteString("    char* result = malloc(strlen(str) * 2 + 1);\n")
+		gen.funcDecls.WriteString("    int j = 0;\n")
+		gen.funcDecls.WriteString("    for (int i = 0; str[i]; i++) {\n")
+		gen.funcDecls.WriteString("        if (str[i] == ' ' || str[i] == '-') {\n")
+		gen.funcDecls.WriteString("            result[j++] = '_';\n")
+		gen.funcDecls.WriteString("        } else if (isupper(str[i]) && i > 0) {\n")
+		gen.funcDecls.WriteString("            result[j++] = '_';\n")
+		gen.funcDecls.WriteString("            result[j++] = tolower(str[i]);\n")
+		gen.funcDecls.WriteString("        } else {\n")
+		gen.funcDecls.WriteString("            result[j++] = tolower(str[i]);\n")
+		gen.funcDecls.WriteString("        }\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    result[j] = '\\0';\n")
+		gen.funcDecls.WriteString("    return result;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	if gen.stringMethods["pascal_case"] {
+		gen.funcDecls.WriteString("char* ahoy_string_pascal_case(const char* str) {\n")
+		gen.funcDecls.WriteString("    if (!str) return NULL;\n")
+		gen.funcDecls.WriteString("    char* result = malloc(strlen(str) + 1);\n")
+		gen.funcDecls.WriteString("    int j = 0;\n")
+		gen.funcDecls.WriteString("    bool capitalize_next = true;\n")
+		gen.funcDecls.WriteString("    for (int i = 0; str[i]; i++) {\n")
+		gen.funcDecls.WriteString("        if (str[i] == ' ' || str[i] == '_' || str[i] == '-') {\n")
+		gen.funcDecls.WriteString("            capitalize_next = true;\n")
+		gen.funcDecls.WriteString("        } else if (capitalize_next) {\n")
+		gen.funcDecls.WriteString("            result[j++] = toupper(str[i]);\n")
+		gen.funcDecls.WriteString("            capitalize_next = false;\n")
+		gen.funcDecls.WriteString("        } else {\n")
+		gen.funcDecls.WriteString("            result[j++] = tolower(str[i]);\n")
+		gen.funcDecls.WriteString("        }\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    result[j] = '\\0';\n")
+		gen.funcDecls.WriteString("    return result;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	if gen.stringMethods["kebab_case"] {
+		gen.funcDecls.WriteString("char* ahoy_string_kebab_case(const char* str) {\n")
+		gen.funcDecls.WriteString("    if (!str) return NULL;\n")
+		gen.funcDecls.WriteString("    char* result = malloc(strlen(str) * 2 + 1);\n")
+		gen.funcDecls.WriteString("    int j = 0;\n")
+		gen.funcDecls.WriteString("    for (int i = 0; str[i]; i++) {\n")
+		gen.funcDecls.WriteString("        if (str[i] == ' ' || str[i] == '_') {\n")
+		gen.funcDecls.WriteString("            result[j++] = '-';\n")
+		gen.funcDecls.WriteString("        } else if (isupper(str[i]) && i > 0) {\n")
+		gen.funcDecls.WriteString("            result[j++] = '-';\n")
+		gen.funcDecls.WriteString("            result[j++] = tolower(str[i]);\n")
+		gen.funcDecls.WriteString("        } else {\n")
+		gen.funcDecls.WriteString("            result[j++] = tolower(str[i]);\n")
+		gen.funcDecls.WriteString("        }\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    result[j] = '\\0';\n")
+		gen.funcDecls.WriteString("    return result;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// split method - returns array of strings (simplified)
+	if gen.stringMethods["split"] {
+		gen.funcDecls.WriteString("// Note: split returns a NULL-terminated array of strings\n")
+		gen.funcDecls.WriteString("char** ahoy_string_split(const char* str, const char* delim) {\n")
+		gen.funcDecls.WriteString("    if (!str || !delim) return NULL;\n")
+		gen.funcDecls.WriteString("    char* str_copy = ahoy_string_dup(str);\n")
+		gen.funcDecls.WriteString("    int count = 1;\n")
+		gen.funcDecls.WriteString("    for (const char* p = str; *p; p++) {\n")
+		gen.funcDecls.WriteString("        if (strstr(p, delim) == p) count++;\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    char** result = malloc((count + 1) * sizeof(char*));\n")
+		gen.funcDecls.WriteString("    char* token = strtok(str_copy, delim);\n")
+		gen.funcDecls.WriteString("    int i = 0;\n")
+		gen.funcDecls.WriteString("    while (token != NULL) {\n")
+		gen.funcDecls.WriteString("        result[i++] = ahoy_string_dup(token);\n")
+		gen.funcDecls.WriteString("        token = strtok(NULL, delim);\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    result[i] = NULL;\n")
+		gen.funcDecls.WriteString("    free(str_copy);\n")
+		gen.funcDecls.WriteString("    return result;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
 }

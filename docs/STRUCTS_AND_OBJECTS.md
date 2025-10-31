@@ -18,7 +18,7 @@ struct particle:
 
 
 # optional struct name following struct keyword; example:
-particle struct
+struct particle
 
 # example of struct initialization to make an object of type smoke_particle
 smoke_particle1: smoke_particle<position:vector2|120,390|, size: 10.0, alpha: 1.0, life:1.0>

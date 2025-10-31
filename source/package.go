@@ -45,7 +45,8 @@ func (pm *PackageManager) LoadFile(filePath string) (*PackageFile, error) {
 		return nil, fmt.Errorf("error reading file %s: %v", filePath, err)
 	}
 
-	formattedContent := formatSource(string(content))
+	// TEMP: Disable formatter for debugging
+	formattedContent := string(content) // formatSource(string(content))
 	tokens := ahoy.Tokenize(formattedContent)
 	ast := ahoy.Parse(tokens)
 
