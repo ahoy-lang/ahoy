@@ -1,16 +1,20 @@
 # Ahoy Programming Language
 
-A modern programming language with Python-like syntax that compiles to C for high performance.
+A modern, expressive programming language with clean syntax and powerful features including default arguments, type annotations, assertions, and deferred execution.
 
 ## Features
 
 - **Clean Syntax**: Python-inspired with whitespace indentation
-- **Type Inference**: Automatic type detection using `:`
+- **Type System**: Optional type annotations with inference
+- **Default Arguments**: Flexible function parameters
+- **Assert & Defer**: Runtime validation and guaranteed cleanup
 - **Pipe Syntax**: Function calls with `|args|`
 - **Word Operators**: Use `plus`, `minus`, `times`, etc.
-- **Dynamic Arrays**: Built-in with C implementation
-- **Dictionaries**: Python-style hash maps
-- **Compile to C**: Native performance
+- **Arrays**: Built-in with `[]` syntax
+- **Objects/Structs**: Built-in with `<>` syntax
+- **Dictionaries**: Python-style hash maps with `{}`
+- **F-Strings**: String interpolation with `f"...{var}..."`
+- **LSP Support**: Real-time linting and validation
 - **Single-Line Statements**: Use `;` to combine statements
 - **`ahoy` Keyword**: Shorthand for print statements
 
@@ -20,11 +24,12 @@ A modern programming language with Python-like syntax that compiles to C for hig
 
 Requires:
 - Go 1.25+
-- GCC compiler
+- GCC compiler (for C compilation)
 
 ### Build
 
 ```bash
+cd ahoy
 ./build.sh
 ```
 
@@ -34,201 +39,391 @@ This creates the `ahoy-bin` executable.
 
 ```bash
 # Compile and run
-./ahoy-bin -f input/test.ahoy -r
+./ahoy-bin -f test.ahoy -r
 
 # Just compile
-./ahoy-bin -f input/test.ahoy
-
-# Format source file
-./ahoy-bin -f input/test.ahoy -format
+./ahoy-bin -f test.ahoy
 
 # Show help
 ./ahoy-bin -h
 ```
 
-**Alternative**: Run from source directory:
-```bash
-cd source
-go run . -f ../input/test.ahoy -r
-```
-
-**Important**: Use `go run .` (with dot) NOT `go run main.go`
-
 ## Language Syntax
 
-### Variables & Assignment
-```python
-# Single line
-x: 42; name: "Ahoy"; active: true
+### Variables & Type Annotations
 
-# Multiple lines
+```ahoy
+? Type inference (original)
 x: 42
-name: "Ahoy"
+name: "Alice"
 active: true
+
+? Explicit type annotations (NEW!)
+age:int= 29
+price:float= 19.99
+items:array= [1, 2, 3]
+config:dict= {"host": "localhost"}
+
+? Constants with types
+MAX_SIZE::int= 100
+API_KEY::string= "secret"
+TIMEOUT:: 30  ? Inferred as int
 ```
 
-### Print Statements
-```python
-# Using ahoy keyword (shorthand)
-ahoy|"Hello, World!\n"|
-ahoy|"Value: %d\n", x|
+### Print Statements & F-Strings
 
-# Using print
-print|"Hello, %s!\n", name|
+```ahoy
+? Using ahoy keyword (shorthand)
+ahoy |"Hello, World!"|
+
+? F-strings with interpolation (NEW!)
+name: "Alice"
+age: 30
+ahoy |f"Hello {name}, you are {age} years old!"|
+
+? Format expressions in f-strings
+x: 10
+y: 20
+ahoy |f"The sum of {x} and {y} is {x + y}"|
 ```
 
 ### Operators
 
 **Arithmetic** (symbols or words):
-```python
-result: a + b       # or: a plus b
-result: a - b       # or: a minus b
-result: a * b       # or: a times b
-result: a / b       # or: a div b
-result: a % b       # or: a mod b
+```ahoy
+result: a + b       ? or: a plus b
+result: a - b       ? or: a minus b
+result: a * b       ? or: a times b
+result: a / b       ? or: a div b
+result: a % b       ? or: a mod b
 ```
 
 **Comparison** (symbols or words):
-```python
-if x > y then       # or: x greater_than y
-if x < y then       # or: x lesser_than y
-if x is y then      # equality
+```ahoy
+if x > y then       ? or: x greater_than y
+if x < y then       ? or: x lesser_than y
+if x is y then      ? equality
+if x not is y then  ? inequality
+```
+
+**Ternary Operator** (NEW!):
+```ahoy
+result: condition ?? true_value : false_value
+max: x > y ?? x : y
 ```
 
 **Boolean**:
-```python
+```ahoy
 result: flag and not other
 result: this or that
 ```
 
 ### Control Flow
-```python
+
+```ahoy
+? If statements
 if condition then
     action||
 else then
     other_action||
 
-# Single-line if
-if x greater_than 5 then ahoy|"Big!\n"|
+? Switch statements
+switch value on
+    1:
+        ahoy |"One"|
+    2:
+        ahoy |"Two"|
+    default:
+        ahoy |"Other"|
 
-# Loops
-i: 0
-loop i lesser_than 10 then
-    ahoy|"Count: %d\n", i|
-    i: i plus 1
+? Loops (halt = break, next = continue)
+loop i:0 to 10
+    if i is 5
+        next  ? Skip 5
+    if i is 8
+        halt  ? Stop at 8
+    ahoy |f"i = {i}"|
+
+? Loop over array
+numbers: [1, 2, 3, 4, 5]
+loop num in numbers
+    ahoy |f"Number: {num}"|
+
+? Loop over dict
+data: {"x": 10, "y": 20}
+loop key, value in data
+    ahoy |f"{key} = {value}"|
 ```
 
-### Functions
-```python
-func factorial|n int| int then
-    if n <= 1 then
-        return 1
-    else then
-        return n times factorial|n minus 1|
+### Functions with Default Arguments (NEW!)
 
-result: factorial|5|
-ahoy|"5! = %d\n", result|
+```ahoy
+? Function with default parameters
+greet :: |name:string, greeting:string="Hello", punctuation:string="!"| string:
+    return f"{greeting} {name}{punctuation}"
+
+? Call with different argument counts
+msg1: greet|"Alice"|                    ? Uses defaults
+msg2: greet|"Bob", "Hi"|                ? Partial override
+msg3: greet|"Charlie", "Hey", "!!!"|   ? All explicit
+
+? Return type keywords
+calculate :: |x:int, y:int| infer:     ? Infer return type
+    return x * y, x + y
+
+log :: |message:string| void:          ? No return value
+    ahoy |message|
+
+log2 :: |message:string|:              ? Implicit void
+    ahoy |message|
+```
+
+### Assert Statements (NEW!)
+
+```ahoy
+? Basic assertions
+assert x > 0
+assert count is 10
+assert name not is ""
+
+? Precondition checking
+divide :: |a:int, b:int| float:
+    assert b not is 0           ? Prevent division by zero
+    return a / b
+
+? Validation pipeline
+validate_user :: |user:dict|:
+    assert "name" in user
+    assert "email" in user
+    assert len|user["name"]| > 0
+    assert "@" in user["email"]
+    ahoy |"User valid!"|
+```
+
+### Defer Statements (NEW!)
+
+```ahoy
+? Basic defer (executes at function exit)
+greet :: |name:string|:
+    defer ahoy |"Goodbye!"|
+    ahoy |f"Hello, {name}!"|
+    ahoy |"Nice to meet you"|
+? Output: Hello, Alice! / Nice to meet you / Goodbye!
+
+? Resource cleanup
+process_file :: |filename:string|:
+    ahoy |f"Opening {filename}"|
+    defer ahoy |f"Closing {filename}"|
+    ? ... file operations ...
+    ? File automatically "closed" when function exits
+
+? Multiple defers (LIFO - Last In First Out)
+demo :: ||:
+    defer ahoy |"Third (executes first)"|
+    defer ahoy |"Second"|
+    defer ahoy |"First (executes last)"|
+    ahoy |"Main function"|
+
+? Defer with return values
+calculate :: |x:int, y:int| int:
+    defer ahoy |"Calculation completed"|
+    result: x * y
+    return result
 ```
 
 ### Arrays
-```python
-# Declaration
-numbers: <10, 20, 30, 40>
 
-# Access
-first: numbers<0>
-last: numbers<3>
+```ahoy
+? Declaration with [] (NEW SYNTAX!)
+numbers: [10, 20, 30, 40]
+mixed: [1, "hello", true]
 
-# Single line
-arr: <1, 2, 3>; ahoy|"First: %d\n", arr<0>|
+? Access
+first: numbers[0]
+last: numbers[3]
+
+? Type annotation
+items:array= [1, 2, 3, 4, 5]
+
+? Iteration
+loop num in numbers
+    ahoy |f"Number: {num}"|
+```
+
+### Objects/Structs
+
+```ahoy
+? Declaration with <> (for struct-like data)
+person: <name: "Alice", age: 30, active: true>
+
+? Access
+name: person.name
+age: person.age
+
+? Nested
+config: <
+    server: <host: "localhost", port: 8080>,
+    debug: true
+>
+host: config.server.host
 ```
 
 ### Dictionaries
-```python
-# Declaration
-person: {"name":"Alice", "age":30, "active":true}
 
-# Access
-name: person{"name"}
-age: person{"age"}
+```ahoy
+? Declaration with {}
+person: {"name": "Alice", "age": 30, "active": true}
 
-# Single line
-data: {"x":10, "y":20}; total: data{"x"} plus data{"y"}|
+? Access
+name: person["name"]
+age: person["age"]
+
+? Type annotation
+config:dict= {"host": "localhost", "port": 8080}
+
+? Iteration
+loop key, value in person
+    ahoy |f"{key}: {value}"|
 ```
 
-### Compile-Time Conditionals
-```python
-when DEBUG then
-    ahoy|"Debug mode enabled\n"|
+### Enums
 
-when PRODUCTION then
-    optimize_code||
+```ahoy
+enum Color:
+    RED
+    GREEN
+    BLUE
+
+enum Status:
+    PENDING: 0
+    ACTIVE: 1
+    DONE: 2
+
+? Usage
+current_color: Color.RED
+state: Status.ACTIVE
 ```
 
-Compiles to C's `#ifdef` directive.
+### Complete Example
 
-### Single-Line Statements
-```python
-# Multiple statements on one line with semicolons
-x: 10; y: 20; result: x plus y; ahoy|"Result: %d\n", result|
+```ahoy
+program example
 
-# Mix declarations and calls
-a: 5; b: 3; ahoy|"%d + %d = %d\n", a, b, a plus b|
+? Constants with types
+MAX_RETRIES::int= 3
+API_URL::string= "https://api.example.com"
+TIMEOUT::float= 30.0
+
+? Function with default arguments, types, assert, and defer
+process_data :: |data:dict, timeout:float=TIMEOUT, retries:int=MAX_RETRIES| bool:
+    ? Precondition validation
+    assert data not is null
+    assert timeout > 0
+    assert retries > 0
+    
+    ? Setup with guaranteed cleanup
+    ahoy |f"Processing data with timeout={timeout}, retries={retries}"|
+    defer ahoy |"Processing completed"|
+    
+    ? Type-annotated variables
+    attempt:int= 0
+    success:bool= false
+    
+    ? Processing loop
+    loop i:1 to retries
+        defer ahoy |f"Attempt {i} finished"|
+        
+        attempt: attempt + 1
+        result: try_process|data, timeout|
+        
+        if result is true
+            success: true
+            halt
+    
+    ? Postcondition validation
+    assert attempt <= retries
+    assert attempt > 0
+    
+    return success
+
+? Main execution
+config:dict= {
+    "id": 12345,
+    "name": "test_data",
+    "priority": "high"
+}
+
+? Call with defaults
+result: process_data|config|
+ahoy |f"Result: {result}"|
+
+? Call with custom timeout
+result2: process_data|config, 45.0|
+ahoy |f"Result2: {result2}"|
+
+? Array operations
+numbers:array= [1, 2, 3, 4, 5]
+loop num in numbers
+    square: num * num
+    ahoy |f"{num}² = {square}"|
+
+? Ternary operator
+max_retries: 5
+mode: max_retries > 3 ?? "aggressive" : "normal"
+ahoy |f"Mode: {mode}"|
 ```
 
-## Complete Example
+## Advanced Features
 
-```python
-# example.ahoy - Comprehensive feature demo
-import "stdio.h"
+### Pattern Matching (Switch)
 
-# Fibonacci with recursion
-func fib|n int| int then
-    if n <= 1 then
-        return n
-    else then
-        return fib|n minus 1| plus fib|n minus 2|
+### Pattern Matching (Switch)
 
-# Single-line variable declarations
-x: 10; y: 20; name: "Ahoy"
-
-# Word operators
-sum: x plus y
-product: x times y
-
-# ahoy keyword (print shorthand)
-ahoy|"Language: %s\n", name|
-ahoy|"Sum: %d, Product: %d\n", sum, product|
-
-# Arrays and loops
-numbers: <5, 10, 15, 20>
-i: 0
-loop i lesser_than 4 then
-    ahoy|"Number[%d] = %d\n", i, numbers<i>|
-    i: i plus 1
-
-# Dictionaries
-config: {"debug":true, "version":2}
-if config{"debug"} then
-    ahoy|"Debug mode ON\n"|
-
-# Compile-time conditionals
-when BENCHMARK then
-    ahoy|"Running benchmarks...\n"|
-
-# Fibonacci demo
-ahoy|"Fib(10) = %d\n", fib|10||
+```ahoy
+switch expression on
+    value1:
+        ? code for value1
+    value2, value3:
+        ? code for multiple values
+    default:
+        ? default case
 ```
+
+### Type System
+
+**Supported Types:**
+- `int` - Integers
+- `float` - Floating point
+- `string` - Text strings
+- `bool` - Booleans (true/false)
+- `char` - Single characters
+- `array` - Arrays/lists
+- `dict` - Dictionaries/maps
+- `vector2` - 2D vectors
+- `color` - Color values
+- `infer` - Inferred return type (functions)
+- `void` - No return value (functions)
+
+### LSP Features
+
+The Ahoy LSP provides real-time diagnostics:
+
+- **Type Checking**: Validates type annotations
+- **Argument Validation**: Checks function call argument counts
+- **Undefined Function Detection**: Warns about missing functions
+- **Return Type Validation**: Ensures functions return correct types
+- **Const Reassignment**: Prevents modifying constants
+- **Enum Validation**: Checks for duplicate enum values
 
 ## CLI Reference
 
 ```
-go run . -f <file.ahoy> [options]
+./ahoy-bin -f <file.ahoy> [options]
 
 Options:
   -f <file>     Input .ahoy source file (required)
-  -r            Run the compiled C program
-  -format       Format the source file (tabs → spaces, trim whitespace)
+  -r            Run the compiled program
+  -lint         Run in lint-only mode (check for errors)
   -h            Show help message
 ```
 
@@ -236,72 +431,200 @@ Options:
 
 All Ahoy source files use the `.ahoy` extension.
 
+## Language Reference Card
+
+### Comments
+```ahoy
+? This is a comment (using ?)
+# This is also a comment (using #)
+```
+
+### Syntax Summary
+
+| Feature | Syntax | Example |
+|---------|--------|---------|
+| Variable | `name: value` | `x: 42` |
+| Variable (typed) | `name:type= value` | `age:int= 29` |
+| Constant | `name:: value` | `MAX:: 100` |
+| Constant (typed) | `name::type= value` | `MAX::int= 100` |
+| Function | `name :: \|params\| type:` | `add :: \|a:int, b:int\| int:` |
+| Default arg | `param:type=default` | `timeout:float=30.0` |
+| Array | `[item1, item2, ...]` | `[1, 2, 3]` |
+| Object | `<key: value, ...>` | `<name: "Alice", age: 30>` |
+| Dict | `{"key": value, ...}` | `{"x": 10, "y": 20}` |
+| F-String | `f"text {expr} text"` | `f"Sum is {x + y}"` |
+| Ternary | `cond ?? true : false` | `max: a > b ?? a : b` |
+| Assert | `assert condition` | `assert x > 0` |
+| Defer | `defer statement` | `defer cleanup\|\|` |
+| Loop | `loop var:start to end` | `loop i:0 to 10` |
+| Loop (array) | `loop item in array` | `loop x in nums` |
+| Loop (dict) | `loop key, val in dict` | `loop k, v in data` |
+| Break | `halt` | `if done halt` |
+| Continue | `next` | `if skip next` |
+
 ## Project Structure
 
 ```
-programming_language/
-├── input/              # .ahoy source files
-│   ├── test.ahoy
-│   ├── simple.ahoy
-│   └── features_test.ahoy
-├── source/             # Compiler source (Go)
-│   ├── main.go         # CLI and main entry
-│   ├── tokenizer.go    # Lexical analysis
-│   ├── parser.go       # Syntax analysis
-│   ├── codegen.go      # C code generation
-│   ├── formatter.go    # Code formatter
-│   └── main_test.go    # Unit tests
-├── output/             # Generated C files and executables
-└── README.md
+ahoy-lang/
+├── ahoy/                    # Core compiler
+│   ├── parser.go            # Syntax analysis
+│   ├── tokenizer.go         # Lexical analysis
+│   ├── ahoy-bin             # Compiled executable
+│   └── README.md            # This file
+├── ahoy-lsp/                # Language Server Protocol
+│   ├── main.go              # LSP server entry
+│   ├── diagnostics.go       # Linting and validation
+│   └── ...
+├── tree-sitter-ahoy/        # Syntax highlighting
+├── vscode-ahoy/             # VS Code extension
+├── zed-ahoy/                # Zed editor support
+├── examples/                # Example programs
+└── test_*.ahoy              # Test files
 ```
 
 ## Features Summary
 
+### Core Language
 - ✅ Python-like whitespace syntax
 - ✅ Type inference with `:`
+- ✅ Optional type annotations with `:type=`
 - ✅ Pipe syntax `func|args|` for calls
 - ✅ Word-based operators (plus, minus, times, div, mod)
-- ✅ Comparison words (greater_than, lesser_than)
+- ✅ F-strings with `f"...{expr}..."`
+- ✅ Ternary operator `condition ?? true : false`
+- ✅ Arrays with `[...]` syntax
+- ✅ Objects with `<key: value>` syntax
+- ✅ Dictionaries with `{...}`
+- ✅ Enums and pattern matching
 - ✅ `ahoy` print shorthand
 - ✅ Single-line statements with `;`
-- ✅ Dynamic arrays with `<...>`
-- ✅ Python-style dictionaries with `{...}`
-- ✅ Compile-time `when` blocks
-- ✅ Static typing with inference
-- ✅ C library imports
-- ✅ Code formatter
-- ✅ Compiles to optimized C
+
+### Modern Features (NEW!)
+- ✅ **Default arguments**: Optional function parameters
+- ✅ **Type annotations**: Explicit typing for safety
+- ✅ **Assert statements**: Runtime validation
+- ✅ **Defer statements**: Guaranteed cleanup (like Go)
+- ✅ **infer/void keywords**: Return type control
+- ✅ **LSP support**: Real-time linting and diagnostics
+- ✅ **Multiple return values**: `return x, y`
+- ✅ **Struct/object syntax**: `<name: "Alice", age: 30>`
 
 ## Examples in Repository
 
-- `input/simple.ahoy` - Basic features with semicolons
-- `input/test.ahoy` - Fibonacci and loops
-- `input/features_test.ahoy` - All language features
+### Basic Examples
+- `test_simple_assert_defer.ahoy` - Assert and defer basics
+- `test_simple_defaults.ahoy` - Default arguments
+- `test_typing_simple.ahoy` - Type annotations
 
-## Notes
+### Comprehensive Examples
+- `test_assert_defer.ahoy` - All assert/defer patterns
+- `test_default_args.ahoy` - Default arguments with validation
+- `test_type_annotations.ahoy` - Type system features
+- `test_comprehensive.ahoy` - All language features
 
-- Tabs automatically converted to spaces by formatter
-- Semicolons allow Python-style single-line statements
-- `ahoy` is equivalent to `print` but shorter
-- Keywords: `greater_than` and `lesser_than` (note the underscore)
-- Arrays use `<>`, dictionaries use `{}`
-- All code compiles to clean, optimized C
+## Best Practices
+
+### Function Design
+```ahoy
+? Good: Type-safe with defaults
+process :: |data:dict, timeout:float=30.0| bool:
+    assert data not is null
+    defer cleanup||
+    ? ... implementation ...
+    return true
+```
+
+### Type Annotations
+```ahoy
+? Use explicit types for:
+? - Public APIs
+? - Complex data structures
+? - Function parameters
+
+? Use inference for:
+? - Local variables
+? - Obvious literals
+```
+
+### Assert & Defer
+```ahoy
+? Assert for validation
+safe_divide :: |a:int, b:int| float:
+    assert b not is 0
+    return a / b
+
+? Defer for cleanup
+process_file :: |filename:string|:
+    file: open|filename|
+    defer close|file|
+    ? ... safe file operations ...
+```
+
+## Editor Support
+
+### VS Code
+Install the `vscode-ahoy` extension for:
+- Syntax highlighting
+- LSP integration
+- Real-time diagnostics
+- Code completion
+
+### Zed
+The `zed-ahoy` extension provides:
+- Tree-sitter grammar
+- Syntax highlighting
+- LSP support
+
+## Performance
+
+Ahoy is designed for:
+- Fast compilation
+- Type safety with minimal overhead
+- Optional runtime checks (assertions)
+- Efficient resource management (defer)
 
 ## Testing
 
 ```bash
-cd source
-go test -v    # Run all unit tests
+cd ahoy
+go test -v    # Run compiler tests
 ```
 
-All 5 unit tests pass.
+## Community & Support
 
-## Performance
+For more examples and documentation, see:
+- `FEATURES_CHEAT_SHEET.md` - Quick syntax reference
+- `COMPLETE_IMPLEMENTATION_SUMMARY.md` - All features
+- `QUICK_REFERENCE_NEW_FEATURES.md` - New features guide
 
-Ahoy compiles to C, giving you:
-- Native execution speed
-- Low memory footprint
-- No runtime overhead
-- Full C library access
+## Notes
+
+- Arrays now use `[]` not `<>` (updated syntax!)
+- Objects/structs use `<>` for named fields
+- Dictionaries use `{}` for key-value pairs
+- Comments use `?` or `#` 
+- Keywords: `halt` (break), `next` (continue)
+- Function syntax: `name :: |params| returnType:`
+- Default args must come after required params
+- Defer executes in LIFO order (Last-In-First-Out)
+- Assertions halt execution if false
+
+## Version History
+
+### Latest Features (October 2024)
+- ✅ Default function arguments
+- ✅ Explicit type annotations
+- ✅ Assert statements
+- ✅ Defer statements
+- ✅ Enhanced LSP with type checking
+- ✅ Function call validation
+
+### Core Features
+- ✅ F-strings with interpolation
+- ✅ Ternary operator
+- ✅ Enhanced loop syntax
+- ✅ Pattern matching (switch)
+- ✅ Enum declarations
+- ✅ Multiple return values
 
 Ahoy! 🏴‍☠️

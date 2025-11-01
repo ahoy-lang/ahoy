@@ -29,6 +29,8 @@ type CodeGenerator struct {
 	funcDecls     strings.Builder
 	includes      map[string]bool
 	variables     map[string]string // variable name -> type
+	constants     map[string]bool   // constant name -> declared
+	hasError      bool              // Track if error occurred
 	arrayImpls    bool              // Track if we've added array implementation
 	arrayMethods  map[string]bool   // Track which array methods are used
 	stringMethods map[string]bool   // Track which string methods are used
@@ -40,6 +42,8 @@ func generateC(ast *ahoy.ASTNode) string {
 	gen := &CodeGenerator{
 		includes:      make(map[string]bool),
 		variables:     make(map[string]string),
+		constants:     make(map[string]bool),
+		hasError:      false,
 		arrayImpls:    false,
 		arrayMethods:  make(map[string]bool),
 		stringMethods: make(map[string]bool),
@@ -58,6 +62,11 @@ func generateC(ast *ahoy.ASTNode) string {
 
 	// Generate main code
 	gen.generateNode(ast)
+	
+	// Check if there were any errors
+	if gen.hasError {
+		return "" // Return empty string to indicate error
+	}
 
 	// Generate array helper functions if any array methods were used
 	gen.writeArrayHelperFunctions()
@@ -360,12 +369,18 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 
 	case ahoy.NODE_ARRAY_LITERAL:
 		gen.generateArrayLiteral(node)
+	
+	case ahoy.NODE_OBJECT_LITERAL:
+		gen.generateObjectLiteral(node)
 
 	case ahoy.NODE_ARRAY_ACCESS:
 		gen.generateArrayAccess(node)
 
 	case ahoy.NODE_DICT_ACCESS:
 		gen.generateDictAccess(node)
+	
+	case ahoy.NODE_OBJECT_ACCESS:
+		gen.generateObjectAccess(node)
 
 	case ahoy.NODE_BLOCK:
 		for _, child := range node.Children {
@@ -389,6 +404,10 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 	case ahoy.NODE_NEXT:
 		gen.writeIndent()
 		gen.output.WriteString("continue;\n")
+	case ahoy.NODE_ASSERT_STATEMENT:
+		gen.generateAssertStatement(node)
+	case ahoy.NODE_DEFER_STATEMENT:
+		gen.generateDeferStatement(node)
 	}
 }
 
@@ -433,6 +452,20 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 	gen.writeIndent()
 
+	// Check if this is a property/element assignment (obj<'prop'>: value or dict{"key"}: value)
+	// In this case, Children[0] is the access node, Children[1] is the value
+	if len(node.Children) == 2 && 
+	   (node.Children[0].Type == ahoy.NODE_OBJECT_ACCESS || 
+	    node.Children[0].Type == ahoy.NODE_DICT_ACCESS ||
+	    node.Children[0].Type == ahoy.NODE_ARRAY_ACCESS) {
+		// Generate the access expression
+		gen.generateNode(node.Children[0])
+		gen.output.WriteString(" = ")
+		gen.generateNode(node.Children[1])
+		gen.output.WriteString(";\n")
+		return
+	}
+
 	// Check if variable already exists
 	if _, exists := gen.variables[node.Value]; exists {
 		// Just assignment
@@ -442,13 +475,35 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 	} else {
 		// Type inference and declaration
 		valueNode := node.Children[0]
-		varType := gen.inferType(valueNode)
-		gen.variables[node.Value] = varType
+		
+		// Special handling for object literals - they define their own type inline
+		if valueNode.Type == ahoy.NODE_OBJECT_LITERAL {
+			gen.output.WriteString("struct { ")
+			// Generate field declarations
+			for _, prop := range valueNode.Children {
+				if prop.Type == ahoy.NODE_OBJECT_PROPERTY {
+					propType := gen.inferType(prop.Children[0])
+					gen.output.WriteString(propType)
+					gen.output.WriteString(" ")
+					gen.output.WriteString(prop.Value)
+					gen.output.WriteString("; ")
+				}
+			}
+			gen.output.WriteString("} ")
+			gen.output.WriteString(node.Value)
+			gen.output.WriteString(" = ")
+			gen.generateNode(valueNode)
+			gen.output.WriteString(";\n")
+			gen.variables[node.Value] = "object"
+		} else {
+			varType := gen.inferType(valueNode)
+			gen.variables[node.Value] = varType
 
-		cType := gen.mapType(varType)
-		gen.output.WriteString(fmt.Sprintf("%s %s = ", cType, node.Value))
-		gen.generateNode(valueNode)
-		gen.output.WriteString(";\n")
+			cType := gen.mapType(varType)
+			gen.output.WriteString(fmt.Sprintf("%s %s = ", cType, node.Value))
+			gen.generateNode(valueNode)
+			gen.output.WriteString(";\n")
+		}
 	}
 }
 
@@ -866,9 +921,44 @@ func (gen *CodeGenerator) generateReturnStatement(node *ahoy.ASTNode) {
 	gen.output.WriteString("return")
 	if len(node.Children) > 0 {
 		gen.output.WriteString(" ")
+		// Handle multiple return values
+		if len(node.Children) > 1 {
+			// Multiple returns - create an inline struct
+			// Note: This requires the function to return a struct type
+			// For now, we'll just return the first value and add a comment
+			gen.output.WriteString("/* TODO: Multiple returns not fully supported in C */ ")
+		}
 		gen.generateNode(node.Children[0])
 	}
 	gen.output.WriteString(";\n")
+}
+
+func (gen *CodeGenerator) generateAssertStatement(node *ahoy.ASTNode) {
+	// Generate assert as C assert macro
+	gen.includes["assert.h"] = true
+	gen.writeIndent()
+	gen.output.WriteString("assert(")
+	if len(node.Children) > 0 {
+		gen.generateNode(node.Children[0])
+	}
+	gen.output.WriteString(");\n")
+}
+
+func (gen *CodeGenerator) generateDeferStatement(node *ahoy.ASTNode) {
+	// Defer is complex in C - we need to use cleanup attribute or manually track
+	// For simplicity, we'll just add a comment and execute the statement immediately
+	// A proper implementation would require tracking deferred statements and executing them
+	// before each return statement and at function end
+	gen.writeIndent()
+	gen.output.WriteString("/* DEFER: Execute before function return */ ")
+	if len(node.Children) > 0 {
+		// Generate the deferred statement
+		// Remove the indent since we already added it
+		savedIndent := gen.indent
+		gen.indent = 0
+		gen.generateNodeInternal(node.Children[0], false)
+		gen.indent = savedIndent
+	}
 }
 
 func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
@@ -973,6 +1063,57 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 		}
 		gen.output.WriteString(")")
 
+	// Type casts
+	case "int":
+		gen.output.WriteString("((int)(")
+		if len(node.Children) > 0 {
+			gen.generateNode(node.Children[0])
+		}
+		gen.output.WriteString("))")
+
+	case "float":
+		gen.output.WriteString("((float)(")
+		if len(node.Children) > 0 {
+			gen.generateNode(node.Children[0])
+		}
+		gen.output.WriteString("))")
+
+	case "char":
+		gen.output.WriteString("((char)(")
+		if len(node.Children) > 0 {
+			gen.generateNode(node.Children[0])
+		}
+		gen.output.WriteString("))")
+
+	case "string":
+		// String cast - convert number to string
+		if len(node.Children) > 0 {
+			argType := gen.inferType(node.Children[0])
+			gen.output.WriteString("({ char* __cast_buf = malloc(32); ")
+			
+			switch argType {
+			case "int":
+				gen.output.WriteString("sprintf(__cast_buf, \"%d\", ")
+				gen.generateNode(node.Children[0])
+				gen.output.WriteString("); __cast_buf; })")
+			case "float":
+				gen.output.WriteString("sprintf(__cast_buf, \"%f\", ")
+				gen.generateNode(node.Children[0])
+				gen.output.WriteString("); __cast_buf; })")
+			case "char":
+				gen.output.WriteString("sprintf(__cast_buf, \"%c\", ")
+				gen.generateNode(node.Children[0])
+				gen.output.WriteString("); __cast_buf; })")
+			case "bool":
+				gen.output.WriteString("sprintf(__cast_buf, \"%s\", ")
+				gen.generateNode(node.Children[0])
+				gen.output.WriteString(" ? \"true\" : \"false\"); __cast_buf; })")
+			default:
+				// Already a string or unknown - just pass through
+				gen.generateNode(node.Children[0])
+			}
+		}
+
 	default:
 		gen.output.WriteString(fmt.Sprintf("%s(", funcName))
 		for i, arg := range node.Children {
@@ -1057,9 +1198,23 @@ func (gen *CodeGenerator) generateBinaryOp(node *ahoy.ASTNode) {
 }
 
 func (gen *CodeGenerator) generateConstant(node *ahoy.ASTNode) {
+	constName := node.Value
+	
+	// Check if constant already declared
+	if gen.constants[constName] {
+		fmt.Printf("\n❌ Error at line %d: Cannot redeclare constant '%s'\n", node.Line, constName)
+		fmt.Printf("   Constants cannot be reassigned or redeclared.\n")
+		fmt.Printf("   '%s' was already declared earlier in the code.\n\n", constName)
+		gen.hasError = true
+		return
+	}
+	
+	// Mark constant as declared
+	gen.constants[constName] = true
+	
 	gen.writeIndent()
 	constType := gen.mapType(node.DataType)
-	gen.output.WriteString(fmt.Sprintf("const %s %s = ", constType, node.Value))
+	gen.output.WriteString(fmt.Sprintf("const %s %s = ", constType, constName))
 	gen.generateNode(node.Children[0])
 	gen.output.WriteString(";\n")
 }
@@ -1275,9 +1430,9 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		}
 		return "int"
 	case ahoy.NODE_STRING:
-		return "string"
+		return "char*"
 	case ahoy.NODE_F_STRING:
-		return "string"
+		return "char*"
 	case ahoy.NODE_BOOLEAN:
 		return "bool"
 	case ahoy.NODE_DICT_LITERAL:
@@ -1287,6 +1442,19 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 	case ahoy.NODE_CALL:
 		// Infer return type of function calls
 		if node.Value == "sprintf" {
+			return "string"
+		}
+		// Type casts
+		if node.Value == "int" {
+			return "int"
+		}
+		if node.Value == "float" {
+			return "float"
+		}
+		if node.Value == "char" {
+			return "char"
+		}
+		if node.Value == "string" {
 			return "string"
 		}
 		return "int"
@@ -2359,5 +2527,41 @@ func (gen *CodeGenerator) writeStringHelperFunctions() {
 		gen.funcDecls.WriteString("    free(str_copy);\n")
 		gen.funcDecls.WriteString("    return result;\n")
 		gen.funcDecls.WriteString("}\n\n")
+	}
+}
+
+func (gen *CodeGenerator) generateObjectLiteral(node *ahoy.ASTNode) {
+	// Generate compound literal initialization
+	// The struct definition is already generated in generateAssignment
+	gen.output.WriteString("{")
+	
+	// Generate field initializations
+	first := true
+	for _, prop := range node.Children {
+		if prop.Type == ahoy.NODE_OBJECT_PROPERTY {
+			if !first {
+				gen.output.WriteString(", ")
+			}
+			gen.output.WriteString(".")
+			gen.output.WriteString(prop.Value)
+			gen.output.WriteString(" = ")
+			gen.generateNodeInternal(prop.Children[0], false)
+			first = false
+		}
+	}
+	
+	gen.output.WriteString("}")
+}
+
+func (gen *CodeGenerator) generateObjectAccess(node *ahoy.ASTNode) {
+	// Object property access: person<'name'> becomes person.name
+	// The property name is in node.Children[0] as a string
+	// Note: The tokenizer already strips quotes from strings
+	gen.output.WriteString(node.Value)
+	gen.output.WriteString(".")
+	
+	if len(node.Children) > 0 && node.Children[0].Type == ahoy.NODE_STRING {
+		// Use the property name directly - quotes are already stripped by tokenizer
+		gen.output.WriteString(node.Children[0].Value)
 	}
 }

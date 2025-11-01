@@ -56,6 +56,9 @@ const (
 	NODE_TERNARY
 	NODE_ASSERT_STATEMENT
 	NODE_DEFER_STATEMENT
+	NODE_OBJECT_LITERAL
+	NODE_OBJECT_PROPERTY
+	NODE_OBJECT_ACCESS
 )
 
 type ASTNode struct {
@@ -78,6 +81,7 @@ type Parser struct {
 	pos            int
 	inFunctionCall bool
 	inArrayLiteral bool
+	inObjectLiteral bool
 	inDictLiteral  bool
 	LintMode       bool
 	Errors         []ParseError
@@ -994,8 +998,16 @@ func (p *Parser) parseReturnStatement() *ASTNode {
 	ret := &ASTNode{Type: NODE_RETURN_STATEMENT}
 
 	if p.current().Type != TOKEN_NEWLINE {
-		expr := p.parseExpression()
+		// Parse first expression
+		expr := p.parseOrExpression() // Use parseOrExpression to avoid consuming comma as part of expression
 		ret.Children = append(ret.Children, expr)
+		
+		// Parse additional return values (multiple returns)
+		for p.current().Type == TOKEN_COMMA {
+			p.advance()
+			expr = p.parseOrExpression()
+			ret.Children = append(ret.Children, expr)
+		}
 	}
 
 	return ret
@@ -1017,8 +1029,16 @@ func (p *Parser) parseAssertStatement() *ASTNode {
 func (p *Parser) parseDeferStatement() *ASTNode {
 	deferToken := p.expect(TOKEN_DEFER)
 	
-	// Parse the deferred statement (typically a function call)
-	statement := p.parseExpression()
+	// Parse the deferred statement
+	// Could be a function call, ahoy statement, print statement, etc.
+	var statement *ASTNode
+	if p.current().Type == TOKEN_PRINT {
+		statement = p.parsePrintStatement()
+	} else if p.current().Type == TOKEN_AHOY {
+		statement = p.parseAhoyStatement()
+	} else {
+		statement = p.parseExpression()
+	}
 	
 	return &ASTNode{
 		Type:     NODE_DEFER_STATEMENT,
@@ -1070,14 +1090,83 @@ func (p *Parser) parseProgramDeclaration() *ASTNode {
 }
 
 func (p *Parser) parseAssignmentOrExpression() *ASTNode {
+	// Check for object/dict property assignment: obj<'prop'>: value or dict{"key"}: value
+	if p.pos+2 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_LANGLE {
+		// Check if this is obj<'prop'>: pattern
+		savedPos := p.pos
+		p.advance() // skip identifier
+		p.advance() // skip <
+		// Skip the accessor
+		depth := 1
+		for p.pos < len(p.tokens) && depth > 0 {
+			if p.current().Type == TOKEN_LANGLE {
+				depth++
+			} else if p.current().Type == TOKEN_RANGLE {
+				depth--
+			}
+			p.advance()
+		}
+		isAssignment := p.current().Type == TOKEN_ASSIGN
+		p.pos = savedPos // restore position
+		
+		if isAssignment {
+			// Parse as object/dict property assignment
+			target := p.parsePrimaryExpression() // This will parse obj<'prop'> or dict{"key"}
+			p.expect(TOKEN_ASSIGN)
+			value := p.parseExpression()
+			
+			// Convert to assignment node
+			return &ASTNode{
+				Type:     NODE_ASSIGNMENT,
+				Children: []*ASTNode{target, value},
+				Line:     target.Line,
+			}
+		}
+	}
+	
+	// Check for dict property assignment: dict{"key"}: value
+	if p.pos+2 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_LBRACE {
+		savedPos := p.pos
+		p.advance() // skip identifier
+		p.advance() // skip {
+		// Skip the key
+		depth := 1
+		for p.pos < len(p.tokens) && depth > 0 {
+			if p.current().Type == TOKEN_LBRACE {
+				depth++
+			} else if p.current().Type == TOKEN_RBRACE {
+				depth--
+			}
+			p.advance()
+		}
+		isAssignment := p.current().Type == TOKEN_ASSIGN
+		p.pos = savedPos // restore position
+		
+		if isAssignment {
+			target := p.parsePrimaryExpression() // This will parse dict{"key"}
+			p.expect(TOKEN_ASSIGN)
+			value := p.parseExpression()
+			
+			return &ASTNode{
+				Type:     NODE_ASSIGNMENT,
+				Children: []*ASTNode{target, value},
+				Line:     target.Line,
+			}
+		}
+	}
+	
 	if p.pos+1 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_ASSIGN {
 		// Assignment with possible type annotation
 		name := p.expect(TOKEN_IDENTIFIER)
 		p.expect(TOKEN_ASSIGN)
 		
-		// Check for type annotation (type=)
+		// Check for type annotation (type=) or inferred type (:=)
 		var explicitType string
-		if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
+		if p.current().Type == TOKEN_EQUALS {
+			// := syntax - inferred type
+			p.advance() // consume =
+			explicitType = "" // Empty means inferred
+		} else if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 			p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
 			p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
 				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
@@ -1085,14 +1174,22 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 			p.current().Type == TOKEN_IDENTIFIER {
 			
-			// This might be a type annotation
-			possibleType := p.current().Value
-			
-			// Look ahead to see if there's an = after the type
-			if p.peek(1).Type == TOKEN_EQUALS {
-				explicitType = possibleType
-				p.advance() // consume type
-				p.advance() // consume =
+			// Check if this is a cast (type followed by parenthesis) - if so, don't treat as type annotation
+			if (p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
+				p.current().Type == TOKEN_CHAR_TYPE || p.current().Type == TOKEN_STRING_TYPE) &&
+				p.peek(1).Type == TOKEN_LPAREN {
+				// This is a cast like int(5), not a type annotation
+				// Fall through to parse it as an expression
+			} else {
+				// This might be a type annotation
+				possibleType := p.current().Value
+				
+				// Look ahead to see if there's an = after the type
+				if p.peek(1).Type == TOKEN_EQUALS {
+					explicitType = possibleType
+					p.advance() // consume type
+					p.advance() // consume =
+				}
 			}
 		}
 		
@@ -1420,15 +1517,24 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			return node
 		}
 
-		// Check for old-style array access identifier<index>
+		// Check for old-style array access identifier<index> or object property access identifier<'property'>
 		if p.current().Type == TOKEN_LANGLE {
 			p.advance()
-			index := p.parseCallArgument()
+			accessor := p.parseCallArgument()
 			p.expect(TOKEN_RANGLE)
+			
+			// Determine if this is object property access or array access
+			// Object property access uses string literals: obj<'prop'> or obj<"prop">
+			// Array access uses numbers/variables: arr<0> or arr<i>
+			nodeType := NODE_ARRAY_ACCESS
+			if accessor.Type == NODE_STRING {
+				nodeType = NODE_OBJECT_ACCESS
+			}
+			
 			node := &ASTNode{
-				Type:     NODE_ARRAY_ACCESS,
+				Type:     nodeType,
 				Value:    token.Value,
-				Children: []*ASTNode{index},
+				Children: []*ASTNode{accessor},
 				Line:     token.Line,
 			}
 			// Check for member access
@@ -1516,6 +1622,39 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 		p.expect(TOKEN_RPAREN)
 		return expr
 
+	// Type casts: int(value), float(value), char(value), string(value)
+	case TOKEN_INT_TYPE, TOKEN_FLOAT_TYPE, TOKEN_CHAR_TYPE, TOKEN_STRING_TYPE:
+		token := p.current()
+		p.advance()
+		
+		// Check if this is a cast (followed by parenthesis)
+		if p.current().Type != TOKEN_LPAREN {
+			// Not a cast - treat as unexpected (types shouldn't appear in expressions alone)
+			errMsg := fmt.Sprintf("Unexpected type keyword '%s' at line %d:%d",
+				token.Value, token.Line, token.Column)
+			if p.LintMode {
+				p.recordError(errMsg)
+				p.advance()
+				return &ASTNode{Type: NODE_IDENTIFIER, Value: "error"}
+			} else {
+				panic(errMsg)
+			}
+		}
+		
+		// It's a cast - parse the argument in parentheses
+		p.advance() // consume opening (
+		
+		arg := p.parseExpression()
+		
+		p.expect(TOKEN_RPAREN)
+		
+		return &ASTNode{
+			Type:     NODE_CALL,
+			Value:    token.Value, // "int", "float", "char", or "string"
+			Children: []*ASTNode{arg},
+			Line:     token.Line,
+		}
+
 	default:
 		current := p.current()
 		errMsg := fmt.Sprintf("Unexpected token %s at line %d:%d", 
@@ -1536,6 +1675,13 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 
 func (p *Parser) parseArrayLiteral() *ASTNode {
 	p.expect(TOKEN_LANGLE)
+
+	// Check if this is an object literal by looking for "identifier:"
+	// Save position to restore if it's not an object
+	if p.current().Type == TOKEN_IDENTIFIER && p.peek(1).Type == TOKEN_ASSIGN {
+		// This is an object literal, not an array
+		return p.parseObjectLiteral()
+	}
 
 	array := &ASTNode{
 		Type:     NODE_ARRAY_LITERAL,
@@ -1564,6 +1710,79 @@ func (p *Parser) parseArrayLiteral() *ASTNode {
 	}
 
 	return array
+}
+
+func (p *Parser) parseObjectLiteral() *ASTNode {
+	// TOKEN_LANGLE already consumed by parseArrayLiteral
+	
+	object := &ASTNode{
+		Type:     NODE_OBJECT_LITERAL,
+		DataType: "object",
+		Children: []*ASTNode{},
+	}
+
+	p.inObjectLiteral = true
+
+	for p.current().Type != TOKEN_RANGLE && p.current().Type != TOKEN_EOF {
+		// Parse property name
+		if p.current().Type != TOKEN_IDENTIFIER {
+			if p.LintMode {
+				p.recordError(fmt.Sprintf("Expected property name at line %d", p.current().Line))
+				p.advance()
+				continue
+			} else {
+				panic(fmt.Sprintf("Expected property name, got %s at line %d", 
+					tokenTypeName(p.current().Type), p.current().Line))
+			}
+		}
+		
+		propName := p.current().Value
+		p.advance()
+		
+		// Expect ':'
+		if p.current().Type != TOKEN_ASSIGN {
+			if p.LintMode {
+				p.recordError(fmt.Sprintf("Expected ':' after property name at line %d", p.current().Line))
+			} else {
+				panic(fmt.Sprintf("Expected ':' after property name at line %d", p.current().Line))
+			}
+		}
+		p.advance()
+		
+		// Parse property value - use parseAdditiveExpression to avoid comparison operators
+		propValue := p.parseAdditiveExpression()
+		
+		// Create property node
+		prop := &ASTNode{
+			Type:  NODE_OBJECT_PROPERTY,
+			Value: propName,
+			Children: []*ASTNode{propValue},
+			Line: propValue.Line,
+		}
+		object.Children = append(object.Children, prop)
+		
+		// Check for comma or end
+		if p.current().Type == TOKEN_COMMA {
+			p.advance()
+		} else if p.current().Type != TOKEN_RANGLE {
+			if p.LintMode {
+				p.recordError(fmt.Sprintf("Expected ',' or '>' in object literal at line %d", p.current().Line))
+				break
+			} else {
+				break
+			}
+		}
+	}
+	
+	p.inObjectLiteral = false
+	p.expect(TOKEN_RANGLE)
+	
+	// Check for member access after object literal
+	if p.current().Type == TOKEN_DOT {
+		return p.parseMemberAccessChain(object)
+	}
+	
+	return object
 }
 
 func (p *Parser) parseDictLiteral() *ASTNode {

@@ -103,6 +103,12 @@ func main() {
 
 	// Generate C code
 	cCode := generateC(ast)
+	
+	// Check if code generation failed
+	if cCode == "" {
+		fmt.Println("✗ Code generation failed due to errors")
+		os.Exit(1)
+	}
 
 	// Determine output file name
 	baseName := filepath.Base(sourceFile)

@@ -73,6 +73,7 @@ const (
 	TOKEN_INT_TYPE
 	TOKEN_FLOAT_TYPE
 	TOKEN_STRING_TYPE
+	TOKEN_CHAR_TYPE
 	TOKEN_BOOL_TYPE
 	TOKEN_DICT_TYPE
 	TOKEN_ARRAY_TYPE
@@ -143,6 +144,7 @@ func Tokenize(input string) []Token {
 		"int":          TOKEN_INT_TYPE,
 		"float":        TOKEN_FLOAT_TYPE,
 		"string":       TOKEN_STRING_TYPE,
+		"char":         TOKEN_CHAR_TYPE,
 		"bool":         TOKEN_BOOL_TYPE,
 		"dict":         TOKEN_DICT_TYPE,
 		"array":        TOKEN_ARRAY_TYPE,
