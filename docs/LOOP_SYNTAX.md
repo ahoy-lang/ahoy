@@ -11,7 +11,7 @@ This document describes the new loop syntax that has been implemented in Ahoy.
 - `loop i from 1 to 5 do` - Range loop with explicit start and end
 - `loop i to 5 do` - Range loop from 0 to end
 - `loop i till condition do` - Conditional loop with explicit counter variable
-- `loop i do` - Forever loop with explicit counter (use with break)
+- `loop i do` - Forever loop with explicit counter (use with halt)
 - `loop:` or `loop do` - Forever loop without counter
 - F-strings: `print|f"hello{i}\n"|` - String interpolation with variables
 - Support for both `then` and `do` keywords in if statements
@@ -47,12 +47,12 @@ loop i till i <= 5 do
 ? Loop forever with explicit counter
 loop i do
     print|f"Loop {i}\n"|
-    if i is 5 do break
+    if i is 5 do halt
 
 ? Loop forever without counter
 loop do
     ahoy|"Forever!\n"|
-    break
+    halt
 
 ? Alternative syntax (also works)
 loop i till i less_than 5 do

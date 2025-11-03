@@ -76,24 +76,58 @@ type ParseError struct {
 	Column  int
 }
 
+type StructField struct {
+	Name         string
+	Type         string
+	DefaultValue *ASTNode
+}
+
+type StructDefinition struct {
+	Name   string
+	Fields []StructField
+	Parent string // For nested types like smoke_particle extends particle
+}
+
 type Parser struct {
-	tokens         []Token
-	pos            int
-	inFunctionCall bool
-	inArrayLiteral bool
+	tokens          []Token
+	pos             int
+	inFunctionCall  bool
+	inArrayLiteral  bool
 	inObjectLiteral bool
-	inDictLiteral  bool
-	LintMode       bool
-	Errors         []ParseError
+	inDictLiteral   bool
+	LintMode        bool
+	Errors          []ParseError
+	variableTypes   map[string]string            // Track variable types
+	constants       map[string]int               // Track constant declarations (name -> line number)
+	structs         map[string]*StructDefinition // Track struct definitions
+	objectLiterals  map[string]map[string]bool   // Track object literal properties by variable name
 }
 
 func Parse(tokens []Token) *ASTNode {
-	parser := &Parser{tokens: tokens, pos: 0, LintMode: false, Errors: []ParseError{}}
+	parser := &Parser{
+		tokens:         tokens,
+		pos:            0,
+		LintMode:       false,
+		Errors:         []ParseError{},
+		variableTypes:  make(map[string]string),
+		constants:      make(map[string]int),
+		structs:        make(map[string]*StructDefinition),
+		objectLiterals: make(map[string]map[string]bool),
+	}
 	return parser.parseProgram()
 }
 
 func ParseLint(tokens []Token) (*ASTNode, []ParseError) {
-	parser := &Parser{tokens: tokens, pos: 0, LintMode: true, Errors: []ParseError{}}
+	parser := &Parser{
+		tokens:         tokens,
+		pos:            0,
+		LintMode:       true,
+		Errors:         []ParseError{},
+		variableTypes:  make(map[string]string),
+		constants:      make(map[string]int),
+		structs:        make(map[string]*StructDefinition),
+		objectLiterals: make(map[string]map[string]bool),
+	}
 	ast := parser.parseProgram()
 	return ast, parser.Errors
 }
@@ -127,6 +161,70 @@ func (p *Parser) recordError(message string) {
 		Column:  token.Column,
 	})
 }
+
+// inferType infers the type from an AST node
+func (p *Parser) inferType(node *ASTNode) string {
+	if node == nil {
+		return "unknown"
+	}
+	
+	switch node.Type {
+	case NODE_NUMBER:
+		// Check if it contains a decimal point
+		if strings.Contains(node.Value, ".") {
+			return "float"
+		}
+		return "int"
+	case NODE_STRING, NODE_F_STRING:
+		return "string"
+	case NODE_CHAR:
+		return "char"
+	case NODE_BOOLEAN:
+		return "bool"
+	case NODE_ARRAY_LITERAL:
+		return "array"
+	case NODE_DICT_LITERAL:
+		return "dict"
+	case NODE_OBJECT_LITERAL:
+		// Check if it has a type name (struct initialization)
+		if node.Value != "" {
+			return "struct:" + node.Value
+		}
+		return "object"
+	case NODE_IDENTIFIER:
+		// Look up the variable's type
+		if varType, ok := p.variableTypes[node.Value]; ok {
+			return varType
+		}
+		return "unknown"
+	default:
+		// For expressions, we could recursively infer but for now return unknown
+		return "unknown"
+	}
+}
+
+// checkTypeCompatibility checks if a value type is compatible with expected type
+func (p *Parser) checkTypeCompatibility(expectedType, actualType string) bool {
+	if expectedType == "unknown" || actualType == "unknown" {
+		return true // Can't check unknown types
+	}
+	
+	// Allow int to float conversion
+	if expectedType == "float" && actualType == "int" {
+		return true
+	}
+	
+	// Check struct type compatibility
+	// Both "struct:typename" and "typename" should match
+	if strings.HasPrefix(expectedType, "struct:") || strings.HasPrefix(actualType, "struct:") {
+		expectedBase := strings.TrimPrefix(expectedType, "struct:")
+		actualBase := strings.TrimPrefix(actualType, "struct:")
+		return expectedBase == actualBase
+	}
+	
+	return expectedType == actualType
+}
+
 
 // Helper function to get readable token name
 func tokenTypeName(t TokenType) string {
@@ -184,10 +282,10 @@ func (p *Parser) skipWhitespace() {
 func (p *Parser) expect(tokenType TokenType) Token {
 	if p.current().Type != tokenType {
 		current := p.current()
-		errMsg := fmt.Sprintf("Expected %s, got %s at line %d:%d", 
-			tokenTypeName(tokenType), 
-			tokenTypeName(current.Type), 
-			current.Line, 
+		errMsg := fmt.Sprintf("Expected %s, got %s at line %d:%d",
+			tokenTypeName(tokenType),
+			tokenTypeName(current.Type),
+			current.Line,
 			current.Column)
 		if p.LintMode {
 			p.recordError(errMsg)
@@ -212,10 +310,10 @@ func (p *Parser) parseProgram() *ASTNode {
 			p.advance()
 			continue
 		}
-		
+
 		// Save position to detect if we're stuck
 		oldPos := p.pos
-		
+
 		stmt := p.parseStatement()
 		if stmt != nil {
 			program.Children = append(program.Children, stmt)
@@ -226,7 +324,7 @@ func (p *Parser) parseProgram() *ASTNode {
 			p.advance()
 			// Continue to parse next statement on same line
 		}
-		
+
 		// Safety check: if position hasn't advanced, force advance to prevent infinite loop
 		if p.pos == oldPos && p.current().Type != TOKEN_EOF {
 			// We're stuck - skip this token to avoid infinite loop
@@ -307,11 +405,11 @@ func (p *Parser) parseFunction() *ASTNode {
 
 	// Check for pipe-based syntax |params| or space-separated params
 	params := &ASTNode{Type: NODE_BLOCK}
-	
+
 	if p.current().Type == TOKEN_PIPE {
 		// Old syntax: func name |param1 type1, param2 type2| then
 		p.advance()
-		
+
 		for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
 			paramName := p.expect(TOKEN_IDENTIFIER)
 			var paramType string
@@ -341,14 +439,14 @@ func (p *Parser) parseFunction() *ASTNode {
 		for p.current().Type == TOKEN_IDENTIFIER {
 			paramName := p.current()
 			p.advance()
-			
+
 			var paramType string
 			// Check for type annotation
 			if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
 				p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
 				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
-			p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
+				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 				p.current().Type == TOKEN_IDENTIFIER {
 				paramType = p.current().Value
 				p.advance()
@@ -374,7 +472,7 @@ func (p *Parser) parseFunction() *ASTNode {
 				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
 				p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
 				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
-			p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
+				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 				p.current().Type == TOKEN_IDENTIFIER {
 				returnType = p.current().Value
 				p.advance()
@@ -389,7 +487,7 @@ func (p *Parser) parseFunction() *ASTNode {
 		p.advance()
 	} else {
 		current := p.current()
-		errMsg := fmt.Sprintf("Expected 'then' or 'do' in function, got %s at line %d:%d", 
+		errMsg := fmt.Sprintf("Expected 'then' or 'do' in function, got %s at line %d:%d",
 			tokenTypeName(current.Type), current.Line, current.Column)
 		if p.LintMode {
 			p.recordError(errMsg)
@@ -436,7 +534,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		p.advance()
 	} else {
 		current := p.current()
-		errMsg := fmt.Sprintf("Expected 'then' or 'do', got %s at line %d:%d", 
+		errMsg := fmt.Sprintf("Expected 'then' or 'do', got %s at line %d:%d",
 			tokenTypeName(current.Type), current.Line, current.Column)
 		if p.LintMode {
 			p.recordError(errMsg)
@@ -481,7 +579,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 			p.advance()
 		} else {
 			current := p.current()
-			errMsg := fmt.Sprintf("Expected 'then' or 'do', got %s at line %d:%d", 
+			errMsg := fmt.Sprintf("Expected 'then' or 'do', got %s at line %d:%d",
 				tokenTypeName(current.Type), current.Line, current.Column)
 			if p.LintMode {
 				p.recordError(errMsg)
@@ -597,7 +695,7 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 		for {
 			// Save position to detect stuck loop
 			oldPos := p.pos
-			
+
 			// Parse single case value
 			var caseValue *ASTNode
 			if p.current().Type == TOKEN_NUMBER {
@@ -683,7 +781,7 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 				// Single value or end of value list
 				break
 			}
-			
+
 			// Safety check: if position hasn't advanced, break to avoid infinite loop
 			if p.pos == oldPos {
 				break
@@ -692,14 +790,14 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 
 		p.expect(TOKEN_ASSIGN) // Expect :
 
-		// Skip optional whitespace/indent after colon  
+		// Skip optional whitespace/indent after colon
 		p.skipWhitespace()
 
 		// Parse case body - must be a statement or call, not an assignment
 		// We need to be careful here because parseStatement might misinterpret
 		// patterns like "ahoy|...|" if preceded by an identifier
 		var caseBody *ASTNode
-		
+
 		// Explicitly handle known statement types
 		switch p.current().Type {
 		case TOKEN_AHOY:
@@ -762,7 +860,7 @@ func (p *Parser) parseLoop() *ASTNode {
 	p.expect(TOKEN_LOOP)
 
 	var loopVar *Token = nil
-	
+
 	// Check for optional loop variable: loop i ...
 	if p.current().Type == TOKEN_IDENTIFIER {
 		ident := p.current()
@@ -773,9 +871,9 @@ func (p *Parser) parseLoop() *ASTNode {
 	// Now check what follows
 	if p.current().Type == TOKEN_FROM {
 		// loop [i] from:start to end
-		p.advance() // consume 'from'
+		p.advance()            // consume 'from'
 		p.expect(TOKEN_ASSIGN) // expect ':'
-		
+
 		startExpr := p.parseExpression()
 		p.expect(TOKEN_TO)
 		endExpr := p.parseExpression()
@@ -830,7 +928,7 @@ func (p *Parser) parseLoop() *ASTNode {
 		}
 
 		p.advance() // consume 'in'
-		
+
 		// Check if we need to go back and parse key,value
 		// Actually, we need to handle this differently - check if there was a comma after first identifier
 		// For now, simple case: loop element in array
@@ -885,8 +983,14 @@ func (p *Parser) parseLoop() *ASTNode {
 	} else if p.current().Type == TOKEN_ASSIGN {
 		// ERROR: loop: or loop i: is invalid - colon should only come after 'from'
 		if !p.LintMode {
-			panic(fmt.Sprintf("Unexpected ':' after loop%s at line %d. Did you mean 'from:'?", 
-				func() string { if loopVar != nil { return " " + loopVar.Value } else { return "" } }(), 
+			panic(fmt.Sprintf("Unexpected ':' after loop%s at line %d. Did you mean 'from:'?",
+				func() string {
+					if loopVar != nil {
+						return " " + loopVar.Value
+					} else {
+						return ""
+					}
+				}(),
 				p.current().Line))
 		}
 		p.recordError("Unexpected ':' - colon should only follow 'from' keyword")
@@ -894,15 +998,20 @@ func (p *Parser) parseLoop() *ASTNode {
 	} else {
 		// Unexpected token
 		if !p.LintMode {
-			panic(fmt.Sprintf("Expected 'from', 'till', 'in', or 'do' after loop%s at line %d", 
-				func() string { if loopVar != nil { return " " + loopVar.Value } else { return "" } }(), 
+			panic(fmt.Sprintf("Expected 'from', 'till', 'in', or 'do' after loop%s at line %d",
+				func() string {
+					if loopVar != nil {
+						return " " + loopVar.Value
+					} else {
+						return ""
+					}
+				}(),
 				p.current().Line))
 		}
 		p.recordError("Expected 'from', 'till', 'in', or 'do' after loop")
 		return &ASTNode{Type: NODE_WHILE_LOOP, Children: []*ASTNode{}}
 	}
 }
-
 
 func (p *Parser) parseWhenStatement() *ASTNode {
 	p.expect(TOKEN_WHEN)
@@ -1001,7 +1110,7 @@ func (p *Parser) parseReturnStatement() *ASTNode {
 		// Parse first expression
 		expr := p.parseOrExpression() // Use parseOrExpression to avoid consuming comma as part of expression
 		ret.Children = append(ret.Children, expr)
-		
+
 		// Parse additional return values (multiple returns)
 		for p.current().Type == TOKEN_COMMA {
 			p.advance()
@@ -1015,10 +1124,10 @@ func (p *Parser) parseReturnStatement() *ASTNode {
 
 func (p *Parser) parseAssertStatement() *ASTNode {
 	assertToken := p.expect(TOKEN_ASSERT)
-	
+
 	// Parse the condition expression
 	condition := p.parseExpression()
-	
+
 	return &ASTNode{
 		Type:     NODE_ASSERT_STATEMENT,
 		Line:     assertToken.Line,
@@ -1028,7 +1137,7 @@ func (p *Parser) parseAssertStatement() *ASTNode {
 
 func (p *Parser) parseDeferStatement() *ASTNode {
 	deferToken := p.expect(TOKEN_DEFER)
-	
+
 	// Parse the deferred statement
 	// Could be a function call, ahoy statement, print statement, etc.
 	var statement *ASTNode
@@ -1039,7 +1148,7 @@ func (p *Parser) parseDeferStatement() *ASTNode {
 	} else {
 		statement = p.parseExpression()
 	}
-	
+
 	return &ASTNode{
 		Type:     NODE_DEFER_STATEMENT,
 		Line:     deferToken.Line,
@@ -1049,11 +1158,11 @@ func (p *Parser) parseDeferStatement() *ASTNode {
 
 func (p *Parser) parseImportStatement() *ASTNode {
 	p.expect(TOKEN_IMPORT)
-	
+
 	// Check if there's an identifier (namespace) before the string path
 	var namespace string
 	var path string
-	
+
 	if p.current().Type == TOKEN_IDENTIFIER {
 		namespace = p.current().Value
 		p.advance()
@@ -1070,8 +1179,8 @@ func (p *Parser) parseImportStatement() *ASTNode {
 	}
 
 	return &ASTNode{
-		Type:  NODE_IMPORT_STATEMENT,
-		Value: path,
+		Type:     NODE_IMPORT_STATEMENT,
+		Value:    path,
 		DataType: namespace, // Use DataType field to store namespace
 	}
 }
@@ -1079,9 +1188,9 @@ func (p *Parser) parseImportStatement() *ASTNode {
 func (p *Parser) parseProgramDeclaration() *ASTNode {
 	p.expect(TOKEN_PROGRAM)
 	name := p.expect(TOKEN_IDENTIFIER)
-	
+
 	// Don't skip newlines here - let parseProgram handle them
-	
+
 	return &ASTNode{
 		Type:  NODE_PROGRAM_DECLARATION,
 		Value: name.Value,
@@ -1108,13 +1217,13 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 		}
 		isAssignment := p.current().Type == TOKEN_ASSIGN
 		p.pos = savedPos // restore position
-		
+
 		if isAssignment {
 			// Parse as object/dict property assignment
 			target := p.parsePrimaryExpression() // This will parse obj<'prop'> or dict{"key"}
 			p.expect(TOKEN_ASSIGN)
 			value := p.parseExpression()
-			
+
 			// Convert to assignment node
 			return &ASTNode{
 				Type:     NODE_ASSIGNMENT,
@@ -1123,7 +1232,73 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			}
 		}
 	}
-	
+
+	// Check for array index assignment: arr[index]: value
+	if p.pos+2 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_LBRACKET {
+		savedPos := p.pos
+		p.advance() // skip identifier
+		p.advance() // skip [
+		// Skip the index
+		depth := 1
+		for p.pos < len(p.tokens) && depth > 0 {
+			if p.current().Type == TOKEN_LBRACKET {
+				depth++
+			} else if p.current().Type == TOKEN_RBRACKET {
+				depth--
+			}
+			p.advance()
+		}
+		isAssignment := p.current().Type == TOKEN_ASSIGN
+		p.pos = savedPos // restore position
+
+		if isAssignment {
+			target := p.parsePrimaryExpression() // This will parse arr[index]
+			p.expect(TOKEN_ASSIGN)
+			value := p.parseExpression()
+
+			return &ASTNode{
+				Type:     NODE_ASSIGNMENT,
+				Children: []*ASTNode{target, value},
+				Line:     target.Line,
+			}
+		}
+	}
+
+	// Check for member access assignment: obj.property: value
+	if p.pos+2 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_DOT {
+		savedPos := p.pos
+		p.advance() // skip identifier
+		p.advance() // skip .
+		// Skip the property name(s)
+		for p.pos < len(p.tokens) && p.current().Type == TOKEN_IDENTIFIER {
+			p.advance()
+			if p.current().Type == TOKEN_DOT {
+				p.advance() // skip next dot
+			} else {
+				break
+			}
+		}
+		isAssignment := p.current().Type == TOKEN_ASSIGN
+		p.pos = savedPos // restore position
+
+		if isAssignment {
+			target := p.parsePrimaryExpression() // This will parse obj.property
+			p.expect(TOKEN_ASSIGN)
+			value := p.parseExpression()
+
+			// Validate property assignment in lint mode
+			if p.LintMode && target.Type == NODE_MEMBER_ACCESS {
+				p.validatePropertyAssignment(target, value, target.Line)
+			}
+
+			return &ASTNode{
+				Type:     NODE_ASSIGNMENT,
+				Children: []*ASTNode{target, value},
+				Line:     target.Line,
+			}
+		}
+	}
+
 	// Check for dict property assignment: dict{"key"}: value
 	if p.pos+2 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_LBRACE {
 		savedPos := p.pos
@@ -1141,12 +1316,12 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 		}
 		isAssignment := p.current().Type == TOKEN_ASSIGN
 		p.pos = savedPos // restore position
-		
+
 		if isAssignment {
 			target := p.parsePrimaryExpression() // This will parse dict{"key"}
 			p.expect(TOKEN_ASSIGN)
 			value := p.parseExpression()
-			
+
 			return &ASTNode{
 				Type:     NODE_ASSIGNMENT,
 				Children: []*ASTNode{target, value},
@@ -1154,26 +1329,27 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			}
 		}
 	}
-	
+
 	if p.pos+1 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_ASSIGN {
 		// Assignment with possible type annotation
 		name := p.expect(TOKEN_IDENTIFIER)
+		line := name.Line
 		p.expect(TOKEN_ASSIGN)
-		
+
 		// Check for type annotation (type=) or inferred type (:=)
 		var explicitType string
 		if p.current().Type == TOKEN_EQUALS {
 			// := syntax - inferred type
-			p.advance() // consume =
+			p.advance()       // consume =
 			explicitType = "" // Empty means inferred
 		} else if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 			p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
 			p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
-				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
+			p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 			p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 			p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 			p.current().Type == TOKEN_IDENTIFIER {
-			
+
 			// Check if this is a cast (type followed by parenthesis) - if so, don't treat as type annotation
 			if (p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 				p.current().Type == TOKEN_CHAR_TYPE || p.current().Type == TOKEN_STRING_TYPE) &&
@@ -1183,26 +1359,140 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			} else {
 				// This might be a type annotation
 				possibleType := p.current().Value
-				
-				// Look ahead to see if there's an = after the type
-				if p.peek(1).Type == TOKEN_EQUALS {
+
+				// Look ahead to see if there's an = or < after the type
+				// < indicates struct initialization: name : type<...>
+				if p.peek(1).Type == TOKEN_EQUALS || p.peek(1).Type == TOKEN_LANGLE {
 					explicitType = possibleType
 					p.advance() // consume type
-					p.advance() // consume =
+					if p.current().Type == TOKEN_EQUALS {
+						p.advance() // consume =
+					}
+					// If TOKEN_LANGLE, DON'T consume it - but we need to handle it specially below
 				}
 			}
 		}
-		
-		value := p.parseExpression()
+
+		// Special handling: if we have explicitType and current token is LANGLE,
+		// this is struct initialization like: name : type<...>
+		// We need to parse it as identifier<...> pattern to preserve the type name
+		var value *ASTNode
+		if explicitType != "" && p.current().Type == TOKEN_LANGLE {
+			// Manually handle the object literal with type name
+			p.advance() // consume <
+			
+			// Check for empty <>
+			if p.current().Type == TOKEN_RANGLE {
+				p.advance()
+				value = &ASTNode{
+					Type:     NODE_OBJECT_LITERAL,
+					DataType: "object",
+					Value:    explicitType, // Set the type name
+					Children: []*ASTNode{},
+					Line:     line,
+				}
+			} else if (p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_STRING) &&
+				p.peek(1).Type == TOKEN_ASSIGN {
+				// Parse object literal with properties
+				value = p.parseObjectLiteral()
+				value.Value = explicitType // Set the type name
+			} else {
+				// Parse as regular expression (fallback)
+				value = p.parseExpression()
+			}
+		} else {
+			value = p.parseExpression()
+		}
+
+		// Type checking in lint mode
+		if p.LintMode {
+			varName := name.Value
+			
+			// Check if this is a reassignment
+			if existingType, exists := p.variableTypes[varName]; exists {
+				// Variable already declared - check type compatibility
+				inferredType := p.inferType(value)
+				
+				// For struct types, normalize the comparison
+				// existingType might be "typename" while inferredType is "struct:typename"
+				expectedType := existingType
+				if inferredType != "unknown" && strings.HasPrefix(inferredType, "struct:") {
+					// If inferred type has struct: prefix but existing doesn't, add it
+					if !strings.HasPrefix(expectedType, "struct:") {
+						expectedType = "struct:" + expectedType
+					}
+				}
+				
+				if !p.checkTypeCompatibility(expectedType, inferredType) {
+					errMsg := fmt.Sprintf("Type mismatch (line %d): can't use %s:%s as %s",
+						line, varName, existingType, inferredType)
+					p.recordError(errMsg)
+				}
+			} else {
+				// First declaration - store the type
+				if explicitType != "" {
+					p.variableTypes[varName] = explicitType
+					
+					// Validate struct initialization
+					if value.Type == NODE_OBJECT_LITERAL {
+						p.validateStructInitialization(explicitType, value, line)
+						// Track object literal properties
+						p.trackObjectLiteralProperties(varName, value)
+					}
+				} else {
+					// Infer type from value
+					inferredType := p.inferType(value)
+					if inferredType != "unknown" {
+						p.variableTypes[varName] = inferredType
+						
+						// Track object literal properties
+						if value.Type == NODE_OBJECT_LITERAL {
+							p.trackObjectLiteralProperties(varName, value)
+						}
+					}
+				}
+
+				// Validate property assignment for struct reassignments
+				if value.Type == NODE_MEMBER_ACCESS && len(value.Children) > 0 {
+					// This is a property assignment like obj.prop: value
+					// We'll handle this in the reassignment validation below
+				}
+			}
+		}
 
 		return &ASTNode{
 			Type:     NODE_ASSIGNMENT,
 			Value:    name.Value,
 			DataType: explicitType,
 			Children: []*ASTNode{value},
-			Line:     name.Line,
+			Line:     line,
 		}
 	}
+
+	// Check for property assignment: identifier.property: value (DUPLICATE - already handled above at line 1277)
+	// This code can be removed as it's redundant
+	/*
+	/*
+	if p.pos+1 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_DOT {
+		// This is redundant - already handled at line 1277
+		target := p.parsePrimaryExpression()
+		
+		if p.current().Type == TOKEN_ASSIGN {
+			p.expect(TOKEN_ASSIGN)
+			value := p.parseExpression()
+			
+			if p.LintMode && target.Type == NODE_MEMBER_ACCESS {
+				p.validatePropertyAssignment(target, value, target.Line)
+			}
+
+			return &ASTNode{
+				Type:     NODE_ASSIGNMENT,
+				Children: []*ASTNode{target, value},
+				Line:     target.Line,
+			}
+		}
+	}
+	*/
 
 	return p.parseExpression()
 }
@@ -1244,10 +1534,10 @@ func (p *Parser) parseTernaryExpression() *ASTNode {
 	// Check for ?? operator
 	if p.current().Type == TOKEN_TERNARY {
 		p.advance() // consume ??
-		
+
 		// Parse the true branch
 		trueBranch := p.parseOrExpression()
-		
+
 		// Expect : before false branch
 		if p.current().Type != TOKEN_ASSIGN {
 			if !p.LintMode {
@@ -1257,10 +1547,10 @@ func (p *Parser) parseTernaryExpression() *ASTNode {
 			return condition
 		}
 		p.advance() // consume :
-		
+
 		// Parse the false branch
 		falseBranch := p.parseTernaryExpression() // Allow nested ternaries
-		
+
 		return &ASTNode{
 			Type:     NODE_TERNARY,
 			Children: []*ASTNode{condition, trueBranch, falseBranch},
@@ -1270,7 +1560,6 @@ func (p *Parser) parseTernaryExpression() *ASTNode {
 
 	return condition
 }
-
 
 func (p *Parser) parseExpressionContinuation(leftNode *ASTNode) *ASTNode {
 	// Continue parsing from the given left node through the expression hierarchy
@@ -1504,6 +1793,20 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			p.advance()
 			index := p.parseExpression()
 			p.expect(TOKEN_RBRACKET)
+			
+			// Validate access syntax in lint mode
+			if p.LintMode {
+				if varType, ok := p.variableTypes[token.Value]; ok {
+					if varType == "dict" {
+						errMsg := fmt.Sprintf("Invalid dict access syntax, use dict{} instead of array[]")
+						p.recordError(errMsg)
+					} else if varType == "object" {
+						errMsg := fmt.Sprintf("Invalid object access syntax, use object<> instead of array[]")
+						p.recordError(errMsg)
+					}
+				}
+			}
+			
 			node := &ASTNode{
 				Type:     NODE_ARRAY_ACCESS,
 				Value:    token.Value,
@@ -1517,12 +1820,40 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			return node
 		}
 
-		// Check for old-style array access identifier<index> or object property access identifier<'property'>
+		// Check for object instantiation identifier<...> or old-style access identifier<index>
 		if p.current().Type == TOKEN_LANGLE {
 			p.advance()
+
+			// Check for empty object instantiation identifier<>
+			if p.current().Type == TOKEN_RANGLE {
+				p.advance() // consume >
+				obj := &ASTNode{
+					Type:     NODE_OBJECT_LITERAL,
+					DataType: "object",
+					Value:    token.Value, // Set the type name
+					Children: []*ASTNode{},
+					Line:     token.Line,
+				}
+				// Check for member access
+				if p.current().Type == TOKEN_DOT {
+					return p.parseMemberAccessChain(obj)
+				}
+				return obj
+			}
+
+			// Check if this is object instantiation with properties (identifier: or "string":)
+			if (p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_STRING) &&
+				p.peek(1).Type == TOKEN_ASSIGN {
+				// This is object instantiation with named properties
+				obj := p.parseObjectLiteral() // Will consume the closing >
+				obj.Value = token.Value       // Set the type name
+				return obj
+			}
+
+			// Otherwise, it's old-style array/object access
 			accessor := p.parseCallArgument()
 			p.expect(TOKEN_RANGLE)
-			
+
 			// Determine if this is object property access or array access
 			// Object property access uses string literals: obj<'prop'> or obj<"prop">
 			// Array access uses numbers/variables: arr<0> or arr<i>
@@ -1531,6 +1862,22 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 				nodeType = NODE_OBJECT_ACCESS
 			}
 			
+			// Validate access syntax in lint mode
+			if p.LintMode {
+				if varType, ok := p.variableTypes[token.Value]; ok {
+					if varType == "array" && nodeType == NODE_OBJECT_ACCESS {
+						errMsg := fmt.Sprintf("Invalid array access syntax, use array[] instead of object<>")
+						p.recordError(errMsg)
+					} else if varType == "dict" {
+						errMsg := fmt.Sprintf("Invalid dict access syntax, use dict{} instead of object<>")
+						p.recordError(errMsg)
+					} else if varType == "array" && nodeType == NODE_ARRAY_ACCESS {
+						errMsg := fmt.Sprintf("Invalid array access syntax, use array[] instead of object<>")
+						p.recordError(errMsg)
+					}
+				}
+			}
+
 			node := &ASTNode{
 				Type:     nodeType,
 				Value:    token.Value,
@@ -1549,6 +1896,20 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			p.advance()
 			key := p.parseExpression()
 			p.expect(TOKEN_RBRACE)
+			
+			// Validate access syntax in lint mode
+			if p.LintMode {
+				if varType, ok := p.variableTypes[token.Value]; ok {
+					if varType == "array" {
+						errMsg := fmt.Sprintf("Invalid array access syntax, use array[] instead of dict{}")
+						p.recordError(errMsg)
+					} else if varType == "object" {
+						errMsg := fmt.Sprintf("Invalid object access syntax, use object<> instead of dict{}")
+						p.recordError(errMsg)
+					}
+				}
+			}
+			
 			return &ASTNode{
 				Type:     NODE_DICT_ACCESS,
 				Value:    token.Value,
@@ -1623,13 +1984,49 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 		return expr
 
 	// Type casts: int(value), float(value), char(value), string(value)
-	case TOKEN_INT_TYPE, TOKEN_FLOAT_TYPE, TOKEN_CHAR_TYPE, TOKEN_STRING_TYPE:
+	// Or type instantiation: vector2<x,y>, color<r,g,b,a>
+	case TOKEN_INT_TYPE, TOKEN_FLOAT_TYPE, TOKEN_CHAR_TYPE, TOKEN_STRING_TYPE, TOKEN_VECTOR2_TYPE, TOKEN_COLOR_TYPE:
 		token := p.current()
 		p.advance()
-		
+
+		// Check if this is object instantiation with <>
+		if p.current().Type == TOKEN_LANGLE {
+			p.advance()
+
+			// Check if this has named properties (for instantiation)
+			if (p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_STRING) &&
+				p.peek(1).Type == TOKEN_ASSIGN {
+				// Object instantiation with properties: vector2<"x": 10, "y": 20>
+				obj := p.parseObjectLiteral()
+				obj.Value = token.Value // Set the type name
+				return obj
+			}
+
+			// Otherwise parse as comma-separated values: vector2<10,20>
+			args := []*ASTNode{}
+			for p.current().Type != TOKEN_RANGLE && p.current().Type != TOKEN_EOF {
+				arg := p.parseAdditiveExpression() // Use additive to avoid consuming > as comparison
+				args = append(args, arg)
+
+				if p.current().Type == TOKEN_COMMA {
+					p.advance()
+				} else if p.current().Type != TOKEN_RANGLE {
+					break
+				}
+			}
+			p.expect(TOKEN_RANGLE)
+
+			return &ASTNode{
+				Type:     NODE_CALL,
+				Value:    token.Value,
+				Children: args,
+				Line:     token.Line,
+			}
+		}
+
 		// Check if this is a cast (followed by parenthesis)
 		if p.current().Type != TOKEN_LPAREN {
-			// Not a cast - treat as unexpected (types shouldn't appear in expressions alone)
+			// Not a cast or instantiation - treat as unexpected
 			errMsg := fmt.Sprintf("Unexpected type keyword '%s' at line %d:%d",
 				token.Value, token.Line, token.Column)
 			if p.LintMode {
@@ -1640,14 +2037,14 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 				panic(errMsg)
 			}
 		}
-		
+
 		// It's a cast - parse the argument in parentheses
 		p.advance() // consume opening (
-		
+
 		arg := p.parseExpression()
-		
+
 		p.expect(TOKEN_RPAREN)
-		
+
 		return &ASTNode{
 			Type:     NODE_CALL,
 			Value:    token.Value, // "int", "float", "char", or "string"
@@ -1657,7 +2054,7 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 
 	default:
 		current := p.current()
-		errMsg := fmt.Sprintf("Unexpected token %s at line %d:%d", 
+		errMsg := fmt.Sprintf("Unexpected token %s at line %d:%d",
 			tokenTypeName(current.Type), current.Line, current.Column)
 		if p.LintMode {
 			p.recordError(errMsg)
@@ -1676,9 +2073,9 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 func (p *Parser) parseArrayLiteral() *ASTNode {
 	p.expect(TOKEN_LANGLE)
 
-	// Check if this is an object literal by looking for "identifier:"
+	// Check if this is an object literal by looking for "identifier:" or "string:"
 	// Save position to restore if it's not an object
-	if p.current().Type == TOKEN_IDENTIFIER && p.peek(1).Type == TOKEN_ASSIGN {
+	if (p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_STRING) && p.peek(1).Type == TOKEN_ASSIGN {
 		// This is an object literal, not an array
 		return p.parseObjectLiteral()
 	}
@@ -1714,7 +2111,7 @@ func (p *Parser) parseArrayLiteral() *ASTNode {
 
 func (p *Parser) parseObjectLiteral() *ASTNode {
 	// TOKEN_LANGLE already consumed by parseArrayLiteral
-	
+
 	object := &ASTNode{
 		Type:     NODE_OBJECT_LITERAL,
 		DataType: "object",
@@ -1724,21 +2121,21 @@ func (p *Parser) parseObjectLiteral() *ASTNode {
 	p.inObjectLiteral = true
 
 	for p.current().Type != TOKEN_RANGLE && p.current().Type != TOKEN_EOF {
-		// Parse property name
-		if p.current().Type != TOKEN_IDENTIFIER {
+		// Parse property name (can be identifier or string)
+		if p.current().Type != TOKEN_IDENTIFIER && p.current().Type != TOKEN_STRING {
 			if p.LintMode {
 				p.recordError(fmt.Sprintf("Expected property name at line %d", p.current().Line))
 				p.advance()
 				continue
 			} else {
-				panic(fmt.Sprintf("Expected property name, got %s at line %d", 
+				panic(fmt.Sprintf("Expected property name, got %s at line %d",
 					tokenTypeName(p.current().Type), p.current().Line))
 			}
 		}
-		
+
 		propName := p.current().Value
 		p.advance()
-		
+
 		// Expect ':'
 		if p.current().Type != TOKEN_ASSIGN {
 			if p.LintMode {
@@ -1748,19 +2145,19 @@ func (p *Parser) parseObjectLiteral() *ASTNode {
 			}
 		}
 		p.advance()
-		
+
 		// Parse property value - use parseAdditiveExpression to avoid comparison operators
 		propValue := p.parseAdditiveExpression()
-		
+
 		// Create property node
 		prop := &ASTNode{
-			Type:  NODE_OBJECT_PROPERTY,
-			Value: propName,
+			Type:     NODE_OBJECT_PROPERTY,
+			Value:    propName,
 			Children: []*ASTNode{propValue},
-			Line: propValue.Line,
+			Line:     propValue.Line,
 		}
 		object.Children = append(object.Children, prop)
-		
+
 		// Check for comma or end
 		if p.current().Type == TOKEN_COMMA {
 			p.advance()
@@ -1773,16 +2170,80 @@ func (p *Parser) parseObjectLiteral() *ASTNode {
 			}
 		}
 	}
-	
+
 	p.inObjectLiteral = false
 	p.expect(TOKEN_RANGLE)
-	
+
 	// Check for member access after object literal
 	if p.current().Type == TOKEN_DOT {
 		return p.parseMemberAccessChain(object)
 	}
-	
+
 	return object
+}
+
+func (p *Parser) parseObjectOrVector2Literal() *ASTNode {
+	// Parse < ... > which could be vector2 or object literal
+	p.expect(TOKEN_LANGLE)
+	
+	// Peek ahead to determine if it's a simple vector2 <x,y> or object literal
+	savedPos := p.pos
+	isVector2 := false
+	
+	// Check for simple vector2 pattern: <number,number>
+	if p.current().Type == TOKEN_NUMBER {
+		p.advance()
+		if p.current().Type == TOKEN_COMMA {
+			p.advance()
+			if p.current().Type == TOKEN_NUMBER {
+				p.advance()
+				if p.current().Type == TOKEN_RANGLE {
+					isVector2 = true
+				}
+			}
+		}
+	} else if p.current().Type == TOKEN_IDENTIFIER {
+		// Could be <x:10,y:20> object literal or variable reference
+		p.advance()
+		if p.current().Type == TOKEN_ASSIGN {
+			// It's an object literal with named properties <x:10>
+			isVector2 = false
+		} else if p.current().Type == TOKEN_COMMA {
+			// Could be <var1,var2> - check next
+			p.advance()
+			if p.current().Type == TOKEN_IDENTIFIER {
+				p.advance()
+				if p.current().Type == TOKEN_RANGLE {
+					// Simple <x,y> with identifiers - treat as vector2-like
+					isVector2 = true
+				}
+			}
+		}
+	}
+	
+	// Restore position
+	p.pos = savedPos
+	
+	if isVector2 {
+		// Parse simple vector2: <number,number>
+		x := p.expect(TOKEN_NUMBER)
+		p.expect(TOKEN_COMMA)
+		y := p.expect(TOKEN_NUMBER)
+		p.expect(TOKEN_RANGLE)
+		
+		xNode := &ASTNode{Type: NODE_NUMBER, Value: x.Value, Line: x.Line}
+		yNode := &ASTNode{Type: NODE_NUMBER, Value: y.Value, Line: y.Line}
+		
+		return &ASTNode{
+			Type:     NODE_OBJECT_LITERAL,
+			DataType: "vector2",
+			Children: []*ASTNode{xNode, yNode},
+			Line:     x.Line,
+		}
+	} else {
+		// Parse as full object literal
+		return p.parseObjectLiteral()
+	}
 }
 
 func (p *Parser) parseDictLiteral() *ASTNode {
@@ -1826,13 +2287,13 @@ func (p *Parser) parseDictLiteral() *ASTNode {
 func (p *Parser) parseEnumDeclaration() *ASTNode {
 	// Expect 'enum' keyword
 	p.expect(TOKEN_ENUM)
-	
+
 	// Get the enum name
 	var name Token
 	if p.current().Type == TOKEN_IDENTIFIER ||
 		p.current().Type == TOKEN_COLOR_TYPE ||
 		p.current().Type == TOKEN_VECTOR2_TYPE ||
-				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
+		p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 		p.current().Type == TOKEN_INT_TYPE ||
 		p.current().Type == TOKEN_FLOAT_TYPE ||
 		p.current().Type == TOKEN_STRING_TYPE ||
@@ -1885,6 +2346,8 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 // Parse constant declaration (NAME :: value)
 func (p *Parser) parseConstantDeclaration() *ASTNode {
 	name := p.expect(TOKEN_IDENTIFIER)
+	line := name.Line
+	varName := name.Value
 	p.expect(TOKEN_DOUBLE_COLON)
 
 	// Check if this is a function declaration (has |)
@@ -1892,19 +2355,31 @@ func (p *Parser) parseConstantDeclaration() *ASTNode {
 		return p.parseFunctionWithDoubleColon(name)
 	}
 
+	// In lint mode, check if constant is being redeclared
+	if p.LintMode {
+		if existingLine, exists := p.constants[varName]; exists {
+			errMsg := fmt.Sprintf("Can't redeclare a constant declared on line %d",
+				existingLine)
+			p.recordError(errMsg)
+		} else {
+			// Register this constant
+			p.constants[varName] = line
+		}
+	}
+
 	// Check for type annotation (type=)
 	var explicitType string
 	if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 		p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
 		p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
-				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
-			p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
+		p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
+		p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 		p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 		p.current().Type == TOKEN_IDENTIFIER {
-		
+
 		// This might be a type annotation
 		possibleType := p.current().Value
-		
+
 		// Look ahead to see if there's an = after the type
 		if p.peek(1).Type == TOKEN_EQUALS {
 			explicitType = possibleType
@@ -1916,11 +2391,23 @@ func (p *Parser) parseConstantDeclaration() *ASTNode {
 	// Regular constant
 	value := p.parseExpression()
 
+	// In lint mode, track the constant's type
+	if p.LintMode {
+		if explicitType != "" {
+			p.variableTypes[varName] = explicitType
+		} else {
+			inferredType := p.inferType(value)
+			if inferredType != "unknown" {
+				p.variableTypes[varName] = inferredType
+			}
+		}
+	}
+
 	return &ASTNode{
 		Type:     NODE_CONSTANT_DECLARATION,
-		Value:    name.Value,
+		Value:    varName,
 		DataType: explicitType,
-		Line:     name.Line,
+		Line:     line,
 		Children: []*ASTNode{value},
 	}
 }
@@ -1938,23 +2425,28 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 	// Parameters
 	params := &ASTNode{Type: NODE_BLOCK}
 	hasDefaultParam := false // Track if we've seen a default parameter
-	
+
 	for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
+		// Safety check: if current token is not an identifier, break to avoid infinite loop
+		if p.current().Type != TOKEN_IDENTIFIER {
+			break
+		}
+
 		paramName := p.expect(TOKEN_IDENTIFIER)
-		
+
 		var paramType string
 		var defaultValue *ASTNode
-		
+
 		// Check for optional type annotation (after colon)
 		if p.current().Type == TOKEN_ASSIGN { // :
 			p.advance()
-			
+
 			// Type is optional - if not present, treat as generic
 			if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
 				p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
 				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
-			p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
+				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 				p.current().Type == TOKEN_IDENTIFIER {
 				paramType = p.current().Value
 				p.advance()
@@ -1966,18 +2458,18 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 			// No colon, no type - generic parameter
 			paramType = "generic"
 		}
-		
+
 		// Check for default value (= expression)
 		if p.current().Type == TOKEN_EQUALS {
 			p.advance()
 			hasDefaultParam = true
-			
+
 			// Parse the default value expression
 			defaultValue = p.parseExpression()
 		} else {
 			// Non-default parameter after default parameter is an error
 			if hasDefaultParam {
-				errMsg := fmt.Sprintf("Non-default parameter '%s' cannot follow default parameters at line %d", 
+				errMsg := fmt.Sprintf("Non-default parameter '%s' cannot follow default parameters at line %d",
 					paramName.Value, paramName.Line)
 				if p.LintMode {
 					p.recordError(errMsg)
@@ -1995,8 +2487,16 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 		}
 		params.Children = append(params.Children, param)
 
+		// In lint mode, register parameters as variables
+		if p.LintMode {
+			p.variableTypes[paramName.Value] = paramType
+		}
+
 		if p.current().Type == TOKEN_COMMA {
 			p.advance()
+		} else if p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
+			// If we're not at a comma, pipe, or EOF, something is wrong - break to avoid infinite loop
+			break
 		}
 	}
 	p.expect(TOKEN_PIPE)
@@ -2013,25 +2513,25 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 			p.advance()
 		} else {
 			returnTypes := []string{}
-			
+
 			// Parse first return type
 			if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
 				p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
 				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
-			p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
+				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 				p.current().Type == TOKEN_IDENTIFIER {
 				returnTypes = append(returnTypes, p.current().Value)
 				p.advance()
-				
+
 				// Parse additional return types (multiple returns)
 				for p.current().Type == TOKEN_COMMA {
 					p.advance()
 					if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 						p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
 						p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
-				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
-			p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
+						p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
+						p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 						p.current().Type == TOKEN_IDENTIFIER {
 						returnTypes = append(returnTypes, p.current().Value)
 						p.advance()
@@ -2040,7 +2540,7 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 					}
 				}
 			}
-			
+
 			// Join multiple return types with comma
 			if len(returnTypes) > 0 {
 				returnType = strings.Join(returnTypes, ",")
@@ -2049,12 +2549,12 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 	}
 
 	p.expect(TOKEN_ASSIGN) // :
-	
+
 	// Skip newline after :
 	if p.current().Type == TOKEN_NEWLINE {
 		p.advance()
 	}
-	
+
 	// Expect indent for function body
 	if p.current().Type == TOKEN_INDENT {
 		p.advance()
@@ -2089,7 +2589,7 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 		} else {
 			break
 		}
-		
+
 		// Safety check
 		if p.pos == oldPos {
 			break
@@ -2111,7 +2611,7 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 		} else {
 			break
 		}
-		
+
 		// Safety check
 		if p.pos == oldPos {
 			break
@@ -2143,30 +2643,80 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 	}
 
 	// Parse struct fields
-	for p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_TYPE {
+	for p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_TYPE || 
+		p.current().Type == TOKEN_NUMBER || p.current().Type == TOKEN_LANGLE {
 		if p.current().Type == TOKEN_TYPE {
 			// Nested type (e.g., "type smoke_particle:")
 			p.advance() // consume 'type'
 			typeName := p.expect(TOKEN_IDENTIFIER)
 			p.expect(TOKEN_ASSIGN)
-			
+
 			// Create nested type node
 			nestedType := &ASTNode{
 				Type:  NODE_TYPE,
 				Value: typeName.Value,
 				Line:  typeName.Line,
 			}
-			
+
 			p.skipNewlines()
 			if p.current().Type == TOKEN_INDENT {
 				p.advance()
-				
+
 				// Parse fields of nested type
 				for p.current().Type != TOKEN_DEDENT && p.current().Type != TOKEN_EOF {
-					if p.current().Type == TOKEN_IDENTIFIER {
+					if p.current().Type == TOKEN_NEWLINE {
+						p.advance()
+						continue
+					}
+
+					// If we encounter another 'type' keyword, we're done with this nested type
+					if p.current().Type == TOKEN_TYPE {
+						break
+					}
+
+					if p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_NUMBER || 
+					   p.current().Type == TOKEN_LANGLE || p.current().Type == TOKEN_STRING ||
+					   p.current().Type == TOKEN_TRUE || p.current().Type == TOKEN_FALSE ||
+					   p.current().Type == TOKEN_LBRACKET || p.current().Type == TOKEN_LBRACE {
+						// Check for default value syntax: "value field: type"
+						var defaultValue *ASTNode
+						
+						// Check if this might be a default value (number, vector2 literal, etc.)
+						if p.current().Type == TOKEN_NUMBER {
+							defaultValue = &ASTNode{
+								Type:  NODE_NUMBER,
+								Value: p.current().Value,
+								Line:  p.current().Line,
+							}
+							p.advance()
+						} else if p.current().Type == TOKEN_LANGLE {
+							// Parse vector2 or object literal default value
+							defaultValue = p.parseObjectOrVector2Literal()
+						} else if p.current().Type == TOKEN_STRING {
+							defaultValue = &ASTNode{
+								Type:  NODE_STRING,
+								Value: p.current().Value,
+								Line:  p.current().Line,
+							}
+							p.advance()
+						} else if p.current().Type == TOKEN_TRUE || p.current().Type == TOKEN_FALSE {
+							defaultValue = &ASTNode{
+								Type:  NODE_BOOLEAN,
+								Value: p.current().Value,
+								Line:  p.current().Line,
+							}
+							p.advance()
+						} else if p.current().Type == TOKEN_LBRACKET {
+							// Parse array literal default value
+							defaultValue = p.parseArrayLiteralBracket()
+						} else if p.current().Type == TOKEN_LBRACE {
+							// Parse dict literal default value
+							defaultValue = p.parseDictLiteral()
+						}
+						
 						fieldName := p.expect(TOKEN_IDENTIFIER)
 						p.expect(TOKEN_ASSIGN)
-						
+
 						// Get type
 						fieldType := p.current().Value
 						if p.current().Type == TOKEN_IDENTIFIER ||
@@ -2180,27 +2730,66 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 							p.current().Type == TOKEN_COLOR_TYPE {
 							p.advance()
 						}
-						
+
 						field := &ASTNode{
-							Type:     NODE_IDENTIFIER,
-							Value:    fieldName.Value,
-							DataType: fieldType,
-							Line:     fieldName.Line,
+							Type:         NODE_IDENTIFIER,
+							Value:        fieldName.Value,
+							DataType:     fieldType,
+							Line:         fieldName.Line,
+							DefaultValue: defaultValue,
 						}
 						nestedType.Children = append(nestedType.Children, field)
+
+						p.skipNewlines()
+					} else {
+						// Unknown token, skip to avoid infinite loop
+						p.advance()
 					}
-					
-					p.skipNewlines()
 				}
-				
+
 				if p.current().Type == TOKEN_DEDENT {
 					p.advance()
 				}
 			}
-			
+
 			struc.Children = append(struc.Children, nestedType)
 		} else {
-			// Regular field
+			// Regular field - check for default value syntax: "value field: type"
+			var defaultValue *ASTNode
+			
+			// Check if this might be a default value (number, vector2 literal, etc.)
+			if p.current().Type == TOKEN_NUMBER {
+				defaultValue = &ASTNode{
+					Type:  NODE_NUMBER,
+					Value: p.current().Value,
+					Line:  p.current().Line,
+				}
+				p.advance()
+			} else if p.current().Type == TOKEN_LANGLE {
+				// Parse vector2 or object literal default value
+				defaultValue = p.parseObjectOrVector2Literal()
+			} else if p.current().Type == TOKEN_STRING {
+				defaultValue = &ASTNode{
+					Type:  NODE_STRING,
+					Value: p.current().Value,
+					Line:  p.current().Line,
+				}
+				p.advance()
+			} else if p.current().Type == TOKEN_TRUE || p.current().Type == TOKEN_FALSE {
+				defaultValue = &ASTNode{
+					Type:  NODE_BOOLEAN,
+					Value: p.current().Value,
+					Line:  p.current().Line,
+				}
+				p.advance()
+			} else if p.current().Type == TOKEN_LBRACKET {
+				// Parse array literal default value
+				defaultValue = p.parseArrayLiteralBracket()
+			} else if p.current().Type == TOKEN_LBRACE {
+				// Parse dict literal default value
+				defaultValue = p.parseDictLiteral()
+			}
+			
 			fieldName := p.expect(TOKEN_IDENTIFIER)
 			p.expect(TOKEN_ASSIGN)
 
@@ -2218,10 +2807,11 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 			}
 
 			field := &ASTNode{
-				Type:     NODE_IDENTIFIER,
-				Value:    fieldName.Value,
-				DataType: fieldType,
-				Line:     fieldName.Line,
+				Type:         NODE_IDENTIFIER,
+				Value:        fieldName.Value,
+				DataType:     fieldType,
+				Line:         fieldName.Line,
+				DefaultValue: defaultValue,
 			}
 			struc.Children = append(struc.Children, field)
 		}
@@ -2233,7 +2823,187 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 		p.advance()
 	}
 
+	// Store struct definition for linting
+	if p.LintMode {
+		p.storeStructDefinition(struc)
+	}
+
 	return struc
+}
+
+// Store struct definition for later validation
+func (p *Parser) storeStructDefinition(struc *ASTNode) {
+	structName := struc.Value
+	structDef := &StructDefinition{
+		Name:   structName,
+		Fields: []StructField{},
+	}
+
+	// Process all fields and nested types
+	for _, child := range struc.Children {
+		if child.Type == NODE_TYPE {
+			// This is a nested type
+			nestedName := child.Value
+			nestedDef := &StructDefinition{
+				Name:   nestedName,
+				Parent: structName, // Track parent struct
+				Fields: []StructField{},
+			}
+
+			// Add parent struct fields to nested type
+			for _, field := range structDef.Fields {
+				nestedDef.Fields = append(nestedDef.Fields, field)
+			}
+
+			// Add nested type fields
+			for _, field := range child.Children {
+				nestedDef.Fields = append(nestedDef.Fields, StructField{
+					Name:         field.Value,
+					Type:         field.DataType,
+					DefaultValue: field.DefaultValue,
+				})
+			}
+
+			p.structs[nestedName] = nestedDef
+		} else {
+			// Regular field
+			structDef.Fields = append(structDef.Fields, StructField{
+				Name:         child.Value,
+				Type:         child.DataType,
+				DefaultValue: child.DefaultValue,
+			})
+		}
+	}
+
+	p.structs[structName] = structDef
+}
+
+// Track object literal properties for validation
+func (p *Parser) trackObjectLiteralProperties(varName string, object *ASTNode) {
+	if object.Type != NODE_OBJECT_LITERAL {
+		return
+	}
+
+	props := make(map[string]bool)
+	for _, prop := range object.Children {
+		if prop.Type == NODE_OBJECT_PROPERTY {
+			props[prop.Value] = true
+		}
+	}
+	p.objectLiterals[varName] = props
+}
+
+// Validate struct initialization
+func (p *Parser) validateStructInitialization(typeName string, value *ASTNode, line int) {
+	if value.Type != NODE_OBJECT_LITERAL {
+		return
+	}
+
+	// Check if it's a struct type
+	structDef, ok := p.structs[typeName]
+	if !ok {
+		return // Not a struct type, could be regular object
+	}
+
+	// Validate each property in the initialization
+	for _, prop := range value.Children {
+		if prop.Type == NODE_OBJECT_PROPERTY {
+			propName := prop.Value
+			if !p.structHasField(typeName, propName) {
+				errMsg := fmt.Sprintf("property '%s' does not exist in type '%s' (line %d)",
+					propName, structDef.Name, line)
+				p.recordError(errMsg)
+			}
+		}
+	}
+}
+
+// Validate property assignment
+func (p *Parser) validatePropertyAssignment(target *ASTNode, value *ASTNode, line int) {
+	if target.Type != NODE_MEMBER_ACCESS || len(target.Children) == 0 {
+		return
+	}
+
+	// Get the root object
+	root := target.Children[0]
+	propertyName := target.Value
+
+	varName := ""
+	objectType := ""
+
+	if root.Type == NODE_IDENTIFIER {
+		varName = root.Value
+		if vtype, ok := p.variableTypes[varName]; ok {
+			objectType = vtype
+		}
+	}
+
+	if objectType == "" {
+		return
+	}
+
+	// Normalize struct type
+	objectType = strings.TrimPrefix(objectType, "struct:")
+
+	// Check if it's an object literal
+	if objectType == "object" || objectType == "object_literal" {
+		if props, ok := p.objectLiterals[varName]; ok {
+			if !props[propertyName] {
+				errMsg := fmt.Sprintf("object literal can't have new properties added at runtime (line %d)", line)
+				p.recordError(errMsg)
+			}
+		}
+		return
+	}
+
+	// Check if it's a struct type
+	if structDef, ok := p.structs[objectType]; ok {
+		if !p.structHasField(objectType, propertyName) {
+			errMsg := fmt.Sprintf("Object property not found: %s does not exist on type %s (line %d)",
+				propertyName, structDef.Name, line)
+			p.recordError(errMsg)
+		} else {
+			// Validate type compatibility
+			fieldType := p.getStructFieldType(objectType, propertyName)
+			valueType := p.inferType(value)
+
+			if !p.checkTypeCompatibility(fieldType, valueType) {
+				errMsg := fmt.Sprintf("Type mismatch: %s:%s cannot be assigned %s value (line %d)",
+					propertyName, fieldType, valueType, line)
+				p.recordError(errMsg)
+			}
+		}
+	}
+}
+
+// Get all fields for a struct type (including parent fields)
+func (p *Parser) getStructFields(typeName string) []StructField {
+	if structDef, ok := p.structs[typeName]; ok {
+		return structDef.Fields
+	}
+	return nil
+}
+
+// Check if a struct has a field
+func (p *Parser) structHasField(typeName, fieldName string) bool {
+	fields := p.getStructFields(typeName)
+	for _, field := range fields {
+		if field.Name == fieldName {
+			return true
+		}
+	}
+	return false
+}
+
+// Get field type from struct
+func (p *Parser) getStructFieldType(typeName, fieldName string) string {
+	fields := p.getStructFields(typeName)
+	for _, field := range fields {
+		if field.Name == fieldName {
+			return field.Type
+		}
+	}
+	return ""
 }
 
 // Parse member access chain (obj.prop or obj.method||)
@@ -2264,7 +3034,7 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 						} else {
 							break
 						}
-						
+
 						// Safety check
 						if p.pos == oldPos {
 							break
@@ -2281,7 +3051,11 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 				Children: []*ASTNode{object, args},
 			}
 		} else {
-			// Simple member access
+			// Simple member access - validate in lint mode
+			if p.LintMode {
+				p.validateMemberAccess(object, member.Value, member.Line)
+			}
+
 			object = &ASTNode{
 				Type:     NODE_MEMBER_ACCESS,
 				Value:    member.Value,
@@ -2292,6 +3066,61 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 	}
 
 	return object
+}
+
+// Validate member access for struct types and object literals
+func (p *Parser) validateMemberAccess(object *ASTNode, memberName string, line int) {
+	// Get the type of the object
+	objectType := ""
+	varName := ""
+
+	if object.Type == NODE_IDENTIFIER {
+		varName = object.Value
+		if vtype, ok := p.variableTypes[varName]; ok {
+			objectType = vtype
+		}
+	} else if object.Type == NODE_MEMBER_ACCESS {
+		// For chained access, get the root variable
+		root := object
+		for root.Type == NODE_MEMBER_ACCESS && len(root.Children) > 0 {
+			root = root.Children[0]
+		}
+		if root.Type == NODE_IDENTIFIER {
+			varName = root.Value
+			if vtype, ok := p.variableTypes[varName]; ok {
+				objectType = vtype
+			}
+		}
+	} else if object.Type == NODE_OBJECT_LITERAL {
+		objectType = "object_literal"
+		// For object literals, check if this is a known variable
+		// We'll handle this when the literal is assigned to a variable
+	}
+
+	if objectType == "" {
+		return // Can't validate without type info
+	}
+
+	// Normalize struct type
+	objectType = strings.TrimPrefix(objectType, "struct:")
+
+	// Check if it's a struct type
+	if structDef, ok := p.structs[objectType]; ok {
+		if !p.structHasField(objectType, memberName) {
+			errMsg := fmt.Sprintf("accessing property '%s' which does not exist on type '%s' (line %d)",
+				memberName, structDef.Name, line)
+			p.recordError(errMsg)
+		}
+	} else if objectType == "object_literal" || strings.HasPrefix(objectType, "object") {
+		// For object literals, check if the property was defined in the literal
+		if props, ok := p.objectLiterals[varName]; ok {
+			if !props[memberName] {
+				errMsg := fmt.Sprintf("accessing property '%s' which does not exist on type 'object literal' (line %d)",
+					memberName, line)
+				p.recordError(errMsg)
+			}
+		}
+	}
 }
 
 // Parse array literal with brackets [...]
