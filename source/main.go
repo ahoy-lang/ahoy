@@ -61,15 +61,32 @@ func main() {
 
 	// Lint mode
 	if *lintFlag {
+		// First check syntax errors
 		_, errors := ahoy.ParseLint(tokens)
 		if len(errors) > 0 {
-			fmt.Printf("Found %d error(s) in %s:\n", len(errors), sourceFile)
+			fmt.Printf("Found %d syntax error(s) in %s:\n", len(errors), sourceFile)
 			for _, err := range errors {
 				fmt.Printf("  Line %d, Column %d: %s\n", err.Line, err.Column, err.Message)
 			}
 			os.Exit(1)
+		}
+
+		// Try to use LSP for comprehensive validation if available
+		lspPath, err := exec.LookPath("ahoy-lsp")
+		if err == nil {
+			// LSP is available, use it for comprehensive linting
+			cmd := exec.Command(lspPath, "--validate", sourceFile)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			err := cmd.Run()
+			if err != nil {
+				// LSP found errors
+				os.Exit(1)
+			}
 		} else {
-			fmt.Printf("✓ No errors found in %s\n", sourceFile)
+			// LSP not available, only syntax checking done
+			fmt.Printf("✓ No syntax errors found in %s\n", sourceFile)
+			fmt.Printf("  (Install ahoy-lsp to PATH for comprehensive validation)\n")
 		}
 		return
 	}

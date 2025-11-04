@@ -644,24 +644,47 @@ func (gen *CodeGenerator) generateWhenStatement(node *ahoy.ASTNode) {
 func (gen *CodeGenerator) generateWhileLoop(node *ahoy.ASTNode) {
 	gen.writeIndent()
 
-	// Check if we have an explicit loop variable (loop i till condition)
-	// Pattern: Children[0] is loop var, Children[1] is condition, Children[2] is body
-	// Old pattern: Children[0] is condition, Children[1] is body
+	// Check if we have an explicit loop variable with initialization
+	// Pattern 1: Children[0] is loop var, Children[1] is start, Children[2] is condition, Children[3] is body (loop i:start till condition)
+	// Pattern 2: Children[0] is loop var, Children[1] is start (0), Children[2] is condition, Children[3] is body (loop i till condition)
+	// Pattern 3: Children[0] is condition, Children[1] is body (loop till condition)
 	var loopVar string
 	var conditionNode *ahoy.ASTNode
 	var bodyNode *ahoy.ASTNode
 
-	if len(node.Children) == 3 && node.Children[0].Type == ahoy.NODE_IDENTIFIER {
-		// New syntax: loop i till condition
+	if len(node.Children) == 4 && node.Children[0].Type == ahoy.NODE_IDENTIFIER {
+		// Pattern 1 or 2: loop i:start till condition or loop i till condition
+		loopVar = node.Children[0].Value
+		startNode := node.Children[1]
+		conditionNode = node.Children[2]
+		bodyNode = node.Children[3]
+
+		// Create block scope for loop variable
+		gen.output.WriteString("{\n")
+		gen.indent++
+		gen.writeIndent()
+
+		// Initialize loop variable with start value
+		gen.output.WriteString(fmt.Sprintf("int %s = ", loopVar))
+		gen.generateNode(startNode)
+		gen.output.WriteString(";\n")
+		gen.writeIndent()
+	} else if len(node.Children) == 3 && node.Children[0].Type == ahoy.NODE_IDENTIFIER {
+		// Old syntax: loop i till condition (without start value)
 		loopVar = node.Children[0].Value
 		conditionNode = node.Children[1]
 		bodyNode = node.Children[2]
 
-		// Initialize loop variable
+		// Create block scope for loop variable
+		gen.output.WriteString("{\n")
+		gen.indent++
+		gen.writeIndent()
+
+		// Initialize loop variable to 0
 		gen.output.WriteString(fmt.Sprintf("int %s = 0;\n", loopVar))
 		gen.writeIndent()
 	} else {
-		// Old syntax: loop condition
+		// Pattern 3: loop till condition (no loop variable)
 		conditionNode = node.Children[0]
 		bodyNode = node.Children[1]
 	}
@@ -683,6 +706,13 @@ func (gen *CodeGenerator) generateWhileLoop(node *ahoy.ASTNode) {
 
 	gen.writeIndent()
 	gen.output.WriteString("}\n")
+
+	// Close block scope if we created one
+	if loopVar != "" {
+		gen.indent--
+		gen.writeIndent()
+		gen.output.WriteString("}\n")
+	}
 }
 
 func (gen *CodeGenerator) generateForRangeLoop(node *ahoy.ASTNode) {
@@ -756,15 +786,48 @@ func (gen *CodeGenerator) generateForLoop(node *ahoy.ASTNode) {
 func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 	gen.writeIndent()
 
-	// Check if this is the new forever loop syntax (loop i: or loop:)
-	// Pattern 1: Children[0] is identifier (loop var), Children[1] is body
-	// Pattern 2: Children[0] is body only (old syntax, infinite loop)
-	// Old pattern: Children[0-3] are init/condition/update/body
+	// Check patterns:
+	// Pattern 1: Children[0] is identifier, Children[1] is start value, Children[2] is body (loop i:start:)
+	// Pattern 2: Children[0] is identifier, Children[1] is start (0), Children[2] is body (loop i: or loop i do)
+	// Pattern 3: Children[0] is body only (loop: or loop do - infinite loop without variable)
 
-	if len(node.Children) == 2 && node.Children[0].Type == ahoy.NODE_IDENTIFIER {
-		// New syntax: loop i: (forever loop with explicit variable)
+	if len(node.Children) == 3 && node.Children[0].Type == ahoy.NODE_IDENTIFIER {
+		// Pattern 1 or 2: loop i:start: (forever loop with explicit variable and start value)
 		loopVar := node.Children[0].Value
-		gen.output.WriteString(fmt.Sprintf("for (int %s = 0; ; %s++) {\n", loopVar, loopVar))
+		
+		// Use block scope to avoid variable redeclaration
+		gen.output.WriteString("{\n")
+		gen.indent++
+		gen.writeIndent()
+		
+		gen.output.WriteString(fmt.Sprintf("int %s = ", loopVar))
+		gen.generateNode(node.Children[1])
+		gen.output.WriteString(";\n")
+		gen.writeIndent()
+		gen.output.WriteString(fmt.Sprintf("for (; ; %s++) {\n", loopVar))
+
+		gen.indent++
+		gen.generateNodeInternal(node.Children[2], false)
+		gen.indent--
+
+		gen.writeIndent()
+		gen.output.WriteString("}\n")
+		
+		gen.indent--
+		gen.writeIndent()
+		gen.output.WriteString("}\n")
+	} else if len(node.Children) == 2 && node.Children[0].Type == ahoy.NODE_IDENTIFIER {
+		// Old pattern: loop i do (forever loop with explicit variable starting at 0)
+		loopVar := node.Children[0].Value
+		
+		// Use block scope to avoid variable redeclaration
+		gen.output.WriteString("{\n")
+		gen.indent++
+		gen.writeIndent()
+		
+		gen.output.WriteString(fmt.Sprintf("int %s = 0;\n", loopVar))
+		gen.writeIndent()
+		gen.output.WriteString(fmt.Sprintf("for (; ; %s++) {\n", loopVar))
 
 		gen.indent++
 		gen.generateNodeInternal(node.Children[1], false)
@@ -772,8 +835,12 @@ func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 
 		gen.writeIndent()
 		gen.output.WriteString("}\n")
+		
+		gen.indent--
+		gen.writeIndent()
+		gen.output.WriteString("}\n")
 	} else if len(node.Children) == 1 || node.Value == "0" {
-		// Forever loop without explicit variable (loop: or loop do)
+		// Pattern 3: Forever loop without explicit variable (loop: or loop do)
 		gen.output.WriteString("for (;;) {\n")
 
 		gen.indent++
@@ -833,35 +900,83 @@ func (gen *CodeGenerator) generateForInArrayLoop(node *ahoy.ASTNode) {
 	gen.writeIndent()
 
 	// node.Children[0] is element variable name
-	// node.Children[1] is array expression
+	// node.Children[1] is array/string expression
 	// node.Children[2] is body
 
 	elementVar := node.Children[0].Value
-	arrayExpr := node.Children[1]
+	iterableExpr := node.Children[1]
 
-	// Generate unique loop counter
-	loopVar := fmt.Sprintf("__loop_i_%d", gen.varCounter)
-	gen.varCounter++
+	// Check if we're iterating over a string
+	iterableType := gen.inferType(iterableExpr)
+	
+	if iterableType == "char*" || iterableType == "string" {
+		// String iteration - iterate over characters
+		iterableName := gen.nodeToString(iterableExpr)
+		loopVar := fmt.Sprintf("__loop_i_%d", gen.varCounter)
+		gen.varCounter++
 
-	// Get array variable name for accessing size
-	arrayName := gen.nodeToString(arrayExpr)
+		gen.output.WriteString(fmt.Sprintf("for (int %s = 0; %s[%s] != '\\0'; %s++) {\n",
+			loopVar, iterableName, loopVar, loopVar))
 
-	// AhoyArray uses 'length', not 'size'
-	gen.output.WriteString(fmt.Sprintf("for (int %s = 0; %s < %s->length; %s++) {\n",
-		loopVar, loopVar, arrayName, loopVar))
+		gen.indent++
+		gen.writeIndent()
 
-	gen.indent++
-	gen.writeIndent()
+		gen.output.WriteString(fmt.Sprintf("char %s = %s[%s];\n",
+			elementVar, iterableName, loopVar))
 
-	// Cast from void* through intptr_t to int (handles stored integers correctly)
-	gen.output.WriteString(fmt.Sprintf("int %s = (intptr_t)%s->data[%s];\n",
-		elementVar, arrayName, loopVar))
+		// Register loop variable for type inference
+		oldType := gen.variables[elementVar]
+		gen.variables[elementVar] = "char"
 
-	gen.generateNodeInternal(node.Children[2], false)
-	gen.indent--
+		gen.generateNodeInternal(node.Children[2], false)
 
-	gen.writeIndent()
-	gen.output.WriteString("}\n")
+		// Restore old type
+		if oldType != "" {
+			gen.variables[elementVar] = oldType
+		} else {
+			delete(gen.variables, elementVar)
+		}
+
+		gen.indent--
+
+		gen.writeIndent()
+		gen.output.WriteString("}\n")
+	} else {
+		// Array iteration
+		loopVar := fmt.Sprintf("__loop_i_%d", gen.varCounter)
+		gen.varCounter++
+
+		arrayName := gen.nodeToString(iterableExpr)
+
+		// AhoyArray uses 'length', not 'size'
+		gen.output.WriteString(fmt.Sprintf("for (int %s = 0; %s < %s->length; %s++) {\n",
+			loopVar, loopVar, arrayName, loopVar))
+
+		gen.indent++
+		gen.writeIndent()
+
+		// Cast from void* through intptr_t to int (handles stored integers correctly)
+		gen.output.WriteString(fmt.Sprintf("int %s = (intptr_t)%s->data[%s];\n",
+			elementVar, arrayName, loopVar))
+
+		// Register loop variable for type inference
+		oldType := gen.variables[elementVar]
+		gen.variables[elementVar] = "int"
+
+		gen.generateNodeInternal(node.Children[2], false)
+
+		// Restore old type
+		if oldType != "" {
+			gen.variables[elementVar] = oldType
+		} else {
+			delete(gen.variables, elementVar)
+		}
+
+		gen.indent--
+
+		gen.writeIndent()
+		gen.output.WriteString("}\n")
+	}
 }
 
 func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
@@ -902,7 +1017,25 @@ func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
 	// Cast value through intptr_t for compatibility
 	gen.output.WriteString(fmt.Sprintf("const char* %s = (const char*)(intptr_t)%s->value;\n", valueVar, entryVar))
 
+	// Register loop variables for type inference
+	oldKeyType := gen.variables[keyVar]
+	oldValType := gen.variables[valueVar]
+	gen.variables[keyVar] = "char*"
+	gen.variables[valueVar] = "char*"
+
 	gen.generateNodeInternal(node.Children[3], false)
+
+	// Restore old types (cleanup)
+	if oldKeyType != "" {
+		gen.variables[keyVar] = oldKeyType
+	} else {
+		delete(gen.variables, keyVar)
+	}
+	if oldValType != "" {
+		gen.variables[valueVar] = oldValType
+	} else {
+		delete(gen.variables, valueVar)
+	}
 
 	gen.writeIndent()
 	gen.output.WriteString(fmt.Sprintf("%s = %s->next;\n", entryVar, entryVar))
@@ -976,8 +1109,20 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 	case "print":
 		gen.output.WriteString("printf(")
 
-		// Process format string if first argument is a string literal
-		if len(node.Children) > 0 && node.Children[0].Type == ahoy.NODE_STRING {
+		// Check if we have multiple arguments or if first arg is a format string
+		hasMultipleArgs := len(node.Children) > 1
+		firstIsString := len(node.Children) > 0 && node.Children[0].Type == ahoy.NODE_STRING
+		
+		// If first argument is a string AND it looks like a format string (has {} or %), treat it as one
+		if firstIsString && !hasMultipleArgs {
+			// Single string argument - just print it
+			formatStr := node.Children[0].Value
+			if !strings.HasSuffix(formatStr, "\\n") {
+				formatStr += "\\n"
+			}
+			gen.output.WriteString(fmt.Sprintf("\"%s\"", formatStr))
+		} else if firstIsString && (strings.Contains(node.Children[0].Value, "{}") || strings.Contains(node.Children[0].Value, "%")) {
+			// First arg is a format string with placeholders
 			formatStr := node.Children[0].Value
 			args := node.Children[1:]
 
@@ -998,18 +1143,17 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 				gen.generateNode(arg)
 			}
 		} else {
-			// No format string, infer format from argument types
+			// Multiple arguments without format string, infer format from argument types
+			// Build a single format string with spaces between arguments (Python-style)
 			if len(node.Children) > 0 {
-				for i, arg := range node.Children {
-					if i > 0 {
-						gen.output.WriteString("; printf(")
-					}
-					
-					// Infer type and generate appropriate printf call
+				formatParts := []string{}
+				
+				// Build format string with spaces between arguments
+				for _, arg := range node.Children {
 					argType := gen.inferType(arg)
 					formatSpec := ""
 					switch argType {
-					case "string":
+					case "string", "char*":
 						formatSpec = "%s"
 					case "int":
 						formatSpec = "%d"
@@ -1023,11 +1167,20 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 						formatSpec = "%d"
 					}
 					
-					gen.output.WriteString(fmt.Sprintf("\"%s\\n\", ", formatSpec))
+					formatParts = append(formatParts, formatSpec)
+				}
+				
+				// Join with spaces and add newline
+				formatStr := strings.Join(formatParts, " ") + "\\n"
+				gen.output.WriteString(fmt.Sprintf("\"%s\"", formatStr))
+				
+				// Output all arguments
+				for _, arg := range node.Children {
+					gen.output.WriteString(", ")
 					gen.generateNode(arg)
-					gen.output.WriteString(")")
 				}
 			}
+			gen.output.WriteString(")")
 			return
 		}
 		gen.output.WriteString(")")
@@ -1236,23 +1389,26 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 		}
 	}
 
-	// List of string methods
-	stringMethodsList := []string{
-		"length", "upper", "lower", "replace", "contains",
+	// Infer the object type to determine correct method routing
+	objectType := gen.inferType(object)
+
+	// List of string-only methods (not ambiguous)
+	stringOnlyMethods := []string{
+		"upper", "lower", "replace", "contains",
 		"camel_case", "snake_case", "pascal_case", "kebab_case",
 		"match", "split", "count", "lpad", "rpad", "pad",
 		"strip", "get_file",
 	}
 
-	// List of dictionary methods
+	// List of dictionary-only methods (not ambiguous)
 	dictMethodsList := []string{
-		"size", "clear", "has", "has_all", "keys", "values",
-		"sort", "stable_sort", "merge",
+		"size", "clear", "has_all", "keys", "values",
+		"stable_sort", "merge",
 	}
 
-	// Check if this is a string method
+	// Check if this is a string-only method
 	isStringMethod := false
-	for _, m := range stringMethodsList {
+	for _, m := range stringOnlyMethods {
 		if methodName == m {
 			isStringMethod = true
 			break
@@ -1268,7 +1424,26 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 		}
 	}
 
-	if isStringMethod {
+	// For "length" method, route based on object type
+	if methodName == "length" {
+		if objectType == "char*" || objectType == "string" {
+			isStringMethod = true
+		}
+		// Otherwise it's an array method (default)
+	}
+
+	// For ambiguous methods (sort, has), route based on object type
+	if methodName == "sort" || methodName == "has" || methodName == "reverse" {
+		if objectType == "dict" || objectType == "HashMap*" {
+			isDictMethod = true
+			isStringMethod = false
+		} else {
+			// Default to array method
+			isDictMethod = false
+		}
+	}
+
+	if isStringMethod || (objectType == "char*" && methodName == "length") {
 		// Track which string method is used
 		gen.stringMethods[methodName] = true
 
@@ -1286,7 +1461,7 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 			}
 		}
 		gen.output.WriteString(")")
-	} else if isDictMethod {
+	} else if isDictMethod || objectType == "dict" {
 		// Track which dict method is used
 		gen.dictMethods[methodName] = true
 
@@ -1409,7 +1584,7 @@ func (gen *CodeGenerator) mapType(langType string) string {
 		return "int"
 	case "float":
 		return "double"
-	case "string":
+	case "string", "char*":
 		return "char*"
 	case "bool":
 		return "bool"
@@ -1583,7 +1758,7 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 				}
 
 				formatSpec := "%d"
-				if varType == "string" {
+				if varType == "string" || varType == "char*" {
 					formatSpec = "%s"
 				} else if varType == "float" {
 					formatSpec = "%f"
@@ -1683,8 +1858,9 @@ func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 
 		// Infer type from the expression
 		exprType := gen.inferType(expr)
+		cType := gen.mapType(exprType)
 		gen.writeIndent()
-		gen.output.WriteString(fmt.Sprintf("%s %s = ", exprType, tempVar))
+		gen.output.WriteString(fmt.Sprintf("%s %s = ", cType, tempVar))
 		gen.generateNodeInternal(expr, false)
 		gen.output.WriteString(";\n")
 	}
@@ -1693,6 +1869,14 @@ func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 	for i, target := range leftSide.Children {
 		if i < len(temps) {
 			gen.writeIndent()
+			// Check if variable needs to be declared
+			if _, exists := gen.variables[target.Value]; !exists {
+				// Need to declare variable - infer type from temp
+				tempType := gen.inferType(rightSide.Children[i])
+				cType := gen.mapType(tempType)
+				gen.output.WriteString(fmt.Sprintf("%s ", cType))
+				gen.variables[target.Value] = tempType
+			}
 			gen.output.WriteString(fmt.Sprintf("%s = %s;\n", target.Value, temps[i]))
 		}
 	}
@@ -1725,25 +1909,36 @@ func (gen *CodeGenerator) generateMemberAccess(node *ahoy.ASTNode) {
 	memberName := node.Value
 
 	gen.generateNodeInternal(object, false)
-	gen.output.WriteString(".")
+	
+	// Check if object is a pointer type (array, dict, or struct pointer)
+	objectType := gen.inferType(object)
+	if objectType == "AhoyArray*" || objectType == "HashMap*" || objectType == "array" || objectType == "dict" ||
+	   strings.HasSuffix(objectType, "*") {
+		gen.output.WriteString("->")
+	} else {
+		gen.output.WriteString(".")
+	}
 	gen.output.WriteString(memberName)
 }
 
 // Generate array helper functions
 func (gen *CodeGenerator) writeArrayHelperFunctions() {
+	// Always write AhoyArray structure if we have array implementations
+	if gen.arrayImpls || len(gen.arrayMethods) > 0 {
+		// Array structure definition
+		gen.funcDecls.WriteString("\n// Array Helper Structure\n")
+		gen.funcDecls.WriteString("typedef struct {\n")
+		gen.funcDecls.WriteString("    int* data;\n")
+		gen.funcDecls.WriteString("    int length;\n")
+		gen.funcDecls.WriteString("    int capacity;\n")
+		gen.funcDecls.WriteString("} AhoyArray;\n\n")
+	}
+
 	if len(gen.arrayMethods) == 0 {
 		return
 	}
 
 	gen.includes["time.h"] = true // For shuffle
-
-	// Array structure definition
-	gen.funcDecls.WriteString("\n// Array Helper Structure\n")
-	gen.funcDecls.WriteString("typedef struct {\n")
-	gen.funcDecls.WriteString("    int* data;\n")
-	gen.funcDecls.WriteString("    int length;\n")
-	gen.funcDecls.WriteString("    int capacity;\n")
-	gen.funcDecls.WriteString("} AhoyArray;\n\n")
 
 	// length method
 	if gen.arrayMethods["length"] {

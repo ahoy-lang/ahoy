@@ -8,13 +8,13 @@ This document describes the new loop syntax that has been implemented in Ahoy.
 **Implementation Complete**: The new loop syntax and f-strings have been successfully implemented.
 
 ### Working Features ✓
-- `loop i from 1 to 5 do` - Range loop with explicit start and end
-- `loop i to 5 do` - Range loop from 0 to end
-- `loop i till condition do` - Conditional loop with explicit counter variable
-- `loop i do` - Forever loop with explicit counter (use with halt)
+- `loop i to 5:` - Range loop with explicit start and end
+- `loop i to 5:` - Range loop from 0 to end
+- `loop i till condition:` - Conditional loop with explicit counter variable
+- `loop i:0:` - Forever loop with explicit counter (use with halt)
 - `loop:` or `loop do` - Forever loop without counter
 - F-strings: `print|f"hello{i}\n"|` - String interpolation with variables
-- Support for both `then` and `do` keywords in if statements
+- Support for both `then` keywords in if statements
 
 ### Known Issues
 - Array iteration (`loop val in values do`) has a type mismatch bug between `AhoyArray` and `DynamicArray`
@@ -25,7 +25,7 @@ This document describes the new loop syntax that has been implemented in Ahoy.
 
 ```ahoy
 ? Loop range from 1 to 5
-loop i from 1 to 5 do
+loop i:1 to 5:
     print|f"Iteration {i}\n"|
 
 struct test:
@@ -33,29 +33,42 @@ struct test:
 		data:int
 
 ? Loop range from 0 to 5
-loop i to 5 do
+loop i to 5:
+    print|f"Count {i}\n"|
+
+? Loop range from 0 to 5
+loop i:0 to 5:
     print|f"Count {i}\n"|
 
 ? Loop conditional with word operators
-loop i till i less_than 5 do
+loop i:0 till i < 5 do
     print|f"Value: {i}\n"|
 
 ? Loop conditional with symbol operators
-loop i till i <= 5 do
+number:2
+loop till number <= 5:
     ahoy|"Count\n"|
+    number+=1
 
-? Loop forever with explicit counter
-loop i do
+values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+loop val:0 to values.length
+    print|f"Value: {val}\n"|
+
+? Loop forever with explicit counter dont run this as it will infinite loop
+loop i:0:
     print|f"Loop {i}\n"|
     if i is 5 do halt
 
 ? Loop forever without counter
-loop do
+loop:
     ahoy|"Forever!\n"|
-    halt
 
 ? Alternative syntax (also works)
-loop i till i less_than 5 do
+loop i:0 till i less_than 5 do
+    ahoy|"Count\n"|
+
+? Alternative syntax (also works)
+loop i till i < 5 do
     ahoy|"Count\n"|
 
 ? Array iteration (TODO: Fix type mismatch)

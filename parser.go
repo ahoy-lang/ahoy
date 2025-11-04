@@ -88,45 +88,78 @@ type StructDefinition struct {
 	Parent string // For nested types like smoke_particle extends particle
 }
 
+// FunctionSignature stores information about a function
+type FunctionSignature struct {
+	Name         string
+	Parameters   []ParameterInfo
+	ReturnTypes  []string
+	IsInfer      bool // True if return type is "infer"
+	FunctionNode *ASTNode // Reference to function AST for inference
+}
+
+// ParameterInfo stores parameter information
+type ParameterInfo struct {
+	Name string
+	Type string // "generic" if no type specified
+}
+
+// ArrayInfo stores information about an array's length
+type ArrayInfo struct {
+	Length  int  // -1 if unknown
+	IsKnown bool
+}
+
 type Parser struct {
-	tokens          []Token
-	pos             int
-	inFunctionCall  bool
-	inArrayLiteral  bool
-	inObjectLiteral bool
-	inDictLiteral   bool
-	LintMode        bool
-	Errors          []ParseError
-	variableTypes   map[string]string            // Track variable types
-	constants       map[string]int               // Track constant declarations (name -> line number)
-	structs         map[string]*StructDefinition // Track struct definitions
-	objectLiterals  map[string]map[string]bool   // Track object literal properties by variable name
+	tokens             []Token
+	pos                int
+	inFunctionCall     bool
+	inArrayLiteral     bool
+	inObjectLiteral    bool
+	inDictLiteral      bool
+	LintMode           bool
+	Errors             []ParseError
+	variableTypes      map[string]string            // Track variable types
+	constants          map[string]int               // Track constant declarations (name -> line number)
+	structs            map[string]*StructDefinition // Track struct definitions
+	objectLiterals     map[string]map[string]bool   // Track object literal properties by variable name
+	currentFunctionRet string                       // Track current function return type
+	functionScope      map[string]string            // Track function-local variables
+	functions          map[string]*FunctionSignature // Track function signatures
+	arrayLengths       map[string]ArrayInfo         // Track array lengths
 }
 
 func Parse(tokens []Token) *ASTNode {
 	parser := &Parser{
-		tokens:         tokens,
-		pos:            0,
-		LintMode:       false,
-		Errors:         []ParseError{},
-		variableTypes:  make(map[string]string),
-		constants:      make(map[string]int),
-		structs:        make(map[string]*StructDefinition),
-		objectLiterals: make(map[string]map[string]bool),
+		tokens:             tokens,
+		pos:                0,
+		LintMode:           false,
+		Errors:             []ParseError{},
+		variableTypes:      make(map[string]string),
+		constants:          make(map[string]int),
+		structs:            make(map[string]*StructDefinition),
+		objectLiterals:     make(map[string]map[string]bool),
+		currentFunctionRet: "",
+		functionScope:      make(map[string]string),
+		functions:          make(map[string]*FunctionSignature),
+		arrayLengths:       make(map[string]ArrayInfo),
 	}
 	return parser.parseProgram()
 }
 
 func ParseLint(tokens []Token) (*ASTNode, []ParseError) {
 	parser := &Parser{
-		tokens:         tokens,
-		pos:            0,
-		LintMode:       true,
-		Errors:         []ParseError{},
-		variableTypes:  make(map[string]string),
-		constants:      make(map[string]int),
-		structs:        make(map[string]*StructDefinition),
-		objectLiterals: make(map[string]map[string]bool),
+		tokens:             tokens,
+		pos:                0,
+		LintMode:           true,
+		Errors:             []ParseError{},
+		variableTypes:      make(map[string]string),
+		constants:          make(map[string]int),
+		structs:            make(map[string]*StructDefinition),
+		objectLiterals:     make(map[string]map[string]bool),
+		currentFunctionRet: "",
+		functionScope:      make(map[string]string),
+		functions:          make(map[string]*FunctionSignature),
+		arrayLengths:       make(map[string]ArrayInfo),
 	}
 	ast := parser.parseProgram()
 	return ast, parser.Errors
@@ -167,7 +200,7 @@ func (p *Parser) inferType(node *ASTNode) string {
 	if node == nil {
 		return "unknown"
 	}
-	
+
 	switch node.Type {
 	case NODE_NUMBER:
 		// Check if it contains a decimal point
@@ -192,7 +225,12 @@ func (p *Parser) inferType(node *ASTNode) string {
 		}
 		return "object"
 	case NODE_IDENTIFIER:
-		// Look up the variable's type
+		// Look up the variable's type - check function scope first, then global
+		if p.functionScope != nil {
+			if varType, ok := p.functionScope[node.Value]; ok {
+				return varType
+			}
+		}
 		if varType, ok := p.variableTypes[node.Value]; ok {
 			return varType
 		}
@@ -208,12 +246,12 @@ func (p *Parser) checkTypeCompatibility(expectedType, actualType string) bool {
 	if expectedType == "unknown" || actualType == "unknown" {
 		return true // Can't check unknown types
 	}
-	
+
 	// Allow int to float conversion
 	if expectedType == "float" && actualType == "int" {
 		return true
 	}
-	
+
 	// Check struct type compatibility
 	// Both "struct:typename" and "typename" should match
 	if strings.HasPrefix(expectedType, "struct:") || strings.HasPrefix(actualType, "struct:") {
@@ -221,8 +259,134 @@ func (p *Parser) checkTypeCompatibility(expectedType, actualType string) bool {
 		actualBase := strings.TrimPrefix(actualType, "struct:")
 		return expectedBase == actualBase
 	}
-	
+
 	return expectedType == actualType
+}
+
+// trackArrayMethodLength tracks array length after method calls
+func (p *Parser) trackArrayMethodLength(varName string, methodCall *ASTNode) {
+	if len(methodCall.Children) == 0 {
+		return
+	}
+	
+	object := methodCall.Children[0]
+	methodName := methodCall.Value
+	
+	// Get the source array's length
+	var sourceLength ArrayInfo
+	if object.Type == NODE_IDENTIFIER {
+		if info, ok := p.arrayLengths[object.Value]; ok {
+			sourceLength = info
+		} else {
+			sourceLength = ArrayInfo{IsKnown: false}
+		}
+	} else if object.Type == NODE_ARRAY_LITERAL {
+		sourceLength = ArrayInfo{
+			Length:  len(object.Children),
+			IsKnown: true,
+		}
+	} else {
+		sourceLength = ArrayInfo{IsKnown: false}
+	}
+	
+	// Track length based on method
+	switch methodName {
+	case "push":
+		if sourceLength.IsKnown {
+			p.arrayLengths[varName] = ArrayInfo{
+				Length:  sourceLength.Length + 1,
+				IsKnown: true,
+			}
+		}
+	case "pop":
+		if sourceLength.IsKnown && sourceLength.Length > 0 {
+			p.arrayLengths[varName] = ArrayInfo{
+				Length:  sourceLength.Length - 1,
+				IsKnown: true,
+			}
+		}
+	case "map", "sort", "reverse", "shuffle":
+		// These preserve length
+		p.arrayLengths[varName] = sourceLength
+	case "filter":
+		// Filter result length is unknown
+		p.arrayLengths[varName] = ArrayInfo{IsKnown: false}
+	default:
+		// Unknown method - can't track length
+		p.arrayLengths[varName] = ArrayInfo{IsKnown: false}
+	}
+}
+
+// validateArrayAccess checks if array access is within bounds
+func (p *Parser) validateArrayAccess(arrayNode *ASTNode, indexNode *ASTNode, line int) {
+	if !p.LintMode {
+		return
+	}
+	
+	// Only validate if array is an identifier
+	if arrayNode.Type != NODE_IDENTIFIER {
+		return
+	}
+	
+	arrayName := arrayNode.Value
+	arrayInfo, exists := p.arrayLengths[arrayName]
+	
+	if !exists || !arrayInfo.IsKnown {
+		return // Can't validate unknown array length
+	}
+	
+	// Parse the index - handle both literal numbers and unary minus
+	var index int
+	var err error
+	
+	if indexNode.Type == NODE_NUMBER {
+		index, err = strconv.Atoi(indexNode.Value)
+		if err != nil {
+			return
+		}
+	} else if indexNode.Type == NODE_UNARY_OP && indexNode.Value == "-" && len(indexNode.Children) > 0 {
+		// Handle negative numbers like -4
+		if indexNode.Children[0].Type == NODE_NUMBER {
+			val, err := strconv.Atoi(indexNode.Children[0].Value)
+			if err != nil {
+				return
+			}
+			index = -val
+		} else {
+			return // Not a literal negative number
+		}
+	} else {
+		return // Can't validate non-literal index
+	}
+	
+	length := arrayInfo.Length
+	
+	// Validate bounds
+	if index >= 0 {
+		// Positive index
+		if index >= length {
+			errMsg := fmt.Sprintf("Array index out of bounds: accessing index %d of array '%s' with length %d",
+				index, arrayName, length)
+			// Add error directly to preserve correct line number
+			p.Errors = append(p.Errors, ParseError{
+				Message: errMsg,
+				Line:    line,
+				Column:  0,
+			})
+		}
+	} else {
+		// Negative index (Python-style)
+		if index < -length {
+			errMsg := fmt.Sprintf("Array index out of bounds: accessing index %d of array '%s' with length %d (valid range: -%d to -1)",
+				index, arrayName, length, length)
+			// Add error directly to preserve correct line number
+			p.Errors = append(p.Errors, ParseError{
+				Message: errMsg,
+				Line:    line,
+				Column:  0,
+			})
+		}
+	}
 }
 
 
@@ -567,6 +731,11 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		Children: []*ASTNode{condition, ifBody},
 	}
 
+	// Skip any newlines or dedents before checking for anif/elseif
+	for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_DEDENT {
+		p.advance()
+	}
+
 	// Handle elseif/anif chains
 	for p.current().Type == TOKEN_ELSEIF || p.current().Type == TOKEN_ANIF {
 		p.advance()
@@ -609,6 +778,16 @@ func (p *Parser) parseIfStatement() *ASTNode {
 
 		// Add elseif as another condition-body pair
 		ifStmt.Children = append(ifStmt.Children, elseifCondition, elseifBody)
+		
+		// Skip any newlines before checking for next anif/elseif
+		for p.current().Type == TOKEN_NEWLINE {
+			p.advance()
+		}
+	}
+
+	// Skip any newlines before checking for else
+	for p.current().Type == TOKEN_NEWLINE {
+		p.advance()
 	}
 
 	// Handle else (no "then" after else)
@@ -869,46 +1048,129 @@ func (p *Parser) parseLoop() *ASTNode {
 	}
 
 	// Now check what follows
-	if p.current().Type == TOKEN_FROM {
-		// loop [i] from:start to end
-		p.advance()            // consume 'from'
-		p.expect(TOKEN_ASSIGN) // expect ':'
-
+	if p.current().Type == TOKEN_ASSIGN && loopVar != nil {
+		// New syntax: loop i:start ...
+		p.advance() // consume ':'
 		startExpr := p.parseExpression()
-		p.expect(TOKEN_TO)
-		endExpr := p.parseExpression()
-		p.expect(TOKEN_DO)
-		p.skipWhitespace()
-		body := p.parseBlock()
 
-		if loopVar != nil {
-			// loop i from:start to end - i is local variable
+		if p.current().Type == TOKEN_TO {
+			// loop i:start to end
+			p.advance() // consume 'to'
+			endExpr := p.parseExpression()
+			
+			// Accept either 'do' or ':'
+			if p.current().Type == TOKEN_DO {
+				p.advance()
+			} else if p.current().Type == TOKEN_ASSIGN {
+				p.advance()
+			} else {
+				if !p.LintMode {
+					panic(fmt.Sprintf("Expected 'do' or ':' after loop range at line %d", p.current().Line))
+				}
+				p.recordError("Expected 'do' or ':' after loop range")
+			}
+			p.skipWhitespace()
+			body := p.parseBlock()
+
 			loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
 			return &ASTNode{
 				Type:     NODE_FOR_RANGE_LOOP,
 				Children: []*ASTNode{loopVarNode, startExpr, endExpr, body},
 			}
-		} else {
-			// loop from:start to end - no local variable, just count iterations
-			return &ASTNode{
-				Type:     NODE_FOR_RANGE_LOOP,
-				Children: []*ASTNode{startExpr, endExpr, body},
+		} else if p.current().Type == TOKEN_TILL {
+			// loop i:start till condition
+			p.advance() // consume 'till'
+			condition := p.parseExpression()
+			
+			// Accept either 'do' or ':'
+			if p.current().Type == TOKEN_DO {
+				p.advance()
+			} else if p.current().Type == TOKEN_ASSIGN {
+				p.advance()
+			} else {
+				if !p.LintMode {
+					panic(fmt.Sprintf("Expected 'do' or ':' after loop condition at line %d", p.current().Line))
+				}
+				p.recordError("Expected 'do' or ':' after loop condition")
 			}
+			p.skipWhitespace()
+			body := p.parseBlock()
+
+			loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
+			return &ASTNode{
+				Type:     NODE_WHILE_LOOP,
+				Children: []*ASTNode{loopVarNode, startExpr, condition, body},
+			}
+		} else if p.current().Type == TOKEN_ASSIGN {
+			// loop i:start: (forever loop with counter starting at start)
+			p.advance() // consume second ':'
+			p.skipWhitespace()
+			body := p.parseBlock()
+
+			loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
+			return &ASTNode{
+				Type:     NODE_FOR_COUNT_LOOP,
+				Value:    loopVar.Value,
+				Children: []*ASTNode{loopVarNode, startExpr, body},
+			}
+		} else {
+			if !p.LintMode {
+				panic(fmt.Sprintf("Expected 'to', 'till', or ':' after loop variable initialization at line %d", p.current().Line))
+			}
+			p.recordError("Expected 'to', 'till', or ':' after loop variable initialization")
+			return &ASTNode{Type: NODE_WHILE_LOOP, Children: []*ASTNode{}}
+		}
+	} else if p.current().Type == TOKEN_TO && loopVar != nil {
+		// loop i to end (starts at 0)
+		p.advance() // consume 'to'
+		endExpr := p.parseExpression()
+		
+		// Accept either 'do' or ':'
+		if p.current().Type == TOKEN_DO {
+			p.advance()
+		} else if p.current().Type == TOKEN_ASSIGN {
+			p.advance()
+		} else {
+			if !p.LintMode {
+				panic(fmt.Sprintf("Expected 'do' or ':' after loop range at line %d", p.current().Line))
+			}
+			p.recordError("Expected 'do' or ':' after loop range")
+		}
+		p.skipWhitespace()
+		body := p.parseBlock()
+
+		loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
+		zeroNode := &ASTNode{Type: NODE_NUMBER, Value: "0"}
+		return &ASTNode{
+			Type:     NODE_FOR_RANGE_LOOP,
+			Children: []*ASTNode{loopVarNode, zeroNode, endExpr, body},
 		}
 	} else if p.current().Type == TOKEN_TILL {
 		// loop [i] till condition
 		p.advance() // consume 'till'
 		condition := p.parseExpression()
-		p.expect(TOKEN_DO)
+		
+		// Accept either 'do' or ':'
+		if p.current().Type == TOKEN_DO {
+			p.advance()
+		} else if p.current().Type == TOKEN_ASSIGN {
+			p.advance()
+		} else {
+			if !p.LintMode {
+				panic(fmt.Sprintf("Expected 'do' or ':' after loop condition at line %d", p.current().Line))
+			}
+			p.recordError("Expected 'do' or ':' after loop condition")
+		}
 		p.skipWhitespace()
 		body := p.parseBlock()
 
 		if loopVar != nil {
 			// loop i till condition - i should be initialized to 0 locally
 			loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
+			zeroNode := &ASTNode{Type: NODE_NUMBER, Value: "0"}
 			return &ASTNode{
 				Type:     NODE_WHILE_LOOP,
-				Children: []*ASTNode{loopVarNode, condition, body},
+				Children: []*ASTNode{loopVarNode, zeroNode, condition, body},
 			}
 		} else {
 			// loop till condition - no local var, should check outer scope in linting
@@ -933,7 +1195,18 @@ func (p *Parser) parseLoop() *ASTNode {
 		// Actually, we need to handle this differently - check if there was a comma after first identifier
 		// For now, simple case: loop element in array
 		collectionExpr := p.parseExpression()
-		p.expect(TOKEN_DO)
+		
+		// Accept either 'do' or ':'
+		if p.current().Type == TOKEN_DO {
+			p.advance()
+		} else if p.current().Type == TOKEN_ASSIGN {
+			p.advance()
+		} else {
+			if !p.LintMode {
+				panic(fmt.Sprintf("Expected 'do' or ':' after 'in' expression at line %d", p.current().Line))
+			}
+			p.recordError("Expected 'do' or ':' after 'in' expression")
+		}
 		p.skipWhitespace()
 		body := p.parseBlock()
 
@@ -948,7 +1221,18 @@ func (p *Parser) parseLoop() *ASTNode {
 		secondIdent := p.expect(TOKEN_IDENTIFIER)
 		p.expect(TOKEN_IN)
 		dictExpr := p.parseExpression()
-		p.expect(TOKEN_DO)
+		
+		// Accept either 'do' or ':'
+		if p.current().Type == TOKEN_DO {
+			p.advance()
+		} else if p.current().Type == TOKEN_ASSIGN {
+			p.advance()
+		} else {
+			if !p.LintMode {
+				panic(fmt.Sprintf("Expected 'do' or ':' after 'in' expression at line %d", p.current().Line))
+			}
+			p.recordError("Expected 'do' or ':' after 'in' expression")
+		}
 		p.skipWhitespace()
 		body := p.parseBlock()
 
@@ -958,19 +1242,20 @@ func (p *Parser) parseLoop() *ASTNode {
 			Type:     NODE_FOR_IN_DICT_LOOP,
 			Children: []*ASTNode{keyNode, valueNode, dictExpr, body},
 		}
-	} else if p.current().Type == TOKEN_DO {
-		// loop [i] do - infinite loop, optionally with counter
-		p.advance() // consume 'do'
+	} else if p.current().Type == TOKEN_DO || p.current().Type == TOKEN_ASSIGN {
+		// loop [i] do or loop [i] : - infinite loop, optionally with counter
+		p.advance() // consume 'do' or ':'
 		p.skipWhitespace()
 		body := p.parseBlock()
 
 		if loopVar != nil {
 			// loop i do - i starts at 0, increments each iteration
 			loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
+			zeroNode := &ASTNode{Type: NODE_NUMBER, Value: "0"}
 			return &ASTNode{
 				Type:     NODE_FOR_COUNT_LOOP,
 				Value:    loopVar.Value,
-				Children: []*ASTNode{loopVarNode, body},
+				Children: []*ASTNode{loopVarNode, zeroNode, body},
 			}
 		} else {
 			// loop do - infinite loop without counter
@@ -980,25 +1265,10 @@ func (p *Parser) parseLoop() *ASTNode {
 				Children: []*ASTNode{body},
 			}
 		}
-	} else if p.current().Type == TOKEN_ASSIGN {
-		// ERROR: loop: or loop i: is invalid - colon should only come after 'from'
-		if !p.LintMode {
-			panic(fmt.Sprintf("Unexpected ':' after loop%s at line %d. Did you mean 'from:'?",
-				func() string {
-					if loopVar != nil {
-						return " " + loopVar.Value
-					} else {
-						return ""
-					}
-				}(),
-				p.current().Line))
-		}
-		p.recordError("Unexpected ':' - colon should only follow 'from' keyword")
-		return &ASTNode{Type: NODE_WHILE_LOOP, Children: []*ASTNode{}}
 	} else {
 		// Unexpected token
 		if !p.LintMode {
-			panic(fmt.Sprintf("Expected 'from', 'till', 'in', or 'do' after loop%s at line %d",
+			panic(fmt.Sprintf("Expected 'to', 'till', 'in', 'do', or ':' after loop%s at line %d",
 				func() string {
 					if loopVar != nil {
 						return " " + loopVar.Value
@@ -1008,7 +1278,7 @@ func (p *Parser) parseLoop() *ASTNode {
 				}(),
 				p.current().Line))
 		}
-		p.recordError("Expected 'from', 'till', 'in', or 'do' after loop")
+		p.recordError("Expected 'to', 'till', 'in', 'do', or ':' after loop")
 		return &ASTNode{Type: NODE_WHILE_LOOP, Children: []*ASTNode{}}
 	}
 }
@@ -1102,20 +1372,83 @@ func (p *Parser) parsePrintStatement() *ASTNode {
 }
 
 func (p *Parser) parseReturnStatement() *ASTNode {
-	p.expect(TOKEN_RETURN)
+	returnToken := p.expect(TOKEN_RETURN)
+	line := returnToken.Line
 
-	ret := &ASTNode{Type: NODE_RETURN_STATEMENT}
+	ret := &ASTNode{Type: NODE_RETURN_STATEMENT, Line: line}
 
+	// Parse return values
+	returnValues := []*ASTNode{}
 	if p.current().Type != TOKEN_NEWLINE {
 		// Parse first expression
 		expr := p.parseOrExpression() // Use parseOrExpression to avoid consuming comma as part of expression
 		ret.Children = append(ret.Children, expr)
+		returnValues = append(returnValues, expr)
 
 		// Parse additional return values (multiple returns)
 		for p.current().Type == TOKEN_COMMA {
 			p.advance()
 			expr = p.parseOrExpression()
 			ret.Children = append(ret.Children, expr)
+			returnValues = append(returnValues, expr)
+		}
+	}
+
+	// In lint mode, validate return types against function signature
+	if p.LintMode {
+		expectedRet := p.currentFunctionRet
+
+		// Skip validation if not in a function or return type is "infer"
+		if expectedRet == "infer" {
+			return ret
+		}
+
+		// If currentFunctionRet is empty but we're in a function, treat as void
+		// We can tell we're in a function if functionScope is not nil and has entries
+		if expectedRet == "" && p.functionScope != nil && len(p.functionScope) > 0 {
+			expectedRet = "void"
+		}
+
+		// Only validate if we have a return type expectation
+		if expectedRet != "" {
+			// Parse expected return types
+			expectedTypes := []string{}
+			if expectedRet == "void" {
+				// Expecting no return value
+				expectedTypes = []string{}
+			} else {
+				expectedTypes = strings.Split(expectedRet, ",")
+			}
+
+			// Get actual return types
+			actualTypes := []string{}
+			for _, returnVal := range returnValues {
+				actualTypes = append(actualTypes, p.inferType(returnVal))
+			}
+
+			// Check if counts match
+			if len(expectedTypes) != len(actualTypes) {
+				if len(expectedTypes) == 0 && len(actualTypes) > 0 {
+					typesStr := "[" + strings.Join(actualTypes, ", ") + "]"
+					errMsg := fmt.Sprintf("Expected return type void but got multiple return types %s", typesStr)
+					p.recordError(errMsg)
+				} else if len(expectedTypes) > 0 && len(actualTypes) == 0 {
+					errMsg := fmt.Sprintf("Expected return type(s) but got none")
+					p.recordError(errMsg)
+				} else {
+					errMsg := fmt.Sprintf("Expected %d return value(s) but got %d", len(expectedTypes), len(actualTypes))
+					p.recordError(errMsg)
+				}
+			} else {
+				// Check each type
+				for i := 0; i < len(expectedTypes); i++ {
+					if !p.checkTypeCompatibility(expectedTypes[i], actualTypes[i]) {
+						errMsg := fmt.Sprintf("Return type mismatch at position %d: expected %s but got %s",
+							i+1, expectedTypes[i], actualTypes[i])
+						p.recordError(errMsg)
+					}
+				}
+			}
 		}
 	}
 
@@ -1380,7 +1713,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 		if explicitType != "" && p.current().Type == TOKEN_LANGLE {
 			// Manually handle the object literal with type name
 			p.advance() // consume <
-			
+
 			// Check for empty <>
 			if p.current().Type == TOKEN_RANGLE {
 				p.advance()
@@ -1407,12 +1740,28 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 		// Type checking in lint mode
 		if p.LintMode {
 			varName := name.Value
-			
-			// Check if this is a reassignment
-			if existingType, exists := p.variableTypes[varName]; exists {
+
+			// Check function scope first, then global scope
+			existingType := ""
+			exists := false
+
+			if p.functionScope != nil {
+				if t, ok := p.functionScope[varName]; ok {
+					existingType = t
+					exists = true
+				}
+			}
+			if !exists {
+				if t, ok := p.variableTypes[varName]; ok {
+					existingType = t
+					exists = true
+				}
+			}
+
+			if exists {
 				// Variable already declared - check type compatibility
 				inferredType := p.inferType(value)
-				
+
 				// For struct types, normalize the comparison
 				// existingType might be "typename" while inferredType is "struct:typename"
 				expectedType := existingType
@@ -1422,7 +1771,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 						expectedType = "struct:" + expectedType
 					}
 				}
-				
+
 				if !p.checkTypeCompatibility(expectedType, inferredType) {
 					errMsg := fmt.Sprintf("Type mismatch (line %d): can't use %s:%s as %s",
 						line, varName, existingType, inferredType)
@@ -1430,9 +1779,15 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				}
 			} else {
 				// First declaration - store the type
+				// If inside a function, store in function scope, otherwise global
+				targetScope := p.variableTypes
+				if p.currentFunctionRet != "" && p.functionScope != nil {
+					targetScope = p.functionScope
+				}
+
 				if explicitType != "" {
-					p.variableTypes[varName] = explicitType
-					
+					targetScope[varName] = explicitType
+
 					// Validate struct initialization
 					if value.Type == NODE_OBJECT_LITERAL {
 						p.validateStructInitialization(explicitType, value, line)
@@ -1443,8 +1798,8 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					// Infer type from value
 					inferredType := p.inferType(value)
 					if inferredType != "unknown" {
-						p.variableTypes[varName] = inferredType
-						
+						targetScope[varName] = inferredType
+
 						// Track object literal properties
 						if value.Type == NODE_OBJECT_LITERAL {
 							p.trackObjectLiteralProperties(varName, value)
@@ -1456,6 +1811,17 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				if value.Type == NODE_MEMBER_ACCESS && len(value.Children) > 0 {
 					// This is a property assignment like obj.prop: value
 					// We'll handle this in the reassignment validation below
+				}
+				
+				// Track array lengths for bounds checking
+				if value.Type == NODE_ARRAY_LITERAL {
+					p.arrayLengths[varName] = ArrayInfo{
+						Length:  len(value.Children),
+						IsKnown: true,
+					}
+				} else if value.Type == NODE_METHOD_CALL {
+					// Track arrays created by methods
+					p.trackArrayMethodLength(varName, value)
 				}
 			}
 		}
@@ -1476,11 +1842,11 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 	if p.pos+1 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_DOT {
 		// This is redundant - already handled at line 1277
 		target := p.parsePrimaryExpression()
-		
+
 		if p.current().Type == TOKEN_ASSIGN {
 			p.expect(TOKEN_ASSIGN)
 			value := p.parseExpression()
-			
+
 			if p.LintMode && target.Type == NODE_MEMBER_ACCESS {
 				p.validatePropertyAssignment(target, value, target.Line)
 			}
@@ -1793,7 +2159,7 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			p.advance()
 			index := p.parseExpression()
 			p.expect(TOKEN_RBRACKET)
-			
+
 			// Validate access syntax in lint mode
 			if p.LintMode {
 				if varType, ok := p.variableTypes[token.Value]; ok {
@@ -1806,13 +2172,20 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 					}
 				}
 			}
-			
+
 			node := &ASTNode{
 				Type:     NODE_ARRAY_ACCESS,
 				Value:    token.Value,
 				Children: []*ASTNode{index},
 				Line:     token.Line,
 			}
+			
+			// Validate array bounds in lint mode
+			if p.LintMode {
+				identNode := &ASTNode{Type: NODE_IDENTIFIER, Value: token.Value}
+				p.validateArrayAccess(identNode, index, token.Line)
+			}
+			
 			// Check for member access after array access
 			if p.current().Type == TOKEN_DOT {
 				return p.parseMemberAccessChain(node)
@@ -1861,7 +2234,7 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			if accessor.Type == NODE_STRING {
 				nodeType = NODE_OBJECT_ACCESS
 			}
-			
+
 			// Validate access syntax in lint mode
 			if p.LintMode {
 				if varType, ok := p.variableTypes[token.Value]; ok {
@@ -1884,6 +2257,13 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 				Children: []*ASTNode{accessor},
 				Line:     token.Line,
 			}
+			
+			// Validate array bounds for array access
+			if p.LintMode && nodeType == NODE_ARRAY_ACCESS {
+				identNode := &ASTNode{Type: NODE_IDENTIFIER, Value: token.Value}
+				p.validateArrayAccess(identNode, accessor, token.Line)
+			}
+			
 			// Check for member access
 			if p.current().Type == TOKEN_DOT {
 				return p.parseMemberAccessChain(node)
@@ -1896,7 +2276,7 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			p.advance()
 			key := p.parseExpression()
 			p.expect(TOKEN_RBRACE)
-			
+
 			// Validate access syntax in lint mode
 			if p.LintMode {
 				if varType, ok := p.variableTypes[token.Value]; ok {
@@ -1909,7 +2289,7 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 					}
 				}
 			}
-			
+
 			return &ASTNode{
 				Type:     NODE_DICT_ACCESS,
 				Value:    token.Value,
@@ -2185,11 +2565,11 @@ func (p *Parser) parseObjectLiteral() *ASTNode {
 func (p *Parser) parseObjectOrVector2Literal() *ASTNode {
 	// Parse < ... > which could be vector2 or object literal
 	p.expect(TOKEN_LANGLE)
-	
+
 	// Peek ahead to determine if it's a simple vector2 <x,y> or object literal
 	savedPos := p.pos
 	isVector2 := false
-	
+
 	// Check for simple vector2 pattern: <number,number>
 	if p.current().Type == TOKEN_NUMBER {
 		p.advance()
@@ -2220,20 +2600,20 @@ func (p *Parser) parseObjectOrVector2Literal() *ASTNode {
 			}
 		}
 	}
-	
+
 	// Restore position
 	p.pos = savedPos
-	
+
 	if isVector2 {
 		// Parse simple vector2: <number,number>
 		x := p.expect(TOKEN_NUMBER)
 		p.expect(TOKEN_COMMA)
 		y := p.expect(TOKEN_NUMBER)
 		p.expect(TOKEN_RANGLE)
-		
+
 		xNode := &ASTNode{Type: NODE_NUMBER, Value: x.Value, Line: x.Line}
 		yNode := &ASTNode{Type: NODE_NUMBER, Value: y.Value, Line: y.Line}
-		
+
 		return &ASTNode{
 			Type:     NODE_OBJECT_LITERAL,
 			DataType: "vector2",
@@ -2487,9 +2867,12 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 		}
 		params.Children = append(params.Children, param)
 
-		// In lint mode, register parameters as variables
+		// In lint mode, register parameters in function scope
 		if p.LintMode {
-			p.variableTypes[paramName.Value] = paramType
+			if p.functionScope == nil {
+				p.functionScope = make(map[string]string)
+			}
+			p.functionScope[paramName.Value] = paramType
 		}
 
 		if p.current().Type == TOKEN_COMMA {
@@ -2560,8 +2943,53 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 		p.advance()
 	}
 
+	// In lint mode, save the function return type and clear function scope
+	var savedFunctionRet string
+	var savedFunctionScope map[string]string
+	if p.LintMode {
+		savedFunctionRet = p.currentFunctionRet
+		savedFunctionScope = p.functionScope
+		p.currentFunctionRet = returnType
+		// Function scope already set up with parameters above
+	}
+
 	// Parse body
 	body := p.parseBlock()
+
+	// In lint mode, restore previous function context
+	if p.LintMode {
+		p.currentFunctionRet = savedFunctionRet
+		p.functionScope = savedFunctionScope
+
+		// Register function signature for later validation
+		paramInfos := []ParameterInfo{}
+		if len(fn.Children) > 0 && fn.Children[0] != nil {
+			for _, paramNode := range fn.Children[0].Children {
+				if paramNode != nil {
+					paramInfos = append(paramInfos, ParameterInfo{
+						Name: paramNode.Value,
+						Type: paramNode.DataType,
+					})
+				}
+			}
+		}
+
+		returnTypesList := []string{}
+		isInfer := false
+		if returnType == "infer" {
+			isInfer = true
+		} else if returnType != "" && returnType != "void" {
+			returnTypesList = strings.Split(returnType, ",")
+		}
+
+		p.functions[name.Value] = &FunctionSignature{
+			Name:         name.Value,
+			Parameters:   paramInfos,
+			ReturnTypes:  returnTypesList,
+			IsInfer:      isInfer,
+			FunctionNode: fn,
+		}
+	}
 
 	fn.Children = append(fn.Children, params)
 	fn.Children = append(fn.Children, body)
@@ -2572,17 +3000,38 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 
 // Parse tuple assignment (a, b : c, d)
 func (p *Parser) parseTupleAssignment() *ASTNode {
-	// Parse left side (identifiers)
+	// Parse left side (identifiers with optional type annotations)
 	leftSide := &ASTNode{Type: NODE_BLOCK}
+	line := p.current().Line
 
 	for {
 		oldPos := p.pos
 		name := p.expect(TOKEN_IDENTIFIER)
-		leftSide.Children = append(leftSide.Children, &ASTNode{
+
+		// Create identifier node
+		idNode := &ASTNode{
 			Type:  NODE_IDENTIFIER,
 			Value: name.Value,
 			Line:  name.Line,
-		})
+		}
+
+		// Check for optional type annotation (identifier:type)
+		if p.current().Type == TOKEN_ASSIGN {
+			p.advance()
+			// Check if this is a type annotation (but NOT a generic identifier, as that would consume the right side)
+			if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
+				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
+				p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
+				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE {
+				idNode.DataType = p.current().Value
+				p.advance()
+			} else {
+				// Not a type annotation, put back the colon
+				p.pos--
+			}
+		}
+
+		leftSide.Children = append(leftSide.Children, idNode)
 
 		if p.current().Type == TOKEN_COMMA {
 			p.advance()
@@ -2599,11 +3048,16 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 	p.expect(TOKEN_ASSIGN)
 
 	// Parse right side (expressions)
+	// Use parsePrimaryExpression to avoid triggering assignment checks in parseExpression
 	rightSide := &ASTNode{Type: NODE_BLOCK}
 
 	for {
 		oldPos := p.pos
-		expr := p.parseExpression()
+		var expr *ASTNode
+		
+		// Directly parse primary expression to avoid assignment parsing issues
+		expr = p.parsePrimaryExpression()
+		
 		rightSide.Children = append(rightSide.Children, expr)
 
 		if p.current().Type == TOKEN_COMMA {
@@ -2618,9 +3072,14 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 		}
 	}
 
+	// Validate tuple assignment in lint mode
+	if p.LintMode {
+		p.validateTupleAssignment(leftSide, rightSide, line)
+	}
+
 	return &ASTNode{
 		Type:     NODE_TUPLE_ASSIGNMENT,
-		Line:     leftSide.Children[0].Line,
+		Line:     line,
 		Children: []*ASTNode{leftSide, rightSide},
 	}
 }
@@ -2643,7 +3102,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 	}
 
 	// Parse struct fields
-	for p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_TYPE || 
+	for p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_TYPE ||
 		p.current().Type == TOKEN_NUMBER || p.current().Type == TOKEN_LANGLE {
 		if p.current().Type == TOKEN_TYPE {
 			// Nested type (e.g., "type smoke_particle:")
@@ -2674,13 +3133,13 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 						break
 					}
 
-					if p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_NUMBER || 
+					if p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_NUMBER ||
 					   p.current().Type == TOKEN_LANGLE || p.current().Type == TOKEN_STRING ||
 					   p.current().Type == TOKEN_TRUE || p.current().Type == TOKEN_FALSE ||
 					   p.current().Type == TOKEN_LBRACKET || p.current().Type == TOKEN_LBRACE {
 						// Check for default value syntax: "value field: type"
 						var defaultValue *ASTNode
-						
+
 						// Check if this might be a default value (number, vector2 literal, etc.)
 						if p.current().Type == TOKEN_NUMBER {
 							defaultValue = &ASTNode{
@@ -2713,7 +3172,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 							// Parse dict literal default value
 							defaultValue = p.parseDictLiteral()
 						}
-						
+
 						fieldName := p.expect(TOKEN_IDENTIFIER)
 						p.expect(TOKEN_ASSIGN)
 
@@ -2756,7 +3215,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 		} else {
 			// Regular field - check for default value syntax: "value field: type"
 			var defaultValue *ASTNode
-			
+
 			// Check if this might be a default value (number, vector2 literal, etc.)
 			if p.current().Type == TOKEN_NUMBER {
 				defaultValue = &ASTNode{
@@ -2789,7 +3248,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 				// Parse dict literal default value
 				defaultValue = p.parseDictLiteral()
 			}
-			
+
 			fieldName := p.expect(TOKEN_IDENTIFIER)
 			p.expect(TOKEN_ASSIGN)
 
@@ -2910,7 +3369,7 @@ func (p *Parser) validateStructInitialization(typeName string, value *ASTNode, l
 		if prop.Type == NODE_OBJECT_PROPERTY {
 			propName := prop.Value
 			if !p.structHasField(typeName, propName) {
-				errMsg := fmt.Sprintf("property '%s' does not exist in type '%s' (line %d)",
+				errMsg := fmt.Sprintf("Invalid property: '%s' does not exist in type '%s' (line %d)",
 					propName, structDef.Name, line)
 				p.recordError(errMsg)
 			}
@@ -3107,7 +3566,7 @@ func (p *Parser) validateMemberAccess(object *ASTNode, memberName string, line i
 	// Check if it's a struct type
 	if structDef, ok := p.structs[objectType]; ok {
 		if !p.structHasField(objectType, memberName) {
-			errMsg := fmt.Sprintf("accessing property '%s' which does not exist on type '%s' (line %d)",
+			errMsg := fmt.Sprintf("Property not found: '%s' does not exist on type '%s' (line %d)",
 				memberName, structDef.Name, line)
 			p.recordError(errMsg)
 		}
@@ -3115,7 +3574,7 @@ func (p *Parser) validateMemberAccess(object *ASTNode, memberName string, line i
 		// For object literals, check if the property was defined in the literal
 		if props, ok := p.objectLiterals[varName]; ok {
 			if !props[memberName] {
-				errMsg := fmt.Sprintf("accessing property '%s' which does not exist on type 'object literal' (line %d)",
+				errMsg := fmt.Sprintf("Property not found: '%s' does not exist on object literal (line %d)",
 					memberName, line)
 				p.recordError(errMsg)
 			}
@@ -3156,10 +3615,11 @@ func (p *Parser) parseArrayLiteralBracket() *ASTNode {
 	return array
 }
 
+
 // Check if the current position is a lambda expression (param: expr)
 func (p *Parser) isLambda() bool {
 	// Look ahead for pattern: IDENTIFIER ASSIGN expression
-	if p.current().Type == TOKEN_IDENTIFIER {
+	if p.pos+1 < len(p.tokens) {
 		// Save position
 		saved := p.pos
 		p.advance()
@@ -3187,8 +3647,8 @@ func (p *Parser) parseLambda() *ASTNode {
 
 	return &ASTNode{
 		Type:     NODE_LAMBDA,
-		Value:    param.Value,      // Parameter name
-		Children: []*ASTNode{expr}, // Lambda body
+		Value:    param.Value,
+		Children: []*ASTNode{expr},
 		Line:     param.Line,
 	}
 }
@@ -3197,10 +3657,227 @@ func (p *Parser) parseLambda() *ASTNode {
 func (p *Parser) parseLambdaBody() *ASTNode {
 	// Save the inFunctionCall flag
 	savedFlag := p.inFunctionCall
-	p.inFunctionCall = true // Prevent parseExpression from consuming PIPE
+	p.inFunctionCall = true
 
 	expr := p.parseOrExpression()
 
 	p.inFunctionCall = savedFlag
 	return expr
+}
+
+// validateTupleAssignment validates that tuple assignment types match
+func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int) {
+	if leftSide == nil || rightSide == nil {
+		return
+	}
+	
+	// Check if right side is a single function call
+	if len(rightSide.Children) == 1 && rightSide.Children[0].Type == NODE_CALL {
+		callNode := rightSide.Children[0]
+		funcName := callNode.Value
+		
+		// Look up function signature
+		funcSig := p.functions[funcName]
+		if funcSig == nil {
+			// Function not found, try to register variables anyway
+			for _, leftVar := range leftSide.Children {
+				targetScope := p.variableTypes
+				if p.currentFunctionRet != "" && p.functionScope != nil {
+					targetScope = p.functionScope
+				}
+				if leftVar.DataType != "" {
+					targetScope[leftVar.Value] = leftVar.DataType
+				}
+			}
+			return
+		}
+		
+		// Get argument types from the call
+		argTypes := []string{}
+		for _, arg := range callNode.Children {
+			argTypes = append(argTypes, p.inferType(arg))
+		}
+		
+		// Determine actual return types
+		returnTypes := []string{}
+		
+		if funcSig.IsInfer {
+			// Infer return types from function with inferred return
+			returnTypes = p.inferReturnTypesFromFunction(funcSig, argTypes)
+		} else if len(funcSig.ReturnTypes) > 0 {
+			// Use declared return types, but substitute generic parameters
+			returnTypes = p.substituteGenericTypes(funcSig, argTypes)
+		}
+		
+		// Validate count matches
+		if len(leftSide.Children) != len(returnTypes) {
+			errMsg := fmt.Sprintf("Tuple assignment mismatch: expected %d values but function returns %d",
+				len(leftSide.Children), len(returnTypes))
+			p.recordError(errMsg)
+			return
+		}
+		
+		// Validate and register each variable
+		for i, leftVar := range leftSide.Children {
+			if i >= len(returnTypes) {
+				break
+			}
+			
+			expectedType := leftVar.DataType
+			actualType := returnTypes[i]
+			
+			// If left side has type annotation, validate it matches
+			if expectedType != "" && actualType != "" {
+				if !p.checkTypeCompatibility(expectedType, actualType) {
+					errMsg := fmt.Sprintf("Tuple assignment type mismatch at position %d: variable '%s' expects %s but got %s",
+						i+1, leftVar.Value, expectedType, actualType)
+					p.recordError(errMsg)
+				}
+			}
+			
+			// Register variable with its type
+			varType := expectedType
+			if varType == "" {
+				varType = actualType
+			}
+			
+			// Store in appropriate scope
+			targetScope := p.variableTypes
+			if p.currentFunctionRet != "" && p.functionScope != nil {
+				targetScope = p.functionScope
+			}
+			targetScope[leftVar.Value] = varType
+		}
+	}
+}
+
+// substituteGenericTypes substitutes generic parameter types with actual argument types
+func (p *Parser) substituteGenericTypes(funcSig *FunctionSignature, argTypes []string) []string {
+	// Create a map of parameter name to actual type
+	genericSubstitutions := make(map[string]string)
+	
+	for i, param := range funcSig.Parameters {
+		if i < len(argTypes) {
+			if param.Type == "generic" || param.Type == "" {
+				genericSubstitutions[param.Name] = argTypes[i]
+			}
+		}
+	}
+	
+	// Substitute in return types
+	result := make([]string, len(funcSig.ReturnTypes))
+	for i, retType := range funcSig.ReturnTypes {
+		// Check if this return type is a parameter name (generic)
+		if actualType, ok := genericSubstitutions[retType]; ok {
+			result[i] = actualType
+		} else {
+			result[i] = retType
+		}
+	}
+	
+	return result
+}
+
+// inferReturnTypesFromFunction infers return types from a function with "infer" return type
+func (p *Parser) inferReturnTypesFromFunction(funcSig *FunctionSignature, argTypes []string) []string {
+	if funcSig.FunctionNode == nil || len(funcSig.FunctionNode.Children) < 2 {
+		return []string{}
+	}
+	
+	// Create substitutions for generic parameters
+	genericSubstitutions := make(map[string]string)
+	for i, param := range funcSig.Parameters {
+		if i < len(argTypes) {
+			if param.Type == "generic" || param.Type == "" {
+				genericSubstitutions[param.Name] = argTypes[i]
+			} else {
+				genericSubstitutions[param.Name] = param.Type
+			}
+		}
+	}
+	
+	// Find return statements in function body
+	body := funcSig.FunctionNode.Children[1]
+	returnTypes := p.findReturnTypes(body, genericSubstitutions)
+	
+	return returnTypes
+}
+
+// findReturnTypes finds return statement types in a function body
+func (p *Parser) findReturnTypes(node *ASTNode, substitutions map[string]string) []string {
+	if node == nil {
+		return []string{}
+	}
+	
+	if node.Type == NODE_RETURN_STATEMENT {
+		// Found a return statement - infer types of returned expressions
+		types := []string{}
+		for _, child := range node.Children {
+			typ := p.inferTypeWithSubstitutions(child, substitutions)
+			types = append(types, typ)
+		}
+		return types
+	}
+	
+	// Recursively search children
+	for _, child := range node.Children {
+		types := p.findReturnTypes(child, substitutions)
+		if len(types) > 0 {
+			return types
+		}
+	}
+	
+	return []string{}
+}
+
+// inferTypeWithSubstitutions infers type with generic parameter substitutions
+func (p *Parser) inferTypeWithSubstitutions(node *ASTNode, substitutions map[string]string) string {
+	if node == nil {
+		return "unknown"
+	}
+	
+	// If this is an identifier, check if it's a parameter with a substitution
+	if node.Type == NODE_IDENTIFIER {
+		if actualType, ok := substitutions[node.Value]; ok {
+			return actualType
+		}
+	}
+	
+	// Otherwise use normal type inference
+	return p.inferType(node)
+}
+
+// parseCallWithName parses a function call when the name has already been consumed
+func (p *Parser) parseCallWithName(funcName Token) *ASTNode {
+	// Expect opening pipe
+	p.expect(TOKEN_PIPE)
+	
+	call := &ASTNode{
+		Type:  NODE_CALL,
+		Value: funcName.Value,
+		Line:  funcName.Line,
+	}
+
+	// Set flag to prevent nested parsing issues
+	p.inFunctionCall = true
+
+	// Parse arguments until closing pipe
+	for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_NEWLINE && p.current().Type != TOKEN_EOF {
+		arg := p.parseCallArgument()
+		call.Children = append(call.Children, arg)
+
+		if p.current().Type == TOKEN_COMMA {
+			p.advance()
+		} else {
+			break
+		}
+	}
+
+	// Consume closing pipe
+	if p.current().Type == TOKEN_PIPE {
+		p.advance()
+	}
+
+	p.inFunctionCall = false
+	return call
 }
