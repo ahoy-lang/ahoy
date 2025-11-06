@@ -121,11 +121,14 @@ type Parser struct {
 	variableTypes      map[string]string            // Track variable types
 	constants          map[string]int               // Track constant declarations (name -> line number)
 	structs            map[string]*StructDefinition // Track struct definitions
+	enums              map[string][]*ASTNode        // Track enum definitions (name -> members)
 	objectLiterals     map[string]map[string]bool   // Track object literal properties by variable name
 	currentFunctionRet string                       // Track current function return type
 	functionScope      map[string]string            // Track function-local variables
 	functions          map[string]*FunctionSignature // Track function signatures
 	arrayLengths       map[string]ArrayInfo         // Track array lengths
+	cHeaders           map[string]*CHeaderInfo      // Track imported C headers (namespace -> header info)
+	cHeaderGlobal      *CHeaderInfo                 // Global C header imports (no namespace)
 }
 
 func Parse(tokens []Token) *ASTNode {
@@ -137,11 +140,14 @@ func Parse(tokens []Token) *ASTNode {
 		variableTypes:      make(map[string]string),
 		constants:          make(map[string]int),
 		structs:            make(map[string]*StructDefinition),
+		enums:              make(map[string][]*ASTNode),
 		objectLiterals:     make(map[string]map[string]bool),
 		currentFunctionRet: "",
 		functionScope:      make(map[string]string),
 		functions:          make(map[string]*FunctionSignature),
 		arrayLengths:       make(map[string]ArrayInfo),
+		cHeaders:           make(map[string]*CHeaderInfo),
+		cHeaderGlobal:      &CHeaderInfo{Functions: make(map[string]*CFunction), Enums: make(map[string]*CEnum), Defines: make(map[string]*CDefine), Structs: make(map[string]*CStruct)},
 	}
 	return parser.parseProgram()
 }
@@ -155,11 +161,14 @@ func ParseLint(tokens []Token) (*ASTNode, []ParseError) {
 		variableTypes:      make(map[string]string),
 		constants:          make(map[string]int),
 		structs:            make(map[string]*StructDefinition),
+		enums:              make(map[string][]*ASTNode),
 		objectLiterals:     make(map[string]map[string]bool),
 		currentFunctionRet: "",
 		functionScope:      make(map[string]string),
 		functions:          make(map[string]*FunctionSignature),
 		arrayLengths:       make(map[string]ArrayInfo),
+		cHeaders:           make(map[string]*CHeaderInfo),
+		cHeaderGlobal:      &CHeaderInfo{Functions: make(map[string]*CFunction), Enums: make(map[string]*CEnum), Defines: make(map[string]*CDefine), Structs: make(map[string]*CStruct)},
 	}
 	ast := parser.parseProgram()
 	return ast, parser.Errors
@@ -249,6 +258,11 @@ func (p *Parser) checkTypeCompatibility(expectedType, actualType string) bool {
 
 	// Allow int to float conversion
 	if expectedType == "float" && actualType == "int" {
+		return true
+	}
+	
+	// Allow string for char* (C string pointers)
+	if (expectedType == "char *" || expectedType == "char*" || expectedType == "const char *" || expectedType == "const char*") && actualType == "string" {
 		return true
 	}
 
@@ -1145,6 +1159,32 @@ func (p *Parser) parseLoop() *ASTNode {
 			Type:     NODE_FOR_RANGE_LOOP,
 			Children: []*ASTNode{loopVarNode, zeroNode, endExpr, body},
 		}
+	} else if p.current().Type == TOKEN_TO && loopVar == nil {
+		// loop to end (no variable, starts at 0)
+		p.advance() // consume 'to'
+		endExpr := p.parseExpression()
+		
+		// Accept either 'do' or ':'
+		if p.current().Type == TOKEN_DO {
+			p.advance()
+		} else if p.current().Type == TOKEN_ASSIGN {
+			p.advance()
+		} else {
+			if !p.LintMode {
+				panic(fmt.Sprintf("Expected 'do' or ':' after loop range at line %d", p.current().Line))
+			}
+			p.recordError("Expected 'do' or ':' after loop range")
+		}
+		p.skipWhitespace()
+		body := p.parseBlock()
+
+		// Create anonymous loop variable "_loop_i"
+		loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: "_loop_counter"}
+		zeroNode := &ASTNode{Type: NODE_NUMBER, Value: "0"}
+		return &ASTNode{
+			Type:     NODE_FOR_RANGE_LOOP,
+			Children: []*ASTNode{loopVarNode, zeroNode, endExpr, body},
+		}
 	} else if p.current().Type == TOKEN_TILL {
 		// loop [i] till condition
 		p.advance() // consume 'till'
@@ -1509,6 +1549,50 @@ func (p *Parser) parseImportStatement() *ASTNode {
 			return &ASTNode{Type: NODE_IMPORT_STATEMENT}
 		}
 		panic(fmt.Sprintf("Expected identifier or string path after import at line %d", p.current().Line))
+	}
+
+	// Parse the C header file if it ends with .h
+	if strings.HasSuffix(path, ".h") {
+		headerInfo, err := ParseCHeader(path)
+		if err == nil {
+			if namespace != "" {
+				// Store with namespace
+				p.cHeaders[namespace] = headerInfo
+			} else {
+				// Merge into global
+				for name, fn := range headerInfo.Functions {
+					p.cHeaderGlobal.Functions[name] = fn
+				}
+				for name, enum := range headerInfo.Enums {
+					p.cHeaderGlobal.Enums[name] = enum
+				}
+				for name, def := range headerInfo.Defines {
+					p.cHeaderGlobal.Defines[name] = def
+				}
+				for name, str := range headerInfo.Structs {
+					p.cHeaderGlobal.Structs[name] = str
+					
+					// Also add to p.structs for validation (lowercase first letter)
+					lowerName := ToLowerFirst(name)
+					fields := []StructField{}
+					for _, cField := range str.Fields {
+						fields = append(fields, StructField{
+							Name: cField.Name,
+							Type: cField.Type,
+						})
+					}
+					p.structs[lowerName] = &StructDefinition{
+						Name:   name,
+						Fields: fields,
+					}
+					// Also add with original name for case-insensitive matching
+					p.structs[name] = &StructDefinition{
+						Name:   name,
+						Fields: fields,
+					}
+				}
+			}
+		}
 	}
 
 	return &ASTNode{
@@ -2330,6 +2414,56 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			p.inFunctionCall = false
 			return call
 		}
+		
+		// Check if this could be a zero-argument function call (no || needed)
+		// This happens when:
+		// - It's a C function with zero params
+		// - Or it's an Ahoy function with zero params
+		// - And it's NOT followed by || (which would make it explicit)
+		isLikelyZeroArgFunc := false
+		
+		// Check C functions (global and namespaced)
+		if p.cHeaderGlobal != nil {
+			for cFuncName, cFunc := range p.cHeaderGlobal.Functions {
+				snakeName := PascalToSnake(cFuncName)
+				if snakeName == token.Value && len(cFunc.Parameters) == 0 {
+					isLikelyZeroArgFunc = true
+					break
+				}
+			}
+		}
+		
+		if !isLikelyZeroArgFunc {
+			for _, headerInfo := range p.cHeaders {
+				for cFuncName, cFunc := range headerInfo.Functions {
+					snakeName := PascalToSnake(cFuncName)
+					if snakeName == token.Value && len(cFunc.Parameters) == 0 {
+						isLikelyZeroArgFunc = true
+						break
+					}
+				}
+				if isLikelyZeroArgFunc {
+					break
+				}
+			}
+		}
+		
+		// Check Ahoy functions - look for function declarations with zero params
+		if !isLikelyZeroArgFunc && p.LintMode {
+			// In lint mode, we track function signatures
+			// For now, just check if it's a known function name
+			// (We could enhance this by tracking function parameter counts)
+		}
+		
+		// If it's a zero-arg function, create a call node
+		if isLikelyZeroArgFunc {
+			return &ASTNode{
+				Type:     NODE_CALL,
+				Value:    token.Value,
+				Line:     token.Line,
+				Children: []*ASTNode{}, // Empty args
+			}
+		}
 
 		// Check for member access (property or method)
 		if p.current().Type == TOKEN_DOT {
@@ -2704,21 +2838,51 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 		Line:  name.Line,
 	}
 
-	// Parse enum members - support multiple lines
-	for p.current().Type == TOKEN_IDENTIFIER {
+	// Parse enum members - support multiple lines with optional values
+	for p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_NUMBER {
+		var value string
+		var memberName string
+		
+		// Check if we have a number first (custom value)
+		if p.current().Type == TOKEN_NUMBER {
+			value = p.current().Value
+			p.advance()
+			
+			// Now expect the identifier
+			if p.current().Type != TOKEN_IDENTIFIER {
+				errMsg := fmt.Sprintf("Expected identifier after enum value at line %d", p.current().Line)
+				if p.LintMode {
+					p.recordError(errMsg)
+					break
+				} else {
+					panic(errMsg)
+				}
+			}
+			memberName = p.current().Value
+			p.advance()
+		} else {
+			// Just an identifier (auto-increment value)
+			memberName = p.current().Value
+			value = "" // Will be auto-assigned during codegen
+			p.advance()
+		}
+		
 		member := &ASTNode{
-			Type:  NODE_IDENTIFIER,
-			Value: p.current().Value,
-			Line:  p.current().Line,
+			Type:     NODE_IDENTIFIER,
+			Value:    memberName,
+			DataType: value, // Store the enum value in DataType field
+			Line:     p.current().Line,
 		}
 		enum.Children = append(enum.Children, member)
-		p.advance()
 		p.skipNewlines()
 	}
 
 	if p.current().Type == TOKEN_DEDENT {
 		p.advance()
 	}
+	
+	// Always track enum members (needed for codegen and validation)
+	p.enums[name.Value] = enum.Children
 
 	return enum
 }
@@ -3537,6 +3701,26 @@ func (p *Parser) validateMemberAccess(object *ASTNode, memberName string, line i
 		varName = object.Value
 		if vtype, ok := p.variableTypes[varName]; ok {
 			objectType = vtype
+		}
+		
+		// Check if it's an enum
+		if _, isEnum := p.enums[varName]; isEnum {
+			// Validate enum member
+			if members, ok := p.enums[varName]; ok {
+				found := false
+				for _, member := range members {
+					if member.Value == memberName {
+						found = true
+						break
+					}
+				}
+				if !found {
+					errMsg := fmt.Sprintf("Field '%s' does not exist on enum '%s' (line %d)",
+						memberName, varName, line)
+					p.recordError(errMsg)
+				}
+			}
+			return
 		}
 	} else if object.Type == NODE_MEMBER_ACCESS {
 		// For chained access, get the root variable

@@ -61,8 +61,10 @@ func main() {
 
 	// Lint mode
 	if *lintFlag {
-		// First check syntax errors
-		_, errors := ahoy.ParseLint(tokens)
+		// Parse the code to check for C imports
+		ast, errors := ahoy.ParseLint(tokens)
+		
+		// Check syntax errors
 		if len(errors) > 0 {
 			fmt.Printf("Found %d syntax error(s) in %s:\n", len(errors), sourceFile)
 			for _, err := range errors {
@@ -70,19 +72,28 @@ func main() {
 			}
 			os.Exit(1)
 		}
+		
+		// Check if file has C header imports
+		hasCImports := false
+		if ast != nil {
+			for _, child := range ast.Children {
+				if child.Type == ahoy.NODE_IMPORT_STATEMENT && strings.HasSuffix(child.Value, ".h") {
+					hasCImports = true
+					break
+				}
+			}
+		}
 
 		// Try to use LSP for comprehensive validation if available
-		lspPath, err := exec.LookPath("ahoy-lsp")
-		if err == nil {
-			// LSP is available, use it for comprehensive linting
-			cmd := exec.Command(lspPath, "--validate", sourceFile)
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			err := cmd.Run()
-			if err != nil {
-				// LSP found errors
-				os.Exit(1)
-			}
+		_, err := exec.LookPath("ahoy-lsp")
+		if err == nil && !hasCImports {
+			// LSP is available and no C imports, use it for comprehensive linting
+			// Note: LSP --validate mode not implemented yet
+			fmt.Printf("✓ No syntax errors found in %s\n", sourceFile)
+		} else if hasCImports {
+			// Has C imports - basic validation only (C functions can't be validated without full header parsing)
+			fmt.Printf("✓ No syntax errors found in %s\n", sourceFile)
+			fmt.Printf("  Note: File uses C imports. Use LSP in your editor for full validation.\n")
 		} else {
 			// LSP not available, only syntax checking done
 			fmt.Printf("✓ No syntax errors found in %s\n", sourceFile)
@@ -161,7 +172,39 @@ func main() {
 	// Compile C code if run flag is set
 	if *runFlag {
 		fmt.Println("Compiling C code...")
-		cmd := exec.Command("gcc", "-o", executable, outputFile, "-lm")
+		
+		// Build compilation arguments
+		compileArgs := []string{"-o", executable, outputFile}
+		
+		// Check if raylib is imported
+		hasRaylib := false
+		raylibPath := ""
+		for _, file := range pkg.Files {
+			if file.AST != nil {
+				for _, child := range file.AST.Children {
+					if child.Type == ahoy.NODE_IMPORT_STATEMENT && strings.Contains(child.Value, "raylib.h") {
+						hasRaylib = true
+						raylibPath = filepath.Dir(child.Value)
+						break
+					}
+				}
+			}
+			if hasRaylib {
+				break
+			}
+		}
+		
+		// Add raylib linking flags if needed
+		if hasRaylib {
+			if raylibPath != "" {
+				compileArgs = append(compileArgs, "-L"+raylibPath)
+			}
+			compileArgs = append(compileArgs, "-lraylib", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
+		} else {
+			compileArgs = append(compileArgs, "-lm")
+		}
+		
+		cmd := exec.Command("gcc", compileArgs...)
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			fmt.Printf("Error compiling C code:\n%s\n", output)
@@ -239,7 +282,16 @@ func MergeWithImports(pkg *Package, imports map[string]*Package) *ahoy.ASTNode {
 			if file.AST != nil {
 				for _, child := range file.AST.Children {
 					// Skip program declarations and imports
-					if child.Type == ahoy.NODE_PROGRAM_DECLARATION || child.Type == ahoy.NODE_IMPORT_STATEMENT {
+					if child.Type == ahoy.NODE_PROGRAM_DECLARATION {
+						continue
+					}
+					
+					// Keep C header imports (.h files), skip .ahoy imports
+					if child.Type == ahoy.NODE_IMPORT_STATEMENT {
+						if strings.HasSuffix(child.Value, ".h") {
+							// Keep C header imports for codegen
+							merged.Children = append(merged.Children, child)
+						}
 						continue
 					}
 					
@@ -284,8 +336,12 @@ func MergeWithImports(pkg *Package, imports map[string]*Package) *ahoy.ASTNode {
 					continue
 				}
 				
-				// Skip imports (we've already processed them)
+				// Keep C header imports (.h files), skip .ahoy imports
 				if child.Type == ahoy.NODE_IMPORT_STATEMENT {
+					if strings.HasSuffix(child.Value, ".h") {
+						// Keep C header imports for codegen
+						merged.Children = append(merged.Children, child)
+					}
 					continue
 				}
 				

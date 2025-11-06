@@ -149,8 +149,15 @@ func (pm *PackageManager) ResolveImport(importPath string, fromFile string) (*Pa
 	} else if strings.HasSuffix(resolvedPath, ".ahoy") {
 		// Load single file or package starting from this file
 		pkg, err = pm.LoadPackageFromFile(resolvedPath)
+	} else if strings.HasSuffix(resolvedPath, ".h") {
+		// C header file - create empty package (parsing handled by compiler)
+		pkg = &Package{
+			Name:  filepath.Base(resolvedPath),
+			Files: []PackageFile{},
+		}
+		err = nil
 	} else {
-		return nil, fmt.Errorf("import path must be a directory or .ahoy file: %s", importPath)
+		return nil, fmt.Errorf("import path must be a directory, .ahoy file, or .h file: %s", importPath)
 	}
 
 	if err != nil {

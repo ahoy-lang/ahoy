@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"ahoy"
@@ -13,10 +14,32 @@ func snakeToPascal(s string) string {
 		return s
 	}
 
+	// Common acronyms that should be uppercase
+	acronyms := map[string]string{
+		"fps": "FPS",
+		"api": "API",
+		"url": "URL",
+		"http": "HTTP",
+		"https": "HTTPS",
+		"rgb": "RGB",
+		"rgba": "RGBA",
+		"gpu": "GPU",
+		"cpu": "CPU",
+		"ui": "UI",
+		"id": "ID",
+		"uuid": "UUID",
+	}
+
 	parts := strings.Split(s, "_")
 	for i, part := range parts {
 		if len(part) > 0 {
-			parts[i] = strings.ToUpper(string(part[0])) + part[1:]
+			// Check if this part is a known acronym
+			if acronymUpper, ok := acronyms[strings.ToLower(part)]; ok {
+				parts[i] = acronymUpper
+			} else {
+				// Normal word - capitalize first letter
+				parts[i] = strings.ToUpper(string(part[0])) + part[1:]
+			}
 		}
 	}
 	return strings.Join(parts, "")
@@ -30,6 +53,7 @@ type CodeGenerator struct {
 	includes      map[string]bool
 	variables     map[string]string // variable name -> type
 	constants     map[string]bool   // constant name -> declared
+	enums         map[string]map[string]bool // enum name -> {member names}
 	hasError      bool              // Track if error occurred
 	arrayImpls    bool              // Track if we've added array implementation
 	arrayMethods  map[string]bool   // Track which array methods are used
@@ -43,6 +67,7 @@ func generateC(ast *ahoy.ASTNode) string {
 		includes:      make(map[string]bool),
 		variables:     make(map[string]string),
 		constants:     make(map[string]bool),
+		enums:         make(map[string]map[string]bool),
 		hasError:      false,
 		arrayImpls:    false,
 		arrayMethods:  make(map[string]bool),
@@ -82,7 +107,12 @@ func generateC(ast *ahoy.ASTNode) string {
 
 	// Write includes
 	for include := range gen.includes {
-		result.WriteString(fmt.Sprintf("#include <%s>\n", include))
+		// Use angle brackets for system includes, quotes for local .h files
+		if strings.HasSuffix(include, ".h") && (strings.HasPrefix(include, "/") || strings.HasPrefix(include, ".")) {
+			result.WriteString(fmt.Sprintf("#include \"%s\"\n", include))
+		} else {
+			result.WriteString(fmt.Sprintf("#include <%s>\n", include))
+		}
 	}
 	result.WriteString("\n")
 
@@ -478,23 +508,34 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 		
 		// Special handling for object literals - they define their own type inline
 		if valueNode.Type == ahoy.NODE_OBJECT_LITERAL {
-			gen.output.WriteString("struct { ")
-			// Generate field declarations
-			for _, prop := range valueNode.Children {
-				if prop.Type == ahoy.NODE_OBJECT_PROPERTY {
-					propType := gen.inferType(prop.Children[0])
-					gen.output.WriteString(propType)
-					gen.output.WriteString(" ")
-					gen.output.WriteString(prop.Value)
-					gen.output.WriteString("; ")
+			// Check if this is a typed struct literal (e.g., rectangle<...>)
+			if valueNode.Value != "" {
+				// Use the C struct type name (capitalize first letter)
+				structName := capitalizeFirst(valueNode.Value)
+				gen.output.WriteString(fmt.Sprintf("%s %s = ", structName, node.Value))
+				gen.generateNode(valueNode)
+				gen.output.WriteString(";\n")
+				gen.variables[node.Value] = valueNode.Value
+			} else {
+				// Anonymous struct
+				gen.output.WriteString("struct { ")
+				// Generate field declarations
+				for _, prop := range valueNode.Children {
+					if prop.Type == ahoy.NODE_OBJECT_PROPERTY {
+						propType := gen.inferType(prop.Children[0])
+						gen.output.WriteString(propType)
+						gen.output.WriteString(" ")
+						gen.output.WriteString(prop.Value)
+						gen.output.WriteString("; ")
+					}
 				}
+				gen.output.WriteString("} ")
+				gen.output.WriteString(node.Value)
+				gen.output.WriteString(" = ")
+				gen.generateNode(valueNode)
+				gen.output.WriteString(";\n")
+				gen.variables[node.Value] = "object"
 			}
-			gen.output.WriteString("} ")
-			gen.output.WriteString(node.Value)
-			gen.output.WriteString(" = ")
-			gen.generateNode(valueNode)
-			gen.output.WriteString(";\n")
-			gen.variables[node.Value] = "object"
 		} else {
 			varType := gen.inferType(valueNode)
 			gen.variables[node.Value] = varType
@@ -731,7 +772,7 @@ func (gen *CodeGenerator) generateForRangeLoop(node *ahoy.ASTNode) {
 
 		gen.output.WriteString(fmt.Sprintf("for (int %s = ", loopVar))
 		gen.generateNode(node.Children[1])
-		gen.output.WriteString(fmt.Sprintf("; %s <= ", loopVar))
+		gen.output.WriteString(fmt.Sprintf("; %s < ", loopVar))
 		gen.generateNode(node.Children[2])
 		gen.output.WriteString(fmt.Sprintf("; %s++) {\n", loopVar))
 
@@ -1720,6 +1761,12 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 	}
 }
 
+// isEnumType checks if a name is an enum type
+func (gen *CodeGenerator) isEnumType(name string) bool {
+	_, exists := gen.enums[name]
+	return exists
+}
+
 func (gen *CodeGenerator) nodeToString(node *ahoy.ASTNode) string {
 	oldOutput := gen.output
 	gen.output = strings.Builder{}
@@ -1817,13 +1864,35 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 func (gen *CodeGenerator) generateEnum(node *ahoy.ASTNode) {
 	enumName := node.Value
 
+	// Track enum members for validation
+	if gen.enums[enumName] == nil {
+		gen.enums[enumName] = make(map[string]bool)
+	}
+
 	gen.writeIndent()
 	gen.output.WriteString(fmt.Sprintf("typedef enum {\n"))
 	gen.indent++
 
-	for i, member := range node.Children {
+	nextAutoValue := 0
+	for _, member := range node.Children {
 		gen.writeIndent()
-		gen.output.WriteString(fmt.Sprintf("%s_%s = %d,\n", enumName, member.Value, i))
+		
+		// Track this member
+		gen.enums[enumName][member.Value] = true
+		
+		// Check if member has a custom value (stored in DataType field)
+		if member.DataType != "" {
+			// Use the custom value
+			gen.output.WriteString(fmt.Sprintf("%s_%s = %s,\n", enumName, member.Value, member.DataType))
+			// Parse the value to set nextAutoValue for next member
+			if val, err := strconv.Atoi(member.DataType); err == nil {
+				nextAutoValue = val + 1
+			}
+		} else {
+			// Auto-increment value
+			gen.output.WriteString(fmt.Sprintf("%s_%s = %d,\n", enumName, member.Value, nextAutoValue))
+			nextAutoValue++
+		}
 	}
 
 	gen.indent--
@@ -1907,6 +1976,18 @@ func (gen *CodeGenerator) generateStruct(node *ahoy.ASTNode) {
 func (gen *CodeGenerator) generateMemberAccess(node *ahoy.ASTNode) {
 	object := node.Children[0]
 	memberName := node.Value
+
+	// Check if this is enum member access (enum_name.MEMBER)
+	if object.Type == ahoy.NODE_IDENTIFIER {
+		// Check if the identifier is an enum name
+		if gen.isEnumType(object.Value) {
+			// Generate as: enum_name_MEMBER
+			gen.output.WriteString(object.Value)
+			gen.output.WriteString("_")
+			gen.output.WriteString(memberName)
+			return
+		}
+	}
 
 	gen.generateNodeInternal(object, false)
 	
@@ -2727,7 +2808,15 @@ func (gen *CodeGenerator) writeStringHelperFunctions() {
 
 func (gen *CodeGenerator) generateObjectLiteral(node *ahoy.ASTNode) {
 	// Generate compound literal initialization
-	// The struct definition is already generated in generateAssignment
+	// If node.Value is set, it's a typed literal (e.g., rectangle<...>)
+	// Need to generate: (Rectangle){...}
+	
+	if node.Value != "" {
+		// Typed object literal - capitalize first letter for C struct name
+		structName := capitalizeFirst(node.Value)
+		gen.output.WriteString(fmt.Sprintf("(%s)", structName))
+	}
+	
 	gen.output.WriteString("{")
 	
 	// Generate field initializations
@@ -2746,6 +2835,14 @@ func (gen *CodeGenerator) generateObjectLiteral(node *ahoy.ASTNode) {
 	}
 	
 	gen.output.WriteString("}")
+}
+
+// capitalizeFirst capitalizes the first letter of a string
+func capitalizeFirst(s string) string {
+	if len(s) == 0 {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 func (gen *CodeGenerator) generateObjectAccess(node *ahoy.ASTNode) {
