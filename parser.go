@@ -109,6 +109,49 @@ type ArrayInfo struct {
 	IsKnown bool
 }
 
+// C Header parsing types
+type CFunction struct {
+	Name       string
+	ReturnType string
+	Parameters []CParameter
+	Line       int // Line number in header file
+}
+
+type CParameter struct {
+	Name string
+	Type string
+}
+
+type CEnum struct {
+	Name   string
+	Values map[string]int
+	Line   int // Line number in header file
+}
+
+type CDefine struct {
+	Name  string
+	Value string
+	Line  int // Line number in header file
+}
+
+type CStructField struct {
+	Name string
+	Type string
+}
+
+type CStruct struct {
+	Name   string
+	Fields []CStructField
+	Line   int // Line number in header file
+}
+
+type CHeaderInfo struct {
+	Functions map[string]*CFunction
+	Enums     map[string]*CEnum
+	Defines   map[string]*CDefine
+	Structs   map[string]*CStruct
+}
+
 type Parser struct {
 	tokens             []Token
 	pos                int
@@ -1565,9 +1608,24 @@ func (p *Parser) parseImportStatement() *ASTNode {
 				}
 				for name, enum := range headerInfo.Enums {
 					p.cHeaderGlobal.Enums[name] = enum
+					
+					// Add enum values as constants
+					for valueName := range enum.Values {
+						// Enum values are already in snake_case style (KEY_RIGHT, etc.)
+						// Make them available as identifiers
+						p.variableTypes[valueName] = "int" // Enums are integers
+					}
 				}
 				for name, def := range headerInfo.Defines {
 					p.cHeaderGlobal.Defines[name] = def
+					
+					// Add defines as constants (color constants like RAYWHITE)
+					// Determine type based on value
+					defType := "Color" // Most defines in raylib are colors
+					if strings.Contains(def.Value, "CLITERAL(Color)") {
+						defType = "Color"
+					}
+					p.variableTypes[name] = defType
 				}
 				for name, str := range headerInfo.Structs {
 					p.cHeaderGlobal.Structs[name] = str
