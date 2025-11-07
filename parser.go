@@ -93,7 +93,7 @@ type FunctionSignature struct {
 	Name         string
 	Parameters   []ParameterInfo
 	ReturnTypes  []string
-	IsInfer      bool // True if return type is "infer"
+	IsInfer      bool     // True if return type is "infer"
 	FunctionNode *ASTNode // Reference to function AST for inference
 }
 
@@ -105,7 +105,7 @@ type ParameterInfo struct {
 
 // ArrayInfo stores information about an array's length
 type ArrayInfo struct {
-	Length  int  // -1 if unknown
+	Length  int // -1 if unknown
 	IsKnown bool
 }
 
@@ -161,17 +161,17 @@ type Parser struct {
 	inDictLiteral      bool
 	LintMode           bool
 	Errors             []ParseError
-	variableTypes      map[string]string            // Track variable types
-	constants          map[string]int               // Track constant declarations (name -> line number)
-	structs            map[string]*StructDefinition // Track struct definitions
-	enums              map[string][]*ASTNode        // Track enum definitions (name -> members)
-	objectLiterals     map[string]map[string]bool   // Track object literal properties by variable name
-	currentFunctionRet string                       // Track current function return type
-	functionScope      map[string]string            // Track function-local variables
+	variableTypes      map[string]string             // Track variable types
+	constants          map[string]int                // Track constant declarations (name -> line number)
+	structs            map[string]*StructDefinition  // Track struct definitions
+	enums              map[string][]*ASTNode         // Track enum definitions (name -> members)
+	objectLiterals     map[string]map[string]bool    // Track object literal properties by variable name
+	currentFunctionRet string                        // Track current function return type
+	functionScope      map[string]string             // Track function-local variables
 	functions          map[string]*FunctionSignature // Track function signatures
-	arrayLengths       map[string]ArrayInfo         // Track array lengths
-	cHeaders           map[string]*CHeaderInfo      // Track imported C headers (namespace -> header info)
-	cHeaderGlobal      *CHeaderInfo                 // Global C header imports (no namespace)
+	arrayLengths       map[string]ArrayInfo          // Track array lengths
+	cHeaders           map[string]*CHeaderInfo       // Track imported C headers (namespace -> header info)
+	cHeaderGlobal      *CHeaderInfo                  // Global C header imports (no namespace)
 }
 
 func Parse(tokens []Token) *ASTNode {
@@ -303,7 +303,7 @@ func (p *Parser) checkTypeCompatibility(expectedType, actualType string) bool {
 	if expectedType == "float" && actualType == "int" {
 		return true
 	}
-	
+
 	// Allow string for char* (C string pointers)
 	if (expectedType == "char *" || expectedType == "char*" || expectedType == "const char *" || expectedType == "const char*") && actualType == "string" {
 		return true
@@ -325,10 +325,10 @@ func (p *Parser) trackArrayMethodLength(varName string, methodCall *ASTNode) {
 	if len(methodCall.Children) == 0 {
 		return
 	}
-	
+
 	object := methodCall.Children[0]
 	methodName := methodCall.Value
-	
+
 	// Get the source array's length
 	var sourceLength ArrayInfo
 	if object.Type == NODE_IDENTIFIER {
@@ -345,7 +345,7 @@ func (p *Parser) trackArrayMethodLength(varName string, methodCall *ASTNode) {
 	} else {
 		sourceLength = ArrayInfo{IsKnown: false}
 	}
-	
+
 	// Track length based on method
 	switch methodName {
 	case "push":
@@ -379,23 +379,23 @@ func (p *Parser) validateArrayAccess(arrayNode *ASTNode, indexNode *ASTNode, lin
 	if !p.LintMode {
 		return
 	}
-	
+
 	// Only validate if array is an identifier
 	if arrayNode.Type != NODE_IDENTIFIER {
 		return
 	}
-	
+
 	arrayName := arrayNode.Value
 	arrayInfo, exists := p.arrayLengths[arrayName]
-	
+
 	if !exists || !arrayInfo.IsKnown {
 		return // Can't validate unknown array length
 	}
-	
+
 	// Parse the index - handle both literal numbers and unary minus
 	var index int
 	var err error
-	
+
 	if indexNode.Type == NODE_NUMBER {
 		index, err = strconv.Atoi(indexNode.Value)
 		if err != nil {
@@ -415,9 +415,9 @@ func (p *Parser) validateArrayAccess(arrayNode *ASTNode, indexNode *ASTNode, lin
 	} else {
 		return // Can't validate non-literal index
 	}
-	
+
 	length := arrayInfo.Length
-	
+
 	// Validate bounds
 	if index >= 0 {
 		// Positive index
@@ -445,7 +445,6 @@ func (p *Parser) validateArrayAccess(arrayNode *ASTNode, indexNode *ASTNode, lin
 		}
 	}
 }
-
 
 // Helper function to get readable token name
 func tokenTypeName(t TokenType) string {
@@ -527,7 +526,7 @@ func (p *Parser) parseProgram() *ASTNode {
 	program := &ASTNode{Type: NODE_PROGRAM}
 
 	for p.current().Type != TOKEN_EOF {
-		if p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_SEMICOLON || p.current().Type == TOKEN_DEDENT {
+		if p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_SEMICOLON || p.current().Type == TOKEN_DEDENT || p.current().Type == TOKEN_END {
 			p.advance()
 			continue
 		}
@@ -587,6 +586,9 @@ func (p *Parser) parseStatement() *ASTNode {
 	case TOKEN_NEXT:
 		p.advance()
 		return &ASTNode{Type: NODE_NEXT, Line: p.current().Line}
+	case TOKEN_END:
+		// 'end' terminates blocks, don't parse as statement
+		return nil
 	case TOKEN_ASSERT:
 		return p.parseAssertStatement()
 	case TOKEN_DEFER:
@@ -728,6 +730,18 @@ func (p *Parser) parseFunction() *ASTNode {
 			p.advance()
 		}
 		body = p.parseBlock()
+
+		// Consume 'end' keyword for multi-line functions
+		if p.current().Type == TOKEN_END {
+			p.advance()
+		} else {
+			errMsg := fmt.Sprintf("Expected 'end' to close function at line %d", p.current().Line)
+			if p.LintMode {
+				p.recordError(errMsg)
+			} else {
+				panic(errMsg)
+			}
+		}
 	} else {
 		// Inline function body
 		body = &ASTNode{Type: NODE_BLOCK}
@@ -745,6 +759,7 @@ func (p *Parser) parseFunction() *ASTNode {
 }
 
 func (p *Parser) parseIfStatement() *ASTNode {
+	startLine := p.current().Line
 	p.expect(TOKEN_IF)
 	condition := p.parseExpression()
 
@@ -768,6 +783,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 	p.skipWhitespace()
 
 	// Check for inline if statement (no newline after then)
+	isMultiLine := false
 	var ifBody *ASTNode
 	if p.current().Type != TOKEN_NEWLINE {
 		// Inline: parse single statement
@@ -778,6 +794,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		}
 	} else {
 		// Multi-line: parse block
+		isMultiLine = true
 		p.advance() // skip newline
 		p.skipWhitespace()
 		ifBody = p.parseBlock()
@@ -828,6 +845,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 			}
 		} else {
 			// Multi-line
+			isMultiLine = true
 			p.advance() // skip newline
 			p.skipWhitespace()
 			elseifBody = p.parseBlock()
@@ -835,16 +853,11 @@ func (p *Parser) parseIfStatement() *ASTNode {
 
 		// Add elseif as another condition-body pair
 		ifStmt.Children = append(ifStmt.Children, elseifCondition, elseifBody)
-		
-		// Skip any newlines before checking for next anif/elseif
-		for p.current().Type == TOKEN_NEWLINE {
+
+		// Skip any newlines or dedents before checking for next anif/elseif
+		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_DEDENT {
 			p.advance()
 		}
-	}
-
-	// Skip any newlines before checking for else
-	for p.current().Type == TOKEN_NEWLINE {
-		p.advance()
 	}
 
 	// Handle else (no "then" after else)
@@ -862,17 +875,38 @@ func (p *Parser) parseIfStatement() *ASTNode {
 			}
 		} else {
 			// Multi-line
+			isMultiLine = true
 			p.expect(TOKEN_NEWLINE)
 			p.expect(TOKEN_INDENT)
 			elseBody = p.parseBlock()
 		}
 		ifStmt.Children = append(ifStmt.Children, elseBody)
+
+		// Skip any newlines or dedents before 'end'
+		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_DEDENT {
+			p.advance()
+		}
+	}
+
+	// Multi-line if statements require 'end'
+	if isMultiLine {
+		if p.current().Type == TOKEN_END {
+			p.advance() // consume 'end'
+		} else {
+			errMsg := fmt.Sprintf("Expected 'end' to close if statement at line %d", startLine)
+			if p.LintMode {
+				p.recordError(errMsg)
+			} else {
+				panic(errMsg)
+			}
+		}
 	}
 
 	return ifStmt
 }
 
 func (p *Parser) parseSwitchStatement() *ASTNode {
+	startLine := p.current().Line
 	p.expect(TOKEN_SWITCH)
 	expr := p.parseExpression()
 
@@ -891,6 +925,9 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 			panic(errMsg)
 		}
 	}
+
+	// Check if this is a one-line switch (no newline after 'on'/'then')
+	isOneLine := p.current().Type != TOKEN_NEWLINE && p.current().Type != TOKEN_INDENT
 
 	// Expect and consume indent after switch keyword
 	p.skipNewlines()
@@ -912,10 +949,10 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 		}
 
 		// Check for end of switch
-		if p.current().Type == TOKEN_DEDENT || p.current().Type == TOKEN_EOF ||
-			p.current().Type == TOKEN_IF || p.current().Type == TOKEN_LOOP ||
-			p.current().Type == TOKEN_FUNC || p.current().Type == TOKEN_RETURN ||
-			p.current().Type == TOKEN_SWITCH {
+		if p.current().Type == TOKEN_END || p.current().Type == TOKEN_DEDENT ||
+			p.current().Type == TOKEN_EOF || p.current().Type == TOKEN_IF ||
+			p.current().Type == TOKEN_LOOP || p.current().Type == TOKEN_FUNC ||
+			p.current().Type == TOKEN_RETURN || p.current().Type == TOKEN_SWITCH {
 			break
 		}
 
@@ -1089,10 +1126,28 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 		// Continue to next case (don't break - newlines separate cases now)
 	}
 
+	// Consume 'end' keyword only for multi-line switch statements
+	if p.current().Type == TOKEN_DEDENT {
+		p.advance()
+	}
+	if !isOneLine {
+		if p.current().Type == TOKEN_END {
+			p.advance()
+		} else {
+			errMsg := fmt.Sprintf("Expected 'end' to close switch statement at line %d", startLine)
+			if p.LintMode {
+				p.recordError(errMsg)
+			} else {
+				panic(errMsg)
+			}
+		}
+	}
+
 	return switchStmt
 }
 
 func (p *Parser) parseLoop() *ASTNode {
+	startLine := p.current().Line
 	p.expect(TOKEN_LOOP)
 
 	var loopVar *Token = nil
@@ -1114,7 +1169,7 @@ func (p *Parser) parseLoop() *ASTNode {
 			// loop i:start to end
 			p.advance() // consume 'to'
 			endExpr := p.parseExpression()
-			
+
 			// Accept either 'do' or ':'
 			if p.current().Type == TOKEN_DO {
 				p.advance()
@@ -1127,7 +1182,39 @@ func (p *Parser) parseLoop() *ASTNode {
 				p.recordError("Expected 'do' or ':' after loop range")
 			}
 			p.skipWhitespace()
-			body := p.parseBlock()
+
+			// Check for inline loop (no newline after do)
+			isMultiLine := false
+			var body *ASTNode
+			if p.current().Type != TOKEN_NEWLINE {
+				// Inline: parse single statement
+				body = &ASTNode{Type: NODE_BLOCK}
+				stmt := p.parseStatement()
+				if stmt != nil {
+					body.Children = append(body.Children, stmt)
+				}
+			} else {
+				// Multi-line: parse block
+				isMultiLine = true
+				body = p.parseBlock()
+			}
+
+			// Consume 'end' for multi-line loops
+			if isMultiLine {
+				if p.current().Type == TOKEN_DEDENT {
+					p.advance()
+				}
+				if p.current().Type == TOKEN_END {
+					p.advance()
+				} else {
+					errMsg := fmt.Sprintf("Expected 'end' to close loop at line %d", startLine)
+					if p.LintMode {
+						p.recordError(errMsg)
+					} else {
+						panic(errMsg)
+					}
+				}
+			}
 
 			loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
 			return &ASTNode{
@@ -1138,7 +1225,7 @@ func (p *Parser) parseLoop() *ASTNode {
 			// loop i:start till condition
 			p.advance() // consume 'till'
 			condition := p.parseExpression()
-			
+
 			// Accept either 'do' or ':'
 			if p.current().Type == TOKEN_DO {
 				p.advance()
@@ -1151,7 +1238,37 @@ func (p *Parser) parseLoop() *ASTNode {
 				p.recordError("Expected 'do' or ':' after loop condition")
 			}
 			p.skipWhitespace()
-			body := p.parseBlock()
+
+			// Check for inline loop
+			isMultiLine := false
+			var body *ASTNode
+			if p.current().Type != TOKEN_NEWLINE {
+				body = &ASTNode{Type: NODE_BLOCK}
+				stmt := p.parseStatement()
+				if stmt != nil {
+					body.Children = append(body.Children, stmt)
+				}
+			} else {
+				isMultiLine = true
+				body = p.parseBlock()
+			}
+
+			// Consume 'end' for multi-line loops
+			if isMultiLine {
+				if p.current().Type == TOKEN_DEDENT {
+					p.advance()
+				}
+				if p.current().Type == TOKEN_END {
+					p.advance()
+				} else {
+					errMsg := fmt.Sprintf("Expected 'end' to close loop at line %d", startLine)
+					if p.LintMode {
+						p.recordError(errMsg)
+					} else {
+						panic(errMsg)
+					}
+				}
+			}
 
 			loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
 			return &ASTNode{
@@ -1162,7 +1279,37 @@ func (p *Parser) parseLoop() *ASTNode {
 			// loop i:start: (forever loop with counter starting at start)
 			p.advance() // consume second ':'
 			p.skipWhitespace()
-			body := p.parseBlock()
+
+			// Check for inline loop
+			isMultiLine := false
+			var body *ASTNode
+			if p.current().Type != TOKEN_NEWLINE {
+				body = &ASTNode{Type: NODE_BLOCK}
+				stmt := p.parseStatement()
+				if stmt != nil {
+					body.Children = append(body.Children, stmt)
+				}
+			} else {
+				isMultiLine = true
+				body = p.parseBlock()
+			}
+
+			// Consume 'end' for multi-line loops
+			if isMultiLine {
+				if p.current().Type == TOKEN_DEDENT {
+					p.advance()
+				}
+				if p.current().Type == TOKEN_END {
+					p.advance()
+				} else {
+					errMsg := fmt.Sprintf("Expected 'end' to close loop at line %d", startLine)
+					if p.LintMode {
+						p.recordError(errMsg)
+					} else {
+						panic(errMsg)
+					}
+				}
+			}
 
 			loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
 			return &ASTNode{
@@ -1181,7 +1328,7 @@ func (p *Parser) parseLoop() *ASTNode {
 		// loop i to end (starts at 0)
 		p.advance() // consume 'to'
 		endExpr := p.parseExpression()
-		
+
 		// Accept either 'do' or ':'
 		if p.current().Type == TOKEN_DO {
 			p.advance()
@@ -1194,7 +1341,37 @@ func (p *Parser) parseLoop() *ASTNode {
 			p.recordError("Expected 'do' or ':' after loop range")
 		}
 		p.skipWhitespace()
-		body := p.parseBlock()
+
+		// Check for inline loop
+		isMultiLine := false
+		var body *ASTNode
+		if p.current().Type != TOKEN_NEWLINE {
+			body = &ASTNode{Type: NODE_BLOCK}
+			stmt := p.parseStatement()
+			if stmt != nil {
+				body.Children = append(body.Children, stmt)
+			}
+		} else {
+			isMultiLine = true
+			body = p.parseBlock()
+		}
+
+		// Consume 'end' for multi-line loops
+		if isMultiLine {
+			if p.current().Type == TOKEN_DEDENT {
+				p.advance()
+			}
+			if p.current().Type == TOKEN_END {
+				p.advance()
+			} else {
+				errMsg := fmt.Sprintf("Expected 'end' to close loop at line %d", startLine)
+				if p.LintMode {
+					p.recordError(errMsg)
+				} else {
+					panic(errMsg)
+				}
+			}
+		}
 
 		loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
 		zeroNode := &ASTNode{Type: NODE_NUMBER, Value: "0"}
@@ -1206,7 +1383,7 @@ func (p *Parser) parseLoop() *ASTNode {
 		// loop to end (no variable, starts at 0)
 		p.advance() // consume 'to'
 		endExpr := p.parseExpression()
-		
+
 		// Accept either 'do' or ':'
 		if p.current().Type == TOKEN_DO {
 			p.advance()
@@ -1219,7 +1396,37 @@ func (p *Parser) parseLoop() *ASTNode {
 			p.recordError("Expected 'do' or ':' after loop range")
 		}
 		p.skipWhitespace()
-		body := p.parseBlock()
+
+		// Check for inline loop
+		isMultiLine := false
+		var body *ASTNode
+		if p.current().Type != TOKEN_NEWLINE {
+			body = &ASTNode{Type: NODE_BLOCK}
+			stmt := p.parseStatement()
+			if stmt != nil {
+				body.Children = append(body.Children, stmt)
+			}
+		} else {
+			isMultiLine = true
+			body = p.parseBlock()
+		}
+
+		// Consume 'end' for multi-line loops
+		if isMultiLine {
+			if p.current().Type == TOKEN_DEDENT {
+				p.advance()
+			}
+			if p.current().Type == TOKEN_END {
+				p.advance()
+			} else {
+				errMsg := fmt.Sprintf("Expected 'end' to close loop at line %d", startLine)
+				if p.LintMode {
+					p.recordError(errMsg)
+				} else {
+					panic(errMsg)
+				}
+			}
+		}
 
 		// Create anonymous loop variable "_loop_i"
 		loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: "_loop_counter"}
@@ -1232,7 +1439,7 @@ func (p *Parser) parseLoop() *ASTNode {
 		// loop [i] till condition
 		p.advance() // consume 'till'
 		condition := p.parseExpression()
-		
+
 		// Accept either 'do' or ':'
 		if p.current().Type == TOKEN_DO {
 			p.advance()
@@ -1245,7 +1452,37 @@ func (p *Parser) parseLoop() *ASTNode {
 			p.recordError("Expected 'do' or ':' after loop condition")
 		}
 		p.skipWhitespace()
-		body := p.parseBlock()
+
+		// Check for inline loop
+		isMultiLine := false
+		var body *ASTNode
+		if p.current().Type != TOKEN_NEWLINE {
+			body = &ASTNode{Type: NODE_BLOCK}
+			stmt := p.parseStatement()
+			if stmt != nil {
+				body.Children = append(body.Children, stmt)
+			}
+		} else {
+			isMultiLine = true
+			body = p.parseBlock()
+		}
+
+		// Consume 'end' for multi-line loops
+		if isMultiLine {
+			if p.current().Type == TOKEN_DEDENT {
+				p.advance()
+			}
+			if p.current().Type == TOKEN_END {
+				p.advance()
+			} else {
+				errMsg := fmt.Sprintf("Expected 'end' to close loop at line %d", startLine)
+				if p.LintMode {
+					p.recordError(errMsg)
+				} else {
+					panic(errMsg)
+				}
+			}
+		}
 
 		if loopVar != nil {
 			// loop i till condition - i should be initialized to 0 locally
@@ -1278,7 +1515,7 @@ func (p *Parser) parseLoop() *ASTNode {
 		// Actually, we need to handle this differently - check if there was a comma after first identifier
 		// For now, simple case: loop element in array
 		collectionExpr := p.parseExpression()
-		
+
 		// Accept either 'do' or ':'
 		if p.current().Type == TOKEN_DO {
 			p.advance()
@@ -1291,7 +1528,37 @@ func (p *Parser) parseLoop() *ASTNode {
 			p.recordError("Expected 'do' or ':' after 'in' expression")
 		}
 		p.skipWhitespace()
-		body := p.parseBlock()
+
+		// Check for inline loop
+		isMultiLine := false
+		var body *ASTNode
+		if p.current().Type != TOKEN_NEWLINE {
+			body = &ASTNode{Type: NODE_BLOCK}
+			stmt := p.parseStatement()
+			if stmt != nil {
+				body.Children = append(body.Children, stmt)
+			}
+		} else {
+			isMultiLine = true
+			body = p.parseBlock()
+		}
+
+		// Consume 'end' for multi-line loops
+		if isMultiLine {
+			if p.current().Type == TOKEN_DEDENT {
+				p.advance()
+			}
+			if p.current().Type == TOKEN_END {
+				p.advance()
+			} else {
+				errMsg := fmt.Sprintf("Expected 'end' to close loop at line %d", startLine)
+				if p.LintMode {
+					p.recordError(errMsg)
+				} else {
+					panic(errMsg)
+				}
+			}
+		}
 
 		elementNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
 		return &ASTNode{
@@ -1304,7 +1571,7 @@ func (p *Parser) parseLoop() *ASTNode {
 		secondIdent := p.expect(TOKEN_IDENTIFIER)
 		p.expect(TOKEN_IN)
 		dictExpr := p.parseExpression()
-		
+
 		// Accept either 'do' or ':'
 		if p.current().Type == TOKEN_DO {
 			p.advance()
@@ -1317,7 +1584,37 @@ func (p *Parser) parseLoop() *ASTNode {
 			p.recordError("Expected 'do' or ':' after 'in' expression")
 		}
 		p.skipWhitespace()
-		body := p.parseBlock()
+
+		// Check for inline loop
+		isMultiLine := false
+		var body *ASTNode
+		if p.current().Type != TOKEN_NEWLINE {
+			body = &ASTNode{Type: NODE_BLOCK}
+			stmt := p.parseStatement()
+			if stmt != nil {
+				body.Children = append(body.Children, stmt)
+			}
+		} else {
+			isMultiLine = true
+			body = p.parseBlock()
+		}
+
+		// Consume 'end' for multi-line loops
+		if isMultiLine {
+			if p.current().Type == TOKEN_DEDENT {
+				p.advance()
+			}
+			if p.current().Type == TOKEN_END {
+				p.advance()
+			} else {
+				errMsg := fmt.Sprintf("Expected 'end' to close loop at line %d", startLine)
+				if p.LintMode {
+					p.recordError(errMsg)
+				} else {
+					panic(errMsg)
+				}
+			}
+		}
 
 		keyNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
 		valueNode := &ASTNode{Type: NODE_IDENTIFIER, Value: secondIdent.Value}
@@ -1329,7 +1626,37 @@ func (p *Parser) parseLoop() *ASTNode {
 		// loop [i] do or loop [i] : - infinite loop, optionally with counter
 		p.advance() // consume 'do' or ':'
 		p.skipWhitespace()
-		body := p.parseBlock()
+
+		// Check for inline loop
+		isMultiLine := false
+		var body *ASTNode
+		if p.current().Type != TOKEN_NEWLINE {
+			body = &ASTNode{Type: NODE_BLOCK}
+			stmt := p.parseStatement()
+			if stmt != nil {
+				body.Children = append(body.Children, stmt)
+			}
+		} else {
+			isMultiLine = true
+			body = p.parseBlock()
+		}
+
+		// Consume 'end' for multi-line loops
+		if isMultiLine {
+			if p.current().Type == TOKEN_DEDENT {
+				p.advance()
+			}
+			if p.current().Type == TOKEN_END {
+				p.advance()
+			} else {
+				errMsg := fmt.Sprintf("Expected 'end' to close loop at line %d", startLine)
+				if p.LintMode {
+					p.recordError(errMsg)
+				} else {
+					panic(errMsg)
+				}
+			}
+		}
 
 		if loopVar != nil {
 			// loop i do - i starts at 0, increments each iteration
@@ -1374,6 +1701,18 @@ func (p *Parser) parseWhenStatement() *ASTNode {
 	p.expect(TOKEN_INDENT)
 
 	body := p.parseBlock()
+
+	// Consume 'end' keyword for when statement
+	if p.current().Type == TOKEN_END {
+		p.advance()
+	} else {
+		errMsg := fmt.Sprintf("Expected 'end' to close when statement at line %d", p.current().Line)
+		if p.LintMode {
+			p.recordError(errMsg)
+		} else {
+			panic(errMsg)
+		}
+	}
 
 	return &ASTNode{
 		Type:     NODE_WHEN_STATEMENT,
@@ -1608,7 +1947,7 @@ func (p *Parser) parseImportStatement() *ASTNode {
 				}
 				for name, enum := range headerInfo.Enums {
 					p.cHeaderGlobal.Enums[name] = enum
-					
+
 					// Add enum values as constants
 					for valueName := range enum.Values {
 						// Enum values are already in snake_case style (KEY_RIGHT, etc.)
@@ -1618,7 +1957,7 @@ func (p *Parser) parseImportStatement() *ASTNode {
 				}
 				for name, def := range headerInfo.Defines {
 					p.cHeaderGlobal.Defines[name] = def
-					
+
 					// Add defines as constants (color constants like RAYWHITE)
 					// Determine type based on value
 					defType := "Color" // Most defines in raylib are colors
@@ -1629,7 +1968,7 @@ func (p *Parser) parseImportStatement() *ASTNode {
 				}
 				for name, str := range headerInfo.Structs {
 					p.cHeaderGlobal.Structs[name] = str
-					
+
 					// Also add to p.structs for validation (lowercase first letter)
 					lowerName := ToLowerFirst(name)
 					fields := []StructField{}
@@ -1954,7 +2293,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					// This is a property assignment like obj.prop: value
 					// We'll handle this in the reassignment validation below
 				}
-				
+
 				// Track array lengths for bounds checking
 				if value.Type == NODE_ARRAY_LITERAL {
 					p.arrayLengths[varName] = ArrayInfo{
@@ -1980,26 +2319,26 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 	// Check for property assignment: identifier.property: value (DUPLICATE - already handled above at line 1277)
 	// This code can be removed as it's redundant
 	/*
-	/*
-	if p.pos+1 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_DOT {
-		// This is redundant - already handled at line 1277
-		target := p.parsePrimaryExpression()
+		/*
+		if p.pos+1 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_DOT {
+			// This is redundant - already handled at line 1277
+			target := p.parsePrimaryExpression()
 
-		if p.current().Type == TOKEN_ASSIGN {
-			p.expect(TOKEN_ASSIGN)
-			value := p.parseExpression()
+			if p.current().Type == TOKEN_ASSIGN {
+				p.expect(TOKEN_ASSIGN)
+				value := p.parseExpression()
 
-			if p.LintMode && target.Type == NODE_MEMBER_ACCESS {
-				p.validatePropertyAssignment(target, value, target.Line)
-			}
+				if p.LintMode && target.Type == NODE_MEMBER_ACCESS {
+					p.validatePropertyAssignment(target, value, target.Line)
+				}
 
-			return &ASTNode{
-				Type:     NODE_ASSIGNMENT,
-				Children: []*ASTNode{target, value},
-				Line:     target.Line,
+				return &ASTNode{
+					Type:     NODE_ASSIGNMENT,
+					Children: []*ASTNode{target, value},
+					Line:     target.Line,
+				}
 			}
 		}
-	}
 	*/
 
 	return p.parseExpression()
@@ -2026,6 +2365,43 @@ func (p *Parser) parseBlock() *ASTNode {
 
 	if p.current().Type == TOKEN_DEDENT {
 		p.advance()
+	}
+
+	return block
+}
+
+// parseBlockUntilEnd parses statements until encountering 'end' keyword
+func (p *Parser) parseBlockUntilEnd(constructName string, startLine int) *ASTNode {
+	block := &ASTNode{Type: NODE_BLOCK}
+
+	for p.current().Type != TOKEN_END && p.current().Type != TOKEN_EOF {
+		// Save position to detect if we're stuck
+		oldPos := p.pos
+
+		if p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_DEDENT {
+			p.advance()
+			continue
+		}
+		stmt := p.parseStatement()
+		if stmt != nil {
+			block.Children = append(block.Children, stmt)
+		}
+
+		// Safety check: if position hasn't advanced, force advance to prevent infinite loop
+		if p.pos == oldPos && p.current().Type != TOKEN_EOF && p.current().Type != TOKEN_END {
+			p.advance()
+		}
+	}
+
+	if p.current().Type == TOKEN_END {
+		p.advance() // consume 'end'
+	} else {
+		errMsg := fmt.Sprintf("Expected 'end' to close %s at line %d", constructName, startLine)
+		if p.LintMode {
+			p.recordError(errMsg)
+		} else {
+			panic(errMsg)
+		}
 	}
 
 	return block
@@ -2321,13 +2697,13 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 				Children: []*ASTNode{index},
 				Line:     token.Line,
 			}
-			
+
 			// Validate array bounds in lint mode
 			if p.LintMode {
 				identNode := &ASTNode{Type: NODE_IDENTIFIER, Value: token.Value}
 				p.validateArrayAccess(identNode, index, token.Line)
 			}
-			
+
 			// Check for member access after array access
 			if p.current().Type == TOKEN_DOT {
 				return p.parseMemberAccessChain(node)
@@ -2399,13 +2775,13 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 				Children: []*ASTNode{accessor},
 				Line:     token.Line,
 			}
-			
+
 			// Validate array bounds for array access
 			if p.LintMode && nodeType == NODE_ARRAY_ACCESS {
 				identNode := &ASTNode{Type: NODE_IDENTIFIER, Value: token.Value}
 				p.validateArrayAccess(identNode, accessor, token.Line)
 			}
-			
+
 			// Check for member access
 			if p.current().Type == TOKEN_DOT {
 				return p.parseMemberAccessChain(node)
@@ -2472,14 +2848,14 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			p.inFunctionCall = false
 			return call
 		}
-		
+
 		// Check if this could be a zero-argument function call (no || needed)
 		// This happens when:
 		// - It's a C function with zero params
 		// - Or it's an Ahoy function with zero params
 		// - And it's NOT followed by || (which would make it explicit)
 		isLikelyZeroArgFunc := false
-		
+
 		// Check C functions (global and namespaced)
 		if p.cHeaderGlobal != nil {
 			for cFuncName, cFunc := range p.cHeaderGlobal.Functions {
@@ -2490,7 +2866,7 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 				}
 			}
 		}
-		
+
 		if !isLikelyZeroArgFunc {
 			for _, headerInfo := range p.cHeaders {
 				for cFuncName, cFunc := range headerInfo.Functions {
@@ -2505,14 +2881,14 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 				}
 			}
 		}
-		
+
 		// Check Ahoy functions - look for function declarations with zero params
 		if !isLikelyZeroArgFunc && p.LintMode {
 			// In lint mode, we track function signatures
 			// For now, just check if it's a known function name
 			// (We could enhance this by tracking function parameter counts)
 		}
-		
+
 		// If it's a zero-arg function, create a call node
 		if isLikelyZeroArgFunc {
 			return &ASTNode{
@@ -2857,6 +3233,7 @@ func (p *Parser) parseDictLiteral() *ASTNode {
 
 // Parse enum declaration
 func (p *Parser) parseEnumDeclaration() *ASTNode {
+	startLine := p.current().Line
 	// Expect 'enum' keyword
 	p.expect(TOKEN_ENUM)
 
@@ -2885,9 +3262,14 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 
 	p.expect(TOKEN_ASSIGN) // colon
 
-	p.skipNewlines()
-	if p.current().Type == TOKEN_INDENT {
-		p.advance()
+	// Check if this is a one-line enum (no newline after colon)
+	isOneLine := p.current().Type != TOKEN_NEWLINE && p.current().Type != TOKEN_INDENT
+
+	if !isOneLine {
+		p.skipNewlines()
+		if p.current().Type == TOKEN_INDENT {
+			p.advance()
+		}
 	}
 
 	enum := &ASTNode{
@@ -2900,12 +3282,12 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 	for p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_NUMBER {
 		var value string
 		var memberName string
-		
+
 		// Check if we have a number first (custom value)
 		if p.current().Type == TOKEN_NUMBER {
 			value = p.current().Value
 			p.advance()
-			
+
 			// Now expect the identifier
 			if p.current().Type != TOKEN_IDENTIFIER {
 				errMsg := fmt.Sprintf("Expected identifier after enum value at line %d", p.current().Line)
@@ -2924,7 +3306,7 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 			value = "" // Will be auto-assigned during codegen
 			p.advance()
 		}
-		
+
 		member := &ASTNode{
 			Type:     NODE_IDENTIFIER,
 			Value:    memberName,
@@ -2932,13 +3314,35 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 			Line:     p.current().Line,
 		}
 		enum.Children = append(enum.Children, member)
-		p.skipNewlines()
+
+		// For one-line enums, stop at newline or EOF
+		if isOneLine && (p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_EOF || p.current().Type == TOKEN_SEMICOLON) {
+			break
+		}
+
+		if !isOneLine {
+			p.skipNewlines()
+		}
 	}
 
-	if p.current().Type == TOKEN_DEDENT {
+	if !isOneLine && p.current().Type == TOKEN_DEDENT {
 		p.advance()
 	}
-	
+
+	// Consume 'end' keyword only for multi-line enums
+	if !isOneLine {
+		if p.current().Type == TOKEN_END {
+			p.advance()
+		} else {
+			errMsg := fmt.Sprintf("Expected 'end' to close enum at line %d", startLine)
+			if p.LintMode {
+				p.recordError(errMsg)
+			} else {
+				panic(errMsg)
+			}
+		}
+	}
+
 	// Always track enum members (needed for codegen and validation)
 	p.enums[name.Value] = enum.Children
 
@@ -3016,6 +3420,7 @@ func (p *Parser) parseConstantDeclaration() *ASTNode {
 
 // Parse function with :: syntax: name :: |params| type: body
 func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
+	startLine := name.Line
 	fn := &ASTNode{
 		Type:  NODE_FUNCTION,
 		Value: name.Value,
@@ -3175,8 +3580,20 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 		// Function scope already set up with parameters above
 	}
 
-	// Parse body
+	// Parse body (function with :: syntax always uses 'end')
 	body := p.parseBlock()
+
+	// Consume 'end' keyword for :: function
+	if p.current().Type == TOKEN_END {
+		p.advance()
+	} else {
+		errMsg := fmt.Sprintf("Expected 'end' to close function at line %d", startLine)
+		if p.LintMode {
+			p.recordError(errMsg)
+		} else {
+			panic(errMsg)
+		}
+	}
 
 	// In lint mode, restore previous function context
 	if p.LintMode {
@@ -3276,10 +3693,10 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 	for {
 		oldPos := p.pos
 		var expr *ASTNode
-		
+
 		// Directly parse primary expression to avoid assignment parsing issues
 		expr = p.parsePrimaryExpression()
-		
+
 		rightSide.Children = append(rightSide.Children, expr)
 
 		if p.current().Type == TOKEN_COMMA {
@@ -3308,13 +3725,19 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 
 // Parse struct declaration
 func (p *Parser) parseStructDeclaration() *ASTNode {
+	startLine := p.current().Line
 	p.expect(TOKEN_STRUCT)
 	name := p.expect(TOKEN_IDENTIFIER)
 	p.expect(TOKEN_ASSIGN)
 
-	p.skipNewlines()
-	if p.current().Type == TOKEN_INDENT {
-		p.advance()
+	// Check if this is a one-line struct (no newline after colon)
+	isOneLine := p.current().Type != TOKEN_NEWLINE && p.current().Type != TOKEN_INDENT
+
+	if !isOneLine {
+		p.skipNewlines()
+		if p.current().Type == TOKEN_INDENT {
+			p.advance()
+		}
 	}
 
 	struc := &ASTNode{
@@ -3356,9 +3779,9 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 					}
 
 					if p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_NUMBER ||
-					   p.current().Type == TOKEN_LANGLE || p.current().Type == TOKEN_STRING ||
-					   p.current().Type == TOKEN_TRUE || p.current().Type == TOKEN_FALSE ||
-					   p.current().Type == TOKEN_LBRACKET || p.current().Type == TOKEN_LBRACE {
+						p.current().Type == TOKEN_LANGLE || p.current().Type == TOKEN_STRING ||
+						p.current().Type == TOKEN_TRUE || p.current().Type == TOKEN_FALSE ||
+						p.current().Type == TOKEN_LBRACKET || p.current().Type == TOKEN_LBRACE {
 						// Check for default value syntax: "value field: type"
 						var defaultValue *ASTNode
 
@@ -3497,11 +3920,32 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 			struc.Children = append(struc.Children, field)
 		}
 
-		p.skipNewlines()
+		// For one-line structs, stop at newline or EOF
+		if isOneLine && (p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_EOF || p.current().Type == TOKEN_SEMICOLON) {
+			break
+		}
+
+		if !isOneLine {
+			p.skipNewlines()
+		}
 	}
 
-	if p.current().Type == TOKEN_DEDENT {
+	if !isOneLine && p.current().Type == TOKEN_DEDENT {
 		p.advance()
+	}
+
+	// Consume 'end' keyword only for multi-line structs
+	if !isOneLine {
+		if p.current().Type == TOKEN_END {
+			p.advance()
+		} else {
+			errMsg := fmt.Sprintf("Expected 'end' to close struct at line %d", startLine)
+			if p.LintMode {
+				p.recordError(errMsg)
+			} else {
+				panic(errMsg)
+			}
+		}
 	}
 
 	// Store struct definition for linting
@@ -3760,7 +4204,7 @@ func (p *Parser) validateMemberAccess(object *ASTNode, memberName string, line i
 		if vtype, ok := p.variableTypes[varName]; ok {
 			objectType = vtype
 		}
-		
+
 		// Check if it's an enum
 		if _, isEnum := p.enums[varName]; isEnum {
 			// Validate enum member
@@ -3857,7 +4301,6 @@ func (p *Parser) parseArrayLiteralBracket() *ASTNode {
 	return array
 }
 
-
 // Check if the current position is a lambda expression (param: expr)
 func (p *Parser) isLambda() bool {
 	// Look ahead for pattern: IDENTIFIER ASSIGN expression
@@ -3912,12 +4355,12 @@ func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int)
 	if leftSide == nil || rightSide == nil {
 		return
 	}
-	
+
 	// Check if right side is a single function call
 	if len(rightSide.Children) == 1 && rightSide.Children[0].Type == NODE_CALL {
 		callNode := rightSide.Children[0]
 		funcName := callNode.Value
-		
+
 		// Look up function signature
 		funcSig := p.functions[funcName]
 		if funcSig == nil {
@@ -3933,16 +4376,16 @@ func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int)
 			}
 			return
 		}
-		
+
 		// Get argument types from the call
 		argTypes := []string{}
 		for _, arg := range callNode.Children {
 			argTypes = append(argTypes, p.inferType(arg))
 		}
-		
+
 		// Determine actual return types
 		returnTypes := []string{}
-		
+
 		if funcSig.IsInfer {
 			// Infer return types from function with inferred return
 			returnTypes = p.inferReturnTypesFromFunction(funcSig, argTypes)
@@ -3950,7 +4393,7 @@ func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int)
 			// Use declared return types, but substitute generic parameters
 			returnTypes = p.substituteGenericTypes(funcSig, argTypes)
 		}
-		
+
 		// Validate count matches
 		if len(leftSide.Children) != len(returnTypes) {
 			errMsg := fmt.Sprintf("Tuple assignment mismatch: expected %d values but function returns %d",
@@ -3958,16 +4401,16 @@ func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int)
 			p.recordError(errMsg)
 			return
 		}
-		
+
 		// Validate and register each variable
 		for i, leftVar := range leftSide.Children {
 			if i >= len(returnTypes) {
 				break
 			}
-			
+
 			expectedType := leftVar.DataType
 			actualType := returnTypes[i]
-			
+
 			// If left side has type annotation, validate it matches
 			if expectedType != "" && actualType != "" {
 				if !p.checkTypeCompatibility(expectedType, actualType) {
@@ -3976,13 +4419,13 @@ func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int)
 					p.recordError(errMsg)
 				}
 			}
-			
+
 			// Register variable with its type
 			varType := expectedType
 			if varType == "" {
 				varType = actualType
 			}
-			
+
 			// Store in appropriate scope
 			targetScope := p.variableTypes
 			if p.currentFunctionRet != "" && p.functionScope != nil {
@@ -3997,7 +4440,7 @@ func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int)
 func (p *Parser) substituteGenericTypes(funcSig *FunctionSignature, argTypes []string) []string {
 	// Create a map of parameter name to actual type
 	genericSubstitutions := make(map[string]string)
-	
+
 	for i, param := range funcSig.Parameters {
 		if i < len(argTypes) {
 			if param.Type == "generic" || param.Type == "" {
@@ -4005,7 +4448,7 @@ func (p *Parser) substituteGenericTypes(funcSig *FunctionSignature, argTypes []s
 			}
 		}
 	}
-	
+
 	// Substitute in return types
 	result := make([]string, len(funcSig.ReturnTypes))
 	for i, retType := range funcSig.ReturnTypes {
@@ -4016,7 +4459,7 @@ func (p *Parser) substituteGenericTypes(funcSig *FunctionSignature, argTypes []s
 			result[i] = retType
 		}
 	}
-	
+
 	return result
 }
 
@@ -4025,7 +4468,7 @@ func (p *Parser) inferReturnTypesFromFunction(funcSig *FunctionSignature, argTyp
 	if funcSig.FunctionNode == nil || len(funcSig.FunctionNode.Children) < 2 {
 		return []string{}
 	}
-	
+
 	// Create substitutions for generic parameters
 	genericSubstitutions := make(map[string]string)
 	for i, param := range funcSig.Parameters {
@@ -4037,11 +4480,11 @@ func (p *Parser) inferReturnTypesFromFunction(funcSig *FunctionSignature, argTyp
 			}
 		}
 	}
-	
+
 	// Find return statements in function body
 	body := funcSig.FunctionNode.Children[1]
 	returnTypes := p.findReturnTypes(body, genericSubstitutions)
-	
+
 	return returnTypes
 }
 
@@ -4050,7 +4493,7 @@ func (p *Parser) findReturnTypes(node *ASTNode, substitutions map[string]string)
 	if node == nil {
 		return []string{}
 	}
-	
+
 	if node.Type == NODE_RETURN_STATEMENT {
 		// Found a return statement - infer types of returned expressions
 		types := []string{}
@@ -4060,7 +4503,7 @@ func (p *Parser) findReturnTypes(node *ASTNode, substitutions map[string]string)
 		}
 		return types
 	}
-	
+
 	// Recursively search children
 	for _, child := range node.Children {
 		types := p.findReturnTypes(child, substitutions)
@@ -4068,7 +4511,7 @@ func (p *Parser) findReturnTypes(node *ASTNode, substitutions map[string]string)
 			return types
 		}
 	}
-	
+
 	return []string{}
 }
 
@@ -4077,14 +4520,14 @@ func (p *Parser) inferTypeWithSubstitutions(node *ASTNode, substitutions map[str
 	if node == nil {
 		return "unknown"
 	}
-	
+
 	// If this is an identifier, check if it's a parameter with a substitution
 	if node.Type == NODE_IDENTIFIER {
 		if actualType, ok := substitutions[node.Value]; ok {
 			return actualType
 		}
 	}
-	
+
 	// Otherwise use normal type inference
 	return p.inferType(node)
 }
@@ -4093,7 +4536,7 @@ func (p *Parser) inferTypeWithSubstitutions(node *ASTNode, substitutions map[str
 func (p *Parser) parseCallWithName(funcName Token) *ASTNode {
 	// Expect opening pipe
 	p.expect(TOKEN_PIPE)
-	
+
 	call := &ASTNode{
 		Type:  NODE_CALL,
 		Value: funcName.Value,

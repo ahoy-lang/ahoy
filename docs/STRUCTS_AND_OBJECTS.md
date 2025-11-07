@@ -6,9 +6,9 @@ struct particle:
   rotation: float
   type smoke_particle:
 	  size: float
-	  alpha: float
-	  life: float
-	  max_life: float
+	  1.0 alpha: float
+	  100 life: float
+	  29 max_life: float
 	  color: color
   type wind_particle:
     direction: vector2

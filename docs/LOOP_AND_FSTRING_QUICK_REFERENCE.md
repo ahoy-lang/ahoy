@@ -6,7 +6,7 @@
 
 ```ahoy
 ? Loop from 1 to 5 (inclusive)
-loop i from 1 to 5 do
+loop i:0 1 to 5 do
     print|f"i = {i}\n"|
 
 ? Loop from 0 to 10 (implicit start at 0)

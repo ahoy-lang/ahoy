@@ -1,0 +1,84 @@
+# Test file with no indentation to test formatter
+
+greet :: |name:string|:
+ahoy|"Hello, " + name|
+end
+
+add :: |a:int, b:int| int:
+result: a + b
+return result
+end
+
+check_positive :: |num:int|:
+if num > 0 then
+ahoy|"Positive"|
+end
+end
+
+classify :: |num:int|:
+if num > 0 then
+ahoy|"Positive"|
+elseif num < 0 then
+ahoy|"Negative"|
+else
+ahoy|"Zero"|
+end
+end
+
+count :: |max:int|:
+loop i to max do
+ahoy|i|
+end
+end
+
+test_switch :: |value:int|:
+switch value on
+1: ahoy|"One"|
+2: ahoy|"Two"|
+3: ahoy|"Three"|
+_: ahoy|"Other"|
+end
+end
+
+nested :: |x:int|:
+if x > 0 then
+loop i to x do
+ahoy|i|
+end
+end
+end
+
+quick_check :: |value:int|:
+if value > 0 then ahoy|"Positive"|
+end
+
+quick_loop :: |max:int|:
+loop i to max do ahoy|i|
+end
+
+enum Color:
+RED
+GREEN
+BLUE
+end
+
+struct Point:
+x: float
+y: float
+end
+
+struct Particle:
+pos: Vector2
+vel: Vector2
+type smoke:
+alpha: float
+size: float
+end
+
+when DEBUG then
+ahoy|"Debug mode"|
+end
+
+single_if_inline: if x > 0 then ahoy|x|
+
+single_loop_inline: loop i to 10 do print|i|

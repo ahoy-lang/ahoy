@@ -35,9 +35,9 @@ const (
 	TOKEN_FUNC
 	TOKEN_RETURN
 	TOKEN_IMPORT
-	TOKEN_PROGRAM // program (package declaration)
-	TOKEN_WHEN    // when (compile time)
-	TOKEN_AHOY    // ahoy (print shorthand)
+	TOKEN_PROGRAM       // program (package declaration)
+	TOKEN_WHEN          // when (compile time)
+	TOKEN_AHOY          // ahoy (print shorthand)
 	TOKEN_PRINT         // print
 	TOKEN_PLUS          // +
 	TOKEN_MINUS         // -
@@ -95,6 +95,7 @@ const (
 	TOKEN_EQUALS       // = (for default arguments)
 	TOKEN_INFER        // infer (inferred return type)
 	TOKEN_VOID         // void (no return value)
+	TOKEN_END          // end (block terminator)
 )
 
 type Token struct {
@@ -162,6 +163,7 @@ func Tokenize(input string) []Token {
 		"defer":        TOKEN_DEFER,
 		"infer":        TOKEN_INFER,
 		"void":         TOKEN_VOID,
+		"end":          TOKEN_END,
 	}
 
 	for lineNum, line := range lines {
@@ -196,7 +198,7 @@ func Tokenize(input string) []Token {
 		i := 0
 
 		// Check if line starts with comment
-		if len(content) > 0 && (content[0] == '?' || content[0] == '#') {
+		if len(content) > 0 && content[0] == '?' {
 			// Skip this line - it's a comment
 			tokens = append(tokens, Token{Type: TOKEN_NEWLINE, Line: lineNum + 1})
 			continue
@@ -215,8 +217,8 @@ func Tokenize(input string) []Token {
 				continue
 			}
 
-			// Check for inline comment (? or #) - skip rest of line
-			if content[i] == '?' || content[i] == '#' {
+			// Check for inline comment (?) - skip rest of line
+			if content[i] == '?' {
 				break // Skip rest of line
 			}
 
