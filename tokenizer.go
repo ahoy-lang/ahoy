@@ -30,7 +30,6 @@ const (
 	TOKEN_LOOP // loop (replaces while/for)
 	TOKEN_IN   // in (for loop element in array)
 	TOKEN_TO   // to (for loop range)
-	TOKEN_FROM // from (for loop start)
 	TOKEN_TILL // till (for loop condition)
 	TOKEN_FUNC
 	TOKEN_RETURN
@@ -95,7 +94,7 @@ const (
 	TOKEN_EQUALS       // = (for default arguments)
 	TOKEN_INFER        // infer (inferred return type)
 	TOKEN_VOID         // void (no return value)
-	TOKEN_END          // end (block terminator)
+	TOKEN_END          // $ or ⚓ (block terminator)
 )
 
 type Token struct {
@@ -119,7 +118,6 @@ func Tokenize(input string) []Token {
 		"loop":         TOKEN_LOOP,
 		"in":           TOKEN_IN,
 		"to":           TOKEN_TO,
-		"from":         TOKEN_FROM,
 		"till":         TOKEN_TILL,
 		"func":         TOKEN_FUNC,
 		"return":       TOKEN_RETURN,
@@ -163,7 +161,6 @@ func Tokenize(input string) []Token {
 		"defer":        TOKEN_DEFER,
 		"infer":        TOKEN_INFER,
 		"void":         TOKEN_VOID,
-		"end":          TOKEN_END,
 	}
 
 	for lineNum, line := range lines {
@@ -205,6 +202,12 @@ func Tokenize(input string) []Token {
 		}
 
 		for i < len(content) {
+			// Check for ⚓ (anchor emoji - easter egg block terminator)
+			if i+2 < len(content) && content[i] == 0xE2 && content[i+1] == 0x9A && content[i+2] == 0x93 {
+				tokens = append(tokens, Token{Type: TOKEN_END, Value: "⚓", Line: lineNum + 1, Column: i + 1})
+				i += 3 // UTF-8 anchor emoji is 3 bytes
+				continue
+			}
 			if unicode.IsSpace(rune(content[i])) {
 				i++
 				continue
@@ -363,6 +366,8 @@ func Tokenize(input string) []Token {
 				tokens = append(tokens, Token{Type: TOKEN_SEMICOLON, Value: ";", Line: lineNum + 1, Column: i + 1})
 			case '=':
 				tokens = append(tokens, Token{Type: TOKEN_EQUALS, Value: "=", Line: lineNum + 1, Column: i + 1})
+			case '$':
+				tokens = append(tokens, Token{Type: TOKEN_END, Value: "$", Line: lineNum + 1, Column: i + 1})
 			// Remove TOKEN_QUESTION case - now handled as comment marker above
 			default:
 				fmt.Printf("Unknown character: %c at line %d, column %d\n", content[i], lineNum+1, i+1)

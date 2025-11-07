@@ -14,6 +14,8 @@ struct particle:
     direction: vector2
     speed: float
     size: vector2
+  loop i from 1 to 2 do
+  	print(kjdk)
 ```
 
 

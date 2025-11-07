@@ -456,7 +456,7 @@ func tokenTypeName(t TokenType) string {
 		TOKEN_ON: "'on'", TOKEN_IF: "'if'", TOKEN_ELSE: "'else'",
 		TOKEN_ELSEIF: "'elseif'", TOKEN_ANIF: "'anif'", TOKEN_SWITCH: "'switch'",
 		TOKEN_LOOP: "'loop'", TOKEN_IN: "'in'", TOKEN_TO: "'to'",
-		TOKEN_FROM: "'from'", TOKEN_TILL: "'till'", TOKEN_FUNC: "'func'",
+		TOKEN_TILL: "'till'", TOKEN_FUNC: "'func'",
 		TOKEN_RETURN: "'return'", TOKEN_IMPORT: "'import'", TOKEN_PROGRAM: "'program'", TOKEN_WHEN: "'when'",
 		TOKEN_AHOY: "'ahoy'", TOKEN_PRINT: "'print'", TOKEN_PLUS: "'+'",
 		TOKEN_MINUS: "'-'", TOKEN_MULTIPLY: "'*'", TOKEN_DIVIDE: "'/'",
@@ -735,7 +735,7 @@ func (p *Parser) parseFunction() *ASTNode {
 		if p.current().Type == TOKEN_END {
 			p.advance()
 		} else {
-			errMsg := fmt.Sprintf("Expected 'end' to close function at line %d", p.current().Line)
+			errMsg := fmt.Sprintf("Expected '$' to close function at line %d", p.current().Line)
 			if p.LintMode {
 				p.recordError(errMsg)
 			} else {
@@ -893,7 +893,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		if p.current().Type == TOKEN_END {
 			p.advance() // consume 'end'
 		} else {
-			errMsg := fmt.Sprintf("Expected 'end' to close if statement at line %d", startLine)
+			errMsg := fmt.Sprintf("Expected '$' to close if statement at line %d", startLine)
 			if p.LintMode {
 				p.recordError(errMsg)
 			} else {
@@ -942,7 +942,20 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 
 	// Parse cases: value:statement then value:statement then ...
 	// Now supports: 'A','B','C':statement or 'a' to 'z':statement or 'A' or 'B':statement
+	maxSwitchIterations := 10000 // Safety limit
+	switchIterations := 0
 	for {
+		switchIterations++
+		if switchIterations > maxSwitchIterations {
+			errMsg := fmt.Sprintf("Parser safety limit reached while parsing switch cases at line %d - possible infinite loop", startLine)
+			if p.LintMode {
+				p.recordError(errMsg)
+			} else {
+				panic(errMsg)
+			}
+			break
+		}
+
 		// Skip newlines and semicolons
 		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_SEMICOLON {
 			p.advance()
@@ -1134,7 +1147,7 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 		if p.current().Type == TOKEN_END {
 			p.advance()
 		} else {
-			errMsg := fmt.Sprintf("Expected 'end' to close switch statement at line %d", startLine)
+			errMsg := fmt.Sprintf("Expected '$' to close switch statement at line %d", startLine)
 			if p.LintMode {
 				p.recordError(errMsg)
 			} else {
@@ -1207,7 +1220,7 @@ func (p *Parser) parseLoop() *ASTNode {
 				if p.current().Type == TOKEN_END {
 					p.advance()
 				} else {
-					errMsg := fmt.Sprintf("Expected 'end' to close loop at line %d", startLine)
+					errMsg := fmt.Sprintf("Expected '$' to close loop at line %d", startLine)
 					if p.LintMode {
 						p.recordError(errMsg)
 					} else {
@@ -1261,7 +1274,7 @@ func (p *Parser) parseLoop() *ASTNode {
 				if p.current().Type == TOKEN_END {
 					p.advance()
 				} else {
-					errMsg := fmt.Sprintf("Expected 'end' to close loop at line %d", startLine)
+					errMsg := fmt.Sprintf("Expected '$' to close loop at line %d", startLine)
 					if p.LintMode {
 						p.recordError(errMsg)
 					} else {
@@ -1302,7 +1315,7 @@ func (p *Parser) parseLoop() *ASTNode {
 				if p.current().Type == TOKEN_END {
 					p.advance()
 				} else {
-					errMsg := fmt.Sprintf("Expected 'end' to close loop at line %d", startLine)
+					errMsg := fmt.Sprintf("Expected '$' to close loop at line %d", startLine)
 					if p.LintMode {
 						p.recordError(errMsg)
 					} else {
@@ -1364,7 +1377,7 @@ func (p *Parser) parseLoop() *ASTNode {
 			if p.current().Type == TOKEN_END {
 				p.advance()
 			} else {
-				errMsg := fmt.Sprintf("Expected 'end' to close loop at line %d", startLine)
+				errMsg := fmt.Sprintf("Expected '$' to close loop at line %d", startLine)
 				if p.LintMode {
 					p.recordError(errMsg)
 				} else {
@@ -1419,7 +1432,7 @@ func (p *Parser) parseLoop() *ASTNode {
 			if p.current().Type == TOKEN_END {
 				p.advance()
 			} else {
-				errMsg := fmt.Sprintf("Expected 'end' to close loop at line %d", startLine)
+				errMsg := fmt.Sprintf("Expected '$' to close loop at line %d", startLine)
 				if p.LintMode {
 					p.recordError(errMsg)
 				} else {
@@ -1475,7 +1488,7 @@ func (p *Parser) parseLoop() *ASTNode {
 			if p.current().Type == TOKEN_END {
 				p.advance()
 			} else {
-				errMsg := fmt.Sprintf("Expected 'end' to close loop at line %d", startLine)
+				errMsg := fmt.Sprintf("Expected '$' to close loop at line %d", startLine)
 				if p.LintMode {
 					p.recordError(errMsg)
 				} else {
@@ -1551,7 +1564,7 @@ func (p *Parser) parseLoop() *ASTNode {
 			if p.current().Type == TOKEN_END {
 				p.advance()
 			} else {
-				errMsg := fmt.Sprintf("Expected 'end' to close loop at line %d", startLine)
+				errMsg := fmt.Sprintf("Expected '$' to close loop at line %d", startLine)
 				if p.LintMode {
 					p.recordError(errMsg)
 				} else {
@@ -1607,7 +1620,7 @@ func (p *Parser) parseLoop() *ASTNode {
 			if p.current().Type == TOKEN_END {
 				p.advance()
 			} else {
-				errMsg := fmt.Sprintf("Expected 'end' to close loop at line %d", startLine)
+				errMsg := fmt.Sprintf("Expected '$' to close loop at line %d", startLine)
 				if p.LintMode {
 					p.recordError(errMsg)
 				} else {
@@ -1649,7 +1662,7 @@ func (p *Parser) parseLoop() *ASTNode {
 			if p.current().Type == TOKEN_END {
 				p.advance()
 			} else {
-				errMsg := fmt.Sprintf("Expected 'end' to close loop at line %d", startLine)
+				errMsg := fmt.Sprintf("Expected '$' to close loop at line %d", startLine)
 				if p.LintMode {
 					p.recordError(errMsg)
 				} else {
@@ -1706,7 +1719,7 @@ func (p *Parser) parseWhenStatement() *ASTNode {
 	if p.current().Type == TOKEN_END {
 		p.advance()
 	} else {
-		errMsg := fmt.Sprintf("Expected 'end' to close when statement at line %d", p.current().Line)
+		errMsg := fmt.Sprintf("Expected '$' to close when statement at line %d", p.current().Line)
 		if p.LintMode {
 			p.recordError(errMsg)
 		} else {
@@ -2370,11 +2383,25 @@ func (p *Parser) parseBlock() *ASTNode {
 	return block
 }
 
-// parseBlockUntilEnd parses statements until encountering 'end' keyword
+// parseBlockUntilEnd parses statements until encountering '$' keyword
 func (p *Parser) parseBlockUntilEnd(constructName string, startLine int) *ASTNode {
 	block := &ASTNode{Type: NODE_BLOCK}
 
+	maxIterations := 10000 // Safety limit to prevent infinite loops
+	iterations := 0
+
 	for p.current().Type != TOKEN_END && p.current().Type != TOKEN_EOF {
+		iterations++
+		if iterations > maxIterations {
+			errMsg := fmt.Sprintf("Parser safety limit reached while parsing %s at line %d - possible infinite loop", constructName, startLine)
+			if p.LintMode {
+				p.recordError(errMsg)
+			} else {
+				panic(errMsg)
+			}
+			break
+		}
+
 		// Save position to detect if we're stuck
 		oldPos := p.pos
 
@@ -2396,7 +2423,7 @@ func (p *Parser) parseBlockUntilEnd(constructName string, startLine int) *ASTNod
 	if p.current().Type == TOKEN_END {
 		p.advance() // consume 'end'
 	} else {
-		errMsg := fmt.Sprintf("Expected 'end' to close %s at line %d", constructName, startLine)
+		errMsg := fmt.Sprintf("Expected '$' to close %s at line %d", constructName, startLine)
 		if p.LintMode {
 			p.recordError(errMsg)
 		} else {
@@ -3334,7 +3361,7 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 		if p.current().Type == TOKEN_END {
 			p.advance()
 		} else {
-			errMsg := fmt.Sprintf("Expected 'end' to close enum at line %d", startLine)
+			errMsg := fmt.Sprintf("Expected '$' to close enum at line %d", startLine)
 			if p.LintMode {
 				p.recordError(errMsg)
 			} else {
@@ -3580,20 +3607,10 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 		// Function scope already set up with parameters above
 	}
 
-	// Parse body (function with :: syntax always uses 'end')
-	body := p.parseBlock()
+	// Parse body (function with :: syntax always uses '$')
+	body := p.parseBlockUntilEnd("function", startLine)
 
-	// Consume 'end' keyword for :: function
-	if p.current().Type == TOKEN_END {
-		p.advance()
-	} else {
-		errMsg := fmt.Sprintf("Expected 'end' to close function at line %d", startLine)
-		if p.LintMode {
-			p.recordError(errMsg)
-		} else {
-			panic(errMsg)
-		}
-	}
+	// parseBlockUntilEnd already consumes the '$' token
 
 	// In lint mode, restore previous function context
 	if p.LintMode {
@@ -3939,7 +3956,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 		if p.current().Type == TOKEN_END {
 			p.advance()
 		} else {
-			errMsg := fmt.Sprintf("Expected 'end' to close struct at line %d", startLine)
+			errMsg := fmt.Sprintf("Expected '$' to close struct at line %d", startLine)
 			if p.LintMode {
 				p.recordError(errMsg)
 			} else {

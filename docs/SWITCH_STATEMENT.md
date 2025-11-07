@@ -10,13 +10,15 @@
 testfunc ::|test| void: return print|"boris"|
 
 grade: 'B'
-switch grade then
+switch grade on
 	'A':ahoy|"6. Excellent!\n"|
 	'B':ahoy|"6. Good job! (char switch works!)\n"|
   'C':ahoy|"6. Average\n"|
 	_: ahoy|"6. Needs improvement\n"|
+	loop i:1 to 3 do
+		print|'hello'|
+	end
 end
-
 
 ? 6. Switch with multiple cases
 grade: 'B'
@@ -24,6 +26,10 @@ switch grade on
 	'A','B':ahoy|"6. Excellent!\n"|
 	'C','D':ahoy|" Average\n"|
 	_: ahoy|"Needs improvement\n"|
+	loop i from 1 to 3 do
+		print|'hello'|
+	end
 end
+
 
 ```

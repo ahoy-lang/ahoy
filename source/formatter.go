@@ -28,18 +28,18 @@ func formatSource(source string) string {
 			continue
 		}
 
-		// Check if this line should decrease indent (end, else, elseif)
+		// Check if this line should decrease indent ($, ⚓, else, elseif)
 		shouldDedentBefore := false
-		if trimmed == "end" || strings.HasPrefix(trimmed, "else ") ||
+		if trimmed == "$" || trimmed == "⚓" || strings.HasPrefix(trimmed, "else ") ||
 			trimmed == "else" || strings.HasPrefix(trimmed, "elseif ") {
 			shouldDedentBefore = true
 		}
 
 		// Dedent before adding the line
 		if shouldDedentBefore && indentLevel > 0 {
-			// Special case: if this is 'end' and we have a struct on the stack,
+			// Special case: if this is '$' or '⚓' and we have a struct on the stack,
 			// dedent all the way back to the struct level
-			if trimmed == "end" && len(structStack) > 0 {
+			if (trimmed == "$" || trimmed == "⚓") && len(structStack) > 0 {
 				// Check if we're closing a struct (dedent to struct's parent level)
 				structLevel := structStack[len(structStack)-1]
 				if indentLevel > structLevel {
