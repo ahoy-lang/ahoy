@@ -173,6 +173,8 @@ type Parser struct {
 	arrayLengths       map[string]ArrayInfo          // Track array lengths
 	cHeaders           map[string]*CHeaderInfo       // Track imported C headers (namespace -> header info)
 	cHeaderGlobal      *CHeaderInfo                  // Global C header imports (no namespace)
+	blockDepth         int                           // Track nesting depth of multi-line blocks
+	loopVarScopes      []map[string]string           // Stack of loop variable scopes
 }
 
 func Parse(tokens []Token) *ASTNode {
@@ -192,6 +194,8 @@ func Parse(tokens []Token) *ASTNode {
 		arrayLengths:       make(map[string]ArrayInfo),
 		cHeaders:           make(map[string]*CHeaderInfo),
 		cHeaderGlobal:      &CHeaderInfo{Functions: make(map[string]*CFunction), Enums: make(map[string]*CEnum), Defines: make(map[string]*CDefine), Structs: make(map[string]*CStruct)},
+		blockDepth:         0,
+		loopVarScopes:      make([]map[string]string, 0),
 	}
 	return parser.parseProgram()
 }
@@ -213,6 +217,8 @@ func ParseLint(tokens []Token) (*ASTNode, []ParseError) {
 		arrayLengths:       make(map[string]ArrayInfo),
 		cHeaders:           make(map[string]*CHeaderInfo),
 		cHeaderGlobal:      &CHeaderInfo{Functions: make(map[string]*CFunction), Enums: make(map[string]*CEnum), Defines: make(map[string]*CDefine), Structs: make(map[string]*CStruct)},
+		blockDepth:         0,
+		loopVarScopes:      make([]map[string]string, 0),
 	}
 	ast := parser.parseProgram()
 	return ast, parser.Errors
@@ -278,7 +284,12 @@ func (p *Parser) inferType(node *ASTNode) string {
 		}
 		return "object"
 	case NODE_IDENTIFIER:
-		// Look up the variable's type - check function scope first, then global
+		// Look up the variable's type - check loop scopes first, then function scope, then global
+		for i := len(p.loopVarScopes) - 1; i >= 0; i-- {
+			if varType, ok := p.loopVarScopes[i][node.Value]; ok {
+				return varType
+			}
+		}
 		if p.functionScope != nil {
 			if varType, ok := p.functionScope[node.Value]; ok {
 				return varType
@@ -527,7 +538,7 @@ func (p *Parser) parseProgram() *ASTNode {
 	program := &ASTNode{Type: NODE_PROGRAM}
 
 	for p.current().Type != TOKEN_EOF {
-		if p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_SEMICOLON || p.current().Type == TOKEN_DEDENT || p.current().Type == TOKEN_END {
+		if p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_SEMICOLON || p.current().Type == TOKEN_DEDENT {
 			p.advance()
 			continue
 		}
@@ -593,7 +604,52 @@ func (p *Parser) parseStatement() *ASTNode {
 		p.advance()
 		return &ASTNode{Type: NODE_NEXT, Line: p.current().Line}
 	case TOKEN_END:
-		// 'end' terminates blocks, don't parse as statement
+		// Handle $ block terminator
+		token := p.current()
+		p.advance() // Consume the TOKEN_END
+		
+		// Check for $#N syntax
+		if strings.HasPrefix(token.Value, "$#") {
+			countStr := strings.TrimPrefix(token.Value, "$#")
+			count, err := strconv.Atoi(countStr)
+			if err != nil || count <= 0 {
+				if p.LintMode {
+					p.Errors = append(p.Errors, ParseError{
+						Message: fmt.Sprintf("Invalid $# syntax: %s", token.Value),
+						Line:    token.Line,
+						Column:  token.Column,
+					})
+				}
+			} else if count > p.blockDepth {
+				if p.LintMode {
+					p.Errors = append(p.Errors, ParseError{
+						Message: fmt.Sprintf("Cannot close %d blocks, only %d block(s) open", count, p.blockDepth),
+						Line:    token.Line,
+						Column:  token.Column,
+					})
+				}
+			} else {
+				// Decrease block depth by count
+				p.blockDepth -= count
+			}
+		} else {
+			// Regular $ terminator
+			if p.blockDepth <= 0 {
+				if p.LintMode {
+					p.Errors = append(p.Errors, ParseError{
+						Message: "Superfluous $ - no block to close",
+						Line:    token.Line,
+						Column:  token.Column,
+					})
+				}
+			} else {
+				p.blockDepth--
+				// Pop loop variable scope if we're closing a loop block
+				if len(p.loopVarScopes) > p.blockDepth {
+					p.loopVarScopes = p.loopVarScopes[:len(p.loopVarScopes)-1]
+				}
+			}
+		}
 		return nil
 	case TOKEN_ASSERT:
 		return p.parseAssertStatement()
@@ -806,6 +862,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		p.advance() // skip newline
 		p.skipWhitespace()
 		if usesColon {
+			p.blockDepth++ // Opening a multi-line block
 			ifBody = p.parseBlockUntilEnd("if", startLine)
 		} else {
 			ifBody = p.parseBlock()
@@ -863,6 +920,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 			p.advance() // skip newline
 			p.skipWhitespace()
 			if elseifUsesColon {
+				p.blockDepth++ // Opening a multi-line block
 				elseifBody = p.parseBlockUntilEnd("anif", startLine)
 			} else {
 				elseifBody = p.parseBlock()
@@ -905,6 +963,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 			p.advance() // skip newline
 			p.skipWhitespace()
 			if elseUsesColon {
+				p.blockDepth++ // Opening a multi-line block
 				elseBody = p.parseBlockUntilEnd("else", startLine)
 			} else {
 				elseBody = p.parseBlock()
@@ -1229,6 +1288,13 @@ func (p *Parser) parseLoop() *ASTNode {
 				p.recordError("Expected 'do' or ':' after loop range")
 			}
 
+			// Register loop variable in scope
+			if loopVar != nil {
+				loopScope := make(map[string]string)
+				loopScope[loopVar.Value] = "int"
+				p.loopVarScopes = append(p.loopVarScopes, loopScope)
+			}
+			
 			// Check for inline loop (no newline after do/colon)
 			isMultiLine := false
 			var body *ASTNode
@@ -1247,10 +1313,16 @@ func (p *Parser) parseLoop() *ASTNode {
 				p.advance()        // skip the newline
 				p.skipWhitespace() // skip any indents
 				if usesColon {
+					p.blockDepth++ // Opening a multi-line block
 					body = p.parseBlockUntilEnd("loop", startLine)
 				} else {
 					body = p.parseBlock()
 				}
+			}
+			
+			// Pop loop variable scope
+			if loopVar != nil && len(p.loopVarScopes) > 0 {
+				p.loopVarScopes = p.loopVarScopes[:len(p.loopVarScopes)-1]
 			}
 
 			// Consume 'end' for multi-line loops (only if not using colon syntax)
@@ -1294,6 +1366,13 @@ func (p *Parser) parseLoop() *ASTNode {
 				p.recordError("Expected 'do' or ':' after loop condition")
 			}
 
+			// Register loop variable in scope
+			if loopVar != nil {
+				loopScope := make(map[string]string)
+				loopScope[loopVar.Value] = "int"
+				p.loopVarScopes = append(p.loopVarScopes, loopScope)
+			}
+			
 			// Check for inline loop
 			isMultiLine := false
 			var body *ASTNode
@@ -1309,10 +1388,16 @@ func (p *Parser) parseLoop() *ASTNode {
 				p.advance()        // skip newline
 				p.skipWhitespace() // skip indents
 				if usesColon {
+					p.blockDepth++ // Opening a multi-line block
 					body = p.parseBlockUntilEnd("loop", startLine)
 				} else {
 					body = p.parseBlock()
 				}
+			}
+			
+			// Pop loop variable scope
+			if loopVar != nil && len(p.loopVarScopes) > 0 {
+				p.loopVarScopes = p.loopVarScopes[:len(p.loopVarScopes)-1]
 			}
 
 			// Consume 'end' for multi-line loops (only if not using colon syntax)
@@ -2486,11 +2571,20 @@ func (p *Parser) parseBlock() *ASTNode {
 // parseBlockUntilEnd parses statements until encountering '$' keyword
 func (p *Parser) parseBlockUntilEnd(constructName string, startLine int) *ASTNode {
 	block := &ASTNode{Type: NODE_BLOCK}
+	
+	// Remember the depth when entering - if it decreases, a nested $#N closed us
+	entryDepth := p.blockDepth
 
 	maxIterations := 10000 // Safety limit to prevent infinite loops
 	iterations := 0
 
 	for p.current().Type != TOKEN_END && p.current().Type != TOKEN_EOF {
+		// Check if a nested $#N closed this block
+		if p.blockDepth < entryDepth {
+			// This block was closed by a nested $#N
+			return block
+		}
+		
 		iterations++
 		if iterations > maxIterations {
 			errMsg := fmt.Sprintf("Parser safety limit reached while parsing %s at line %d - possible infinite loop", constructName, startLine)
@@ -2515,13 +2609,54 @@ func (p *Parser) parseBlockUntilEnd(constructName string, startLine int) *ASTNod
 		}
 
 		// Safety check: if position hasn't advanced, force advance to prevent infinite loop
-		if p.pos == oldPos && p.current().Type != TOKEN_EOF && p.current().Type != TOKEN_END {
+		if p.pos == oldPos && p.current().Type != TOKEN_EOF && p.current().Type == TOKEN_END {
 			p.advance()
 		}
 	}
 
 	if p.current().Type == TOKEN_END {
+		token := p.current()
 		p.advance() // consume 'end'
+		
+		// Handle $#N syntax - this TOKEN_END closes this block, but may close additional parent blocks
+		if strings.HasPrefix(token.Value, "$#") {
+			countStr := strings.TrimPrefix(token.Value, "$#")
+			count, err := strconv.Atoi(countStr)
+			
+			// Validate $#N syntax
+			if err != nil || count <= 0 {
+				if p.LintMode {
+					p.Errors = append(p.Errors, ParseError{
+						Message: fmt.Sprintf("Invalid $# syntax: %s (must be positive integer)", token.Value),
+						Line:    token.Line,
+						Column:  token.Column,
+					})
+				}
+			} else if count > p.blockDepth {
+				if p.LintMode {
+					p.Errors = append(p.Errors, ParseError{
+						Message: fmt.Sprintf("Cannot close %d blocks, only %d block(s) open", count, p.blockDepth),
+						Line:    token.Line,
+						Column:  token.Column,
+					})
+				}
+			}
+			
+			if err == nil && count > 1 {
+				// This $ closes the current block (already decremented in calling function)
+				// Need to close count-1 more blocks
+				p.blockDepth -= (count - 1)
+				
+				// Pop additional loop var scopes
+				for i := 1; i < count && len(p.loopVarScopes) > 0; i++ {
+					if p.blockDepth >= 0 && len(p.loopVarScopes) > p.blockDepth {
+						p.loopVarScopes = p.loopVarScopes[:len(p.loopVarScopes)-1]
+					} else if len(p.loopVarScopes) > 0 {
+						p.loopVarScopes = p.loopVarScopes[:len(p.loopVarScopes)-1]
+					}
+				}
+			}
+		}
 	} else {
 		errMsg := fmt.Sprintf("Expected '$' to close %s at line %d", constructName, startLine)
 		if p.LintMode {

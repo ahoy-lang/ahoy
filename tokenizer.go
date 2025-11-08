@@ -372,7 +372,26 @@ func Tokenize(input string) []Token {
 			case '=':
 				tokens = append(tokens, Token{Type: TOKEN_EQUALS, Value: "=", Line: lineNum + 1, Column: i + 1})
 			case '$':
-				tokens = append(tokens, Token{Type: TOKEN_END, Value: "$", Line: lineNum + 1, Column: i + 1})
+				// Check for $#N syntax (multiple block closures)
+				if i+1 < len(content) && content[i+1] == '#' {
+					i += 2 // skip $ and #
+					// Read the number
+					numStart := i
+					for i < len(content) && content[i] >= '0' && content[i] <= '9' {
+						i++
+					}
+					if i > numStart {
+						countStr := content[numStart:i]
+						tokens = append(tokens, Token{Type: TOKEN_END, Value: "$#" + countStr, Line: lineNum + 1, Column: numStart - 1})
+						i-- // will be incremented at end of loop
+					} else {
+						// No number after #, treat as regular $
+						tokens = append(tokens, Token{Type: TOKEN_END, Value: "$", Line: lineNum + 1, Column: i - 1})
+						i-- // back up since we advanced past #
+					}
+				} else {
+					tokens = append(tokens, Token{Type: TOKEN_END, Value: "$", Line: lineNum + 1, Column: i + 1})
+				}
 			// Remove TOKEN_QUESTION case - now handled as comment marker above
 			default:
 				fmt.Printf("Unknown character: %c at line %d, column %d\n", content[i], lineNum+1, i+1)

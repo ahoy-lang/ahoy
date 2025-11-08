@@ -1,21 +1,22 @@
-# example of struct declarations
+# Struct Declarations
+
+## Block Terminator Rule
+**All struct declarations REQUIRE `$` terminator** - structs are multi-line constructs.
+
+## Example of struct declarations
 ```ahoy
 struct particle:
-  position: vector2
-  velocity: vector2
-  rotation: float
+  position: vector2, velocity: vector2, rotation: float
   type smoke_particle:
-	  size: float
-	  1.0 alpha: float
-	  100 life: float
-	  29 max_life: float
-	  color: color
+	  10 size: float, ? initial value set to 10.0
+		1.0 alpha: float, ? initial value set to 1.0
+	 	1 life: float, ? initial value set to 1.0
+		max_life: float, ? initial value set to 0.0
+		name: string, ? initial value set to ""
+		color: color
   type wind_particle:
-    direction: vector2
-    speed: float
-    size: vector2
-  loop i from 1 to 2 do
-  	print(kjdk)
+    direction: vector2, speed: float, size: vector2
+$
 ```
 
 
@@ -39,7 +40,10 @@ smoke_particle1<'position.x'>: 100.0
 - access struct properties with dot notation or angle brackets with property name as string
 - C doesnt have vector2 type so we should typedef struct for vector2 in the generated C code
 
-# examples of struct with syntax on one line
+# Examples of struct with syntax on one line (still requires $)
+```ahoy
 struct particles: position: vector2; velocity: vector2
   type smoke_particle: size: float; alpha: float; life: float; max_life: float; color: color
   type cookie_truck: direction: vector2; speed: float; size: vector2
+$
+```

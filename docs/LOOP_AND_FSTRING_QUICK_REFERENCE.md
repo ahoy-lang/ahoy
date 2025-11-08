@@ -6,12 +6,10 @@
 
 ```ahoy
 ? Loop from 1 to 5 (inclusive)
-loop i:0 1 to 5 do
-    print|f"i = {i}\n"|
+loop i:0 1 to 5 do print|f"i = {i}\n"|
 
 ? Loop from 0 to 10 (implicit start at 0)
-loop j to 10 do
-    print|f"j = {j}\n"|
+loop j to 10 do print|f"j = {j}\n"|
 ```
 
 **Generated:** Standard C `for` loop with counter increment
@@ -20,12 +18,10 @@ loop j to 10 do
 
 ```ahoy
 ? Loop with explicit counter and condition
-loop k till k less_than 10 do
-    print|f"k = {k}\n"|
+loop k till k less_than 10 do print|f"k = {k}\n"|
 
 ? Using comparison operators
-loop m till m <= 5 do
-    ahoy|"Still going\n"|
+loop m till m <= 5 do ahoy|"Still going\n"|
 ```
 
 **Generated:** C `while` loop with auto-increment of counter variable
@@ -36,12 +32,14 @@ loop m till m <= 5 do
 ? Forever loop with counter (must use break)
 loop n:
     print|f"Iteration {n}\n"|
-    if n is 5 do break
+    if n is 5 do halt
+$
 
-? Forever loop without counter
-loop do
+? Forever loop break first loop though
+loop:
     ahoy|"Infinite!\n"|
-    break
+    halt
+$
 ```
 
 **Generated:** C `for(;;)` infinite loop
@@ -51,8 +49,7 @@ loop do
 ```ahoy
 ? Iterate over array elements
 numbers: [1, 2, 3, 4, 5]
-loop num in numbers do
-    print|f"Number: {num}\n"|
+loop num in numbers do print|f"Number: {num}\n"|
 ```
 
 **Note:** Currently has known type mismatch issues
@@ -62,8 +59,7 @@ loop num in numbers do
 ```ahoy
 ? Iterate over key-value pairs
 config: {"host":"localhost", "port":"8080"}
-loop key, val in config do
-    print|f"{key} = {val}\n"|
+loop key, val in config do print|f"{key} = {val}\n"|
 ```
 
 **Note:** String format specifiers need improvement
@@ -106,8 +102,7 @@ print|f"x={x}, y={y}, sum={result}\n"|
 ### In Loops
 
 ```ahoy
-loop i to 5 do
-    print|f"Iteration #{i}\n"|
+loop i to 5 do print|f"Iteration #{i}\n"|
 ```
 
 ## If Statement Flexibility
@@ -116,12 +111,10 @@ Both `then` and `do` keywords work:
 
 ```ahoy
 ? Using 'then' (traditional)
-if x is 5 then
-    ahoy|"Five!"|
+if x is 5 then ahoy|"Five!"|
 
 ? Using 'do' (new style)
-if x is 5 do
-    ahoy|"Five!"|
+if x is 5 do ahoy|"Five!"|
 
 ? Inline with 'do'
 if done do break
@@ -141,18 +134,21 @@ total: 0
 loop score in scores do
     total: total plus score
     print|f"Score: {score}, Running total: {total}\n"|
+$
 
 average: total div 5
 print|f"Average: {average}\n"|
 
 ? Grade determination
-loop i till i is 1 do
-    if average greater_than 90 do
-        print|f"Grade: A\n"|
-    anif average greater_than 80 do
-        print|f"Grade: B\n"|
-    else
-        print|f"Grade: C\n"|
+loop i till i is 1:
+  if average greater_than 90 do
+      print|f"Grade: A\n"|
+  anif average greater_than 80 do
+      print|f"Grade: B\n"|
+  else
+      print|f"Grade: C\n"|
+  $
+$
 ```
 
 ## Best Practices
@@ -223,26 +219,31 @@ print|f"Blast off!\n"|
 ### Accumulation
 ```ahoy
 total: 0
-loop i to 100 do
-    total: total plus i
+loop i to 100 do total: total plus i
 print|f"Sum: {total}\n"|
 ```
 
 ### Search with Early Exit
 ```ahoy
 found: false
-loop i to 100 do
-    if i is target do
-        found: true
-        break
+loop i to 100:
+  if i is target:
+      found: true
+      halt
+	$
+$
+$
+
 ```
 
 ### Nested Loops
 ```ahoy
-loop row to 3 do
-    loop col to 3 do
+loop row to 3:
+    loop col to 3:
         print|f"({row},{col}) "|
     ahoy|"\n"|
+  $
+$
 ```
 
 ## Notes
@@ -251,8 +252,8 @@ loop row to 3 do
 - Old loop syntax still works unchanged
 - F-strings compile to C `sprintf` calls
 - Loop counters auto-initialize to 0 and auto-increment
-- Use `break` to exit loops early
-- Use `skip` to continue to next iteration
+- Use `halt` to exit loops early
+- Use `next` to continue to next iteration
 
 ## Status
 

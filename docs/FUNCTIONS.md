@@ -1,10 +1,16 @@
 
 
-## example of function declaration with parameters and multiple return type
+## Function Declaration Syntax
+
+### Block Terminator Rule
+**Multi-line function bodies REQUIRE `$` terminator.**
+
+## Example of function declaration with parameters and multiple return type
 ```ahoy
 func_name :: |name:string, phone:int| string, int:
 	print|"Name: %s, Phone: %d\n", name, phone|;
 	return name, phone
+$
 ```
 
 ## store function with multiple returns

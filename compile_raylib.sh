@@ -21,13 +21,13 @@ go run . "${SOURCE_FILE}"
 
 if [ $? -eq 0 ]; then
     echo "Compiling C code with Raylib to executable..."
-    
+
     # Copy raylib.h to a temporary location or use direct path
     gcc -o "${EXECUTABLE}" "${C_FILE}" \
         -I"${RAYLIB_SRC}" \
         "${RAYLIB_SRC}/libraylib.a" \
         -lGL -lm -lpthread -ldl -lrt -lX11
-    
+
     if [ $? -eq 0 ]; then
         echo "Successfully compiled to ${EXECUTABLE}"
         echo "Run with: ${EXECUTABLE}"

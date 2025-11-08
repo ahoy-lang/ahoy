@@ -16,6 +16,20 @@ This document describes the new loop syntax that has been implemented in Ahoy.
 - F-strings: `print|f"hello{i}\n"|` - String interpolation with variables
 - Support for both `then` keywords in if statements
 
+### Block Terminator Rules for Loops
+
+**One-line loops with `do` keyword do NOT require `$`:**
+```ahoy
+loop i:0 till i < 5 do print|f"Value: {i}\n"|
+```
+
+**Multi-line loops with `:` (colon) REQUIRE `$`:**
+```ahoy
+loop i to 5:
+    print|f"Count {i}\n"|
+$
+```
+
 ### Known Issues
 - Array iteration (`loop val in values do`) has a type mismatch bug between `AhoyArray` and `DynamicArray`
 - Dictionary iteration f-string format specifiers need adjustment for string types
@@ -27,22 +41,25 @@ This document describes the new loop syntax that has been implemented in Ahoy.
 ? Loop range from 1 to 5
 loop i:1 to 5:
     print|f"Iteration {i}\n"|
+$
 
 struct test:
 	type sample:
 		data:int
+$
 
 ? Loop range from 0 to 5
 loop i to 5:
     print|f"Count {i}\n"|
+$
 
 ? Loop range from 0 to 5
 loop i:0 to 5:
     print|f"Count {i}\n"|
+$
 
 ? Loop conditional with word operators
-loop i:0 till i < 5 do
-    print|f"Value: {i}\n"|
+loop i:0 till i < 5 do print|f"Value: {i}\n"|
 
 ? Loop conditional with symbol operators
 number:2
@@ -59,7 +76,7 @@ loop i:0:
     print|f"Loop {i}\n"|
     if i is 5 do halt
 
-? Loop forever without counter
+? Loop forever without counter; dont run this
 loop:
     ahoy|"Forever!\n"|
 
@@ -101,7 +118,7 @@ Format specifiers are automatically determined based on variable type:
 ## Implementation Details
 
 ### Parser Changes
-- Added `TOKEN_FROM`, `TOKEN_TILL`, `TOKEN_PRINT`, `TOKEN_F_STRING` tokens
+- Added `TOKEN_TILL`, `TOKEN_PRINT`, `TOKEN_F_STRING` tokens
 - Updated `parseLoop()` to handle all new syntax variations
 - Added `parsePrintStatement()` for print statements
 - Updated if statements to accept both `then` and `do` keywords
