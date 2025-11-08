@@ -168,7 +168,6 @@ type Parser struct {
 	objectLiterals     map[string]map[string]bool    // Track object literal properties by variable name
 	currentFunctionRet string                        // Track current function return type
 	functionScope      map[string]string             // Track function-local variables
-	seenNonImport      bool                          // Track if we've seen non-import statements
 	functions          map[string]*FunctionSignature // Track function signatures
 	arrayLengths       map[string]ArrayInfo          // Track array lengths
 	cHeaders           map[string]*CHeaderInfo       // Track imported C headers (namespace -> header info)
@@ -538,11 +537,6 @@ func (p *Parser) parseProgram() *ASTNode {
 		stmt := p.parseStatement()
 		if stmt != nil {
 			program.Children = append(program.Children, stmt)
-			
-			// Track if we've seen non-import statements
-			if stmt.Type != NODE_IMPORT_STATEMENT && stmt.Type != NODE_PROGRAM_DECLARATION {
-				p.seenNonImport = true
-			}
 		}
 
 		// After a statement, accept either newline or semicolon
@@ -769,18 +763,14 @@ func (p *Parser) parseIfStatement() *ASTNode {
 	p.expect(TOKEN_IF)
 	condition := p.parseExpression()
 
-	// Accept 'then', 'do', or ':'
-	usesColon := false
+	// Accept either 'then' or ':'
 	if p.current().Type == TOKEN_THEN {
 		p.advance()
-	} else if p.current().Type == TOKEN_DO {
-		p.advance()
-	} else if p.current().Type == TOKEN_ASSIGN {
-		usesColon = true
+	} else if p.current().Type == TOKEN_ASSIGN { // colon
 		p.advance()
 	} else {
 		current := p.current()
-		errMsg := fmt.Sprintf("Expected 'then', 'do', or ':', got %s at line %d:%d",
+		errMsg := fmt.Sprintf("Expected 'then' or ':', got %s at line %d:%d",
 			tokenTypeName(current.Type), current.Line, current.Column)
 		if p.LintMode {
 			p.recordError(errMsg)
@@ -789,12 +779,14 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		}
 	}
 
-	// Check for inline if statement (no newline after then/do/colon)
+	// Skip optional whitespace/indent after keyword
+	p.skipWhitespace()
+
+	// Check for inline if statement (no newline after then)
 	isMultiLine := false
 	var ifBody *ASTNode
 	if p.current().Type != TOKEN_NEWLINE {
 		// Inline: parse single statement
-		p.skipWhitespace()
 		ifBody = &ASTNode{Type: NODE_BLOCK}
 		stmt := p.parseStatement()
 		if stmt != nil {
@@ -805,11 +797,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		isMultiLine = true
 		p.advance() // skip newline
 		p.skipWhitespace()
-		if usesColon {
-			ifBody = p.parseBlockUntilEnd("if", startLine)
-		} else {
-			ifBody = p.parseBlock()
-		}
+		ifBody = p.parseBlock()
 	}
 
 	ifStmt := &ASTNode{
@@ -817,8 +805,8 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		Children: []*ASTNode{condition, ifBody},
 	}
 
-	// Skip any newlines, semicolons, or dedents before checking for anif/elseif
-	for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_DEDENT || p.current().Type == TOKEN_SEMICOLON {
+	// Skip any newlines or dedents before checking for anif/elseif
+	for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_DEDENT {
 		p.advance()
 	}
 
@@ -827,18 +815,14 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		p.advance()
 		elseifCondition := p.parseExpression()
 
-		// Accept 'then', 'do', or ':'
-		elseifUsesColon := false
+		// Accept either 'then' or ':'
 		if p.current().Type == TOKEN_THEN {
 			p.advance()
-		} else if p.current().Type == TOKEN_DO {
-			p.advance()
-		} else if p.current().Type == TOKEN_ASSIGN {
-			elseifUsesColon = true
+		} else if p.current().Type == TOKEN_ASSIGN { // colon
 			p.advance()
 		} else {
 			current := p.current()
-			errMsg := fmt.Sprintf("Expected 'then', 'do', or ':', got %s at line %d:%d",
+			errMsg := fmt.Sprintf("Expected 'then' or ':', got %s at line %d:%d",
 				tokenTypeName(current.Type), current.Line, current.Column)
 			if p.LintMode {
 				p.recordError(errMsg)
@@ -847,11 +831,13 @@ func (p *Parser) parseIfStatement() *ASTNode {
 			}
 		}
 
+		// Skip optional whitespace/indent after keyword
+		p.skipWhitespace()
+
 		// Check for inline elseif/anif
 		var elseifBody *ASTNode
 		if p.current().Type != TOKEN_NEWLINE {
 			// Inline
-			p.skipWhitespace()
 			elseifBody = &ASTNode{Type: NODE_BLOCK}
 			stmt := p.parseStatement()
 			if stmt != nil {
@@ -862,30 +848,24 @@ func (p *Parser) parseIfStatement() *ASTNode {
 			isMultiLine = true
 			p.advance() // skip newline
 			p.skipWhitespace()
-			if elseifUsesColon {
-				elseifBody = p.parseBlockUntilEnd("anif", startLine)
-			} else {
-				elseifBody = p.parseBlock()
-			}
+			elseifBody = p.parseBlock()
 		}
 
 		// Add elseif as another condition-body pair
 		ifStmt.Children = append(ifStmt.Children, elseifCondition, elseifBody)
 
-		// Skip any newlines, semicolons, or dedents before checking for next anif/elseif
-		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_DEDENT || p.current().Type == TOKEN_SEMICOLON {
+		// Skip any newlines or dedents before checking for next anif/elseif
+		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_DEDENT {
 			p.advance()
 		}
 	}
 
-	// Handle else (can optionally use ':')
+	// Handle else (optional ':' after else)
 	if p.current().Type == TOKEN_ELSE {
 		p.advance()
 
-		// Check if using ':' syntax
-		elseUsesColon := false
+		// Optional ':' after else
 		if p.current().Type == TOKEN_ASSIGN {
-			elseUsesColon = true
 			p.advance()
 		}
 
@@ -893,7 +873,6 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		var elseBody *ASTNode
 		if p.current().Type != TOKEN_NEWLINE {
 			// Inline
-			p.skipWhitespace()
 			elseBody = &ASTNode{Type: NODE_BLOCK}
 			stmt := p.parseStatement()
 			if stmt != nil {
@@ -902,26 +881,20 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		} else {
 			// Multi-line
 			isMultiLine = true
-			p.advance() // skip newline
-			p.skipWhitespace()
-			if elseUsesColon {
-				elseBody = p.parseBlockUntilEnd("else", startLine)
-			} else {
-				elseBody = p.parseBlock()
-			}
+			p.expect(TOKEN_NEWLINE)
+			p.expect(TOKEN_INDENT)
+			elseBody = p.parseBlock()
 		}
 		ifStmt.Children = append(ifStmt.Children, elseBody)
 
-		// Skip any newlines or dedents before 'end' (only if not using colon syntax)
-		if !elseUsesColon {
-			for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_DEDENT {
-				p.advance()
-			}
+		// Skip any newlines or dedents before 'end'
+		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_DEDENT {
+			p.advance()
 		}
 	}
 
-	// Multi-line if statements require 'end' (only if not using colon syntax which already consumed it)
-	if isMultiLine && !usesColon {
+	// Multi-line if statements require 'end'
+	if isMultiLine {
 		if p.current().Type == TOKEN_END {
 			p.advance() // consume 'end'
 		} else {
@@ -1108,34 +1081,114 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 
 		p.expect(TOKEN_ASSIGN) // Expect :
 
-		// Skip optional whitespace/indent after colon
-		p.skipWhitespace()
-
-		// Parse case body - must be a statement or call, not an assignment
-		// We need to be careful here because parseStatement might misinterpret
-		// patterns like "ahoy|...|" if preceded by an identifier
+		// Parse case body - can be single statement or multi-line block
 		var caseBody *ASTNode
 
-		// Explicitly handle known statement types
-		switch p.current().Type {
-		case TOKEN_AHOY:
-			caseBody = p.parseAhoyStatement()
-		case TOKEN_PRINT:
-			caseBody = p.parsePrintStatement()
-		case TOKEN_RETURN:
-			caseBody = p.parseReturnStatement()
-		case TOKEN_IF:
-			caseBody = p.parseIfStatement()
-		case TOKEN_SWITCH:
-			caseBody = p.parseSwitchStatement()
-		case TOKEN_LOOP:
-			caseBody = p.parseLoop()
-		case TOKEN_IDENTIFIER:
-			// Could be a function call or method call
-			caseBody = p.parseExpression()
-		default:
-			// Try to parse as expression
-			caseBody = p.parseExpression()
+		// Check if this is a multi-line case (newline after colon)
+		// IMPORTANT: Check BEFORE skipping whitespace!
+		if p.current().Type == TOKEN_NEWLINE {
+			p.advance() // skip newline
+			if p.current().Type == TOKEN_INDENT {
+				p.advance() // skip indent
+			}
+
+			// Parse multi-line case block
+			caseBody = &ASTNode{Type: NODE_BLOCK}
+			for {
+				// Check for end of case block
+				if p.current().Type == TOKEN_DEDENT || p.current().Type == TOKEN_EOF {
+					break
+				}
+
+				// Check if we hit another case or end of switch
+				if p.current().Type == TOKEN_NUMBER || p.current().Type == TOKEN_STRING ||
+					p.current().Type == TOKEN_CHAR {
+					// Peek ahead to see if this is a case label (has : after it)
+					nextIdx := p.pos + 1
+					if nextIdx < len(p.tokens) && p.tokens[nextIdx].Type == TOKEN_ASSIGN {
+						// This is a new case, break out
+						break
+					}
+				}
+				// Special handling for identifiers - could be case label or variable declaration
+				if p.current().Type == TOKEN_IDENTIFIER {
+					// Peek ahead - case label: "identifier:" not followed by type keyword
+					// Variable decl: "identifier: type" or "identifier: value"
+					nextIdx := p.pos + 1
+					if nextIdx < len(p.tokens) && p.tokens[nextIdx].Type == TOKEN_ASSIGN {
+						// Has colon after identifier - check what follows
+						nextNextIdx := nextIdx + 1
+						if nextNextIdx < len(p.tokens) {
+							nextNextType := p.tokens[nextNextIdx].Type
+							// If followed by type keyword, it's a variable declaration, not a case
+							if nextNextType == TOKEN_INT_TYPE || nextNextType == TOKEN_FLOAT_TYPE ||
+								nextNextType == TOKEN_STRING_TYPE || nextNextType == TOKEN_BOOL_TYPE ||
+								nextNextType == TOKEN_DICT_TYPE || nextNextType == TOKEN_ARRAY_TYPE ||
+								nextNextType == TOKEN_VECTOR2_TYPE || nextNextType == TOKEN_COLOR_TYPE ||
+								nextNextType == TOKEN_CHAR_TYPE {
+								// This is a variable declaration, continue parsing
+							} else if nextNextType == TOKEN_IDENTIFIER {
+								// Could be custom type or case body - if underscore, it's default case
+								if p.current().Value == "_" {
+									// Default case
+									break
+								}
+								// Otherwise check if it looks like assignment (identifier: identifier = ...)
+								nextNextNextIdx := nextNextIdx + 1
+								if nextNextNextIdx < len(p.tokens) && p.tokens[nextNextNextIdx].Type == TOKEN_EQUALS {
+									// Variable declaration with type inference
+								} else {
+									// Likely a case label
+									break
+								}
+							} else {
+								// Not a type keyword, likely a case label
+								break
+							}
+						}
+					}
+				}
+
+				// Skip blank lines
+				if p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_SEMICOLON {
+					p.advance()
+					continue
+				}
+
+				// Parse statement in case block
+				stmt := p.parseStatement()
+				if stmt != nil {
+					caseBody.Children = append(caseBody.Children, stmt)
+				}
+			}
+
+			// Consume dedent at end of case block
+			if p.current().Type == TOKEN_DEDENT {
+				p.advance()
+			}
+		} else {
+			// Single-line case body
+			// Explicitly handle known statement types
+			switch p.current().Type {
+			case TOKEN_AHOY:
+				caseBody = p.parseAhoyStatement()
+			case TOKEN_PRINT:
+				caseBody = p.parsePrintStatement()
+			case TOKEN_RETURN:
+				caseBody = p.parseReturnStatement()
+			case TOKEN_IF:
+				caseBody = p.parseIfStatement()
+			case TOKEN_SWITCH:
+				caseBody = p.parseSwitchStatement()
+			case TOKEN_LOOP:
+				caseBody = p.parseLoop()
+			case TOKEN_IDENTIFIER:
+				// Could be a function call or method call
+				caseBody = p.parseExpression()
+			default:
+				// Try to parse as expression
+				caseBody = p.parseExpression()
+			}
 		}
 
 		// Create case node
@@ -1216,11 +1269,9 @@ func (p *Parser) parseLoop() *ASTNode {
 			endExpr := p.parseExpression()
 
 			// Accept either 'do' or ':'
-			usesColon := false
 			if p.current().Type == TOKEN_DO {
 				p.advance()
 			} else if p.current().Type == TOKEN_ASSIGN {
-				usesColon = true
 				p.advance()
 			} else {
 				if !p.LintMode {
@@ -1228,13 +1279,12 @@ func (p *Parser) parseLoop() *ASTNode {
 				}
 				p.recordError("Expected 'do' or ':' after loop range")
 			}
+			p.skipWhitespace()
 
-			// Check for inline loop (no newline after do/colon)
+			// Check for inline loop (no newline after do)
 			isMultiLine := false
 			var body *ASTNode
 			if p.current().Type != TOKEN_NEWLINE {
-				// Inline loop - skip whitespace before parsing statement
-				p.skipWhitespace()
 				// Inline: parse single statement
 				body = &ASTNode{Type: NODE_BLOCK}
 				stmt := p.parseStatement()
@@ -1244,17 +1294,11 @@ func (p *Parser) parseLoop() *ASTNode {
 			} else {
 				// Multi-line: parse block
 				isMultiLine = true
-				p.advance()        // skip the newline
-				p.skipWhitespace() // skip any indents
-				if usesColon {
-					body = p.parseBlockUntilEnd("loop", startLine)
-				} else {
-					body = p.parseBlock()
-				}
+				body = p.parseBlock()
 			}
 
-			// Consume 'end' for multi-line loops (only if not using colon syntax)
-			if isMultiLine && !usesColon {
+			// Consume 'end' for multi-line loops
+			if isMultiLine {
 				if p.current().Type == TOKEN_DEDENT {
 					p.advance()
 				}
@@ -1281,11 +1325,9 @@ func (p *Parser) parseLoop() *ASTNode {
 			condition := p.parseExpression()
 
 			// Accept either 'do' or ':'
-			usesColon := false
 			if p.current().Type == TOKEN_DO {
 				p.advance()
 			} else if p.current().Type == TOKEN_ASSIGN {
-				usesColon = true
 				p.advance()
 			} else {
 				if !p.LintMode {
@@ -1293,12 +1335,12 @@ func (p *Parser) parseLoop() *ASTNode {
 				}
 				p.recordError("Expected 'do' or ':' after loop condition")
 			}
+			p.skipWhitespace()
 
 			// Check for inline loop
 			isMultiLine := false
 			var body *ASTNode
 			if p.current().Type != TOKEN_NEWLINE {
-				p.skipWhitespace()
 				body = &ASTNode{Type: NODE_BLOCK}
 				stmt := p.parseStatement()
 				if stmt != nil {
@@ -1306,17 +1348,11 @@ func (p *Parser) parseLoop() *ASTNode {
 				}
 			} else {
 				isMultiLine = true
-				p.advance()        // skip newline
-				p.skipWhitespace() // skip indents
-				if usesColon {
-					body = p.parseBlockUntilEnd("loop", startLine)
-				} else {
-					body = p.parseBlock()
-				}
+				body = p.parseBlock()
 			}
 
-			// Consume 'end' for multi-line loops (only if not using colon syntax)
-			if isMultiLine && !usesColon {
+			// Consume 'end' for multi-line loops
+			if isMultiLine {
 				if p.current().Type == TOKEN_DEDENT {
 					p.advance()
 				}
@@ -1392,11 +1428,9 @@ func (p *Parser) parseLoop() *ASTNode {
 		endExpr := p.parseExpression()
 
 		// Accept either 'do' or ':'
-		usesColon := false
 		if p.current().Type == TOKEN_DO {
 			p.advance()
 		} else if p.current().Type == TOKEN_ASSIGN {
-			usesColon = true
 			p.advance()
 		} else {
 			if !p.LintMode {
@@ -1404,12 +1438,12 @@ func (p *Parser) parseLoop() *ASTNode {
 			}
 			p.recordError("Expected 'do' or ':' after loop range")
 		}
+		p.skipWhitespace()
 
 		// Check for inline loop
 		isMultiLine := false
 		var body *ASTNode
 		if p.current().Type != TOKEN_NEWLINE {
-			p.skipWhitespace()
 			body = &ASTNode{Type: NODE_BLOCK}
 			stmt := p.parseStatement()
 			if stmt != nil {
@@ -1417,17 +1451,11 @@ func (p *Parser) parseLoop() *ASTNode {
 			}
 		} else {
 			isMultiLine = true
-			p.advance()        // skip newline
-			p.skipWhitespace() // skip indents
-			if usesColon {
-				body = p.parseBlockUntilEnd("loop", startLine)
-			} else {
-				body = p.parseBlock()
-			}
+			body = p.parseBlock()
 		}
 
-		// Consume 'end' for multi-line loops (only if not using colon syntax)
-		if isMultiLine && !usesColon {
+		// Consume 'end' for multi-line loops
+		if isMultiLine {
 			if p.current().Type == TOKEN_DEDENT {
 				p.advance()
 			}
@@ -1455,11 +1483,9 @@ func (p *Parser) parseLoop() *ASTNode {
 		endExpr := p.parseExpression()
 
 		// Accept either 'do' or ':'
-		usesColon := false
 		if p.current().Type == TOKEN_DO {
 			p.advance()
 		} else if p.current().Type == TOKEN_ASSIGN {
-			usesColon = true
 			p.advance()
 		} else {
 			if !p.LintMode {
@@ -1467,12 +1493,12 @@ func (p *Parser) parseLoop() *ASTNode {
 			}
 			p.recordError("Expected 'do' or ':' after loop range")
 		}
+		p.skipWhitespace()
 
 		// Check for inline loop
 		isMultiLine := false
 		var body *ASTNode
 		if p.current().Type != TOKEN_NEWLINE {
-			p.skipWhitespace()
 			body = &ASTNode{Type: NODE_BLOCK}
 			stmt := p.parseStatement()
 			if stmt != nil {
@@ -1480,17 +1506,11 @@ func (p *Parser) parseLoop() *ASTNode {
 			}
 		} else {
 			isMultiLine = true
-			p.advance()        // skip newline
-			p.skipWhitespace() // skip indents
-			if usesColon {
-				body = p.parseBlockUntilEnd("loop", startLine)
-			} else {
-				body = p.parseBlock()
-			}
+			body = p.parseBlock()
 		}
 
-		// Consume 'end' for multi-line loops (only if not using colon syntax)
-		if isMultiLine && !usesColon {
+		// Consume 'end' for multi-line loops
+		if isMultiLine {
 			if p.current().Type == TOKEN_DEDENT {
 				p.advance()
 			}
@@ -1519,11 +1539,9 @@ func (p *Parser) parseLoop() *ASTNode {
 		condition := p.parseExpression()
 
 		// Accept either 'do' or ':'
-		usesColon := false
 		if p.current().Type == TOKEN_DO {
 			p.advance()
 		} else if p.current().Type == TOKEN_ASSIGN {
-			usesColon = true
 			p.advance()
 		} else {
 			if !p.LintMode {
@@ -1531,12 +1549,12 @@ func (p *Parser) parseLoop() *ASTNode {
 			}
 			p.recordError("Expected 'do' or ':' after loop condition")
 		}
+		p.skipWhitespace()
 
 		// Check for inline loop
 		isMultiLine := false
 		var body *ASTNode
 		if p.current().Type != TOKEN_NEWLINE {
-			p.skipWhitespace()
 			body = &ASTNode{Type: NODE_BLOCK}
 			stmt := p.parseStatement()
 			if stmt != nil {
@@ -1544,17 +1562,11 @@ func (p *Parser) parseLoop() *ASTNode {
 			}
 		} else {
 			isMultiLine = true
-			p.advance()        // skip newline
-			p.skipWhitespace() // skip indents
-			if usesColon {
-				body = p.parseBlockUntilEnd("loop", startLine)
-			} else {
-				body = p.parseBlock()
-			}
+			body = p.parseBlock()
 		}
 
-		// Consume 'end' for multi-line loops (only if not using colon syntax)
-		if isMultiLine && !usesColon {
+		// Consume 'end' for multi-line loops
+		if isMultiLine {
 			if p.current().Type == TOKEN_DEDENT {
 				p.advance()
 			}
@@ -1603,11 +1615,9 @@ func (p *Parser) parseLoop() *ASTNode {
 		collectionExpr := p.parseExpression()
 
 		// Accept either 'do' or ':'
-		usesColon := false
 		if p.current().Type == TOKEN_DO {
 			p.advance()
 		} else if p.current().Type == TOKEN_ASSIGN {
-			usesColon = true
 			p.advance()
 		} else {
 			if !p.LintMode {
@@ -1615,12 +1625,12 @@ func (p *Parser) parseLoop() *ASTNode {
 			}
 			p.recordError("Expected 'do' or ':' after 'in' expression")
 		}
+		p.skipWhitespace()
 
 		// Check for inline loop
 		isMultiLine := false
 		var body *ASTNode
 		if p.current().Type != TOKEN_NEWLINE {
-			p.skipWhitespace()
 			body = &ASTNode{Type: NODE_BLOCK}
 			stmt := p.parseStatement()
 			if stmt != nil {
@@ -1628,17 +1638,11 @@ func (p *Parser) parseLoop() *ASTNode {
 			}
 		} else {
 			isMultiLine = true
-			p.advance()        // skip newline
-			p.skipWhitespace() // skip indents
-			if usesColon {
-				body = p.parseBlockUntilEnd("loop", startLine)
-			} else {
-				body = p.parseBlock()
-			}
+			body = p.parseBlock()
 		}
 
-		// Consume 'end' for multi-line loops (only if not using colon syntax)
-		if isMultiLine && !usesColon {
+		// Consume 'end' for multi-line loops
+		if isMultiLine {
 			if p.current().Type == TOKEN_DEDENT {
 				p.advance()
 			}
@@ -1667,11 +1671,9 @@ func (p *Parser) parseLoop() *ASTNode {
 		dictExpr := p.parseExpression()
 
 		// Accept either 'do' or ':'
-		usesColon := false
 		if p.current().Type == TOKEN_DO {
 			p.advance()
 		} else if p.current().Type == TOKEN_ASSIGN {
-			usesColon = true
 			p.advance()
 		} else {
 			if !p.LintMode {
@@ -1679,12 +1681,12 @@ func (p *Parser) parseLoop() *ASTNode {
 			}
 			p.recordError("Expected 'do' or ':' after 'in' expression")
 		}
+		p.skipWhitespace()
 
 		// Check for inline loop
 		isMultiLine := false
 		var body *ASTNode
 		if p.current().Type != TOKEN_NEWLINE {
-			p.skipWhitespace()
 			body = &ASTNode{Type: NODE_BLOCK}
 			stmt := p.parseStatement()
 			if stmt != nil {
@@ -1692,17 +1694,11 @@ func (p *Parser) parseLoop() *ASTNode {
 			}
 		} else {
 			isMultiLine = true
-			p.advance()        // skip newline
-			p.skipWhitespace() // skip indents
-			if usesColon {
-				body = p.parseBlockUntilEnd("loop", startLine)
-			} else {
-				body = p.parseBlock()
-			}
+			body = p.parseBlock()
 		}
 
-		// Consume 'end' for multi-line loops (only if not using colon syntax)
-		if isMultiLine && !usesColon {
+		// Consume 'end' for multi-line loops
+		if isMultiLine {
 			if p.current().Type == TOKEN_DEDENT {
 				p.advance()
 			}
@@ -2014,18 +2010,7 @@ func (p *Parser) parseDeferStatement() *ASTNode {
 }
 
 func (p *Parser) parseImportStatement() *ASTNode {
-	importToken := p.current()
 	p.expect(TOKEN_IMPORT)
-
-	// Validate that import is at top level (after program declaration, before other code)
-	if p.seenNonImport {
-		errMsg := fmt.Sprintf("Import statements must be at the top of the file, after the program declaration at line %d", importToken.Line)
-		if p.LintMode {
-			p.recordError(errMsg)
-		} else {
-			panic(errMsg)
-		}
-	}
 
 	// Check if there's an identifier (namespace) before the string path
 	var namespace string
@@ -3442,13 +3427,8 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 		}
 		enum.Children = append(enum.Children, member)
 
-		// Skip optional delimiters (comma, semicolon, or newline)
-		for p.current().Type == TOKEN_COMMA || p.current().Type == TOKEN_SEMICOLON || p.current().Type == TOKEN_NEWLINE {
-			p.advance()
-		}
-
 		// For one-line enums, stop at newline or EOF
-		if isOneLine && (p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_EOF) {
+		if isOneLine && (p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_EOF || p.current().Type == TOKEN_SEMICOLON) {
 			break
 		}
 
@@ -4042,13 +4022,8 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 			struc.Children = append(struc.Children, field)
 		}
 
-		// Skip optional delimiters (comma, semicolon, or newline)
-		for p.current().Type == TOKEN_COMMA || p.current().Type == TOKEN_SEMICOLON || p.current().Type == TOKEN_NEWLINE {
-			p.advance()
-		}
-
 		// For one-line structs, stop at newline or EOF
-		if isOneLine && (p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_EOF) {
+		if isOneLine && (p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_EOF || p.current().Type == TOKEN_SEMICOLON) {
 			break
 		}
 

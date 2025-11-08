@@ -28,11 +28,11 @@ if score greater 90 then ahoy|"A\n"| anif score greater 80 then ahoy|"B\n"| else
 ### 4. Mixed Inline and Multi-line
 Combine inline and multi-line formats in the same conditional chain:
 ```ahoy
-if simple then action||
-	anif complex;
-  multiple_lines||
+if simple: action||
+anif complex;
+	multiple_lines||
   more_code||
-else default||
+else: default||
 ```
 
 ## Examples
@@ -40,9 +40,9 @@ else default||
 ### Before (Multi-line only):
 ```ahoy
 score: 85
-if score greater_than 90 then ahoy|"Grade: A\n"|
-anif score greater_than 80 then ahoy|"Grade: B\n"|
-anif score greater_than 70 then ahoy|"Grade: C\n"|
+if score greater_than 90: ahoy|"Grade: A\n"|;
+anif score greater_than 80: ahoy|"Grade: B\n"|;
+anif score greater_than 70: ahoy|"Grade: C\n"|;
 else ahoy|"Grade: F\n"|
 ```
 

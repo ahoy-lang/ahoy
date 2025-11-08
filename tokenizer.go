@@ -89,6 +89,7 @@ const (
 	TOKEN_ASSERT       // assert (runtime assertion)
 	TOKEN_DEFER        // defer (deferred execution)
 	TOKEN_DOUBLE_COLON // ::
+	TOKEN_WALRUS       // := (for tuple assignment)
 	TOKEN_QUESTION     // ? (loop counter variable)
 	TOKEN_TERNARY      // ?? (ternary operator)
 	TOKEN_EQUALS       // = (for default arguments)
@@ -119,7 +120,7 @@ func Tokenize(input string) []Token {
 		"in":           TOKEN_IN,
 		"to":           TOKEN_TO,
 		"till":         TOKEN_TILL,
-		"func":         TOKEN_FUNC,
+		// "func" removed - we use :: syntax for functions
 		"return":       TOKEN_RETURN,
 		"import":       TOKEN_IMPORT,
 		"program":      TOKEN_PROGRAM,
@@ -313,6 +314,10 @@ func Tokenize(input string) []Token {
 				switch twoChar {
 				case "::":
 					tokens = append(tokens, Token{Type: TOKEN_DOUBLE_COLON, Value: "::", Line: lineNum + 1, Column: i + 1})
+					i += 2
+					continue
+				case ":=":
+					tokens = append(tokens, Token{Type: TOKEN_WALRUS, Value: ":=", Line: lineNum + 1, Column: i + 1})
 					i += 2
 					continue
 				case "<=":

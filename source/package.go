@@ -25,8 +25,8 @@ type Package struct {
 
 // PackageManager handles package resolution and compilation
 type PackageManager struct {
-	Packages      map[string]*Package     // program name -> Package
-	ImportedPaths map[string]*Package     // file/dir path -> Package
+	Packages      map[string]*Package // program name -> Package
+	ImportedPaths map[string]*Package // file/dir path -> Package
 	CurrentDir    string
 }
 
@@ -48,7 +48,22 @@ func (pm *PackageManager) LoadFile(filePath string) (*PackageFile, error) {
 	// TEMP: Disable formatter for debugging
 	formattedContent := string(content) // formatSource(string(content))
 	tokens := ahoy.Tokenize(formattedContent)
-	ast := ahoy.Parse(tokens)
+
+	// Protect against parse panics when scanning directories
+	var ast *ahoy.ASTNode
+	var parseErr error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				parseErr = fmt.Errorf("parse error in %s: %v", filePath, r)
+			}
+		}()
+		ast = ahoy.Parse(tokens)
+	}()
+
+	if parseErr != nil {
+		return nil, parseErr
+	}
 
 	pf := &PackageFile{
 		Path:    filePath,
@@ -104,7 +119,9 @@ func (pm *PackageManager) LoadPackageFromFile(mainFilePath string) (*Package, er
 		filePath := filepath.Join(dir, file.Name())
 		pf, err := pm.LoadFile(filePath)
 		if err != nil {
-			return nil, err
+			// Skip files that fail to parse instead of failing the whole package
+			fmt.Printf("Warning: Skipping file %s due to error: %v\n", file.Name(), err)
+			continue
 		}
 
 		// Only include files with matching program name
@@ -187,7 +204,9 @@ func (pm *PackageManager) LoadPackageFromDirectory(dirPath string) (*Package, er
 		filePath := filepath.Join(dirPath, file.Name())
 		pf, err := pm.LoadFile(filePath)
 		if err != nil {
-			return nil, err
+			// Skip files that fail to parse
+			fmt.Printf("Warning: Skipping file %s due to error: %v\n", file.Name(), err)
+			continue
 		}
 
 		if pf.ProgramName == "" {
@@ -247,8 +266,8 @@ func (pkg *Package) GetAllGlobalVariables() []*ahoy.ASTNode {
 	for _, file := range pkg.Files {
 		if file.AST != nil {
 			for _, child := range file.AST.Children {
-				if child.Type == ahoy.NODE_VARIABLE_DECLARATION || 
-				   child.Type == ahoy.NODE_CONSTANT_DECLARATION {
+				if child.Type == ahoy.NODE_VARIABLE_DECLARATION ||
+					child.Type == ahoy.NODE_CONSTANT_DECLARATION {
 					variables = append(variables, child)
 				}
 			}
@@ -299,7 +318,7 @@ func (pkg *Package) MergeAST() *ahoy.ASTNode {
 				if child.Type == ahoy.NODE_PROGRAM_DECLARATION {
 					continue
 				}
-				
+
 				// Deduplicate imports
 				if child.Type == ahoy.NODE_IMPORT_STATEMENT {
 					importKey := child.Value + "|" + child.DataType // path + namespace
@@ -308,7 +327,7 @@ func (pkg *Package) MergeAST() *ahoy.ASTNode {
 					}
 					seenImports[importKey] = true
 				}
-				
+
 				merged.Children = append(merged.Children, child)
 			}
 		}

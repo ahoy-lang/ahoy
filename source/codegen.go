@@ -60,6 +60,9 @@ type CodeGenerator struct {
 	stringMethods map[string]bool   // Track which string methods are used
 	dictMethods   map[string]bool   // Track which dict methods are used
 	loopCounters  []string          // Stack of loop counter variable names
+	currentFunction string           // Current function being generated
+	currentFunctionReturnType string // Return type of current function
+	currentFunctionHasMultiReturn bool // Whether current function has multiple returns
 }
 
 func generateC(ast *ahoy.ASTNode) string {
@@ -362,7 +365,13 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 		gen.generateUnaryOp(node)
 
 	case ahoy.NODE_TERNARY:
+		if isStatement {
+			gen.writeIndent()
+		}
 		gen.generateTernary(node)
+		if isStatement {
+			gen.output.WriteString(";\n")
+		}
 
 	case ahoy.NODE_IDENTIFIER:
 		// Check if it's the loop counter variable
@@ -442,12 +451,34 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 }
 
 func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
+	funcName := node.Value
 	returnType := "void"
+	returnTypes := []string{}
+	
+	// Check if we have multiple return types (comma-separated in DataType)
 	if node.DataType != "" {
-		returnType = gen.mapType(node.DataType)
+		if strings.Contains(node.DataType, ",") {
+			// Multiple return types - create a struct
+			parts := strings.Split(node.DataType, ",")
+			for _, part := range parts {
+				returnTypes = append(returnTypes, strings.TrimSpace(part))
+			}
+			
+			// Generate struct definition for multi-return
+			structName := fmt.Sprintf("%s_return", funcName)
+			gen.funcDecls.WriteString(fmt.Sprintf("typedef struct {\n"))
+			for i, rType := range returnTypes {
+				mappedType := gen.mapType(rType)
+				gen.funcDecls.WriteString(fmt.Sprintf("    %s ret%d;\n", mappedType, i))
+			}
+			gen.funcDecls.WriteString(fmt.Sprintf("} %s;\n\n", structName))
+			returnType = structName
+		} else {
+			returnType = gen.mapType(node.DataType)
+		}
 	}
 
-	gen.funcDecls.WriteString(fmt.Sprintf("%s %s(", returnType, node.Value))
+	gen.funcDecls.WriteString(fmt.Sprintf("%s %s(", returnType, funcName))
 
 	// Parameters
 	params := node.Children[0]
@@ -469,6 +500,11 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	oldOutput := gen.output
 	gen.output = strings.Builder{}
 	gen.indent++
+	
+	// Store current function info for return statement generation
+	gen.currentFunction = funcName
+	gen.currentFunctionReturnType = returnType
+	gen.currentFunctionHasMultiReturn = len(returnTypes) > 1
 
 	gen.generateNodeInternal(body, false)
 
@@ -477,6 +513,9 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 
 	gen.indent--
 	gen.output = oldOutput
+	gen.currentFunction = ""
+	gen.currentFunctionReturnType = ""
+	gen.currentFunctionHasMultiReturn = false
 }
 
 func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
@@ -1096,13 +1135,22 @@ func (gen *CodeGenerator) generateReturnStatement(node *ahoy.ASTNode) {
 	if len(node.Children) > 0 {
 		gen.output.WriteString(" ")
 		// Handle multiple return values
-		if len(node.Children) > 1 {
-			// Multiple returns - create an inline struct
-			// Note: This requires the function to return a struct type
-			// For now, we'll just return the first value and add a comment
-			gen.output.WriteString("/* TODO: Multiple returns not fully supported in C */ ")
+		if len(node.Children) > 1 && gen.currentFunctionHasMultiReturn {
+			// Multiple returns - return a struct literal with correct type
+			gen.output.WriteString("(")
+			gen.output.WriteString(gen.currentFunctionReturnType)
+			gen.output.WriteString("){")
+			for i, child := range node.Children {
+				if i > 0 {
+					gen.output.WriteString(", ")
+				}
+				gen.output.WriteString(fmt.Sprintf(".ret%d = ", i))
+				gen.generateNode(child)
+			}
+			gen.output.WriteString("}")
+		} else {
+			gen.generateNode(node.Children[0])
 		}
-		gen.generateNode(node.Children[0])
 	}
 	gen.output.WriteString(";\n")
 }
@@ -1142,8 +1190,15 @@ func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
 }
 
 func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
-	// Convert snake_case function names to PascalCase for C
-	funcName := snakeToPascal(node.Value)
+	// Convert snake_case to PascalCase for C library functions
+	// Keep user-defined functions as-is
+	funcName := node.Value
+	
+	// If function has underscores, assume it's a C library function and convert to PascalCase
+	// User functions in Ahoy should not use underscores in names
+	if strings.Contains(funcName, "_") {
+		funcName = snakeToPascal(funcName)
+	}
 
 	// Handle special functions
 	switch node.Value {
@@ -1918,7 +1973,37 @@ func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 	leftSide := node.Children[0]
 	rightSide := node.Children[1]
 
-	// Generate temporary variables for swap
+	// Check if right side is a single function call that returns multiple values
+	if len(rightSide.Children) == 1 && rightSide.Children[0].Type == ahoy.NODE_CALL {
+		callNode := rightSide.Children[0]
+		funcName := callNode.Value
+		
+		// Generate the function call into a temp struct
+		tempVar := fmt.Sprintf("__multi_ret_%d", gen.varCounter)
+		gen.varCounter++
+		
+		gen.writeIndent()
+		gen.output.WriteString(fmt.Sprintf("%s_return %s = ", funcName, tempVar))
+		gen.generateNode(callNode)
+		gen.output.WriteString(";\n")
+		
+		// Assign struct fields to left side variables
+		for i, target := range leftSide.Children {
+			gen.writeIndent()
+			// Check if variable needs to be declared
+			if _, exists := gen.variables[target.Value]; !exists {
+				// Need to declare variable - infer type from function return
+				// For now, use int as default (should lookup function signature)
+				cType := "int"
+				gen.output.WriteString(fmt.Sprintf("%s ", cType))
+				gen.variables[target.Value] = "int"
+			}
+			gen.output.WriteString(fmt.Sprintf("%s = %s.ret%d;\n", target.Value, tempVar, i))
+		}
+		return
+	}
+
+	// Generate temporary variables for regular tuple assignment
 	temps := make([]string, len(rightSide.Children))
 	for i, expr := range rightSide.Children {
 		tempVar := fmt.Sprintf("__temp_%d", gen.varCounter)
