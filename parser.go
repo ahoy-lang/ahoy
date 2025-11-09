@@ -184,6 +184,7 @@ type Parser struct {
 	cHeaderGlobal      *CHeaderInfo                  // Global C header imports (no namespace)
 	blockDepth         int                           // Track nesting depth of multi-line blocks
 	loopVarScopes      []map[string]string           // Stack of loop variable scopes
+	functionDepth      int                           // Track nesting depth of function definitions
 }
 
 func Parse(tokens []Token) *ASTNode {
@@ -205,6 +206,7 @@ func Parse(tokens []Token) *ASTNode {
 		cHeaderGlobal:      &CHeaderInfo{Functions: make(map[string]*CFunction), Enums: make(map[string]*CEnum), Defines: make(map[string]*CDefine), Structs: make(map[string]*CStruct)},
 		blockDepth:         0,
 		loopVarScopes:      make([]map[string]string, 0),
+		functionDepth:      0,
 	}
 	return parser.parseProgram()
 }
@@ -228,6 +230,7 @@ func ParseLint(tokens []Token) (*ASTNode, []ParseError) {
 		cHeaderGlobal:      &CHeaderInfo{Functions: make(map[string]*CFunction), Enums: make(map[string]*CEnum), Defines: make(map[string]*CDefine), Structs: make(map[string]*CStruct)},
 		blockDepth:         0,
 		loopVarScopes:      make([]map[string]string, 0),
+		functionDepth:      0,
 	}
 	ast := parser.parseProgram()
 	return ast, parser.Errors
@@ -509,6 +512,7 @@ func tokenTypeName(t TokenType) string {
 		TOKEN_ASSERT: "'assert'", TOKEN_DEFER: "'defer'",
 		TOKEN_DOUBLE_COLON: "'::'", TOKEN_QUESTION: "'?'", TOKEN_TERNARY: "'??'",
 		TOKEN_EQUALS: "'='", TOKEN_INFER: "'infer'", TOKEN_VOID: "'void'",
+		TOKEN_AT: "'@'",
 	}
 	if name, ok := names[t]; ok {
 		return name
@@ -675,6 +679,8 @@ func (p *Parser) parseStatement() *ASTNode {
 		return p.parseDeferStatement()
 	case TOKEN_IMPORT:
 		return p.parseImportStatement()
+	case TOKEN_AT:
+		return p.parseFunctionDeclaration()
 	case TOKEN_IDENTIFIER:
 		// Check for constant declaration (name ::)
 		nextType := p.peek(1).Type
@@ -2686,7 +2692,7 @@ func (p *Parser) parseBlockUntilEnd(constructName string, startLine int) *ASTNod
 	} else {
 		errMsg := fmt.Sprintf("Expected '$' to close %s at line %d", constructName, startLine)
 		if p.LintMode {
-			p.recordError(errMsg)
+			p.recordErrorAtLine(errMsg, startLine)
 		} else {
 			panic(errMsg)
 		}
@@ -3738,6 +3744,27 @@ func (p *Parser) parseConstantDeclaration() *ASTNode {
 	}
 }
 
+// Parse function declaration with @ prefix: @ name :: |params| type: body
+func (p *Parser) parseFunctionDeclaration() *ASTNode {
+	startLine := p.current().Line
+	p.expect(TOKEN_AT) // consume @
+	
+	// Check for nested function definition
+	if p.LintMode && p.functionDepth > 0 {
+		errMsg := fmt.Sprintf("Function definitions cannot be nested inside other functions (line %d)", startLine)
+		p.recordErrorAtLine(errMsg, startLine)
+	}
+	
+	name := p.expect(TOKEN_IDENTIFIER)
+	p.expect(TOKEN_DOUBLE_COLON)
+	
+	p.functionDepth++ // Entering function definition
+	defer func() { p.functionDepth-- }() // Exiting function definition
+	
+	result := p.parseFunctionWithDoubleColon(name)
+	return result
+}
+
 // Parse function with :: syntax: name :: |params| type: body
 func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 	startLine := name.Line
@@ -3901,9 +3928,10 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 	}
 
 	// Parse body (function with :: syntax always uses '$')
+	p.blockDepth++ // Opening a multi-line block
 	body := p.parseBlockUntilEnd("function", startLine)
 
-	// parseBlockUntilEnd already consumes the '$' token
+	// parseBlockUntilEnd already consumes the '$' token and decrements blockDepth
 
 	// In lint mode, restore previous function context
 	if p.LintMode {

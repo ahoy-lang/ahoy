@@ -96,6 +96,7 @@ const (
 	TOKEN_INFER        // infer (inferred return type)
 	TOKEN_VOID         // void (no return value)
 	TOKEN_END          // $ or ⚓ (block terminator)
+	TOKEN_AT           // @ (function declaration prefix)
 )
 
 type Token struct {
@@ -371,6 +372,8 @@ func Tokenize(input string) []Token {
 				tokens = append(tokens, Token{Type: TOKEN_SEMICOLON, Value: ";", Line: lineNum + 1, Column: i + 1})
 			case '=':
 				tokens = append(tokens, Token{Type: TOKEN_EQUALS, Value: "=", Line: lineNum + 1, Column: i + 1})
+			case '@':
+				tokens = append(tokens, Token{Type: TOKEN_AT, Value: "@", Line: lineNum + 1, Column: i + 1})
 			case '$':
 				// Check for $#N syntax (multiple block closures)
 				if i+1 < len(content) && content[i+1] == '#' {
