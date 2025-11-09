@@ -86,6 +86,14 @@ type StructDefinition struct {
 	Name   string
 	Fields []StructField
 	Parent string // For nested types like smoke_particle extends particle
+	Line   int    // Line where struct is declared
+}
+
+// EnumDefinition stores information about an enum
+type EnumDefinition struct {
+	Name    string
+	Members []*ASTNode
+	Line    int // Line where enum is declared
 }
 
 // FunctionSignature stores information about a function
@@ -95,6 +103,7 @@ type FunctionSignature struct {
 	ReturnTypes  []string
 	IsInfer      bool     // True if return type is "infer"
 	FunctionNode *ASTNode // Reference to function AST for inference
+	Line         int      // Line where function is declared
 }
 
 // ParameterInfo stores parameter information
@@ -164,7 +173,7 @@ type Parser struct {
 	variableTypes      map[string]string             // Track variable types
 	constants          map[string]int                // Track constant declarations (name -> line number)
 	structs            map[string]*StructDefinition  // Track struct definitions
-	enums              map[string][]*ASTNode         // Track enum definitions (name -> members)
+	enums              map[string]*EnumDefinition    // Track enum definitions
 	objectLiterals     map[string]map[string]bool    // Track object literal properties by variable name
 	currentFunctionRet string                        // Track current function return type
 	functionScope      map[string]string             // Track function-local variables
@@ -186,7 +195,7 @@ func Parse(tokens []Token) *ASTNode {
 		variableTypes:      make(map[string]string),
 		constants:          make(map[string]int),
 		structs:            make(map[string]*StructDefinition),
-		enums:              make(map[string][]*ASTNode),
+		enums:              make(map[string]*EnumDefinition),
 		objectLiterals:     make(map[string]map[string]bool),
 		currentFunctionRet: "",
 		functionScope:      make(map[string]string),
@@ -209,7 +218,7 @@ func ParseLint(tokens []Token) (*ASTNode, []ParseError) {
 		variableTypes:      make(map[string]string),
 		constants:          make(map[string]int),
 		structs:            make(map[string]*StructDefinition),
-		enums:              make(map[string][]*ASTNode),
+		enums:              make(map[string]*EnumDefinition),
 		objectLiterals:     make(map[string]map[string]bool),
 		currentFunctionRet: "",
 		functionScope:      make(map[string]string),
@@ -251,6 +260,15 @@ func (p *Parser) recordError(message string) {
 		Message: message,
 		Line:    token.Line,
 		Column:  token.Column,
+	})
+}
+
+// recordErrorAtLine records an error at a specific line number
+func (p *Parser) recordErrorAtLine(message string, line int) {
+	p.Errors = append(p.Errors, ParseError{
+		Message: message,
+		Line:    line,
+		Column:  1, // Default to column 1 for block-level errors
 	})
 }
 
@@ -1505,6 +1523,7 @@ func (p *Parser) parseLoop() *ASTNode {
 			p.advance()        // skip newline
 			p.skipWhitespace() // skip indents
 			if usesColon {
+				p.blockDepth++ // Opening a multi-line block
 				body = p.parseBlockUntilEnd("loop", startLine)
 			} else {
 				body = p.parseBlock()
@@ -1568,6 +1587,7 @@ func (p *Parser) parseLoop() *ASTNode {
 			p.advance()        // skip newline
 			p.skipWhitespace() // skip indents
 			if usesColon {
+				p.blockDepth++ // Opening a multi-line block
 				body = p.parseBlockUntilEnd("loop", startLine)
 			} else {
 				body = p.parseBlock()
@@ -1632,6 +1652,7 @@ func (p *Parser) parseLoop() *ASTNode {
 			p.advance()        // skip newline
 			p.skipWhitespace() // skip indents
 			if usesColon {
+				p.blockDepth++ // Opening a multi-line block
 				body = p.parseBlockUntilEnd("loop", startLine)
 			} else {
 				body = p.parseBlock()
@@ -1716,6 +1737,7 @@ func (p *Parser) parseLoop() *ASTNode {
 			p.advance()        // skip newline
 			p.skipWhitespace() // skip indents
 			if usesColon {
+				p.blockDepth++ // Opening a multi-line block
 				body = p.parseBlockUntilEnd("loop", startLine)
 			} else {
 				body = p.parseBlock()
@@ -1780,6 +1802,7 @@ func (p *Parser) parseLoop() *ASTNode {
 			p.advance()        // skip newline
 			p.skipWhitespace() // skip indents
 			if usesColon {
+				p.blockDepth++ // Opening a multi-line block
 				body = p.parseBlockUntilEnd("loop", startLine)
 			} else {
 				body = p.parseBlock()
@@ -2618,6 +2641,9 @@ func (p *Parser) parseBlockUntilEnd(constructName string, startLine int) *ASTNod
 		token := p.current()
 		p.advance() // consume 'end'
 		
+		// Decrement blockDepth for this block closure
+		p.blockDepth--
+		
 		// Handle $#N syntax - this TOKEN_END closes this block, but may close additional parent blocks
 		if strings.HasPrefix(token.Value, "$#") {
 			countStr := strings.TrimPrefix(token.Value, "$#")
@@ -2632,10 +2658,10 @@ func (p *Parser) parseBlockUntilEnd(constructName string, startLine int) *ASTNod
 						Column:  token.Column,
 					})
 				}
-			} else if count > p.blockDepth {
+			} else if count > p.blockDepth + 1 { // +1 because we already decremented once
 				if p.LintMode {
 					p.Errors = append(p.Errors, ParseError{
-						Message: fmt.Sprintf("Cannot close %d blocks, only %d block(s) open", count, p.blockDepth),
+						Message: fmt.Sprintf("Cannot close %d blocks, only %d block(s) open", count, p.blockDepth + 1),
 						Line:    token.Line,
 						Column:  token.Column,
 					})
@@ -2643,7 +2669,7 @@ func (p *Parser) parseBlockUntilEnd(constructName string, startLine int) *ASTNod
 			}
 			
 			if err == nil && count > 1 {
-				// This $ closes the current block (already decremented in calling function)
+				// This $ closed the current block (already decremented above)
 				// Need to close count-1 more blocks
 				p.blockDepth -= (count - 1)
 				
@@ -3603,15 +3629,42 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 		} else {
 			errMsg := fmt.Sprintf("Expected '$' to close enum at line %d", startLine)
 			if p.LintMode {
-				p.recordError(errMsg)
+				p.recordErrorAtLine(errMsg, startLine)
 			} else {
 				panic(errMsg)
 			}
 		}
 	}
 
+	// Check for duplicate enum declaration
+	if p.LintMode {
+		if existing, exists := p.enums[name.Value]; exists {
+			errMsg := fmt.Sprintf("Redeclaration of enum '%s' (previously declared at line %d)", name.Value, existing.Line)
+			p.recordErrorAtLine(errMsg, startLine)
+		}
+		// Check if name conflicts with struct
+		if existing, exists := p.structs[name.Value]; exists {
+			errMsg := fmt.Sprintf("Redeclaration of '%s' as enum (previously declared as struct at line %d)", name.Value, existing.Line)
+			p.recordErrorAtLine(errMsg, startLine)
+		}
+		// Check if name conflicts with function
+		if existing, exists := p.functions[name.Value]; exists {
+			errMsg := fmt.Sprintf("Redeclaration of '%s' as enum (previously declared as function at line %d)", name.Value, existing.Line)
+			p.recordErrorAtLine(errMsg, startLine)
+		}
+		// Check if name conflicts with constant
+		if existingLine, exists := p.constants[name.Value]; exists {
+			errMsg := fmt.Sprintf("Redeclaration of '%s' as enum (previously declared as constant at line %d)", name.Value, existingLine)
+			p.recordErrorAtLine(errMsg, startLine)
+		}
+	}
+
 	// Always track enum members (needed for codegen and validation)
-	p.enums[name.Value] = enum.Children
+	p.enums[name.Value] = &EnumDefinition{
+		Name:    name.Value,
+		Members: enum.Children,
+		Line:    startLine,
+	}
 
 	return enum
 }
@@ -3878,12 +3931,34 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 			returnTypesList = strings.Split(returnType, ",")
 		}
 
+		// Check for duplicate function declaration
+		if existing, exists := p.functions[name.Value]; exists {
+			errMsg := fmt.Sprintf("Redeclaration of function '%s' (previously declared at line %d)", name.Value, existing.Line)
+			p.recordErrorAtLine(errMsg, name.Line)
+		}
+		// Check if name conflicts with struct
+		if existing, exists := p.structs[name.Value]; exists {
+			errMsg := fmt.Sprintf("Redeclaration of '%s' as function (previously declared as struct at line %d)", name.Value, existing.Line)
+			p.recordErrorAtLine(errMsg, name.Line)
+		}
+		// Check if name conflicts with enum
+		if existing, exists := p.enums[name.Value]; exists {
+			errMsg := fmt.Sprintf("Redeclaration of '%s' as function (previously declared as enum at line %d)", name.Value, existing.Line)
+			p.recordErrorAtLine(errMsg, name.Line)
+		}
+		// Check if name conflicts with constant
+		if existingLine, exists := p.constants[name.Value]; exists {
+			errMsg := fmt.Sprintf("Redeclaration of '%s' as function (previously declared as constant at line %d)", name.Value, existingLine)
+			p.recordErrorAtLine(errMsg, name.Line)
+		}
+		
 		p.functions[name.Value] = &FunctionSignature{
 			Name:         name.Value,
 			Parameters:   paramInfos,
 			ReturnTypes:  returnTypesList,
 			IsInfer:      isInfer,
 			FunctionNode: fn,
+			Line:         name.Line,
 		}
 	}
 
@@ -4203,7 +4278,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 		} else {
 			errMsg := fmt.Sprintf("Expected '$' to close struct at line %d", startLine)
 			if p.LintMode {
-				p.recordError(errMsg)
+				p.recordErrorAtLine(errMsg, startLine)
 			} else {
 				panic(errMsg)
 			}
@@ -4212,18 +4287,41 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 
 	// Store struct definition for linting
 	if p.LintMode {
-		p.storeStructDefinition(struc)
+		p.storeStructDefinition(struc, startLine)
 	}
 
 	return struc
 }
 
 // Store struct definition for later validation
-func (p *Parser) storeStructDefinition(struc *ASTNode) {
+func (p *Parser) storeStructDefinition(struc *ASTNode, startLine int) {
 	structName := struc.Value
+	
+	// Check for duplicate struct declaration
+	if existing, exists := p.structs[structName]; exists {
+		errMsg := fmt.Sprintf("Redeclaration of struct '%s' (previously declared at line %d)", structName, existing.Line)
+		p.recordErrorAtLine(errMsg, startLine)
+	}
+	// Check if name conflicts with enum
+	if existing, exists := p.enums[structName]; exists {
+		errMsg := fmt.Sprintf("Redeclaration of '%s' as struct (previously declared as enum at line %d)", structName, existing.Line)
+		p.recordErrorAtLine(errMsg, startLine)
+	}
+	// Check if name conflicts with function
+	if existing, exists := p.functions[structName]; exists {
+		errMsg := fmt.Sprintf("Redeclaration of '%s' as struct (previously declared as function at line %d)", structName, existing.Line)
+		p.recordErrorAtLine(errMsg, startLine)
+	}
+	// Check if name conflicts with constant
+	if existingLine, exists := p.constants[structName]; exists {
+		errMsg := fmt.Sprintf("Redeclaration of '%s' as struct (previously declared as constant at line %d)", structName, existingLine)
+		p.recordErrorAtLine(errMsg, startLine)
+	}
+
 	structDef := &StructDefinition{
 		Name:   structName,
 		Fields: []StructField{},
+		Line:   startLine,
 	}
 
 	// Process all fields and nested types
@@ -4235,6 +4333,7 @@ func (p *Parser) storeStructDefinition(struc *ASTNode) {
 				Name:   nestedName,
 				Parent: structName, // Track parent struct
 				Fields: []StructField{},
+				Line:   child.Line,
 			}
 
 			// Add parent struct fields to nested type
@@ -4468,21 +4567,19 @@ func (p *Parser) validateMemberAccess(object *ASTNode, memberName string, line i
 		}
 
 		// Check if it's an enum
-		if _, isEnum := p.enums[varName]; isEnum {
+		if enumDef, isEnum := p.enums[varName]; isEnum {
 			// Validate enum member
-			if members, ok := p.enums[varName]; ok {
-				found := false
-				for _, member := range members {
-					if member.Value == memberName {
-						found = true
-						break
-					}
+			found := false
+			for _, member := range enumDef.Members {
+				if member.Value == memberName {
+					found = true
+					break
 				}
-				if !found {
-					errMsg := fmt.Sprintf("Field '%s' does not exist on enum '%s' (line %d)",
-						memberName, varName, line)
-					p.recordError(errMsg)
-				}
+			}
+			if !found {
+				errMsg := fmt.Sprintf("Field '%s' does not exist on enum '%s' (line %d)",
+					memberName, varName, line)
+				p.recordError(errMsg)
 			}
 			return
 		}

@@ -4,7 +4,7 @@
 
 ✅ **ALWAYS need $:**
 - Structs
-- Enums  
+- Enums
 - Multi-line functions
 - Multi-line if/anif/else with `:`
 - Multi-line loops with `:`
@@ -14,7 +14,6 @@
 - One-line if with `then`
 - One-line loop with `do`
 - Inline statements with `;`
-- One-line switch with `then...end`
 
 ## Quick Examples
 
@@ -56,7 +55,7 @@ if outer:
     loop i to 5:
         if inner:
             action||
-        $#3  ? Close all 3 blocks
+$#3  ? Close all 3 blocks
 ```
 
 ## Common Errors
