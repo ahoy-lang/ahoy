@@ -4,11 +4,11 @@
 
 ### 1. Core Syntax Changes
 - ✅ Arrays use `[]` syntax (changed from `<>`)
-- ✅ Objects/Dicts use `<>` syntax  
+- ✅ Objects/Dicts use `<>` syntax
 - ✅ `less_than` keyword (changed from `lesser_than`)
-- ✅ Loops use `do` keyword (changed from `then`/`:`)
+- ✅ Loops use `do` keyword for inline; `:` for blocks
 - ✅ `?` token for loop counter variable
-- ✅ Comments with `?` or `#`
+- ✅ Comments with `?`
 - ✅ Constants with `::` syntax
 
 ### 2. Print Functions
@@ -41,7 +41,7 @@
 ### 5. Array Methods (All Implemented!)
 - ✅ `length||` - get array length
 - ✅ `push|value|` - add element (returns array for chaining!)
-- ✅ `pop||` - remove and return last element  
+- ✅ `pop||` - remove and return last element
 - ✅ `sum||` - sum all elements
 - ✅ `sort||` - sort array
 - ✅ `reverse||` - reverse array
@@ -83,7 +83,7 @@
 - Array/dict literals support method chaining
 - Lambda parsing stops at closing `|` for proper chaining
 
-### Code Generator Features  
+### Code Generator Features
 - **Zero Runtime Overhead**: Everything generates inline C code!
 - **Inline Lambda Expansion**: map/filter generate efficient loops
 - **Loop Counter Stack**: Proper `?` variable tracking in nested loops
@@ -100,7 +100,7 @@
 
 ### ✅ Passing Tests (11/17)
 1. ✅ array_methods_test.ahoy
-2. ✅ break_skip_test.ahoy  
+2. ✅ break_skip_test.ahoy
 3. ✅ conditionals_test.ahoy
 4. ✅ features_test.ahoy
 5. ✅ loops_test.ahoy
@@ -117,7 +117,7 @@ Some test files use old syntax and need to be updated:
 - new_features.ahoy - syntax issues
 - query_test.ahoy - LINQ not yet implemented
 - raylib_test.ahoy - struct syntax issues
-- switch_test.ahoy - minor syntax issues  
+- switch_test.ahoy - minor syntax issues
 - test.ahoy - syntax issues
 
 ## 🎯 Key Achievements
@@ -125,7 +125,7 @@ Some test files use old syntax and need to be updated:
 ### 1. **NO RUNTIME LIBRARY NEEDED!** 🎉
 Everything compiles to self-contained C code:
 - Array methods → inline helper functions
-- %v/%t → compile-time format replacement  
+- %v/%t → compile-time format replacement
 - sprintf → inline buffer allocation
 - map/filter → inline loop generation
 - Lambdas → inline expression evaluation
@@ -141,11 +141,11 @@ result: [1, 2, 3, 4, 5]
 Generates efficient C:
 ```c
 // Filter generates inline loop
-AhoyArray* filtered = ({ 
+AhoyArray* filtered = ({
     /* inline filtering code */
 });
 
-// Map generates inline loop  
+// Map generates inline loop
 AhoyArray* mapped = ({
     /* inline transformation code */
 });
