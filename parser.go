@@ -185,6 +185,8 @@ type Parser struct {
 	blockDepth         int                           // Track nesting depth of multi-line blocks
 	loopVarScopes      []map[string]string           // Stack of loop variable scopes
 	functionDepth      int                           // Track nesting depth of function definitions
+	hasProgramDecl     bool                          // Track if program declaration exists
+	inFunctionBody     bool                          // Track if we're inside a function body
 }
 
 func Parse(tokens []Token) *ASTNode {
@@ -207,6 +209,8 @@ func Parse(tokens []Token) *ASTNode {
 		blockDepth:         0,
 		loopVarScopes:      make([]map[string]string, 0),
 		functionDepth:      0,
+		hasProgramDecl:     false,
+		inFunctionBody:     false,
 	}
 	return parser.parseProgram()
 }
@@ -231,6 +235,8 @@ func ParseLint(tokens []Token) (*ASTNode, []ParseError) {
 		blockDepth:         0,
 		loopVarScopes:      make([]map[string]string, 0),
 		functionDepth:      0,
+		hasProgramDecl:     false,
+		inFunctionBody:     false,
 	}
 	ast := parser.parseProgram()
 	return ast, parser.Errors
@@ -273,6 +279,40 @@ func (p *Parser) recordErrorAtLine(message string, line int) {
 		Line:    line,
 		Column:  1, // Default to column 1 for block-level errors
 	})
+}
+
+// validateNoGlobalFunctionCalls checks if a statement contains function calls at global scope
+func (p *Parser) validateNoGlobalFunctionCalls(node *ASTNode) {
+	if node == nil {
+		return
+	}
+	
+	// Check if this node is a function call
+	if node.Type == NODE_CALL {
+		funcName := node.Value
+		// Allow C functions from headers (they're in cHeaders or cHeaderGlobal)
+		isCFunction := false
+		if p.cHeaderGlobal != nil {
+			if _, exists := p.cHeaderGlobal.Functions[funcName]; exists {
+				isCFunction = true
+			}
+		}
+		for _, header := range p.cHeaders {
+			if _, exists := header.Functions[funcName]; exists {
+				isCFunction = true
+				break
+			}
+		}
+		
+		if !isCFunction {
+			p.recordErrorAtLine(fmt.Sprintf("Function call '%s' not allowed at global scope when program is declared. Functions can only be called from within other functions.", funcName), node.Line)
+		}
+	}
+	
+	// Recursively check children
+	for _, child := range node.Children {
+		p.validateNoGlobalFunctionCalls(child)
+	}
 }
 
 // inferType infers the type from an AST node
@@ -691,7 +731,12 @@ func (p *Parser) parseStatement() *ASTNode {
 		if nextType == TOKEN_COMMA {
 			return p.parseTupleAssignment()
 		}
-		return p.parseAssignmentOrExpression()
+		stmt := p.parseAssignmentOrExpression()
+		// Validate no function calls at global scope when program is declared
+		if p.LintMode && p.hasProgramDecl && !p.inFunctionBody && stmt != nil {
+			p.validateNoGlobalFunctionCalls(stmt)
+		}
+		return stmt
 	case TOKEN_COLOR_TYPE, TOKEN_VECTOR2_TYPE:
 		return p.parseExpression()
 	case TOKEN_NEWLINE, TOKEN_SEMICOLON:
@@ -2229,6 +2274,9 @@ func (p *Parser) parseImportStatement() *ASTNode {
 func (p *Parser) parseProgramDeclaration() *ASTNode {
 	p.expect(TOKEN_PROGRAM)
 	name := p.expect(TOKEN_IDENTIFIER)
+
+	// Track that we have a program declaration
+	p.hasProgramDecl = true
 
 	// Don't skip newlines here - let parseProgram handle them
 
@@ -3927,10 +3975,13 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 	// In lint mode, save the function return type and clear function scope
 	var savedFunctionRet string
 	var savedFunctionScope map[string]string
+	var savedInFunctionBody bool
 	if p.LintMode {
 		savedFunctionRet = p.currentFunctionRet
 		savedFunctionScope = p.functionScope
+		savedInFunctionBody = p.inFunctionBody
 		p.currentFunctionRet = returnType
+		p.inFunctionBody = true // Mark that we're inside function body
 		// Function scope already set up with parameters above
 	}
 
@@ -3944,11 +3995,12 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 	if p.LintMode {
 		p.currentFunctionRet = savedFunctionRet
 		p.functionScope = savedFunctionScope
+		p.inFunctionBody = savedInFunctionBody
 
 		// Register function signature for later validation
 		paramInfos := []ParameterInfo{}
-		if len(fn.Children) > 0 && fn.Children[0] != nil {
-			for _, paramNode := range fn.Children[0].Children {
+		if params != nil {
+			for _, paramNode := range params.Children {
 				if paramNode != nil {
 					paramInfos = append(paramInfos, ParameterInfo{
 						Name: paramNode.Value,
@@ -3994,6 +4046,16 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 			IsInfer:      isInfer,
 			FunctionNode: fn,
 			Line:         name.Line,
+		}
+		
+		// Validate main function signature if program is declared
+		if p.hasProgramDecl && name.Value == "main" {
+			if len(paramInfos) > 0 {
+				p.recordErrorAtLine("main function cannot have parameters when program is declared", name.Line)
+			}
+			if returnType != "void" && returnType != "" {
+				p.recordErrorAtLine("main function must return void when program is declared", name.Line)
+			}
 		}
 	}
 
