@@ -46,24 +46,26 @@ func snakeToPascal(s string) string {
 }
 
 type CodeGenerator struct {
-	output        strings.Builder
-	indent        int
-	varCounter    int
-	funcDecls     strings.Builder
-	includes      map[string]bool
-	variables     map[string]string // variable name -> type
-	constants     map[string]bool   // constant name -> declared
-	enums         map[string]map[string]bool // enum name -> {member names}
-	userFunctions map[string]bool   // user-defined function names (keep snake_case)
-	hasError      bool              // Track if error occurred
-	arrayImpls    bool              // Track if we've added array implementation
-	arrayMethods  map[string]bool   // Track which array methods are used
-	stringMethods map[string]bool   // Track which string methods are used
-	dictMethods   map[string]bool   // Track which dict methods are used
-	loopCounters  []string          // Stack of loop counter variable names
+	output         strings.Builder
+	indent         int
+	varCounter     int
+	funcDecls      strings.Builder
+	includes       map[string]bool
+	variables      map[string]string // variable name -> type (global scope)
+	functionVars   map[string]string // variable name -> type (function scope)
+	constants      map[string]bool   // constant name -> declared
+	enums          map[string]map[string]bool // enum name -> {member names}
+	userFunctions  map[string]bool   // user-defined function names (keep snake_case)
+	hasError       bool              // Track if error occurred
+	arrayImpls     bool              // Track if we've added array implementation
+	arrayMethods   map[string]bool   // Track which array methods are used
+	stringMethods  map[string]bool   // Track which string methods are used
+	dictMethods    map[string]bool   // Track which dict methods are used
+	loopCounters   []string          // Stack of loop counter variable names
 	currentFunction string           // Current function being generated
 	currentFunctionReturnType string // Return type of current function
 	currentFunctionHasMultiReturn bool // Whether current function has multiple returns
+	hasMainFunc    bool              // Whether there's an Ahoy main function
 }
 
 func generateC(ast *ahoy.ASTNode) string {
@@ -78,6 +80,7 @@ func generateC(ast *ahoy.ASTNode) string {
 		arrayMethods:  make(map[string]bool),
 		stringMethods: make(map[string]bool),
 		dictMethods:   make(map[string]bool),
+		hasMainFunc:   false,
 	}
 
 	// Add standard includes
@@ -89,6 +92,9 @@ func generateC(ast *ahoy.ASTNode) string {
 
 	// Generate hash map implementation
 	gen.writeHashMapImplementation()
+
+	// First pass: check if there's a main function
+	gen.checkForMainFunction(ast)
 
 	// Generate main code
 	gen.generateNode(ast)
@@ -136,10 +142,19 @@ func generateC(ast *ahoy.ASTNode) string {
 	result.WriteString("\n")
 
 	// Write main program
-	result.WriteString("int main() {\n")
-	result.WriteString(gen.output.String())
-	result.WriteString("    return 0;\n")
-	result.WriteString("}\n")
+	if gen.hasMainFunc {
+		// If there's an Ahoy main function, just call it
+		result.WriteString("int main() {\n")
+		result.WriteString("    ahoy_main();\n")
+		result.WriteString("    return 0;\n")
+		result.WriteString("}\n")
+	} else {
+		// Legacy: no main function, use global scope code
+		result.WriteString("int main() {\n")
+		result.WriteString(gen.output.String())
+		result.WriteString("    return 0;\n")
+		result.WriteString("}\n")
+	}
 
 	return result.String()
 }
@@ -281,6 +296,28 @@ void hashMapPut(HashMap* map, const char* key, void* value);
 void* hashMapGet(HashMap* map, const char* key);
 void freeHashMap(HashMap* map);
 `
+}
+
+// checkForMainFunction scans the AST for a main function and registers all user functions
+func (gen *CodeGenerator) checkForMainFunction(node *ahoy.ASTNode) {
+	if node == nil {
+		return
+	}
+	
+	if node.Type == ahoy.NODE_FUNCTION {
+		// Register this as a user-defined function
+		funcName := node.Value
+		gen.userFunctions[funcName] = true
+		
+		// Check if it's the main function
+		if funcName == "main" {
+			gen.hasMainFunc = true
+		}
+	}
+	
+	for _, child := range node.Children {
+		gen.checkForMainFunction(child)
+	}
 }
 
 func (gen *CodeGenerator) writeIndent() {
@@ -455,6 +492,12 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	funcName := node.Value
 	
+	// Rename main to ahoy_main to avoid conflict with C's main
+	cFuncName := funcName
+	if funcName == "main" {
+		cFuncName = "ahoy_main"
+	}
+	
 	// Track this as a user-defined function (keep snake_case)
 	gen.userFunctions[funcName] = true
 	
@@ -483,23 +526,23 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 			returnType = gen.mapType(node.DataType)
 		}
 	}
-
-	gen.funcDecls.WriteString(fmt.Sprintf("%s %s(", returnType, funcName))
-
-	// Parameters
+	
+	// Build parameter list for both declaration and forward declaration
 	params := node.Children[0]
+	paramList := ""
 	for i, param := range params.Children {
 		if i > 0 {
-			gen.funcDecls.WriteString(", ")
+			paramList += ", "
 		}
 		paramType := "int" // default
 		if param.DataType != "" {
 			paramType = gen.mapType(param.DataType)
 		}
-		gen.funcDecls.WriteString(fmt.Sprintf("%s %s", paramType, param.Value))
+		paramList += fmt.Sprintf("%s %s", paramType, param.Value)
 	}
 
-	gen.funcDecls.WriteString(") {\n")
+	gen.funcDecls.WriteString(fmt.Sprintf("%s %s(%s);\n", returnType, cFuncName, paramList))
+	gen.funcDecls.WriteString(fmt.Sprintf("%s %s(%s) {\n", returnType, cFuncName, paramList))
 
 	// Function body
 	body := node.Children[1]
@@ -508,9 +551,12 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	gen.indent++
 	
 	// Store current function info for return statement generation
-	gen.currentFunction = funcName
+	gen.currentFunction = cFuncName
 	gen.currentFunctionReturnType = returnType
 	gen.currentFunctionHasMultiReturn = len(returnTypes) > 1
+	
+	// Initialize function-local variable scope
+	gen.functionVars = make(map[string]string)
 
 	gen.generateNodeInternal(body, false)
 
@@ -522,6 +568,7 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	gen.currentFunction = ""
 	gen.currentFunctionReturnType = ""
 	gen.currentFunctionHasMultiReturn = false
+	gen.functionVars = nil // Clear function scope
 }
 
 func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
@@ -541,8 +588,11 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 		return
 	}
 
-	// Check if variable already exists
-	if _, exists := gen.variables[node.Value]; exists {
+	// Check if variable already exists (function scope first, then global)
+	_, existsInFunc := gen.functionVars[node.Value]
+	_, existsGlobal := gen.variables[node.Value]
+	
+	if existsInFunc || existsGlobal {
 		// Just assignment
 		gen.output.WriteString(fmt.Sprintf("%s = ", node.Value))
 		gen.generateNode(node.Children[0])
@@ -560,7 +610,13 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				gen.output.WriteString(fmt.Sprintf("%s %s = ", structName, node.Value))
 				gen.generateNode(valueNode)
 				gen.output.WriteString(";\n")
-				gen.variables[node.Value] = valueNode.Value
+				
+				// Track variable in appropriate scope
+				if gen.currentFunction != "" && gen.functionVars != nil {
+					gen.functionVars[node.Value] = valueNode.Value
+				} else {
+					gen.variables[node.Value] = valueNode.Value
+				}
 			} else {
 				// Anonymous struct
 				gen.output.WriteString("struct { ")
@@ -579,11 +635,25 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				gen.output.WriteString(" = ")
 				gen.generateNode(valueNode)
 				gen.output.WriteString(";\n")
-				gen.variables[node.Value] = "object"
+				
+				// Track variable in appropriate scope
+				if gen.currentFunction != "" && gen.functionVars != nil {
+					gen.functionVars[node.Value] = "object"
+				} else {
+					gen.variables[node.Value] = "object"
+				}
 			}
 		} else {
 			varType := gen.inferType(valueNode)
-			gen.variables[node.Value] = varType
+			
+			// Track variable in appropriate scope
+			if gen.currentFunction != "" && gen.functionVars != nil {
+				// Inside a function - use function scope
+				gen.functionVars[node.Value] = varType
+			} else {
+				// Global scope
+				gen.variables[node.Value] = varType
+			}
 
 			cType := gen.mapType(varType)
 			gen.output.WriteString(fmt.Sprintf("%s %s = ", cType, node.Value))
@@ -1200,8 +1270,10 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 	// Convert C library functions to PascalCase
 	funcName := node.Value
 	
-	// Check if this is a user-defined function
-	if gen.userFunctions[funcName] {
+	// Special case: rename main to ahoy_main
+	if funcName == "main" {
+		funcName = "ahoy_main"
+	} else if gen.userFunctions[funcName] {
 		// Keep user-defined function names as-is (snake_case)
 		funcName = node.Value
 	} else if strings.Contains(funcName, "_") {
@@ -1697,6 +1769,8 @@ func (gen *CodeGenerator) mapType(langType string) string {
 		return "HashMap*"
 	case "array":
 		return "AhoyArray*"
+	case "void":
+		return "void"
 	default:
 		return "int"
 	}
