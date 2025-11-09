@@ -3682,9 +3682,16 @@ func (p *Parser) parseConstantDeclaration() *ASTNode {
 	varName := name.Value
 	p.expect(TOKEN_DOUBLE_COLON)
 
-	// Check if this is a function declaration (has |)
+	// Check if this is a function declaration (has |) - this should use @ prefix
 	if p.current().Type == TOKEN_PIPE {
-		return p.parseFunctionWithDoubleColon(name)
+		errMsg := fmt.Sprintf("Function declarations must use '@' prefix: @ %s :: |...", varName)
+		if p.LintMode {
+			p.recordErrorAtLine(errMsg, line)
+			// Still parse it to continue checking for other errors
+			return p.parseFunctionWithDoubleColon(name)
+		} else {
+			panic(errMsg)
+		}
 	}
 
 	// In lint mode, check if constant is being redeclared

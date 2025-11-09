@@ -54,6 +54,7 @@ type CodeGenerator struct {
 	variables     map[string]string // variable name -> type
 	constants     map[string]bool   // constant name -> declared
 	enums         map[string]map[string]bool // enum name -> {member names}
+	userFunctions map[string]bool   // user-defined function names (keep snake_case)
 	hasError      bool              // Track if error occurred
 	arrayImpls    bool              // Track if we've added array implementation
 	arrayMethods  map[string]bool   // Track which array methods are used
@@ -71,6 +72,7 @@ func generateC(ast *ahoy.ASTNode) string {
 		variables:     make(map[string]string),
 		constants:     make(map[string]bool),
 		enums:         make(map[string]map[string]bool),
+		userFunctions: make(map[string]bool),
 		hasError:      false,
 		arrayImpls:    false,
 		arrayMethods:  make(map[string]bool),
@@ -452,6 +454,10 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 
 func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	funcName := node.Value
+	
+	// Track this as a user-defined function (keep snake_case)
+	gen.userFunctions[funcName] = true
+	
 	returnType := "void"
 	returnTypes := []string{}
 	
@@ -1190,13 +1196,16 @@ func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
 }
 
 func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
-	// Convert snake_case to PascalCase for C library functions
-	// Keep user-defined functions as-is
+	// Keep user-defined functions as snake_case
+	// Convert C library functions to PascalCase
 	funcName := node.Value
 	
-	// If function has underscores, assume it's a C library function and convert to PascalCase
-	// User functions in Ahoy should not use underscores in names
-	if strings.Contains(funcName, "_") {
+	// Check if this is a user-defined function
+	if gen.userFunctions[funcName] {
+		// Keep user-defined function names as-is (snake_case)
+		funcName = node.Value
+	} else if strings.Contains(funcName, "_") {
+		// External C library function - convert to PascalCase
 		funcName = snakeToPascal(funcName)
 	}
 
