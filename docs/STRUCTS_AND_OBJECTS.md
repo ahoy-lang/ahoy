@@ -6,7 +6,9 @@
 ## Example of struct declarations
 ```ahoy
 struct particle:
-  position: vector2, velocity: vector2, rotation: float
+  position: vector2,
+  velocity: vector2,
+  rotation: float
   type smoke_particle:
 	  10 size: float, ? initial value set to 10.0
 		1.0 alpha: float, ? initial value set to 1.0
@@ -15,7 +17,9 @@ struct particle:
 		name: string, ? initial value set to ""
 		color: color
   type wind_particle:
-    direction: vector2, speed: float, size: vector2
+    direction: vector2,
+    speed: float,
+    size: vector2
 $
 ```
 

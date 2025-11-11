@@ -594,9 +594,15 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 	
 	if existsInFunc || existsGlobal {
 		// Just assignment
-		gen.output.WriteString(fmt.Sprintf("%s = ", node.Value))
-		gen.generateNode(node.Children[0])
-		gen.output.WriteString(";\n")
+		valueNode := node.Children[0]
+		if valueNode.Type == ahoy.NODE_SWITCH_STATEMENT {
+			// Generate switch as expression (assign in each case)
+			gen.generateSwitchExpression(valueNode, node.Value)
+		} else {
+			gen.output.WriteString(fmt.Sprintf("%s = ", node.Value))
+			gen.generateNode(node.Children[0])
+			gen.output.WriteString(";\n")
+		}
 	} else {
 		// Type inference and declaration
 		valueNode := node.Children[0]
@@ -656,9 +662,17 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			}
 
 			cType := gen.mapType(varType)
-			gen.output.WriteString(fmt.Sprintf("%s %s = ", cType, node.Value))
-			gen.generateNode(valueNode)
-			gen.output.WriteString(";\n")
+			
+			// Check if value is a switch expression
+			if valueNode.Type == ahoy.NODE_SWITCH_STATEMENT {
+				// Generate switch as expression (assign in each case)
+				gen.output.WriteString(fmt.Sprintf("%s %s;\n", cType, node.Value))
+				gen.generateSwitchExpression(valueNode, node.Value)
+			} else {
+				gen.output.WriteString(fmt.Sprintf("%s %s = ", cType, node.Value))
+				gen.generateNode(valueNode)
+				gen.output.WriteString(";\n")
+			}
 		}
 	}
 }
@@ -704,6 +718,199 @@ func (gen *CodeGenerator) generateIfStatement(node *ahoy.ASTNode) {
 	}
 
 	gen.output.WriteString("\n")
+}
+
+// generateSwitchExpression generates a switch that assigns to a variable (expression context)
+func (gen *CodeGenerator) generateSwitchExpression(node *ahoy.ASTNode, targetVar string) {
+	switchExpr := node.Children[0]
+	switchExprType := gen.inferType(switchExpr)
+	
+	// Check if this is a string switch - need to use if-else with strcmp
+	if switchExprType == "char*" || switchExprType == "string" {
+		gen.generateStringSwitchExpression(node, targetVar)
+		return
+	}
+	
+	// Generate normal switch with assignments in each case
+	gen.writeIndent()
+	gen.output.WriteString("switch (")
+	gen.generateNode(switchExpr)
+	gen.output.WriteString(") {\n")
+	
+	// Generate cases
+	for i := 1; i < len(node.Children); i++ {
+		caseNode := node.Children[i]
+		if caseNode.Type == ahoy.NODE_SWITCH_CASE {
+			caseValue := caseNode.Children[0]
+			caseBody := caseNode.Children[1]
+			
+			// Check if it's a list of cases or range
+			if caseValue.Type == ahoy.NODE_SWITCH_CASE_LIST {
+				// Multiple cases
+				for _, val := range caseValue.Children {
+					gen.indent++
+					gen.writeIndent()
+					gen.output.WriteString("case ")
+					gen.generateNode(val)
+					gen.output.WriteString(":\n")
+					gen.indent--
+				}
+				gen.indent++
+				gen.indent++
+				gen.generateSwitchCaseAssignment(caseBody, targetVar)
+				gen.writeIndent()
+				gen.output.WriteString("break;\n")
+				gen.indent--
+				gen.indent--
+			} else if caseValue.Type == ahoy.NODE_SWITCH_CASE_RANGE {
+				// Range case
+				gen.indent++
+				gen.writeIndent()
+				gen.output.WriteString("default:\n")
+				gen.indent++
+				gen.writeIndent()
+				gen.output.WriteString("if (")
+				gen.generateNode(switchExpr)
+				gen.output.WriteString(" >= ")
+				gen.generateNode(caseValue.Children[0])
+				gen.output.WriteString(" && ")
+				gen.generateNode(switchExpr)
+				gen.output.WriteString(" <= ")
+				gen.generateNode(caseValue.Children[1])
+				gen.output.WriteString(") {\n")
+				gen.indent++
+				gen.generateSwitchCaseAssignment(caseBody, targetVar)
+				gen.writeIndent()
+				gen.output.WriteString("break;\n")
+				gen.indent--
+				gen.writeIndent()
+				gen.output.WriteString("}\n")
+				gen.indent--
+				gen.indent--
+			} else {
+				// Single case or default
+				gen.indent++
+				gen.writeIndent()
+				
+				if caseValue.Type == ahoy.NODE_IDENTIFIER && caseValue.Value == "_" {
+					gen.output.WriteString("default:\n")
+				} else {
+					gen.output.WriteString("case ")
+					gen.generateNode(caseValue)
+					gen.output.WriteString(":\n")
+				}
+				
+				gen.indent++
+				gen.generateSwitchCaseAssignment(caseBody, targetVar)
+				gen.writeIndent()
+				gen.output.WriteString("break;\n")
+				gen.indent--
+				gen.indent--
+			}
+		}
+	}
+	
+	gen.writeIndent()
+	gen.output.WriteString("}\n")
+}
+
+// generateSwitchCaseAssignment generates an assignment for a case body
+func (gen *CodeGenerator) generateSwitchCaseAssignment(caseBody *ahoy.ASTNode, targetVar string) {
+	// Check if body is a block with multiple statements
+	if caseBody.Type == ahoy.NODE_BLOCK && len(caseBody.Children) > 0 {
+		// Execute all statements except last, then assign last
+		for i := 0; i < len(caseBody.Children)-1; i++ {
+			gen.generateNodeInternal(caseBody.Children[i], true)
+		}
+		// Last statement is the return value
+		lastStmt := caseBody.Children[len(caseBody.Children)-1]
+		gen.writeIndent()
+		gen.output.WriteString(fmt.Sprintf("%s = ", targetVar))
+		gen.generateNode(lastStmt)
+		gen.output.WriteString(";\n")
+	} else {
+		// Single expression
+		gen.writeIndent()
+		gen.output.WriteString(fmt.Sprintf("%s = ", targetVar))
+		gen.generateNode(caseBody)
+		gen.output.WriteString(";\n")
+	}
+}
+
+// generateStringSwitchExpression generates if-else chain for string switches
+func (gen *CodeGenerator) generateStringSwitchExpression(node *ahoy.ASTNode, targetVar string) {
+	switchExpr := node.Children[0]
+	
+	first := true
+	hasDefault := false
+	var defaultBody *ahoy.ASTNode
+	
+	for i := 1; i < len(node.Children); i++ {
+		caseNode := node.Children[i]
+		if caseNode.Type == ahoy.NODE_SWITCH_CASE {
+			caseValue := caseNode.Children[0]
+			caseBody := caseNode.Children[1]
+			
+			// Check for default case
+			if caseValue.Type == ahoy.NODE_IDENTIFIER && caseValue.Value == "_" {
+				hasDefault = true
+				defaultBody = caseBody
+				continue
+			}
+			
+			gen.writeIndent()
+			if first {
+				gen.output.WriteString("if (")
+				first = false
+			} else {
+				gen.output.WriteString("else if (")
+			}
+			
+			// Handle multiple cases
+			if caseValue.Type == ahoy.NODE_SWITCH_CASE_LIST {
+				for j, val := range caseValue.Children {
+					if j > 0 {
+						gen.output.WriteString(" || ")
+					}
+					gen.output.WriteString("strcmp(")
+					gen.generateNode(switchExpr)
+					gen.output.WriteString(", ")
+					gen.generateNode(val)
+					gen.output.WriteString(") == 0")
+				}
+			} else {
+				gen.output.WriteString("strcmp(")
+				gen.generateNode(switchExpr)
+				gen.output.WriteString(", ")
+				gen.generateNode(caseValue)
+				gen.output.WriteString(") == 0")
+			}
+			
+			gen.output.WriteString(") {\n")
+			gen.indent++
+			gen.generateSwitchCaseAssignment(caseBody, targetVar)
+			gen.indent--
+			gen.writeIndent()
+			gen.output.WriteString("}")
+		}
+	}
+	
+	// Handle default case
+	if hasDefault {
+		if !first {
+			gen.output.WriteString(" else {\n")
+		} else {
+			gen.writeIndent()
+			gen.output.WriteString("{\n")
+		}
+		gen.indent++
+		gen.generateSwitchCaseAssignment(defaultBody, targetVar)
+		gen.indent--
+		gen.writeIndent()
+		gen.output.WriteString("}\n")
+	} else if !first {
+		gen.output.WriteString("\n")
+	}
 }
 
 func (gen *CodeGenerator) generateSwitchStatement(node *ahoy.ASTNode) {
@@ -764,12 +971,18 @@ func (gen *CodeGenerator) generateSwitchStatement(node *ahoy.ASTNode) {
 				gen.indent--
 				gen.indent--
 			} else {
-				// Single case value
+				// Single case value or default case
 				gen.indent++
 				gen.writeIndent()
-				gen.output.WriteString("case ")
-				gen.generateNode(caseValue) // Case value
-				gen.output.WriteString(":\n")
+				
+				// Check if it's a default case (underscore)
+				if caseValue.Type == ahoy.NODE_IDENTIFIER && caseValue.Value == "_" {
+					gen.output.WriteString("default:\n")
+				} else {
+					gen.output.WriteString("case ")
+					gen.generateNode(caseValue) // Case value
+					gen.output.WriteString(":\n")
+				}
 
 				gen.indent++
 				gen.generateNodeInternal(caseNode.Children[1], true) // Case body
@@ -1889,6 +2102,16 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			return "string"
 		}
 		return trueType
+	case ahoy.NODE_SWITCH_STATEMENT:
+		// Infer type from first case body
+		if len(node.Children) > 1 {
+			firstCase := node.Children[1]
+			if firstCase.Type == ahoy.NODE_SWITCH_CASE && len(firstCase.Children) > 1 {
+				caseBody := firstCase.Children[1]
+				return gen.inferSwitchCaseType(caseBody)
+			}
+		}
+		return "int"
 	case ahoy.NODE_IDENTIFIER:
 		if varType, exists := gen.variables[node.Value]; exists {
 			return varType
@@ -1897,6 +2120,20 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 	default:
 		return "int"
 	}
+}
+
+// inferSwitchCaseType infers the type of a switch case body
+func (gen *CodeGenerator) inferSwitchCaseType(body *ahoy.ASTNode) string {
+	if body == nil {
+		return "int"
+	}
+	
+	// If it's a block, infer from last statement
+	if body.Type == ahoy.NODE_BLOCK && len(body.Children) > 0 {
+		return gen.inferType(body.Children[len(body.Children)-1])
+	}
+	
+	return gen.inferType(body)
 }
 
 // isEnumType checks if a name is an enum type
@@ -2052,6 +2289,166 @@ func (gen *CodeGenerator) generateEnumDeclaration(node *ahoy.ASTNode) {
 }
 
 // Generate tuple assignment
+// generateTupleSwitchAssignment handles tuple assignment from switch expressions
+func (gen *CodeGenerator) generateTupleSwitchAssignment(leftSide *ahoy.ASTNode, switchNode *ahoy.ASTNode) {
+	// Declare all left-side variables first
+	for i, target := range leftSide.Children {
+		if _, exists := gen.variables[target.Value]; !exists {
+			// Infer type from first case of switch
+			if len(switchNode.Children) > 1 {
+				firstCase := switchNode.Children[1]
+				if firstCase.Type == ahoy.NODE_SWITCH_CASE && len(firstCase.Children) > 1 {
+					caseBody := firstCase.Children[1]
+					// Case body should be a BLOCK node with tuple expressions
+					if caseBody.Type == ahoy.NODE_BLOCK && i < len(caseBody.Children) {
+						exprType := gen.inferType(caseBody.Children[i])
+						cType := gen.mapType(exprType)
+						gen.writeIndent()
+						gen.output.WriteString(fmt.Sprintf("%s %s;\n", cType, target.Value))
+						gen.variables[target.Value] = exprType
+						continue
+					}
+				}
+			}
+			// Fallback type
+			gen.writeIndent()
+			gen.output.WriteString(fmt.Sprintf("int %s;\n", target.Value))
+			gen.variables[target.Value] = "int"
+		}
+	}
+	
+	// Generate switch with tuple assignments in each case
+	switchExpr := switchNode.Children[0]
+	switchExprType := gen.inferType(switchExpr)
+	
+	// Check if this is a string switch
+	if switchExprType == "char*" || switchExprType == "string" {
+		gen.generateTupleStringSwitchExpression(switchNode, leftSide)
+		return
+	}
+	
+	// Generate normal switch with tuple assignments
+	gen.writeIndent()
+	gen.output.WriteString("switch (")
+	gen.generateNode(switchExpr)
+	gen.output.WriteString(") {\n")
+	
+	// Generate cases
+	for i := 1; i < len(switchNode.Children); i++ {
+		caseNode := switchNode.Children[i]
+		if caseNode.Type == ahoy.NODE_SWITCH_CASE {
+			caseValue := caseNode.Children[0]
+			caseBody := caseNode.Children[1]
+			
+			// Generate case label
+			gen.indent++
+			gen.writeIndent()
+			if caseValue.Type == ahoy.NODE_IDENTIFIER && caseValue.Value == "_" {
+				gen.output.WriteString("default:\n")
+			} else {
+				gen.output.WriteString("case ")
+				gen.generateNode(caseValue)
+				gen.output.WriteString(":\n")
+			}
+			
+			gen.indent++
+			// Generate tuple assignments
+			if caseBody.Type == ahoy.NODE_BLOCK {
+				for j, expr := range caseBody.Children {
+					if j < len(leftSide.Children) {
+						gen.writeIndent()
+						gen.output.WriteString(fmt.Sprintf("%s = ", leftSide.Children[j].Value))
+						gen.generateNode(expr)
+						gen.output.WriteString(";\n")
+					}
+				}
+			}
+			gen.writeIndent()
+			gen.output.WriteString("break;\n")
+			gen.indent--
+			gen.indent--
+		}
+	}
+	
+	gen.writeIndent()
+	gen.output.WriteString("}\n")
+}
+
+// generateTupleStringSwitchExpression handles tuple assignment from string switch
+func (gen *CodeGenerator) generateTupleStringSwitchExpression(switchNode *ahoy.ASTNode, leftSide *ahoy.ASTNode) {
+	switchExpr := switchNode.Children[0]
+	
+	first := true
+	hasDefault := false
+	var defaultBody *ahoy.ASTNode
+	
+	for i := 1; i < len(switchNode.Children); i++ {
+		caseNode := switchNode.Children[i]
+		if caseNode.Type == ahoy.NODE_SWITCH_CASE {
+			caseValue := caseNode.Children[0]
+			caseBody := caseNode.Children[1]
+			
+			// Check for default case
+			if caseValue.Type == ahoy.NODE_IDENTIFIER && caseValue.Value == "_" {
+				hasDefault = true
+				defaultBody = caseBody
+				continue
+			}
+			
+			gen.writeIndent()
+			if first {
+				gen.output.WriteString("if (")
+				first = false
+			} else {
+				gen.output.WriteString("else if (")
+			}
+			
+			gen.output.WriteString("strcmp(")
+			gen.generateNode(switchExpr)
+			gen.output.WriteString(", ")
+			gen.generateNode(caseValue)
+			gen.output.WriteString(") == 0) {\n")
+			
+			gen.indent++
+			// Generate tuple assignments
+			if caseBody.Type == ahoy.NODE_BLOCK {
+				for j, expr := range caseBody.Children {
+					if j < len(leftSide.Children) {
+						gen.writeIndent()
+						gen.output.WriteString(fmt.Sprintf("%s = ", leftSide.Children[j].Value))
+						gen.generateNode(expr)
+						gen.output.WriteString(";\n")
+					}
+				}
+			}
+			gen.indent--
+			gen.writeIndent()
+			gen.output.WriteString("}")
+		}
+	}
+	
+	// Handle default case
+	if hasDefault {
+		gen.output.WriteString(" else {\n")
+		gen.indent++
+		if defaultBody.Type == ahoy.NODE_BLOCK {
+			for j, expr := range defaultBody.Children {
+				if j < len(leftSide.Children) {
+					gen.writeIndent()
+					gen.output.WriteString(fmt.Sprintf("%s = ", leftSide.Children[j].Value))
+					gen.generateNode(expr)
+					gen.output.WriteString(";\n")
+				}
+			}
+		}
+		gen.indent--
+		gen.writeIndent()
+		gen.output.WriteString("}\n")
+	} else {
+		gen.output.WriteString("\n")
+	}
+}
+
 func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 	leftSide := node.Children[0]
 	rightSide := node.Children[1]
@@ -2083,6 +2480,12 @@ func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 			}
 			gen.output.WriteString(fmt.Sprintf("%s = %s.ret%d;\n", target.Value, tempVar, i))
 		}
+		return
+	}
+
+	// Check if right side is a single switch statement returning a tuple
+	if len(rightSide.Children) == 1 && rightSide.Children[0].Type == ahoy.NODE_SWITCH_STATEMENT {
+		gen.generateTupleSwitchAssignment(leftSide, rightSide.Children[0])
 		return
 	}
 

@@ -313,12 +313,12 @@ func Tokenize(input string) []Token {
 			if i+1 < len(content) {
 				twoChar := content[i : i+2]
 				switch twoChar {
-				case "::":
-					tokens = append(tokens, Token{Type: TOKEN_DOUBLE_COLON, Value: "::", Line: lineNum + 1, Column: i + 1})
-					i += 2
-					continue
 				case ":=":
 					tokens = append(tokens, Token{Type: TOKEN_WALRUS, Value: ":=", Line: lineNum + 1, Column: i + 1})
+					i += 2
+					continue
+				case "::":
+					tokens = append(tokens, Token{Type: TOKEN_DOUBLE_COLON, Value: "::", Line: lineNum + 1, Column: i + 1})
 					i += 2
 					continue
 				case "<=":

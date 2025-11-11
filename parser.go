@@ -550,9 +550,9 @@ func tokenTypeName(t TokenType) string {
 		TOKEN_ENUM: "'enum'", TOKEN_STRUCT: "'struct'", TOKEN_TYPE: "'type'",
 		TOKEN_DO: "'do'", TOKEN_HALT: "'halt'", TOKEN_NEXT: "'next'",
 		TOKEN_ASSERT: "'assert'", TOKEN_DEFER: "'defer'",
-		TOKEN_DOUBLE_COLON: "'::'", TOKEN_QUESTION: "'?'", TOKEN_TERNARY: "'??'",
+		TOKEN_DOUBLE_COLON: "'::'", TOKEN_WALRUS: "':='", TOKEN_QUESTION: "'?'", TOKEN_TERNARY: "'??'",
 		TOKEN_EQUALS: "'='", TOKEN_INFER: "'infer'", TOKEN_VOID: "'void'",
-		TOKEN_AT: "'@'",
+		TOKEN_AT: "'@'", TOKEN_END: "'$'",
 	}
 	if name, ok := names[t]; ok {
 		return name
@@ -727,6 +727,10 @@ func (p *Parser) parseStatement() *ASTNode {
 		if nextType == TOKEN_DOUBLE_COLON {
 			return p.parseConstantDeclaration()
 		}
+		// Check for walrus operator (name :=) - inferred type assignment
+		if nextType == TOKEN_WALRUS {
+			return p.parseWalrusAssignment()
+		}
 		// Check for tuple assignment (name, name :)
 		if nextType == TOKEN_COMMA {
 			return p.parseTupleAssignment()
@@ -895,13 +899,11 @@ func (p *Parser) parseIfStatement() *ASTNode {
 	condition := p.parseExpression()
 
 	// Accept 'then', 'do', or ':'
-	usesColon := false
 	if p.current().Type == TOKEN_THEN {
 		p.advance()
 	} else if p.current().Type == TOKEN_DO {
 		p.advance()
 	} else if p.current().Type == TOKEN_ASSIGN {
-		usesColon = true
 		p.advance()
 	} else {
 		current := p.current()
@@ -914,29 +916,15 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		}
 	}
 
-	// Check for inline if statement (no newline after then/do/colon)
-	isMultiLine := false
-	var ifBody *ASTNode
-	if p.current().Type != TOKEN_NEWLINE {
-		// Inline: parse single statement
-		p.skipWhitespace()
-		ifBody = &ASTNode{Type: NODE_BLOCK}
-		stmt := p.parseStatement()
-		if stmt != nil {
-			ifBody.Children = append(ifBody.Children, stmt)
-		}
-	} else {
-		// Multi-line: parse block
-		isMultiLine = true
-		p.advance() // skip newline
-		p.skipWhitespace()
-		if usesColon {
-			p.blockDepth++ // Opening a multi-line block
-			ifBody = p.parseBlockUntilEnd("if", startLine)
-		} else {
-			ifBody = p.parseBlock()
-		}
+	// Both inline and multiline now require $ to close
+	// Skip optional newlines after then/do/colon
+	for p.current().Type == TOKEN_NEWLINE {
+		p.advance()
 	}
+	
+	p.skipWhitespace()
+	p.blockDepth++ // Opening a block (inline or multiline)
+	ifBody := p.parseBlockUntilEnd("if", startLine)
 
 	ifStmt := &ASTNode{
 		Type:     NODE_IF_STATEMENT,
@@ -954,13 +942,11 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		elseifCondition := p.parseExpression()
 
 		// Accept 'then', 'do', or ':'
-		elseifUsesColon := false
 		if p.current().Type == TOKEN_THEN {
 			p.advance()
 		} else if p.current().Type == TOKEN_DO {
 			p.advance()
 		} else if p.current().Type == TOKEN_ASSIGN {
-			elseifUsesColon = true
 			p.advance()
 		} else {
 			current := p.current()
@@ -973,28 +959,15 @@ func (p *Parser) parseIfStatement() *ASTNode {
 			}
 		}
 
-		// Check for inline elseif/anif
-		var elseifBody *ASTNode
-		if p.current().Type != TOKEN_NEWLINE {
-			// Inline
-			p.skipWhitespace()
-			elseifBody = &ASTNode{Type: NODE_BLOCK}
-			stmt := p.parseStatement()
-			if stmt != nil {
-				elseifBody.Children = append(elseifBody.Children, stmt)
-			}
-		} else {
-			// Multi-line
-			isMultiLine = true
-			p.advance() // skip newline
-			p.skipWhitespace()
-			if elseifUsesColon {
-				p.blockDepth++ // Opening a multi-line block
-				elseifBody = p.parseBlockUntilEnd("anif", startLine)
-			} else {
-				elseifBody = p.parseBlock()
-			}
+		// Both inline and multiline now require $ to close
+		// Skip optional newlines after then/do/colon
+		for p.current().Type == TOKEN_NEWLINE {
+			p.advance()
 		}
+		
+		p.skipWhitespace()
+		p.blockDepth++ // Opening a block (inline or multiline)
+		elseifBody := p.parseBlockUntilEnd("anif", startLine)
 
 		// Add elseif as another condition-body pair
 		ifStmt.Children = append(ifStmt.Children, elseifCondition, elseifBody)
@@ -1009,58 +982,24 @@ func (p *Parser) parseIfStatement() *ASTNode {
 	if p.current().Type == TOKEN_ELSE {
 		p.advance()
 
-		// Check if using ':' syntax
-		elseUsesColon := false
+		// Optional ':' after else
 		if p.current().Type == TOKEN_ASSIGN {
-			elseUsesColon = true
 			p.advance()
 		}
 
-		// Check for inline else
-		var elseBody *ASTNode
-		if p.current().Type != TOKEN_NEWLINE {
-			// Inline
-			p.skipWhitespace()
-			elseBody = &ASTNode{Type: NODE_BLOCK}
-			stmt := p.parseStatement()
-			if stmt != nil {
-				elseBody.Children = append(elseBody.Children, stmt)
-			}
-		} else {
-			// Multi-line
-			isMultiLine = true
-			p.advance() // skip newline
-			p.skipWhitespace()
-			if elseUsesColon {
-				p.blockDepth++ // Opening a multi-line block
-				elseBody = p.parseBlockUntilEnd("else", startLine)
-			} else {
-				elseBody = p.parseBlock()
-			}
+		// Both inline and multiline now require $ to close
+		// Skip optional newlines after colon
+		for p.current().Type == TOKEN_NEWLINE {
+			p.advance()
 		}
+		
+		p.skipWhitespace()
+		p.blockDepth++ // Opening a block (inline or multiline)
+		elseBody := p.parseBlockUntilEnd("else", startLine)
 		ifStmt.Children = append(ifStmt.Children, elseBody)
-
-		// Skip any newlines or dedents before 'end' (only if not using colon syntax)
-		if !elseUsesColon {
-			for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_DEDENT {
-				p.advance()
-			}
-		}
 	}
 
-	// Multi-line if statements require 'end' (only if not using colon syntax which already consumed it)
-	if isMultiLine && !usesColon {
-		if p.current().Type == TOKEN_END {
-			p.advance() // consume 'end'
-		} else {
-			errMsg := fmt.Sprintf("Expected '$' to close if statement at line %d", startLine)
-			if p.LintMode {
-				p.recordError(errMsg)
-			} else {
-				panic(errMsg)
-			}
-		}
-	}
+	// Note: parseBlockUntilEnd already consumes the $ and decrements blockDepth
 
 	return ifStmt
 }
@@ -1070,24 +1009,17 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 	p.expect(TOKEN_SWITCH)
 	expr := p.parseExpression()
 
-	// Accept either "then", "on", or ":" keyword
-	if p.current().Type == TOKEN_ON {
-		p.advance()
-	} else if p.current().Type == TOKEN_THEN {
-		p.advance()
-	} else if p.current().Type == TOKEN_ASSIGN { // colon
+	// Expect ':' after switch expression
+	if p.current().Type == TOKEN_ASSIGN { // colon
 		p.advance()
 	} else {
-		errMsg := fmt.Sprintf("Expected 'on', 'then', or ':' after switch expression at line %d", p.current().Line)
+		errMsg := fmt.Sprintf("Expected ':' after switch expression at line %d", p.current().Line)
 		if p.LintMode {
 			p.recordError(errMsg)
 		} else {
 			panic(errMsg)
 		}
 	}
-
-	// Check if this is a one-line switch (no newline after 'on'/'then')
-	isOneLine := p.current().Type != TOKEN_NEWLINE && p.current().Type != TOKEN_INDENT
 
 	// Expect and consume indent after switch keyword
 	p.skipNewlines()
@@ -1100,8 +1032,7 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 		Children: []*ASTNode{expr}, // First child is the switch expression
 	}
 
-	// Parse cases: value:statement then value:statement then ...
-	// Now supports: 'A','B','C':statement or 'a' to 'z':statement or 'A' or 'B':statement
+	// Parse cases: each case starts with 'on' keyword (except default case with '_')
 	maxSwitchIterations := 10000 // Safety limit
 	switchIterations := 0
 	for {
@@ -1116,162 +1047,233 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 			break
 		}
 
-		// Skip newlines and semicolons
-		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_SEMICOLON {
+		// Skip newlines, semicolons, indents, and dedents (indentation is cosmetic in switch)
+		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_SEMICOLON ||
+			p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
 			p.advance()
 		}
 
 		// Check for end of switch
-		if p.current().Type == TOKEN_END || p.current().Type == TOKEN_DEDENT ||
-			p.current().Type == TOKEN_EOF || p.current().Type == TOKEN_IF ||
-			p.current().Type == TOKEN_LOOP || p.current().Type == TOKEN_FUNC ||
-			p.current().Type == TOKEN_RETURN || p.current().Type == TOKEN_SWITCH {
+		if p.current().Type == TOKEN_END || p.current().Type == TOKEN_EOF {
 			break
 		}
 
-		// Check if we have a case value (number, char, string, or underscore for default)
-		if p.current().Type != TOKEN_NUMBER && p.current().Type != TOKEN_STRING &&
-			p.current().Type != TOKEN_CHAR && p.current().Type != TOKEN_IDENTIFIER {
+		// Check if we have 'on' keyword or '_' for default case
+		isDefaultCase := false
+		if p.current().Type == TOKEN_ON {
+			p.advance() // consume 'on'
+		} else if p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "_" {
+			isDefaultCase = true
+		} else {
+			// No more cases to parse
 			break
 		}
 
-		// Parse case values - could be single, list (with commas), list (with 'or'), or range (with 'to')
+		// Parse case values - could be single, list (with commas), or range (with 'to')
 		caseValues := []*ASTNode{}
 
-		for {
-			// Save position to detect stuck loop
-			oldPos := p.pos
+		if !isDefaultCase {
+			for {
+				// Save position to detect stuck loop
+				oldPos := p.pos
 
-			// Parse single case value
-			var caseValue *ASTNode
-			if p.current().Type == TOKEN_NUMBER {
-				tok := p.current()
-				p.advance()
-				caseValue = &ASTNode{
-					Type:  NODE_NUMBER,
-					Value: tok.Value,
-				}
-			} else if p.current().Type == TOKEN_CHAR {
-				tok := p.current()
-				p.advance()
-				caseValue = &ASTNode{
-					Type:  NODE_CHAR,
-					Value: tok.Value,
-				}
-			} else if p.current().Type == TOKEN_STRING {
-				tok := p.current()
-				p.advance()
-				caseValue = &ASTNode{
-					Type:  NODE_STRING,
-					Value: tok.Value,
-				}
-			} else if p.current().Type == TOKEN_IDENTIFIER {
-				tok := p.current()
-				p.advance()
-				caseValue = &ASTNode{
-					Type:  NODE_IDENTIFIER,
-					Value: tok.Value,
-				}
-			} else {
-				// Unexpected token - break out to avoid infinite loop
-				break
-			}
-
-			caseValues = append(caseValues, caseValue)
-
-			// Check for range ('to' keyword) or multiple values (',' or 'or')
-			if p.current().Type == TOKEN_TO {
-				// This is a range: 'a' to 'z'
-				p.advance()
-				var endValue *ASTNode
+				// Parse single case value
+				var caseValue *ASTNode
 				if p.current().Type == TOKEN_NUMBER {
 					tok := p.current()
 					p.advance()
-					endValue = &ASTNode{
+					caseValue = &ASTNode{
 						Type:  NODE_NUMBER,
 						Value: tok.Value,
 					}
 				} else if p.current().Type == TOKEN_CHAR {
 					tok := p.current()
 					p.advance()
-					endValue = &ASTNode{
+					caseValue = &ASTNode{
 						Type:  NODE_CHAR,
 						Value: tok.Value,
 					}
+				} else if p.current().Type == TOKEN_STRING {
+					tok := p.current()
+					p.advance()
+					caseValue = &ASTNode{
+						Type:  NODE_STRING,
+						Value: tok.Value,
+					}
+				} else if p.current().Type == TOKEN_IDENTIFIER {
+					tok := p.current()
+					p.advance()
+					caseValue = &ASTNode{
+						Type:  NODE_IDENTIFIER,
+						Value: tok.Value,
+					}
 				} else {
-					errMsg := fmt.Sprintf("Expected end value for range at line %d", p.current().Line)
-					if p.LintMode {
-						p.recordError(errMsg)
-						// Create a dummy node to continue parsing
+					// Unexpected token - break out to avoid infinite loop
+					break
+				}
+
+				caseValues = append(caseValues, caseValue)
+
+				// Check for range ('to' keyword) or multiple values (',')
+				if p.current().Type == TOKEN_TO {
+					// This is a range: 'a' to 'z'
+					p.advance()
+					var endValue *ASTNode
+					if p.current().Type == TOKEN_NUMBER {
+						tok := p.current()
+						p.advance()
 						endValue = &ASTNode{
 							Type:  NODE_NUMBER,
-							Value: "0",
+							Value: tok.Value,
+						}
+					} else if p.current().Type == TOKEN_CHAR {
+						tok := p.current()
+						p.advance()
+						endValue = &ASTNode{
+							Type:  NODE_CHAR,
+							Value: tok.Value,
 						}
 					} else {
-						panic(errMsg)
+						errMsg := fmt.Sprintf("Expected end value for range at line %d", p.current().Line)
+						if p.LintMode {
+							p.recordError(errMsg)
+							// Create a dummy node to continue parsing
+							endValue = &ASTNode{
+								Type:  NODE_NUMBER,
+								Value: "0",
+							}
+						} else {
+							panic(errMsg)
+						}
 					}
+
+					// Create range node
+					rangeNode := &ASTNode{
+						Type:     NODE_SWITCH_CASE_RANGE,
+						Children: []*ASTNode{caseValue, endValue},
+					}
+					caseValues = []*ASTNode{rangeNode}
+					break
+				} else if p.current().Type == TOKEN_COMMA {
+					// Multiple values: 'A','B','C'
+					p.advance()
+					continue
+				} else {
+					// Single value or end of value list
+					break
 				}
 
-				// Create range node
-				rangeNode := &ASTNode{
-					Type:     NODE_SWITCH_CASE_RANGE,
-					Children: []*ASTNode{caseValue, endValue},
+				// Safety check: if position hasn't advanced, break to avoid infinite loop
+				if p.pos == oldPos {
+					break
 				}
-				caseValues = []*ASTNode{rangeNode}
-				break
-			} else if p.current().Type == TOKEN_COMMA || p.current().Type == TOKEN_OR {
-				// Multiple values: 'A','B','C' or 'A' or 'B'
-				p.advance()
-				continue
-			} else {
-				// Single value or end of value list
-				break
 			}
-
-			// Safety check: if position hasn't advanced, break to avoid infinite loop
-			if p.pos == oldPos {
-				break
-			}
+		} else {
+			// Default case with '_'
+			tok := p.current()
+			p.advance()
+			caseValues = append(caseValues, &ASTNode{
+				Type:  NODE_IDENTIFIER,
+				Value: tok.Value,
+			})
 		}
 
+		caseLine := p.current().Line // Track line number for error reporting
 		p.expect(TOKEN_ASSIGN) // Expect :
 
 		// Skip optional whitespace/indent after colon
 		p.skipWhitespace()
 
-		// Parse case body - must be a statement or call, not an assignment
-		// We need to be careful here because parseStatement might misinterpret
-		// patterns like "ahoy|...|" if preceded by an identifier
-		var caseBody *ASTNode
-
-		// Explicitly handle known statement types
-		switch p.current().Type {
-		case TOKEN_AHOY:
-			caseBody = p.parseAhoyStatement()
-		case TOKEN_PRINT:
-			caseBody = p.parsePrintStatement()
-		case TOKEN_RETURN:
-			caseBody = p.parseReturnStatement()
-		case TOKEN_IF:
-			caseBody = p.parseIfStatement()
-		case TOKEN_SWITCH:
-			caseBody = p.parseSwitchStatement()
-		case TOKEN_LOOP:
-			caseBody = p.parseLoop()
-		case TOKEN_IDENTIFIER:
-			// Could be a function call or method call
-			caseBody = p.parseExpression()
-		default:
-			// Try to parse as expression
-			caseBody = p.parseExpression()
+		// Skip whitespace/newlines after colon - indentation is cosmetic
+		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT {
+			p.advance()
 		}
 
-		// Create case node
+		// Parse case body - could be multiple statements or single expression
+		var caseBody *ASTNode
+		
+		// Check if we're starting a new case immediately (empty case)
+		if p.current().Type == TOKEN_ON || (p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "_") ||
+			p.current().Type == TOKEN_END || p.current().Type == TOKEN_DEDENT {
+			// Empty case body
+			caseBody = &ASTNode{Type: NODE_BLOCK}
+		} else {
+			// Parse statements/expressions until we hit next case or end
+			statements := []*ASTNode{}
+			
+			for {
+				// Skip cosmetic tokens
+				for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT ||
+					p.current().Type == TOKEN_DEDENT {
+					p.advance()
+				}
+				
+				// Check for end of case
+				if p.current().Type == TOKEN_ON || (p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "_") ||
+					p.current().Type == TOKEN_END || p.current().Type == TOKEN_EOF {
+					break
+				}
+				
+				// Parse one statement/expression
+				var stmt *ASTNode
+				switch p.current().Type {
+				case TOKEN_AHOY:
+					stmt = p.parseAhoyStatement()
+				case TOKEN_PRINT:
+					stmt = p.parsePrintStatement()
+				case TOKEN_RETURN:
+					stmt = p.parseReturnStatement()
+				case TOKEN_IF:
+					stmt = p.parseIfStatement()
+				case TOKEN_SWITCH:
+					stmt = p.parseSwitchStatement()
+				case TOKEN_LOOP:
+					stmt = p.parseLoop()
+				default:
+					// Try to parse as expression (potentially tuple)
+					stmt = p.parseSwitchCaseExpression()
+				}
+				
+				// Append statement and check for end of case
+				if stmt != nil {
+					statements = append(statements, stmt)
+					
+					// Skip trailing cosmetic tokens
+					for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_DEDENT {
+						p.advance()
+					}
+					
+					// Check if we're at the end of this case
+					if p.current().Type == TOKEN_ON || (p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "_") ||
+						p.current().Type == TOKEN_END || p.current().Type == TOKEN_EOF {
+						break
+					}
+				} else {
+					break
+				}
+			}
+			
+			// If multiple statements, wrap in block; otherwise return single statement
+			if len(statements) > 1 {
+				caseBody = &ASTNode{
+					Type:     NODE_BLOCK,
+					Children: statements,
+					Line:     caseLine,
+				}
+			} else if len(statements) == 1 {
+				caseBody = statements[0]
+			} else {
+				caseBody = &ASTNode{Type: NODE_BLOCK}
+			}
+		}
+
+		// Create case node with line number for error reporting
 		var caseNode *ASTNode
 		if len(caseValues) == 1 {
 			caseNode = &ASTNode{
 				Type:     NODE_SWITCH_CASE,
 				Children: []*ASTNode{caseValues[0], caseBody},
+				Line:     caseLine,
 			}
 		} else {
 			// Multiple case values
@@ -1282,6 +1284,7 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 			caseNode = &ASTNode{
 				Type:     NODE_SWITCH_CASE,
 				Children: []*ASTNode{listNode, caseBody},
+				Line:     caseLine,
 			}
 		}
 
@@ -1291,32 +1294,244 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_SEMICOLON {
 			p.advance()
 		}
-
-		// Check for "then" separator (optional now with newlines)
-		if p.current().Type == TOKEN_THEN {
-			p.advance()
-		}
-		// Continue to next case (don't break - newlines separate cases now)
+		// Continue to next case
 	}
 
-	// Consume 'end' keyword only for multi-line switch statements
+	// Consume final dedent and '$' to close switch statement
 	if p.current().Type == TOKEN_DEDENT {
 		p.advance()
 	}
-	if !isOneLine {
-		if p.current().Type == TOKEN_END {
-			p.advance()
+	if p.current().Type == TOKEN_END {
+		p.advance()
+	} else {
+		errMsg := fmt.Sprintf("Expected '$' to close switch statement at line %d", startLine)
+		if p.LintMode {
+			p.recordError(errMsg)
 		} else {
-			errMsg := fmt.Sprintf("Expected '$' to close switch statement at line %d", startLine)
+			panic(errMsg)
+		}
+	}
+
+	return switchStmt
+}
+
+// validateSwitchReturnTypes checks that all cases in a switch return compatible types
+func (p *Parser) validateSwitchReturnTypes(switchStmt *ASTNode, line int) {
+	p.validateSwitchReturnTypesWithExpected(switchStmt, "", line)
+}
+
+// validateSwitchReturnTypesWithExpected checks switch return types against an expected type
+func (p *Parser) validateSwitchReturnTypesWithExpected(switchStmt *ASTNode, expectedType string, line int) {
+	if switchStmt == nil || len(switchStmt.Children) < 2 {
+		return // Need at least expression + one case
+	}
+
+	// Get all case bodies with their line numbers (skip first child which is the switch expression)
+	type caseInfo struct {
+		typeName string
+		line     int
+	}
+	var cases []caseInfo
+	
+	for i := 1; i < len(switchStmt.Children); i++ {
+		caseNode := switchStmt.Children[i]
+		if caseNode.Type != NODE_SWITCH_CASE || len(caseNode.Children) < 2 {
+			continue
+		}
+
+		// The last child is the body
+		body := caseNode.Children[len(caseNode.Children)-1]
+		bodyType := p.inferCaseBodyType(body)
+		caseLine := caseNode.Line
+		if caseLine == 0 {
+			caseLine = line // Fallback to switch line
+		}
+		cases = append(cases, caseInfo{typeName: bodyType, line: caseLine})
+	}
+
+	if len(cases) == 0 {
+		return // No cases to validate
+	}
+
+	// If we have an expected type, validate each case against it
+	if expectedType != "" {
+		for _, caseData := range cases {
+			if caseData.typeName == "void" {
+				errMsg := fmt.Sprintf("Returns void but expected type '%s'", expectedType)
+				p.recordErrorAtLine(errMsg, caseData.line)
+			} else if !p.checkTypeCompatibility(expectedType, caseData.typeName) {
+				errMsg := fmt.Sprintf("Returns type '%s' but expected type '%s'", caseData.typeName, expectedType)
+				p.recordErrorAtLine(errMsg, caseData.line)
+			}
+		}
+		return
+	}
+
+	// Otherwise, check if all types are compatible with each other
+	firstType := cases[0].typeName
+	for _, caseData := range cases {
+		if caseData.typeName == "void" {
+			errMsg := fmt.Sprintf("Returns void - switch expressions must return values")
+			p.recordErrorAtLine(errMsg, caseData.line)
+		} else if firstType != "unknown" && caseData.typeName != "unknown" && firstType != caseData.typeName {
+			// Allow int to float promotion
+			if !((firstType == "float" && caseData.typeName == "int") || (firstType == "int" && caseData.typeName == "float")) {
+				errMsg := fmt.Sprintf("Returns type '%s' but other cases return '%s' - all cases must return the same type", caseData.typeName, firstType)
+				p.recordErrorAtLine(errMsg, caseData.line)
+			}
+		}
+	}
+}
+
+// parseSwitchCaseExpression parses a switch case body, supporting tuple expressions
+func (p *Parser) parseSwitchCaseExpression() *ASTNode {
+	// Parse first expression
+	firstExpr := p.parseExpression()
+	
+	// Check if there's a comma (tuple expression)
+	if p.current().Type == TOKEN_COMMA {
+		// This is a tuple expression
+		tupleNode := &ASTNode{
+			Type:     NODE_BLOCK, // Use BLOCK to hold multiple expressions
+			Children: []*ASTNode{firstExpr},
+		}
+		
+		for p.current().Type == TOKEN_COMMA {
+			p.advance() // consume comma
+			
+			// Check for newline (end of case) or other terminators
+			if p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_DEDENT ||
+				p.current().Type == TOKEN_ON || p.current().Type == TOKEN_END ||
+				(p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "_") {
+				break
+			}
+			
+			expr := p.parseExpression()
+			tupleNode.Children = append(tupleNode.Children, expr)
+		}
+		
+		return tupleNode
+	}
+	
+	return firstExpr
+}
+
+// parseSwitchCaseBlock parses a multi-line switch case body
+func (p *Parser) parseSwitchCaseBlock(startLine int) *ASTNode {
+	block := &ASTNode{Type: NODE_BLOCK, Line: startLine}
+	
+	maxIterations := 10000
+	iterations := 0
+
+	for {
+		iterations++
+		if iterations > maxIterations {
+			errMsg := fmt.Sprintf("Parser safety limit reached while parsing switch case at line %d", startLine)
 			if p.LintMode {
 				p.recordError(errMsg)
 			} else {
 				panic(errMsg)
 			}
+			break
+		}
+
+		// Check for end of case body
+		if p.current().Type == TOKEN_DEDENT || p.current().Type == TOKEN_ON ||
+			(p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "_") ||
+			p.current().Type == TOKEN_END || p.current().Type == TOKEN_EOF {
+			break
+		}
+
+		// Skip newlines and indents (indentation is cosmetic in switch bodies)
+		if p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT {
+			p.advance()
+			continue
+		}
+
+		// Parse statement
+		stmt := p.parseStatement()
+		if stmt != nil {
+			block.Children = append(block.Children, stmt)
 		}
 	}
 
-	return switchStmt
+	// Don't consume dedent here - let main switch loop handle it
+	return block
+}
+
+// inferSwitchReturnType infers the return type of a switch statement from its cases
+func (p *Parser) inferSwitchReturnType(switchStmt *ASTNode) string {
+	if switchStmt == nil || len(switchStmt.Children) < 2 {
+		return "unknown"
+	}
+
+	// Get the type of the first case
+	for i := 1; i < len(switchStmt.Children); i++ {
+		caseNode := switchStmt.Children[i]
+		if caseNode.Type != NODE_SWITCH_CASE || len(caseNode.Children) < 2 {
+			continue
+		}
+
+		body := caseNode.Children[len(caseNode.Children)-1]
+		bodyType := p.inferCaseBodyType(body)
+		if bodyType != "unknown" && bodyType != "void" {
+			return bodyType
+		}
+	}
+
+	return "unknown"
+}
+
+// inferCaseBodyType infers the type returned by a case body
+func (p *Parser) inferCaseBodyType(body *ASTNode) string {
+	if body == nil {
+		return "unknown"
+	}
+
+	switch body.Type {
+	case NODE_BLOCK:
+		// For multi-line blocks, infer from last statement
+		if len(body.Children) == 0 {
+			return "void"
+		}
+		// Check if all statements are void (like multiple prints)
+		allVoid := true
+		for _, stmt := range body.Children {
+			stmtType := p.inferCaseBodyType(stmt)
+			if stmtType != "void" {
+				allVoid = false
+				break
+			}
+		}
+		if allVoid {
+			return "void"
+		}
+		// Return type of last statement
+		return p.inferCaseBodyType(body.Children[len(body.Children)-1])
+	case NODE_CALL:
+		// Check for built-in functions that return void
+		if body.Value == "print" || body.Value == "ahoy" {
+			return "void"
+		}
+		// Check if it's a known function
+		if funcSig, ok := p.functions[body.Value]; ok {
+			if len(funcSig.ReturnTypes) == 0 {
+				return "void"
+			}
+			if len(funcSig.ReturnTypes) > 0 {
+				return funcSig.ReturnTypes[0]
+			}
+		}
+		return p.inferType(body)
+	case NODE_SWITCH_STATEMENT:
+		// For nested switches, infer the return type from its cases
+		return p.inferSwitchReturnType(body)
+	case NODE_IF_STATEMENT, NODE_WHILE_LOOP, NODE_FOR_LOOP:
+		// These statements don't return values
+		return "void"
+	default:
+		return p.inferType(body)
+	}
 }
 
 func (p *Parser) parseLoop() *ASTNode {
@@ -1344,11 +1559,9 @@ func (p *Parser) parseLoop() *ASTNode {
 			endExpr := p.parseExpression()
 
 			// Accept either 'do' or ':'
-			usesColon := false
 			if p.current().Type == TOKEN_DO {
 				p.advance()
 			} else if p.current().Type == TOKEN_ASSIGN {
-				usesColon = true
 				p.advance()
 			} else {
 				if !p.LintMode {
@@ -1364,51 +1577,19 @@ func (p *Parser) parseLoop() *ASTNode {
 				p.loopVarScopes = append(p.loopVarScopes, loopScope)
 			}
 			
-			// Check for inline loop (no newline after do/colon)
-			isMultiLine := false
-			var body *ASTNode
-			if p.current().Type != TOKEN_NEWLINE {
-				// Inline loop - skip whitespace before parsing statement
-				p.skipWhitespace()
-				// Inline: parse single statement
-				body = &ASTNode{Type: NODE_BLOCK}
-				stmt := p.parseStatement()
-				if stmt != nil {
-					body.Children = append(body.Children, stmt)
-				}
-			} else {
-				// Multi-line: parse block
-				isMultiLine = true
-				p.advance()        // skip the newline
-				p.skipWhitespace() // skip any indents
-				if usesColon {
-					p.blockDepth++ // Opening a multi-line block
-					body = p.parseBlockUntilEnd("loop", startLine)
-				} else {
-					body = p.parseBlock()
-				}
+			// Both inline and multiline now require $ to close
+			// Skip optional newlines after do/colon
+			for p.current().Type == TOKEN_NEWLINE {
+				p.advance()
 			}
+			
+			p.skipWhitespace()
+			p.blockDepth++ // Opening a block (inline or multiline)
+			body := p.parseBlockUntilEnd("loop", startLine)
 			
 			// Pop loop variable scope
 			if loopVar != nil && len(p.loopVarScopes) > 0 {
 				p.loopVarScopes = p.loopVarScopes[:len(p.loopVarScopes)-1]
-			}
-
-			// Consume 'end' for multi-line loops (only if not using colon syntax)
-			if isMultiLine && !usesColon {
-				if p.current().Type == TOKEN_DEDENT {
-					p.advance()
-				}
-				if p.current().Type == TOKEN_END {
-					p.advance()
-				} else {
-					errMsg := fmt.Sprintf("Expected '$' to close loop at line %d", startLine)
-					if p.LintMode {
-						p.recordError(errMsg)
-					} else {
-						panic(errMsg)
-					}
-				}
 			}
 
 			loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
@@ -1422,11 +1603,9 @@ func (p *Parser) parseLoop() *ASTNode {
 			condition := p.parseExpression()
 
 			// Accept either 'do' or ':'
-			usesColon := false
 			if p.current().Type == TOKEN_DO {
 				p.advance()
 			} else if p.current().Type == TOKEN_ASSIGN {
-				usesColon = true
 				p.advance()
 			} else {
 				if !p.LintMode {
@@ -1442,48 +1621,19 @@ func (p *Parser) parseLoop() *ASTNode {
 				p.loopVarScopes = append(p.loopVarScopes, loopScope)
 			}
 			
-			// Check for inline loop
-			isMultiLine := false
-			var body *ASTNode
-			if p.current().Type != TOKEN_NEWLINE {
-				p.skipWhitespace()
-				body = &ASTNode{Type: NODE_BLOCK}
-				stmt := p.parseStatement()
-				if stmt != nil {
-					body.Children = append(body.Children, stmt)
-				}
-			} else {
-				isMultiLine = true
-				p.advance()        // skip newline
-				p.skipWhitespace() // skip indents
-				if usesColon {
-					p.blockDepth++ // Opening a multi-line block
-					body = p.parseBlockUntilEnd("loop", startLine)
-				} else {
-					body = p.parseBlock()
-				}
+			// Both inline and multiline now require $ to close
+			// Skip optional newlines after do/colon
+			for p.current().Type == TOKEN_NEWLINE {
+				p.advance()
 			}
+			
+			p.skipWhitespace()
+			p.blockDepth++ // Opening a block (inline or multiline)
+			body := p.parseBlockUntilEnd("loop", startLine)
 			
 			// Pop loop variable scope
 			if loopVar != nil && len(p.loopVarScopes) > 0 {
 				p.loopVarScopes = p.loopVarScopes[:len(p.loopVarScopes)-1]
-			}
-
-			// Consume 'end' for multi-line loops (only if not using colon syntax)
-			if isMultiLine && !usesColon {
-				if p.current().Type == TOKEN_DEDENT {
-					p.advance()
-				}
-				if p.current().Type == TOKEN_END {
-					p.advance()
-				} else {
-					errMsg := fmt.Sprintf("Expected '$' to close loop at line %d", startLine)
-					if p.LintMode {
-						p.recordError(errMsg)
-					} else {
-						panic(errMsg)
-					}
-				}
 			}
 
 			loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
@@ -1494,38 +1644,16 @@ func (p *Parser) parseLoop() *ASTNode {
 		} else if p.current().Type == TOKEN_ASSIGN {
 			// loop i:start: (forever loop with counter starting at start)
 			p.advance() // consume second ':'
+			
+			// Both inline and multiline now require $ to close
+			// Skip optional newlines after second colon
+			for p.current().Type == TOKEN_NEWLINE {
+				p.advance()
+			}
+			
 			p.skipWhitespace()
-
-			// Check for inline loop
-			isMultiLine := false
-			var body *ASTNode
-			if p.current().Type != TOKEN_NEWLINE {
-				body = &ASTNode{Type: NODE_BLOCK}
-				stmt := p.parseStatement()
-				if stmt != nil {
-					body.Children = append(body.Children, stmt)
-				}
-			} else {
-				isMultiLine = true
-				body = p.parseBlock()
-			}
-
-			// Consume 'end' for multi-line loops
-			if isMultiLine {
-				if p.current().Type == TOKEN_DEDENT {
-					p.advance()
-				}
-				if p.current().Type == TOKEN_END {
-					p.advance()
-				} else {
-					errMsg := fmt.Sprintf("Expected '$' to close loop at line %d", startLine)
-					if p.LintMode {
-						p.recordError(errMsg)
-					} else {
-						panic(errMsg)
-					}
-				}
-			}
+			p.blockDepth++ // Opening a block (inline or multiline)
+			body := p.parseBlockUntilEnd("loop", startLine)
 
 			loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
 			return &ASTNode{
@@ -1546,11 +1674,9 @@ func (p *Parser) parseLoop() *ASTNode {
 		endExpr := p.parseExpression()
 
 		// Accept either 'do' or ':'
-		usesColon := false
 		if p.current().Type == TOKEN_DO {
 			p.advance()
 		} else if p.current().Type == TOKEN_ASSIGN {
-			usesColon = true
 			p.advance()
 		} else {
 			if !p.LintMode {
@@ -1559,44 +1685,13 @@ func (p *Parser) parseLoop() *ASTNode {
 			p.recordError("Expected 'do' or ':' after loop range")
 		}
 
-		// Check for inline loop
-		isMultiLine := false
-		var body *ASTNode
-		if p.current().Type != TOKEN_NEWLINE {
-			p.skipWhitespace()
-			body = &ASTNode{Type: NODE_BLOCK}
-			stmt := p.parseStatement()
-			if stmt != nil {
-				body.Children = append(body.Children, stmt)
-			}
-		} else {
-			isMultiLine = true
-			p.advance()        // skip newline
-			p.skipWhitespace() // skip indents
-			if usesColon {
-				p.blockDepth++ // Opening a multi-line block
-				body = p.parseBlockUntilEnd("loop", startLine)
-			} else {
-				body = p.parseBlock()
-			}
+		// Both inline and multiline now require $ to close
+		for p.current().Type == TOKEN_NEWLINE {
+			p.advance()
 		}
-
-		// Consume 'end' for multi-line loops (only if not using colon syntax)
-		if isMultiLine && !usesColon {
-			if p.current().Type == TOKEN_DEDENT {
-				p.advance()
-			}
-			if p.current().Type == TOKEN_END {
-				p.advance()
-			} else {
-				errMsg := fmt.Sprintf("Expected '$' to close loop at line %d", startLine)
-				if p.LintMode {
-					p.recordError(errMsg)
-				} else {
-					panic(errMsg)
-				}
-			}
-		}
+		p.skipWhitespace()
+		p.blockDepth++
+		body := p.parseBlockUntilEnd("loop", startLine)
 
 		loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
 		zeroNode := &ASTNode{Type: NODE_NUMBER, Value: "0"}
@@ -1610,11 +1705,9 @@ func (p *Parser) parseLoop() *ASTNode {
 		endExpr := p.parseExpression()
 
 		// Accept either 'do' or ':'
-		usesColon := false
 		if p.current().Type == TOKEN_DO {
 			p.advance()
 		} else if p.current().Type == TOKEN_ASSIGN {
-			usesColon = true
 			p.advance()
 		} else {
 			if !p.LintMode {
@@ -1623,44 +1716,13 @@ func (p *Parser) parseLoop() *ASTNode {
 			p.recordError("Expected 'do' or ':' after loop range")
 		}
 
-		// Check for inline loop
-		isMultiLine := false
-		var body *ASTNode
-		if p.current().Type != TOKEN_NEWLINE {
-			p.skipWhitespace()
-			body = &ASTNode{Type: NODE_BLOCK}
-			stmt := p.parseStatement()
-			if stmt != nil {
-				body.Children = append(body.Children, stmt)
-			}
-		} else {
-			isMultiLine = true
-			p.advance()        // skip newline
-			p.skipWhitespace() // skip indents
-			if usesColon {
-				p.blockDepth++ // Opening a multi-line block
-				body = p.parseBlockUntilEnd("loop", startLine)
-			} else {
-				body = p.parseBlock()
-			}
+		// Both inline and multiline now require $ to close
+		for p.current().Type == TOKEN_NEWLINE {
+			p.advance()
 		}
-
-		// Consume 'end' for multi-line loops (only if not using colon syntax)
-		if isMultiLine && !usesColon {
-			if p.current().Type == TOKEN_DEDENT {
-				p.advance()
-			}
-			if p.current().Type == TOKEN_END {
-				p.advance()
-			} else {
-				errMsg := fmt.Sprintf("Expected '$' to close loop at line %d", startLine)
-				if p.LintMode {
-					p.recordError(errMsg)
-				} else {
-					panic(errMsg)
-				}
-			}
-		}
+		p.skipWhitespace()
+		p.blockDepth++
+		body := p.parseBlockUntilEnd("loop", startLine)
 
 		// Create anonymous loop variable "_loop_i"
 		loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: "_loop_counter"}
@@ -1675,11 +1737,9 @@ func (p *Parser) parseLoop() *ASTNode {
 		condition := p.parseExpression()
 
 		// Accept either 'do' or ':'
-		usesColon := false
 		if p.current().Type == TOKEN_DO {
 			p.advance()
 		} else if p.current().Type == TOKEN_ASSIGN {
-			usesColon = true
 			p.advance()
 		} else {
 			if !p.LintMode {
@@ -1688,44 +1748,13 @@ func (p *Parser) parseLoop() *ASTNode {
 			p.recordError("Expected 'do' or ':' after loop condition")
 		}
 
-		// Check for inline loop
-		isMultiLine := false
-		var body *ASTNode
-		if p.current().Type != TOKEN_NEWLINE {
-			p.skipWhitespace()
-			body = &ASTNode{Type: NODE_BLOCK}
-			stmt := p.parseStatement()
-			if stmt != nil {
-				body.Children = append(body.Children, stmt)
-			}
-		} else {
-			isMultiLine = true
-			p.advance()        // skip newline
-			p.skipWhitespace() // skip indents
-			if usesColon {
-				p.blockDepth++ // Opening a multi-line block
-				body = p.parseBlockUntilEnd("loop", startLine)
-			} else {
-				body = p.parseBlock()
-			}
+		// Both inline and multiline now require $ to close
+		for p.current().Type == TOKEN_NEWLINE {
+			p.advance()
 		}
-
-		// Consume 'end' for multi-line loops (only if not using colon syntax)
-		if isMultiLine && !usesColon {
-			if p.current().Type == TOKEN_DEDENT {
-				p.advance()
-			}
-			if p.current().Type == TOKEN_END {
-				p.advance()
-			} else {
-				errMsg := fmt.Sprintf("Expected '$' to close loop at line %d", startLine)
-				if p.LintMode {
-					p.recordError(errMsg)
-				} else {
-					panic(errMsg)
-				}
-			}
-		}
+		p.skipWhitespace()
+		p.blockDepth++
+		body := p.parseBlockUntilEnd("loop", startLine)
 
 		if loopVar != nil {
 			// loop i till condition - i should be initialized to 0 locally
@@ -1760,11 +1789,9 @@ func (p *Parser) parseLoop() *ASTNode {
 		collectionExpr := p.parseExpression()
 
 		// Accept either 'do' or ':'
-		usesColon := false
 		if p.current().Type == TOKEN_DO {
 			p.advance()
 		} else if p.current().Type == TOKEN_ASSIGN {
-			usesColon = true
 			p.advance()
 		} else {
 			if !p.LintMode {
@@ -1773,44 +1800,13 @@ func (p *Parser) parseLoop() *ASTNode {
 			p.recordError("Expected 'do' or ':' after 'in' expression")
 		}
 
-		// Check for inline loop
-		isMultiLine := false
-		var body *ASTNode
-		if p.current().Type != TOKEN_NEWLINE {
-			p.skipWhitespace()
-			body = &ASTNode{Type: NODE_BLOCK}
-			stmt := p.parseStatement()
-			if stmt != nil {
-				body.Children = append(body.Children, stmt)
-			}
-		} else {
-			isMultiLine = true
-			p.advance()        // skip newline
-			p.skipWhitespace() // skip indents
-			if usesColon {
-				p.blockDepth++ // Opening a multi-line block
-				body = p.parseBlockUntilEnd("loop", startLine)
-			} else {
-				body = p.parseBlock()
-			}
+		// Both inline and multiline now require $ to close
+		for p.current().Type == TOKEN_NEWLINE {
+			p.advance()
 		}
-
-		// Consume 'end' for multi-line loops (only if not using colon syntax)
-		if isMultiLine && !usesColon {
-			if p.current().Type == TOKEN_DEDENT {
-				p.advance()
-			}
-			if p.current().Type == TOKEN_END {
-				p.advance()
-			} else {
-				errMsg := fmt.Sprintf("Expected '$' to close loop at line %d", startLine)
-				if p.LintMode {
-					p.recordError(errMsg)
-				} else {
-					panic(errMsg)
-				}
-			}
-		}
+		p.skipWhitespace()
+		p.blockDepth++
+		body := p.parseBlockUntilEnd("loop", startLine)
 
 		elementNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
 		return &ASTNode{
@@ -1825,11 +1821,9 @@ func (p *Parser) parseLoop() *ASTNode {
 		dictExpr := p.parseExpression()
 
 		// Accept either 'do' or ':'
-		usesColon := false
 		if p.current().Type == TOKEN_DO {
 			p.advance()
 		} else if p.current().Type == TOKEN_ASSIGN {
-			usesColon = true
 			p.advance()
 		} else {
 			if !p.LintMode {
@@ -1838,44 +1832,13 @@ func (p *Parser) parseLoop() *ASTNode {
 			p.recordError("Expected 'do' or ':' after 'in' expression")
 		}
 
-		// Check for inline loop
-		isMultiLine := false
-		var body *ASTNode
-		if p.current().Type != TOKEN_NEWLINE {
-			p.skipWhitespace()
-			body = &ASTNode{Type: NODE_BLOCK}
-			stmt := p.parseStatement()
-			if stmt != nil {
-				body.Children = append(body.Children, stmt)
-			}
-		} else {
-			isMultiLine = true
-			p.advance()        // skip newline
-			p.skipWhitespace() // skip indents
-			if usesColon {
-				p.blockDepth++ // Opening a multi-line block
-				body = p.parseBlockUntilEnd("loop", startLine)
-			} else {
-				body = p.parseBlock()
-			}
+		// Both inline and multiline now require $ to close
+		for p.current().Type == TOKEN_NEWLINE {
+			p.advance()
 		}
-
-		// Consume 'end' for multi-line loops (only if not using colon syntax)
-		if isMultiLine && !usesColon {
-			if p.current().Type == TOKEN_DEDENT {
-				p.advance()
-			}
-			if p.current().Type == TOKEN_END {
-				p.advance()
-			} else {
-				errMsg := fmt.Sprintf("Expected '$' to close loop at line %d", startLine)
-				if p.LintMode {
-					p.recordError(errMsg)
-				} else {
-					panic(errMsg)
-				}
-			}
-		}
+		p.skipWhitespace()
+		p.blockDepth++
+		body := p.parseBlockUntilEnd("loop", startLine)
 
 		keyNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
 		valueNode := &ASTNode{Type: NODE_IDENTIFIER, Value: secondIdent.Value}
@@ -1886,38 +1849,14 @@ func (p *Parser) parseLoop() *ASTNode {
 	} else if p.current().Type == TOKEN_DO || p.current().Type == TOKEN_ASSIGN {
 		// loop [i] do or loop [i] : - infinite loop, optionally with counter
 		p.advance() // consume 'do' or ':'
+		
+		// Both inline and multiline now require $ to close
+		for p.current().Type == TOKEN_NEWLINE {
+			p.advance()
+		}
 		p.skipWhitespace()
-
-		// Check for inline loop
-		isMultiLine := false
-		var body *ASTNode
-		if p.current().Type != TOKEN_NEWLINE {
-			body = &ASTNode{Type: NODE_BLOCK}
-			stmt := p.parseStatement()
-			if stmt != nil {
-				body.Children = append(body.Children, stmt)
-			}
-		} else {
-			isMultiLine = true
-			body = p.parseBlock()
-		}
-
-		// Consume 'end' for multi-line loops
-		if isMultiLine {
-			if p.current().Type == TOKEN_DEDENT {
-				p.advance()
-			}
-			if p.current().Type == TOKEN_END {
-				p.advance()
-			} else {
-				errMsg := fmt.Sprintf("Expected '$' to close loop at line %d", startLine)
-				if p.LintMode {
-					p.recordError(errMsg)
-				} else {
-					panic(errMsg)
-				}
-			}
-		}
+		p.blockDepth++
+		body := p.parseBlockUntilEnd("loop", startLine)
 
 		if loopVar != nil {
 			// loop i do - i starts at 0, increments each iteration
@@ -2287,6 +2226,46 @@ func (p *Parser) parseProgramDeclaration() *ASTNode {
 	}
 }
 
+func (p *Parser) parseWalrusAssignment() *ASTNode {
+	// Handle name := value (inferred type assignment)
+	name := p.expect(TOKEN_IDENTIFIER)
+	line := name.Line
+	p.expect(TOKEN_WALRUS)
+	
+	// Check if value is a switch expression - not allowed without explicit type
+	if p.current().Type == TOKEN_SWITCH {
+		errMsg := fmt.Sprintf("Expected type/s between : and = for switch expression (e.g., :string= or :(string,int)=)")
+		if p.LintMode {
+			p.recordErrorAtLine(errMsg, line)
+			// Skip the switch statement to continue parsing
+			for p.current().Type != TOKEN_END && p.current().Type != TOKEN_EOF {
+				p.advance()
+			}
+			if p.current().Type == TOKEN_END {
+				p.advance()
+			}
+			return &ASTNode{
+				Type:  NODE_VARIABLE_DECLARATION,
+				Value: name.Value,
+				Line:  line,
+			}
+		} else {
+			panic(errMsg)
+		}
+	}
+	
+	// Parse the value
+	value := p.parseExpression()
+	
+	return &ASTNode{
+		Type:     NODE_VARIABLE_DECLARATION,
+		Value:    name.Value,
+		DataType: "", // Empty means inferred
+		Children: []*ASTNode{value},
+		Line:     line,
+	}
+}
+
 func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 	// Check for object/dict property assignment: obj<'prop'>: value or dict{"key"}: value
 	if p.pos+2 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_LANGLE {
@@ -2428,8 +2407,27 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 		// Check for type annotation (type=) or inferred type (:=)
 		var explicitType string
 		if p.current().Type == TOKEN_EQUALS {
-			// := syntax - inferred type
-			p.advance()       // consume =
+			// := syntax (or : = with space) - check if valid
+			p.advance() // consume =
+			
+			// Check if this is a switch expression - requires explicit type
+			if p.current().Type == TOKEN_SWITCH {
+				errMsg := fmt.Sprintf("Expected type/s between : and = for switch expression (e.g., :string= or :(string,int)=)")
+				if p.LintMode {
+					p.recordErrorAtLine(errMsg, line)
+					// Skip the switch statement to continue parsing
+					for p.current().Type != TOKEN_END && p.current().Type != TOKEN_EOF {
+						p.advance()
+					}
+					return &ASTNode{
+						Type:  NODE_VARIABLE_DECLARATION,
+						Value: name.Value,
+						Line:  line,
+					}
+				} else {
+					panic(errMsg)
+				}
+			}
 			explicitType = "" // Empty means inferred
 		} else if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 			p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
@@ -2550,7 +2548,18 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 						// Track object literal properties
 						p.trackObjectLiteralProperties(varName, value)
 					}
+
+					// Validate switch statement return types match explicit type
+					if value.Type == NODE_SWITCH_STATEMENT {
+						p.validateSwitchReturnTypesWithExpected(value, explicitType, line)
+					}
 				} else {
+					// Check if this is a switch expression without explicit type
+					if value.Type == NODE_SWITCH_STATEMENT {
+						errMsg := fmt.Sprintf("Switch expression variable '%s' requires explicit type", varName)
+						p.recordErrorAtLine(errMsg, line)
+					}
+					
 					// Infer type from value
 					inferredType := p.inferType(value)
 					if inferredType != "unknown" {
@@ -2660,6 +2669,16 @@ func (p *Parser) parseBlockUntilEnd(constructName string, startLine int) *ASTNod
 		if p.blockDepth < entryDepth {
 			// This block was closed by a nested $#N
 			return block
+		}
+		
+		// Stop if we encounter else/anif/elseif (for if statements)
+		if constructName == "if" || constructName == "anif" {
+			if p.current().Type == TOKEN_ELSE || p.current().Type == TOKEN_ANIF || p.current().Type == TOKEN_ELSEIF {
+				// Decrement blockDepth since we're not consuming $ here
+				// The else/anif will increment it again
+				p.blockDepth--
+				return block
+			}
 		}
 		
 		iterations++
@@ -3272,6 +3291,10 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 		expr := p.parseExpression()
 		p.expect(TOKEN_RPAREN)
 		return expr
+
+	case TOKEN_SWITCH:
+		// Switch expression (can be used in assignments)
+		return p.parseSwitchStatement()
 
 	// Type casts: int(value), float(value), char(value), string(value)
 	// Or type instantiation: vector2<x,y>, color<r,g,b,a>
@@ -4115,6 +4138,36 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 
 	p.expect(TOKEN_ASSIGN)
 
+	// Check for optional tuple type specification: (type, type) =
+	if p.current().Type == TOKEN_LPAREN {
+		p.advance() // consume (
+		typeIndex := 0
+		for p.current().Type != TOKEN_RPAREN && p.current().Type != TOKEN_EOF {
+			// Parse type
+			if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
+				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
+				p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
+				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
+				p.current().Type == TOKEN_IDENTIFIER {
+				
+				// Apply type to corresponding left-side variable
+				if typeIndex < len(leftSide.Children) {
+					leftSide.Children[typeIndex].DataType = p.current().Value
+				}
+				p.advance()
+				typeIndex++
+				
+				if p.current().Type == TOKEN_COMMA {
+					p.advance()
+				}
+			} else {
+				break
+			}
+		}
+		p.expect(TOKEN_RPAREN)
+		p.expect(TOKEN_EQUALS) // expect =
+	}
+
 	// Parse right side (expressions)
 	// Use parsePrimaryExpression to avoid triggering assignment checks in parseExpression
 	rightSide := &ASTNode{Type: NODE_BLOCK}
@@ -4142,6 +4195,21 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 
 	// Validate tuple assignment in lint mode
 	if p.LintMode {
+		// Check if any left-side variable lacks explicit type when right side is switch
+		if len(rightSide.Children) == 1 && rightSide.Children[0].Type == NODE_SWITCH_STATEMENT {
+			hasAllTypes := true
+			for _, target := range leftSide.Children {
+				if target.DataType == "" {
+					hasAllTypes = false
+					break
+				}
+			}
+			if !hasAllTypes {
+				errMsg := fmt.Sprintf("Tuple assignment from switch requires explicit types: (type, type) at line %d", line)
+				p.recordError(errMsg)
+			}
+		}
+		
 		p.validateTupleAssignment(leftSide, rightSide, line)
 	}
 
@@ -4809,6 +4877,76 @@ func (p *Parser) parseLambdaBody() *ASTNode {
 // validateTupleAssignment validates that tuple assignment types match
 func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int) {
 	if leftSide == nil || rightSide == nil {
+		return
+	}
+
+	// Check if right side is a single switch statement returning tuples
+	if len(rightSide.Children) == 1 && rightSide.Children[0].Type == NODE_SWITCH_STATEMENT {
+		switchNode := rightSide.Children[0]
+		expectedCount := len(leftSide.Children)
+		
+		// Validate all cases return the expected number of values
+		for i := 1; i < len(switchNode.Children); i++ {
+			caseNode := switchNode.Children[i]
+			if caseNode.Type == NODE_SWITCH_CASE && len(caseNode.Children) > 1 {
+				caseLine := caseNode.Line
+				if caseLine == 0 {
+					caseLine = line
+				}
+				
+				caseBody := caseNode.Children[1]
+				
+				// Determine actual count: BLOCK means tuple, anything else is single value
+				actualCount := 1
+				if caseBody.Type == NODE_BLOCK {
+					actualCount = len(caseBody.Children)
+				}
+				
+				if actualCount != expectedCount {
+					errMsg := fmt.Sprintf("Expected %d return values but got %d",
+						expectedCount, actualCount)
+					p.recordErrorAtLine(errMsg, caseLine)
+					continue // Skip type validation if count mismatch
+				}
+				
+				// Validate types if explicit types are provided
+				if caseBody.Type == NODE_BLOCK {
+					for j, expr := range caseBody.Children {
+						if j < len(leftSide.Children) && leftSide.Children[j].DataType != "" {
+							expectedType := leftSide.Children[j].DataType
+							actualType := p.inferType(expr)
+							if !p.checkTypeCompatibility(expectedType, actualType) {
+								errMsg := fmt.Sprintf("Tuple position %d expects type %s but got %s",
+									j+1, expectedType, actualType)
+								p.recordErrorAtLine(errMsg, caseLine)
+							}
+						}
+					}
+				} else if expectedCount > 1 {
+					// Single expression but multiple expected - handle type check for position 1
+					if leftSide.Children[0].DataType != "" {
+						expectedType := leftSide.Children[0].DataType
+						actualType := p.inferType(caseBody)
+						if !p.checkTypeCompatibility(expectedType, actualType) {
+							errMsg := fmt.Sprintf("Tuple position 1 expects type %s but got %s (missing %d values)",
+								expectedType, actualType, expectedCount-1)
+							p.recordErrorAtLine(errMsg, caseLine)
+						}
+					}
+				}
+			}
+		}
+		
+		// Register variables with their declared types
+		for _, leftVar := range leftSide.Children {
+			if leftVar.DataType != "" {
+				targetScope := p.variableTypes
+				if p.currentFunctionRet != "" && p.functionScope != nil {
+					targetScope = p.functionScope
+				}
+				targetScope[leftVar.Value] = leftVar.DataType
+			}
+		}
 		return
 	}
 
