@@ -1,7 +1,11 @@
+expected: []
 ? Tuples test
 a: 42
 b: 55
 a, b : b, a
 c: a + 10
 print|c| ? should print: 65 (55 + 10 after swap)
+expected.push|"65"|
 
+? Print expected values for test validation
+print|expected|

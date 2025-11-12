@@ -1,4 +1,8 @@
+expected: []
 ? Enums test
 x: 1
 print|x| ? should print: 1
+expected.push|"1"|
 
+? Print expected values for test validation
+print|expected|

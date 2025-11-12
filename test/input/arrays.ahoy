@@ -1,30 +1,89 @@
+expected: []
 ? Arrays test
 numbers: [1, 2, 3, 4, 5]
 first: numbers[0]
 print|first| ? should print: 1
+expected.push|"1"|
 
 words: ["hello", "world", "ahoy"]
 word: words[1]
 print|word| ? should print: world
+expected.push|"world"|
 
 items: [10, 20, 30, 40]
 len: items.length||
 print|len| ? should print: 4
+expected.push|"4"|
 
 arr: [5, 6, 7, 8]
 last: arr.pop||
-print|last| ? should print: 8
+print|last|
+expected.push|"8"|
 
 values: [2, 4, 6, 8]
 total: values.sum||
 print|total| ? should print: 20
+expected.push|"20"|
 
 nums: [10, 20, 30]
 has_20: nums.has|20|
 print|has_20| ? should print: 1 (true)
+expected.push|"1"|
 
 original: [1, 2, 3]
 reversed: original.reverse||
 third: reversed[2]
 print|third| ? should print: 1
+expected.push|"1"|
 
+? Mixed-type array tests
+? Test 1: Homogeneous int array (should infer array[int])
+int_array: [1, 2, 3, 4]
+print|int_array|
+expected.push|"[1, 2, 3, 4]"|
+
+? Test 2: Homogeneous string array (should infer array[string])
+string_array: ["apple", "banana", "cherry"]
+print|string_array|
+expected.push|"[\"apple\", \"banana\", \"cherry\"]"|
+
+? Test 3: Mixed-type array - int and string
+mixed1: [1, "hello", 2, "world"]
+print|mixed1|
+expected.push|"[1, \"hello\", 2, \"world\"]"|
+
+? Test 4: Mixed-type array - different types
+mixed2: [42, "test", 99]
+print|mixed2|
+expected.push|"[42, \"test\", 99]"|
+
+? Test 5: Empty array then push mixed types
+mixed3: []
+mixed3.push|1|
+mixed3.push|"two"|
+mixed3.push|3|
+print|mixed3|
+expected.push|"[1, \"two\", 3]"|
+
+? Test 6: Array with initial value then push same type
+same_type: [10]
+same_type.push|20|
+same_type.push|30|
+print|same_type|
+expected.push|"[10, 20, 30]"|
+
+? Test 7: Array with initial value then push different type
+diff_type: [5]
+diff_type.push|"mixed"|
+print|diff_type|
+expected.push|"[5, \"mixed\"]"|
+
+? Test 8: Complex mixed array
+complex: [1, "two", 3, "four", 5]
+complex.push|"six"|
+complex.push|7|
+print|complex|
+expected.push|"[1, \"two\", 3, \"four\", 5, \"six\", 7]"|
+
+? Print expected values for test validation
+print|expected|

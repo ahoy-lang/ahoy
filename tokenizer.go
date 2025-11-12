@@ -112,15 +112,15 @@ func Tokenize(input string) []Token {
 	indentStack := []int{0}
 
 	keywords := map[string]TokenType{
-		"if":           TOKEN_IF,
-		"else":         TOKEN_ELSE,
-		"elseif":       TOKEN_ELSEIF,
-		"anif":         TOKEN_ANIF,
-		"switch":       TOKEN_SWITCH,
-		"loop":         TOKEN_LOOP,
-		"in":           TOKEN_IN,
-		"to":           TOKEN_TO,
-		"till":         TOKEN_TILL,
+		"if":     TOKEN_IF,
+		"else":   TOKEN_ELSE,
+		"elseif": TOKEN_ELSEIF,
+		"anif":   TOKEN_ANIF,
+		"switch": TOKEN_SWITCH,
+		"loop":   TOKEN_LOOP,
+		"in":     TOKEN_IN,
+		"to":     TOKEN_TO,
+		"till":   TOKEN_TILL,
 		// "func" removed - we use :: syntax for functions
 		"return":       TOKEN_RETURN,
 		"import":       TOKEN_IMPORT,
@@ -176,7 +176,7 @@ func Tokenize(input string) []Token {
 			if char == ' ' {
 				indent++
 			} else if char == '\t' {
-				indent += 4
+				indent += 2
 			} else {
 				break
 			}

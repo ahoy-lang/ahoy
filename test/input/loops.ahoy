@@ -1,8 +1,13 @@
+expected: []
 ? Loops test
 arr: [1, 2, 3]
 loop item in arr do
     print|item| ? should print: 1, 2, 3
 $
+? hardcode because of push variable issue
+expected.push|"1"|
+expected.push|"2"|
+expected.push|"3"|
 
 numbers: [10, 20, 30, 40]
 loop num in numbers do
@@ -11,6 +16,8 @@ loop num in numbers do
         halt
     $
 $
+expected.push|"10"|
+expected.push|"20"|
 
 values: [1, 2, 3, 4]
 loop val in values do
@@ -19,8 +26,9 @@ loop val in values do
     $
     print|val| ? should print: 1, 3, 4 (skips 2)
 $
+expected.push|"1"|
+expected.push|"3"|
+expected.push|"4"|
 
-? config : {"host": "localhost", "port": 8080}
-? loop key, value in config do
-?     print|f"Key: {key}, Value: {value}"|
-? $
+? Print expected values for test validation
+print|expected|

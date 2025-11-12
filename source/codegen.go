@@ -228,10 +228,18 @@ void freeArray(DynamicArray* arr) {
 
 func (gen *CodeGenerator) writeHashMapImplementation() {
 	hashMapCode := `
-// Hash Map Implementation
+// Hash Map Implementation with type tracking
+typedef enum {
+    AHOY_TYPE_INT,
+    AHOY_TYPE_STRING,
+    AHOY_TYPE_FLOAT,
+    AHOY_TYPE_CHAR
+} AhoyValueType;
+
 typedef struct HashMapEntry {
     char* key;
     void* value;
+    AhoyValueType valueType;
     struct HashMapEntry* next;
 } HashMapEntry;
 
@@ -258,13 +266,14 @@ HashMap* createHashMap(int capacity) {
     return map;
 }
 
-void hashMapPut(HashMap* map, const char* key, void* value) {
+void hashMapPutTyped(HashMap* map, const char* key, void* value, AhoyValueType valueType) {
     unsigned int index = hash(key) % map->capacity;
     HashMapEntry* entry = map->buckets[index];
 
     while (entry != NULL) {
         if (strcmp(entry->key, key) == 0) {
             entry->value = value;
+            entry->valueType = valueType;
             return;
         }
         entry = entry->next;
@@ -273,9 +282,14 @@ void hashMapPut(HashMap* map, const char* key, void* value) {
     HashMapEntry* newEntry = malloc(sizeof(HashMapEntry));
     newEntry->key = strdup(key);
     newEntry->value = value;
+    newEntry->valueType = valueType;
     newEntry->next = map->buckets[index];
     map->buckets[index] = newEntry;
     map->size++;
+}
+
+void hashMapPut(HashMap* map, const char* key, void* value) {
+    hashMapPutTyped(map, key, value, AHOY_TYPE_STRING);
 }
 
 void* hashMapGet(HashMap* map, const char* key) {
@@ -495,7 +509,13 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 	case ahoy.NODE_STRUCT_DECLARATION:
 		gen.generateStruct(node)
 	case ahoy.NODE_METHOD_CALL:
+		if isStatement {
+			gen.writeIndent()
+		}
 		gen.generateMethodCall(node)
+		if isStatement {
+			gen.output.WriteString(";\n")
+		}
 	case ahoy.NODE_MEMBER_ACCESS:
 		gen.generateMemberAccess(node)
 	case ahoy.NODE_HALT:
@@ -970,7 +990,109 @@ func (gen *CodeGenerator) generateStringSwitchExpression(node *ahoy.ASTNode, tar
 	}
 }
 
+// generateStringSwitchStatement generates if-else chain for string/char switches in statement context
+func (gen *CodeGenerator) generateStringSwitchStatement(node *ahoy.ASTNode) {
+	switchExpr := node.Children[0]
+	switchExprType := gen.inferType(switchExpr)
+
+	first := true
+	hasDefault := false
+	var defaultBody *ahoy.ASTNode
+
+	for i := 1; i < len(node.Children); i++ {
+		caseNode := node.Children[i]
+		if caseNode.Type == ahoy.NODE_SWITCH_CASE {
+			caseValue := caseNode.Children[0]
+			caseBody := caseNode.Children[1]
+
+			// Check for default case
+			if caseValue.Type == ahoy.NODE_IDENTIFIER && caseValue.Value == "_" {
+				hasDefault = true
+				defaultBody = caseBody
+				continue
+			}
+
+			gen.writeIndent()
+			if first {
+				gen.output.WriteString("if (")
+				first = false
+			} else {
+				gen.output.WriteString("else if (")
+			}
+
+			// Handle multiple cases
+			if caseValue.Type == ahoy.NODE_SWITCH_CASE_LIST {
+				for j, val := range caseValue.Children {
+					if j > 0 {
+						gen.output.WriteString(" || ")
+					}
+					// For char type, use direct comparison
+					if switchExprType == "char" {
+						gen.generateNode(switchExpr)
+						gen.output.WriteString(" == ")
+						gen.generateNode(val)
+					} else {
+						// For string type, use strcmp
+						gen.output.WriteString("strcmp(")
+						gen.generateNode(switchExpr)
+						gen.output.WriteString(", ")
+						gen.generateNode(val)
+						gen.output.WriteString(") == 0")
+					}
+				}
+			} else {
+				// Single case value
+				if switchExprType == "char" {
+					gen.generateNode(switchExpr)
+					gen.output.WriteString(" == ")
+					gen.generateNode(caseValue)
+				} else {
+					gen.output.WriteString("strcmp(")
+					gen.generateNode(switchExpr)
+					gen.output.WriteString(", ")
+					gen.generateNode(caseValue)
+					gen.output.WriteString(") == 0")
+				}
+			}
+
+			gen.output.WriteString(") {\n")
+			gen.indent++
+			gen.generateNodeInternal(caseBody, true) // Case body
+			gen.indent--
+			gen.writeIndent()
+			gen.output.WriteString("}")
+		}
+	}
+
+	// Handle default case
+	if hasDefault {
+		if !first {
+			gen.output.WriteString(" else {\n")
+		} else {
+			gen.writeIndent()
+			gen.output.WriteString("{\n")
+		}
+		gen.indent++
+		gen.generateNodeInternal(defaultBody, true) // Default body
+		gen.indent--
+		gen.writeIndent()
+		gen.output.WriteString("}\n")
+	} else if !first {
+		gen.output.WriteString("\n")
+	}
+}
+
 func (gen *CodeGenerator) generateSwitchStatement(node *ahoy.ASTNode) {
+	switchExpr := node.Children[0]
+	switchExprType := gen.inferType(switchExpr)
+
+	// Check if this is a string or char switch - need to use if-else
+	if switchExprType == "char*" || switchExprType == "string" || switchExprType == "char" {
+		gen.generateStringSwitchStatement(node)
+		return
+	}
+
+	// Generate normal C switch statement for integers
 	gen.writeIndent()
 	gen.output.WriteString("switch (")
 	gen.generateNode(node.Children[0]) // Generate switch expression
@@ -1439,9 +1561,59 @@ func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
 	gen.indent++
 	gen.writeIndent()
 	gen.output.WriteString(fmt.Sprintf("const char* %s = %s->key;\n", keyVar, entryVar))
+	
+	// Generate a helper variable to convert value based on type
+	valueHelperVar := fmt.Sprintf("__value_str_%d", gen.varCounter)
+	gen.varCounter++
+	
 	gen.writeIndent()
-	// Cast value through intptr_t for compatibility
-	gen.output.WriteString(fmt.Sprintf("const char* %s = (const char*)(intptr_t)%s->value;\n", valueVar, entryVar))
+	gen.output.WriteString(fmt.Sprintf("char %s[64];\n", valueHelperVar))
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("switch (%s->valueType) {\n", entryVar))
+	
+	gen.indent++
+	gen.writeIndent()
+	gen.output.WriteString("case AHOY_TYPE_INT:\n")
+	gen.indent++
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("sprintf(%s, \"%%d\", (int)(intptr_t)%s->value);\n", valueHelperVar, entryVar))
+	gen.writeIndent()
+	gen.output.WriteString("break;\n")
+	gen.indent--
+	
+	gen.writeIndent()
+	gen.output.WriteString("case AHOY_TYPE_STRING:\n")
+	gen.indent++
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("strcpy(%s, (const char*)(intptr_t)%s->value);\n", valueHelperVar, entryVar))
+	gen.writeIndent()
+	gen.output.WriteString("break;\n")
+	gen.indent--
+	
+	gen.writeIndent()
+	gen.output.WriteString("case AHOY_TYPE_FLOAT:\n")
+	gen.indent++
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("sprintf(%s, \"%%f\", *(float*)(intptr_t)%s->value);\n", valueHelperVar, entryVar))
+	gen.writeIndent()
+	gen.output.WriteString("break;\n")
+	gen.indent--
+	
+	gen.writeIndent()
+	gen.output.WriteString("case AHOY_TYPE_CHAR:\n")
+	gen.indent++
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("sprintf(%s, \"%%c\", (char)(intptr_t)%s->value);\n", valueHelperVar, entryVar))
+	gen.writeIndent()
+	gen.output.WriteString("break;\n")
+	gen.indent--
+	gen.indent--
+	
+	gen.writeIndent()
+	gen.output.WriteString("}\n")
+	
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("const char* %s = %s;\n", valueVar, valueHelperVar))
 
 	// Register loop variables for type inference
 	oldKeyType := gen.variables[keyVar]
@@ -1999,7 +2171,16 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 				if i > 0 {
 					gen.output.WriteString(", ")
 				}
+				// For array methods like push, cast to intptr_t
+				if methodName == "push" || methodName == "has" {
+					gen.output.WriteString("(intptr_t)")
+				}
 				gen.generateNodeInternal(arg, false)
+				// For push, also pass the type
+				if methodName == "push" && i == 0 {
+					valueType := gen.getValueType(arg)
+					gen.output.WriteString(fmt.Sprintf(", %s", gen.getAhoyTypeEnum(valueType)))
+				}
 			}
 		}
 		gen.output.WriteString(")")
@@ -2034,15 +2215,39 @@ func (gen *CodeGenerator) generateArrayLiteral(node *ahoy.ASTNode) {
 	arrName := fmt.Sprintf("arr_%d", gen.varCounter)
 	gen.varCounter++
 
+	// Determine if this is a mixed-type array or homogeneous
+	isMixed := false
+	var firstType string
+	if len(node.Children) > 0 {
+		firstType = gen.getValueType(node.Children[0])
+		for _, child := range node.Children[1:] {
+			if gen.getValueType(child) != firstType {
+				isMixed = true
+				break
+			}
+		}
+	}
+
 	// Use simple C array initialization
 	gen.output.WriteString("({ ")
 	gen.output.WriteString(fmt.Sprintf("AhoyArray* %s = malloc(sizeof(AhoyArray)); ", arrName))
 	gen.output.WriteString(fmt.Sprintf("%s->length = %d; ", arrName, len(node.Children)))
 	gen.output.WriteString(fmt.Sprintf("%s->capacity = %d; ", arrName, len(node.Children)))
 	gen.output.WriteString(fmt.Sprintf("%s->data = malloc(%d * sizeof(intptr_t)); ", arrName, len(node.Children)))
+	gen.output.WriteString(fmt.Sprintf("%s->types = malloc(%d * sizeof(AhoyValueType)); ", arrName, len(node.Children)))
+	
+	// Set typed/mixed flag
+	if isMixed {
+		gen.output.WriteString(fmt.Sprintf("%s->is_typed = 0; ", arrName))
+	} else {
+		gen.output.WriteString(fmt.Sprintf("%s->is_typed = 1; ", arrName))
+		gen.output.WriteString(fmt.Sprintf("%s->element_type = %s; ", arrName, gen.getAhoyTypeEnum(firstType)))
+	}
 
-	// Add elements - cast to intptr_t for pointer safety
+	// Add elements - cast to intptr_t for pointer safety and track types
 	for i, child := range node.Children {
+		valueType := gen.getValueType(child)
+		gen.output.WriteString(fmt.Sprintf("%s->types[%d] = %s; ", arrName, i, gen.getAhoyTypeEnum(valueType)))
 		gen.output.WriteString(fmt.Sprintf("%s->data[%d] = (intptr_t)", arrName, i))
 		gen.generateNode(child)
 		gen.output.WriteString("; ")
@@ -2091,7 +2296,21 @@ func (gen *CodeGenerator) generateDictLiteral(node *ahoy.ASTNode) {
 		key := node.Children[i]
 		value := node.Children[i+1]
 
-		gen.output.WriteString(fmt.Sprintf("hashMapPut(%s, ", dictName))
+		// Determine value type
+		valueType := gen.inferType(value)
+		ahoyTypeEnum := "AHOY_TYPE_STRING"
+		switch valueType {
+		case "int":
+			ahoyTypeEnum = "AHOY_TYPE_INT"
+		case "float":
+			ahoyTypeEnum = "AHOY_TYPE_FLOAT"
+		case "char":
+			ahoyTypeEnum = "AHOY_TYPE_CHAR"
+		default:
+			ahoyTypeEnum = "AHOY_TYPE_STRING"
+		}
+
+		gen.output.WriteString(fmt.Sprintf("hashMapPutTyped(%s, ", dictName))
 
 		// If key is an identifier, convert to string literal
 		if key.Type == ahoy.NODE_IDENTIFIER {
@@ -2102,7 +2321,7 @@ func (gen *CodeGenerator) generateDictLiteral(node *ahoy.ASTNode) {
 
 		gen.output.WriteString(", (void*)(intptr_t)")
 		gen.generateNode(value)
-		gen.output.WriteString("); ")
+		gen.output.WriteString(fmt.Sprintf(", %s); ", ahoyTypeEnum))
 	}
 
 	gen.output.WriteString(fmt.Sprintf("%s; })", dictName))
@@ -2798,12 +3017,15 @@ func (gen *CodeGenerator) generateMemberAccess(node *ahoy.ASTNode) {
 func (gen *CodeGenerator) writeArrayHelperFunctions() {
 	// Always write AhoyArray structure if we have array implementations
 	if gen.arrayImpls || len(gen.arrayMethods) > 0 {
-		// Array structure definition
+		// Array structure definition with type tracking
 		gen.funcDecls.WriteString("\n// Array Helper Structure\n")
 		gen.funcDecls.WriteString("typedef struct {\n")
 		gen.funcDecls.WriteString("    intptr_t* data;\n")
+		gen.funcDecls.WriteString("    AhoyValueType* types;  // Type for each element\n")
 		gen.funcDecls.WriteString("    int length;\n")
 		gen.funcDecls.WriteString("    int capacity;\n")
+		gen.funcDecls.WriteString("    int is_typed;  // 0 = mixed types allowed, 1 = single type enforced\n")
+		gen.funcDecls.WriteString("    AhoyValueType element_type;  // If is_typed=1, this is the enforced type\n")
 		gen.funcDecls.WriteString("} AhoyArray;\n\n")
 	}
 
@@ -2822,12 +3044,15 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 
 	// push method
 	if gen.arrayMethods["push"] {
-		gen.funcDecls.WriteString("AhoyArray* ahoy_array_push(AhoyArray* arr, intptr_t value) {\n")
+		gen.funcDecls.WriteString("AhoyArray* ahoy_array_push(AhoyArray* arr, intptr_t value, AhoyValueType type) {\n")
 		gen.funcDecls.WriteString("    if (arr->length >= arr->capacity) {\n")
 		gen.funcDecls.WriteString("        arr->capacity = arr->capacity == 0 ? 4 : arr->capacity * 2;\n")
 		gen.funcDecls.WriteString("        arr->data = realloc(arr->data, arr->capacity * sizeof(intptr_t));\n")
+		gen.funcDecls.WriteString("        arr->types = realloc(arr->types, arr->capacity * sizeof(AhoyValueType));\n")
 		gen.funcDecls.WriteString("    }\n")
-		gen.funcDecls.WriteString("    arr->data[arr->length++] = value;\n")
+		gen.funcDecls.WriteString("    arr->data[arr->length] = value;\n")
+		gen.funcDecls.WriteString("    arr->types[arr->length] = type;\n")
+		gen.funcDecls.WriteString("    arr->length++;\n")
 		gen.funcDecls.WriteString("    return arr;\n")
 		gen.funcDecls.WriteString("}\n\n")
 	}
@@ -2907,16 +3132,29 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 		gen.funcDecls.WriteString("}\n\n")
 	}
 
-	// print_array helper - formats array for printing
+	// print_array helper - formats array for printing with type support
 	if gen.arrayMethods["print_array"] {
 		gen.funcDecls.WriteString("char* print_array_helper(AhoyArray* arr) {\n")
 		gen.funcDecls.WriteString("    if (arr == NULL || arr->length == 0) return \"[]\";\n")
-		gen.funcDecls.WriteString("    char* buffer = malloc(1024);\n")
+		gen.funcDecls.WriteString("    char* buffer = malloc(4096);\n")
 		gen.funcDecls.WriteString("    int offset = 0;\n")
 		gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \"[\");\n")
 		gen.funcDecls.WriteString("    for (int i = 0; i < arr->length; i++) {\n")
 		gen.funcDecls.WriteString("        if (i > 0) offset += sprintf(buffer + offset, \", \");\n")
-		gen.funcDecls.WriteString("        offset += sprintf(buffer + offset, \"%d\", (int)arr->data[i]);\n")
+		gen.funcDecls.WriteString("        switch (arr->types[i]) {\n")
+		gen.funcDecls.WriteString("            case AHOY_TYPE_INT:\n")
+		gen.funcDecls.WriteString("                offset += sprintf(buffer + offset, \"%d\", (int)arr->data[i]);\n")
+		gen.funcDecls.WriteString("                break;\n")
+		gen.funcDecls.WriteString("            case AHOY_TYPE_FLOAT:\n")
+		gen.funcDecls.WriteString("                offset += sprintf(buffer + offset, \"%f\", *((double*)(intptr_t)arr->data[i]));\n")
+		gen.funcDecls.WriteString("                break;\n")
+		gen.funcDecls.WriteString("            case AHOY_TYPE_STRING:\n")
+		gen.funcDecls.WriteString("                offset += sprintf(buffer + offset, \"\\\"%s\\\"\", (char*)(intptr_t)arr->data[i]);\n")
+		gen.funcDecls.WriteString("                break;\n")
+		gen.funcDecls.WriteString("            case AHOY_TYPE_CHAR:\n")
+		gen.funcDecls.WriteString("                offset += sprintf(buffer + offset, \"'%c'\", (char)arr->data[i]);\n")
+		gen.funcDecls.WriteString("                break;\n")
+		gen.funcDecls.WriteString("        }\n")
 		gen.funcDecls.WriteString("    }\n")
 		gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \"]\");\n")
 		gen.funcDecls.WriteString("    return buffer;\n")
@@ -2954,15 +3192,6 @@ func (gen *CodeGenerator) writeDictHelperFunctions() {
 	if gen.dictMethods["keys"] || gen.dictMethods["values"] {
 		// Ensure AhoyArray structure is defined
 		gen.arrayImpls = true
-		if !gen.arrayMethods["__dummy__"] {
-			// Add array structure if not already added
-			gen.funcDecls.WriteString("// Array Helper Structure\n")
-			gen.funcDecls.WriteString("typedef struct {\n")
-			gen.funcDecls.WriteString("    intptr_t* data;\n")
-			gen.funcDecls.WriteString("    int length;\n")
-			gen.funcDecls.WriteString("    int capacity;\n")
-			gen.funcDecls.WriteString("} AhoyArray;\n\n")
-		}
 	}
 
 	// size method
@@ -3282,6 +3511,46 @@ func (gen *CodeGenerator) getFormatSpec(typeName string) string {
 		return "%p" // Pointer
 	default:
 		return "%d" // Default to int
+	}
+}
+
+// Get value type for an AST node (simpler version of inferType)
+func (gen *CodeGenerator) getValueType(node *ahoy.ASTNode) string {
+	switch node.Type {
+	case ahoy.NODE_NUMBER:
+		// Check if it contains a decimal point
+		if strings.Contains(node.Value, ".") {
+			return "float"
+		}
+		return "int"
+	case ahoy.NODE_STRING, ahoy.NODE_F_STRING:
+		return "string"
+	case ahoy.NODE_CHAR:
+		return "char"
+	case ahoy.NODE_BOOLEAN:
+		return "int" // bool stored as int
+	case ahoy.NODE_ARRAY_LITERAL:
+		return "array"
+	case ahoy.NODE_DICT_LITERAL:
+		return "dict"
+	default:
+		return "int"
+	}
+}
+
+// Get AhoyValueType enum for a type string
+func (gen *CodeGenerator) getAhoyTypeEnum(typeName string) string {
+	switch typeName {
+	case "int", "bool":
+		return "AHOY_TYPE_INT"
+	case "float":
+		return "AHOY_TYPE_FLOAT"
+	case "string":
+		return "AHOY_TYPE_STRING"
+	case "char":
+		return "AHOY_TYPE_CHAR"
+	default:
+		return "AHOY_TYPE_INT"
 	}
 }
 

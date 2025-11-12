@@ -1,7 +1,11 @@
 program example
 
 @ main :: || void:
+	expected:[]
 	print|"Program, Example!"|
 	number: multiply_two_numbers|5, 10|
 	print|f"5 * 10 = {number}"|
+	expected.push|"Program, Example!", "5 * 10 = 50"|
+	print|expected|
 $
+main||

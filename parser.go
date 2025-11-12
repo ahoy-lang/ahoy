@@ -4679,43 +4679,76 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 		p.advance()
 		member := p.expect(TOKEN_IDENTIFIER)
 
-		// Check if this is a method call (but not if we're already inside a function call)
-		if p.current().Type == TOKEN_PIPE && !p.inFunctionCall {
-			p.advance()
+		// Check if this is a method call
+		// Allow method calls even inside function calls, but need to look ahead
+		// to ensure we have a matching closing pipe
+		if p.current().Type == TOKEN_PIPE {
+			// Look ahead to see if there's a closing pipe (for method call)
+			// or if this pipe is the closing pipe of the outer call
+			savedPos := p.pos
+			p.advance() // consume opening pipe
+			
+			// If immediately followed by another pipe, it's an empty method call
+			isMethodCall := false
+			if p.current().Type == TOKEN_PIPE {
+				isMethodCall = true
+			} else if p.current().Type != TOKEN_COMMA && p.current().Type != TOKEN_NEWLINE && p.current().Type != TOKEN_EOF {
+				// There's content between pipes, so it's a method call
+				isMethodCall = true
+			}
+			
+			// Reset position
+			p.pos = savedPos
+			
+			if isMethodCall {
+				p.advance() // consume opening pipe
 
-			// Parse arguments
-			args := &ASTNode{Type: NODE_BLOCK}
-			if p.current().Type != TOKEN_PIPE {
-				// Check if this is a lambda (param: expression)
-				if p.isLambda() {
-					lambda := p.parseLambda()
-					args.Children = append(args.Children, lambda)
-				} else {
-					for {
-						oldPos := p.pos
-						arg := p.parseExpression()
-						args.Children = append(args.Children, arg)
+				// Parse arguments
+				args := &ASTNode{Type: NODE_BLOCK}
+				if p.current().Type != TOKEN_PIPE {
+					// Check if this is a lambda (param: expression)
+					if p.isLambda() {
+						lambda := p.parseLambda()
+						args.Children = append(args.Children, lambda)
+					} else {
+						for {
+							oldPos := p.pos
+							arg := p.parseCallArgument()
+							args.Children = append(args.Children, arg)
 
-						if p.current().Type == TOKEN_COMMA {
-							p.advance()
-						} else {
-							break
-						}
+							if p.current().Type == TOKEN_COMMA {
+								p.advance()
+							} else {
+								break
+							}
 
-						// Safety check
-						if p.pos == oldPos {
-							break
+							// Safety check
+							if p.pos == oldPos {
+								break
+							}
 						}
 					}
 				}
-			}
-			p.expect(TOKEN_PIPE)
+				p.expect(TOKEN_PIPE)
 
-			object = &ASTNode{
-				Type:     NODE_METHOD_CALL,
-				Value:    member.Value,
-				Line:     member.Line,
-				Children: []*ASTNode{object, args},
+				object = &ASTNode{
+					Type:     NODE_METHOD_CALL,
+					Value:    member.Value,
+					Line:     member.Line,
+					Children: []*ASTNode{object, args},
+				}
+			} else {
+				// Simple member access - validate in lint mode
+				if p.LintMode {
+					p.validateMemberAccess(object, member.Value, member.Line)
+				}
+
+				object = &ASTNode{
+					Type:     NODE_MEMBER_ACCESS,
+					Value:    member.Value,
+					Line:     member.Line,
+					Children: []*ASTNode{object},
+				}
 			}
 		} else {
 			// Simple member access - validate in lint mode

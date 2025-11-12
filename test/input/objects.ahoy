@@ -1,12 +1,20 @@
+expected: []
 ? Objects test
 person: <name: "Alice", age: 30>
 print|person| ? should print: {name: "Alice", age: 30}
+expected.push|"{name: \"Alice\", age: 30}"|
 print|person.name| ? should print: Alice
+expected.push|"Alice"|
 print|person.age| ? should print: 30
+expected.push|"30"|
 
 data: <label: "Test", value: 3.14>
 print|data.label| ? should print: Test
+expected.push|"Test"|
 
 config: <host: "localhost", port: 8080>
 print|config.host| ? should print: localhost
+expected.push|"localhost"|
 
+? Print expected values for test validation
+print|expected|

@@ -1,6 +1,10 @@
+expected: []
 ? Functions test
 x: 5
 y: 10
 z: x + y
 print|z| ? should print: 15
+expected.push|"15"|
 
+? Print expected values for test validation
+print|expected|

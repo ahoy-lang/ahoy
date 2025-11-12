@@ -1,34 +1,74 @@
+expected: []
 ? Conditionals - if statements and switch
 
 ? Basic if
 x: 10
-if x is 10 then
-    print|"ten"|
-$
+if x is 10 then print|"ten"| expected.push|"ten"| $
 
 ? If-else
 y: 5
-if y greater_than 10 then
-    print|"big"|
-else
-    print|"small"|
+if y greater_than 10 then print|"big"| expected.push|"big"|
+else print|"small"| expected.push|"small"|
 $
 
 ? Switch statement
 day: 2
-result:string= switch day:
+result :string= switch day:
     on 1: "Mon"
     on 2: "Tue"
     on 3: "Wed"
     _: "Other"
 $
 print|result|
+expected.push|"Tue"|
 
 ? Switch with multiple values
 grade: 'B'
-quality:string= switch grade:
+quality :string= switch grade:
     on 'A', 'B': "Good"
     on 'C': "OK"
     _: "Poor"
 $
 print|quality|
+expected.push|"Good"|
+
+
+? Switch with multiple return values
+grade: 'A'
+quality, quality_grade: (string, int) = switch grade:
+    on 'A': "EXCELLENT", 1
+    on 'B': "Good",2
+    on 'C': "OK",2
+    _: "Poor",3
+$
+print|quality,quality_grade| ?"excellant",1
+expected.push|"EXCELLENT 1"|
+
+? testing if else if chain with anif
+grade: 'B'
+if grade is 'A' then print|"You did great!"| expected.push|"You did great!"|
+anif grade is 'B' then print|"You did good!"| expected.push|"You did good!"|
+else print|"Keep trying!"| expected.push|"Keep trying!"|
+$
+
+? test dfault case
+grade: 'F'
+quality :string= switch grade:
+    on 'A', 'B': "Good"
+    on 'C': "OK"
+    _: "Poor"
+$
+print|quality|
+expected.push|"Poor"|
+
+
+? test calling print
+grade: 'F'
+switch grade:
+    on 'A', 'B': print|"Good"| expected.push|"Good"|
+    on 'C': print|"OK"| expected.push|"OK"|
+    _: print|"Poor"| expected.push|"Poor"|
+$
+
+? Print expected values for test validation
+print|expected|
