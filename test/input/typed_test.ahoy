@@ -1,0 +1,24 @@
+expected: []
+
+? Test typed integer array
+numbers: array[int]= [1, 2, 3]
+print|numbers|
+expected.push|"[1, 2, 3]"|
+
+? Test typed string array
+words: array[string]= ["hello", "world"]
+print|words|
+expected.push|"[\"hello\", \"world\"]"|
+
+? Test .type property on int array
+arr_type: numbers.type
+print|arr_type|
+expected.push|"array[int]"|
+
+? Test .type property on string array
+str_type: words.type
+print|str_type|
+expected.push|"array[string]"|
+
+? Print expected
+print|expected|

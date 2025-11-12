@@ -9,20 +9,24 @@ city: person{"city"}
 print|city| ? should print: NYC
 expected.push|"NYC"|
 
+? check size of dict
 data: {"a": "first", "b": "second", "c": "third"}
 size: data.size||
 print|size| ? should print: 3
 expected.push|"3"|
 
+? check has key
 config: {"theme": "dark"}
 has_theme: config.has|"theme"|
 print|has_theme| ? should print: 1 (true)
 expected.push|"1"|
 
+? check has key
 has_font: config.has|"font"|
 print|has_font| ? should print: 0 (false)
 expected.push|"0"|
 
+? test adding new key-value pair:
 settings: {"mode": "dev"}
 settings{"port"}: "8080"
 port: settings{"port"}

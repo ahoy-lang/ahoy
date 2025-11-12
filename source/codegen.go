@@ -78,6 +78,7 @@ type CodeGenerator struct {
 	hasMainFunc                   bool                       // Whether there's an Ahoy main function
 	arrayElementTypes             map[string]string          // array variable name -> element type
 	structs                       map[string]*StructInfo     // struct name -> struct info
+	currentTypeContext            string                     // Current type annotation context (e.g., "array[int]")
 }
 
 // GenerateC generates C code from an AST (exported for testing)
@@ -123,6 +124,9 @@ func generateC(ast *ahoy.ASTNode) string {
 		return "" // Return empty string to indicate error
 	}
 
+	// Generate type helper function if needed
+	gen.writeTypeEnumToStringHelper()
+
 	// Generate array helper functions if any array methods were used
 	gen.writeArrayHelperFunctions()
 
@@ -158,6 +162,41 @@ func generateC(ast *ahoy.ASTNode) string {
 	// Write hash map declarations
 	result.WriteString(gen.getHashMapDeclarations())
 	result.WriteString("\n")
+	
+	// Write AhoyValueType enum (needed by both HashMap and AhoyArray)
+	result.WriteString("\n// Value type tracking\n")
+	result.WriteString("typedef enum {\n")
+	result.WriteString("    AHOY_TYPE_INT,\n")
+	result.WriteString("    AHOY_TYPE_STRING,\n")
+	result.WriteString("    AHOY_TYPE_FLOAT,\n")
+	result.WriteString("    AHOY_TYPE_CHAR\n")
+	result.WriteString("} AhoyValueType;\n\n")
+	
+	// Write AhoyArray struct definition if arrays are used (must come after AhoyValueType)
+	if gen.arrayImpls || len(gen.arrayMethods) > 0 {
+		result.WriteString("// Array Helper Structure\n")
+		result.WriteString("typedef struct {\n")
+		result.WriteString("    intptr_t* data;\n")
+		result.WriteString("    AhoyValueType* types;  // Type for each element\n")
+		result.WriteString("    int length;\n")
+		result.WriteString("    int capacity;\n")
+		result.WriteString("    int is_typed;  // 0 = mixed types allowed, 1 = single type enforced\n")
+		result.WriteString("    AhoyValueType element_type;  // If is_typed=1, this is the enforced type\n")
+		result.WriteString("} AhoyArray;\n\n")
+		
+		// Add forward declarations for array helper functions
+		if gen.arrayMethods["push"] {
+			result.WriteString("AhoyArray* ahoy_array_push(AhoyArray* arr, intptr_t value, AhoyValueType type);\n")
+		}
+		if gen.arrayMethods["pop"] {
+			result.WriteString("intptr_t ahoy_array_pop(AhoyArray* arr);\n")
+		}
+		if gen.arrayMethods["length"] {
+			result.WriteString("int ahoy_array_length(AhoyArray* arr);\n")
+		}
+		result.WriteString("char* print_array_helper(AhoyArray* arr);\n")
+		result.WriteString("\n")
+	}
 
 	// Write function declarations
 	result.WriteString(gen.funcDecls.String())
@@ -229,12 +268,6 @@ void freeArray(DynamicArray* arr) {
 func (gen *CodeGenerator) writeHashMapImplementation() {
 	hashMapCode := `
 // Hash Map Implementation with type tracking
-typedef enum {
-    AHOY_TYPE_INT,
-    AHOY_TYPE_STRING,
-    AHOY_TYPE_FLOAT,
-    AHOY_TYPE_CHAR
-} AhoyValueType;
 
 typedef struct HashMapEntry {
     char* key;
@@ -323,15 +356,16 @@ void freeHashMap(HashMap* map) {
 }
 
 func (gen *CodeGenerator) getHashMapDeclarations() string {
-	return `
-// Forward declarations
-typedef struct HashMapEntry HashMapEntry;
-typedef struct HashMap HashMap;
-HashMap* createHashMap(int capacity);
-void hashMapPut(HashMap* map, const char* key, void* value);
-void* hashMapGet(HashMap* map, const char* key);
-void freeHashMap(HashMap* map);
-`
+	var decls strings.Builder
+	decls.WriteString("\n// Forward declarations\n")
+	decls.WriteString("typedef struct HashMapEntry HashMapEntry;\n")
+	decls.WriteString("typedef struct HashMap HashMap;\n")
+	decls.WriteString("HashMap* createHashMap(int capacity);\n")
+	decls.WriteString("void hashMapPut(HashMap* map, const char* key, void* value);\n")
+	decls.WriteString("void* hashMapGet(HashMap* map, const char* key);\n")
+	decls.WriteString("void freeHashMap(HashMap* map);\n")
+	
+	return decls.String()
 }
 
 // checkForMainFunction scans the AST for a main function and registers all user functions
@@ -516,6 +550,8 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 		if isStatement {
 			gen.output.WriteString(";\n")
 		}
+	case ahoy.NODE_TYPE_PROPERTY:
+		gen.generateTypeProperty(node)
 	case ahoy.NODE_MEMBER_ACCESS:
 		gen.generateMemberAccess(node)
 	case ahoy.NODE_HALT:
@@ -663,6 +699,9 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 	} else {
 		// Type inference and declaration
 		valueNode := node.Children[0]
+		
+		// Check if we have an explicit type annotation
+		explicitType := node.DataType
 
 		// Special handling for object literals - they define their own type inline
 		if valueNode.Type == ahoy.NODE_OBJECT_LITERAL {
@@ -722,6 +761,11 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			}
 		} else {
 			varType := gen.inferType(valueNode)
+			
+			// Use explicit type if provided, otherwise infer
+			if explicitType != "" {
+				varType = explicitType
+			}
 
 			// Track variable in appropriate scope
 			if gen.currentFunction != "" && gen.functionVars != nil {
@@ -732,10 +776,18 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				gen.variables[node.Value] = varType
 			}
 
-			// If this is an array literal, track the element type
-			if valueNode.Type == ahoy.NODE_ARRAY_LITERAL && len(valueNode.Children) > 0 {
-				elemType := gen.inferType(valueNode.Children[0])
-				gen.arrayElementTypes[node.Value] = elemType
+			// If this is an array literal with typed annotation, track the element type
+			if valueNode.Type == ahoy.NODE_ARRAY_LITERAL {
+				if explicitType != "" && strings.HasPrefix(explicitType, "array[") {
+					// Extract element type from array[type]
+					elemType := strings.TrimSuffix(strings.TrimPrefix(explicitType, "array["), "]")
+					gen.arrayElementTypes[node.Value] = elemType
+					// Set context for array literal generation
+					gen.currentTypeContext = explicitType
+				} else if len(valueNode.Children) > 0 {
+					elemType := gen.inferType(valueNode.Children[0])
+					gen.arrayElementTypes[node.Value] = elemType
+				}
 			}
 
 			cType := gen.mapType(varType)
@@ -750,6 +802,9 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				gen.generateNode(valueNode)
 				gen.output.WriteString(";\n")
 			}
+			
+			// Clear type context after generation
+			gen.currentTypeContext = ""
 		}
 	}
 }
@@ -1789,8 +1844,12 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 					case "struct":
 						formatSpec = "%s" // Will use print_struct_helper
 					default:
-						// Check if it's a known struct type
-						if _, isStruct := gen.structs[argType]; isStruct {
+						// Check for typed collections
+						if strings.HasPrefix(argType, "array[") {
+							formatSpec = "%s" // Will use print_array_helper
+						} else if strings.HasPrefix(argType, "dict[") {
+							formatSpec = "%s" // Will use print_dict_helper
+						} else if _, isStruct := gen.structs[argType]; isStruct {
 							formatSpec = "%s" // Will use print_struct_helper
 						} else {
 							formatSpec = "%d"
@@ -1810,7 +1869,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 					argType := gen.inferType(arg)
 
 					// Special handling for arrays and dicts
-					if argType == "array" {
+					if argType == "array" || strings.HasPrefix(argType, "array[") {
 						// Check if we know the element type for this array
 						if arg.Type == ahoy.NODE_IDENTIFIER {
 							if elemType, exists := gen.arrayElementTypes[arg.Value]; exists {
@@ -1840,7 +1899,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 							gen.generateNode(arg)
 							gen.output.WriteString(")")
 						}
-					} else if argType == "dict" {
+					} else if argType == "dict" || strings.HasPrefix(argType, "dict[") {
 						gen.dictMethods["print_dict"] = true
 						gen.output.WriteString("print_dict_helper(")
 						gen.generateNode(arg)
@@ -2161,6 +2220,22 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 		// Track which array method is used
 		gen.arrayMethods[methodName] = true
 
+		// Special handling for push with multiple arguments - generate multiple calls
+		if methodName == "push" && len(args.Children) > 1 {
+			for i, arg := range args.Children {
+				if i > 0 {
+					gen.output.WriteString("; ")
+				}
+				gen.output.WriteString("ahoy_array_push(")
+				gen.generateNodeInternal(object, false)
+				gen.output.WriteString(", (intptr_t)")
+				gen.generateNodeInternal(arg, false)
+				valueType := gen.getValueType(arg)
+				gen.output.WriteString(fmt.Sprintf(", %s)", gen.getAhoyTypeEnum(valueType)))
+			}
+			return
+		}
+
 		// Generate array method function call
 		gen.output.WriteString(fmt.Sprintf("ahoy_array_%s(", methodName))
 		gen.generateNodeInternal(object, false)
@@ -2215,10 +2290,20 @@ func (gen *CodeGenerator) generateArrayLiteral(node *ahoy.ASTNode) {
 	arrName := fmt.Sprintf("arr_%d", gen.varCounter)
 	gen.varCounter++
 
+	// Check if we have an explicit type from context
+	var explicitElementType string
+	if gen.currentTypeContext != "" && strings.HasPrefix(gen.currentTypeContext, "array[") {
+		explicitElementType = strings.TrimSuffix(strings.TrimPrefix(gen.currentTypeContext, "array["), "]")
+	}
+
 	// Determine if this is a mixed-type array or homogeneous
 	isMixed := false
 	var firstType string
-	if len(node.Children) > 0 {
+	if explicitElementType != "" {
+		// Use explicit type from annotation
+		firstType = explicitElementType
+		isMixed = false
+	} else if len(node.Children) > 0 {
 		firstType = gen.getValueType(node.Children[0])
 		for _, child := range node.Children[1:] {
 			if gen.getValueType(child) != firstType {
@@ -2328,6 +2413,14 @@ func (gen *CodeGenerator) generateDictLiteral(node *ahoy.ASTNode) {
 }
 
 func (gen *CodeGenerator) mapType(langType string) string {
+	// Check for typed collections first
+	if strings.HasPrefix(langType, "array[") {
+		return "AhoyArray*"
+	}
+	if strings.HasPrefix(langType, "dict[") {
+		return "HashMap*"
+	}
+	
 	switch langType {
 	case "int":
 		return "int"
@@ -2350,6 +2443,8 @@ func (gen *CodeGenerator) mapType(langType string) string {
 
 func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 	switch node.Type {
+	case ahoy.NODE_TYPE_PROPERTY:
+		return "char*" // .type property returns a string
 	case ahoy.NODE_NUMBER:
 		if strings.Contains(node.Value, ".") {
 			return "float"
@@ -3013,22 +3108,61 @@ func (gen *CodeGenerator) generateMemberAccess(node *ahoy.ASTNode) {
 	gen.output.WriteString(memberName)
 }
 
+func (gen *CodeGenerator) generateTypeProperty(node *ahoy.ASTNode) {
+	// Generate code to return type string for .type property
+	object := node.Children[0]
+	objectName := ""
+	
+	// Extract object name/identifier
+	if object.Type == ahoy.NODE_IDENTIFIER {
+		objectName = object.Value
+	}
+	
+	// Generate inline expression that returns type string
+	gen.output.WriteString("({")
+	gen.output.WriteString("char* __type_str = malloc(64); ")
+	
+	// Check variable type to determine how to get type info
+	varType := gen.inferType(object)
+	
+	if varType == "array" || varType == "AhoyArray*" || strings.HasPrefix(varType, "array[") {
+		// Array type - check if typed
+		gen.output.WriteString(fmt.Sprintf("if (%s != NULL && %s->is_typed) { ", objectName, objectName))
+		gen.output.WriteString(fmt.Sprintf("const char* elem_type = ahoy_type_enum_to_string(%s->element_type); ", objectName))
+		gen.output.WriteString("sprintf(__type_str, \"array[%s]\", elem_type); ")
+		gen.output.WriteString("} else { ")
+		gen.output.WriteString("strcpy(__type_str, \"array\"); ")
+		gen.output.WriteString("} ")
+	} else if varType == "dict" || varType == "HashMap*" {
+		// Dict type - for now just return "dict"
+		// TODO: Add typed dict support
+		gen.output.WriteString("strcpy(__type_str, \"dict\"); ")
+	} else {
+		// Other types
+		gen.output.WriteString(fmt.Sprintf("strcpy(__type_str, \"%s\"); ", varType))
+	}
+	
+	gen.output.WriteString("__type_str; ")
+	gen.output.WriteString("})")
+}
+
+// Helper function to convert AhoyValueType enum to string
+func (gen *CodeGenerator) writeTypeEnumToStringHelper() {
+	gen.funcDecls.WriteString("const char* ahoy_type_enum_to_string(AhoyValueType type) {\n")
+	gen.funcDecls.WriteString("    switch(type) {\n")
+	gen.funcDecls.WriteString("        case AHOY_TYPE_INT: return \"int\";\n")
+	gen.funcDecls.WriteString("        case AHOY_TYPE_STRING: return \"string\";\n")
+	gen.funcDecls.WriteString("        case AHOY_TYPE_FLOAT: return \"float\";\n")
+	gen.funcDecls.WriteString("        case AHOY_TYPE_CHAR: return \"char\";\n")
+	gen.funcDecls.WriteString("        default: return \"unknown\";\n")
+	gen.funcDecls.WriteString("    }\n")
+	gen.funcDecls.WriteString("}\n\n")
+}
+
 // Generate array helper functions
 func (gen *CodeGenerator) writeArrayHelperFunctions() {
-	// Always write AhoyArray structure if we have array implementations
-	if gen.arrayImpls || len(gen.arrayMethods) > 0 {
-		// Array structure definition with type tracking
-		gen.funcDecls.WriteString("\n// Array Helper Structure\n")
-		gen.funcDecls.WriteString("typedef struct {\n")
-		gen.funcDecls.WriteString("    intptr_t* data;\n")
-		gen.funcDecls.WriteString("    AhoyValueType* types;  // Type for each element\n")
-		gen.funcDecls.WriteString("    int length;\n")
-		gen.funcDecls.WriteString("    int capacity;\n")
-		gen.funcDecls.WriteString("    int is_typed;  // 0 = mixed types allowed, 1 = single type enforced\n")
-		gen.funcDecls.WriteString("    AhoyValueType element_type;  // If is_typed=1, this is the enforced type\n")
-		gen.funcDecls.WriteString("} AhoyArray;\n\n")
-	}
-
+	// Note: AhoyArray structure is now defined in the header section
+	
 	if len(gen.arrayMethods) == 0 {
 		return
 	}

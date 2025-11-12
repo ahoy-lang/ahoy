@@ -6,5 +6,15 @@ z: x + y
 print|z| ? should print: 15
 expected.push|"15"|
 
+
+
+? @ multi :: |name,phone| infer:
+? 	return name, phone
+? $
+? name, phone: multi|"Alice", 123-456-7890|
+? print|name,phone|
+? expected.push|"Alice",123-45-7890|
+
+
 ? Print expected values for test validation
 print|expected|

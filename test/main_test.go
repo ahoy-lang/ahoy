@@ -12,48 +12,6 @@ import (
 
 // TestConsolidatedFiles tests all consolidated test files
 func TestConsolidatedFiles(t *testing.T) {
-	tests := []struct {
-		name      string
-		inputFile string
-	}{
-		{
-			name:      "Arrays Test",
-			inputFile: "input/arrays.ahoy",
-		},
-		{
-			name:      "Dictionaries Test",
-			inputFile: "input/dictionaries.ahoy",
-		},
-		{
-			name:      "Objects Test",
-			inputFile: "input/objects.ahoy",
-		},
-		{
-			name:      "Tuples Test",
-			inputFile: "input/tuples.ahoy",
-		},
-		{
-			name:      "Loops Test",
-			inputFile: "input/loops.ahoy",
-		},
-		{
-			name:      "Conditionals Test",
-			inputFile: "input/conditionals.ahoy",
-		},
-		{
-			name:      "Enums Test",
-			inputFile: "input/enums.ahoy",
-		},
-		{
-			name:      "Functions Test",
-			inputFile: "input/functions.ahoy",
-		},
-		{
-			name:      "Program Test",
-			inputFile: "input/program.ahoy",
-		},
-	}
-
 	// Build the compiler first
 	compilerPath := "../source/ahoy-compiler"
 	if _, err := os.Stat(compilerPath); os.IsNotExist(err) {
@@ -64,9 +22,22 @@ func TestConsolidatedFiles(t *testing.T) {
 		}
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			output, err := compileAndRun(t, tt.inputFile, compilerPath)
+	// Discover all .ahoy files in input directory
+	files, err := filepath.Glob("input/*.ahoy")
+	if err != nil {
+		t.Fatalf("Failed to read input directory: %v", err)
+	}
+
+	for _, file := range files {
+		// Extract test name from file
+		baseName := filepath.Base(file)
+		testName := strings.TrimSuffix(baseName, ".ahoy")
+		testName = strings.ReplaceAll(testName, "_", " ")
+		testName = strings.Title(testName) + " Test"
+		
+		t.Run(testName, func(t *testing.T) {
+			t.Parallel()
+			output, err := compileAndRun(t, file, compilerPath)
 			if err != nil {
 				t.Fatalf("Failed to compile and run: %v", err)
 			}
@@ -103,6 +74,19 @@ func TestConsolidatedFiles(t *testing.T) {
 
 			// Get all output lines except the last one (which is the expected array)
 			actualOutput := lines[:len(lines)-1]
+
+			// Validate output count matches expected count
+			if len(actualOutput) != len(expectedValues) {
+				t.Errorf("Output count mismatch:")
+				t.Errorf("  Expected %d output lines", len(expectedValues))
+				t.Errorf("  Got %d output lines", len(actualOutput))
+				if len(expectedValues) > 0 && len(expectedValues) <= 10 {
+					t.Errorf("  Expected values: %v", expectedValues)
+				}
+				if len(actualOutput) > 0 && len(actualOutput) <= 10 {
+					t.Errorf("  Actual output: %v", actualOutput)
+				}
+			}
 
 			// Verify each expected value appears in the actual output
 			for i, expected := range expectedValues {

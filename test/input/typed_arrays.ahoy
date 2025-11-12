@@ -1,0 +1,35 @@
+expected: []
+? Typed Arrays Test
+
+? Create typed integer array
+numbers: array[int]= [1, 2, 3]
+print|numbers|
+expected.push|"[1, 2, 3]"|
+
+? Create typed string array
+words: array[string]= ["hello", "world"]
+print|words|
+expected.push|"[\"hello\", \"world\"]"|
+
+? TODO: Typed dict with string keys and int values
+? scores: dict[string, int]= {"alice": 95, "bob": 87}
+? print|scores{"alice"}|
+? expected.push|"95"|
+
+? Test .type property on arrays
+arr_type: numbers.type
+print|arr_type|
+expected.push|"array[int]"|
+
+? Test .type property on string arrays
+str_type: words.type
+print|str_type|
+expected.push|"array[string]"|
+
+? TODO: Test .type property on dicts
+? dict_type: scores.type
+? print|dict_type|
+? expected.push|"dict[string,int]"|
+
+? Print expected values for test validation
+print|expected|

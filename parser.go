@@ -59,6 +59,7 @@ const (
 	NODE_OBJECT_LITERAL
 	NODE_OBJECT_PROPERTY
 	NODE_OBJECT_ACCESS
+	NODE_TYPE_PROPERTY // .type property access
 )
 
 type ASTNode struct {
@@ -2446,10 +2447,50 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			} else {
 				// This might be a type annotation
 				possibleType := p.current().Value
-
-				// Look ahead to see if there's an = or < after the type
-				// < indicates struct initialization: name : type<...>
-				if p.peek(1).Type == TOKEN_EQUALS || p.peek(1).Type == TOKEN_LANGLE {
+				
+				// Check for typed collections: array[type]= or dict[key,value]=
+				if (p.current().Type == TOKEN_ARRAY_TYPE || p.current().Type == TOKEN_DICT_TYPE) &&
+					p.peek(1).Type == TOKEN_LBRACKET {
+					baseType := possibleType
+					isDict := p.current().Type == TOKEN_DICT_TYPE
+					p.advance() // consume array/dict
+					p.advance() // consume [
+					
+					if isDict {
+						// dict[key_type, value_type]=
+						keyType := p.current().Value
+						p.advance()
+						if p.current().Type == TOKEN_COMMA {
+							p.advance()
+							valueType := p.current().Value
+							p.advance()
+							if p.current().Type == TOKEN_RBRACKET {
+								p.advance() // consume ]
+								possibleType = fmt.Sprintf("%s[%s,%s]", baseType, keyType, valueType)
+								explicitType = possibleType
+								// Expect = after typed collection
+								if p.current().Type == TOKEN_EQUALS {
+									p.advance() // consume =
+								}
+							}
+						}
+					} else {
+						// array[element_type]=
+						elementType := p.current().Value
+						p.advance()
+						if p.current().Type == TOKEN_RBRACKET {
+							p.advance() // consume ]
+							possibleType = fmt.Sprintf("%s[%s]", baseType, elementType)
+							explicitType = possibleType
+							// Expect = after typed collection
+							if p.current().Type == TOKEN_EQUALS {
+								p.advance() // consume =
+							}
+						}
+					}
+					// After parsing typed collection, we're done with type annotation
+				} else if p.peek(1).Type == TOKEN_EQUALS || p.peek(1).Type == TOKEN_LANGLE {
+					// Non-collection types with = or <
 					explicitType = possibleType
 					p.advance() // consume type
 					if p.current().Type == TOKEN_EQUALS {
@@ -2552,6 +2593,19 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					// Validate switch statement return types match explicit type
 					if value.Type == NODE_SWITCH_STATEMENT {
 						p.validateSwitchReturnTypesWithExpected(value, explicitType, line)
+					}
+					
+					// Validate typed collections match
+					if strings.HasPrefix(explicitType, "array[") || strings.HasPrefix(explicitType, "dict[") {
+						inferredType := p.inferType(value)
+						// For typed collections, inferred type should match base type
+						if strings.HasPrefix(explicitType, "array[") && inferredType != "array" {
+							errMsg := fmt.Sprintf("Type mismatch (line %d): expected %s but got %s", line, explicitType, inferredType)
+							p.recordError(errMsg)
+						} else if strings.HasPrefix(explicitType, "dict[") && inferredType != "dict" {
+							errMsg := fmt.Sprintf("Type mismatch (line %d): expected %s but got %s", line, explicitType, inferredType)
+							p.recordError(errMsg)
+						}
 					}
 				} else {
 					// Check if this is a switch expression without explicit type
@@ -4677,7 +4731,20 @@ func (p *Parser) getStructFieldType(typeName, fieldName string) string {
 func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 	for p.current().Type == TOKEN_DOT {
 		p.advance()
-		member := p.expect(TOKEN_IDENTIFIER)
+		
+		// Allow 'type' keyword as a member name (special case for .type property)
+		var member Token
+		if p.current().Type == TOKEN_TYPE {
+			member = Token{
+				Type:   TOKEN_IDENTIFIER,
+				Value:  "type",
+				Line:   p.current().Line,
+				Column: p.current().Column,
+			}
+			p.advance()
+		} else {
+			member = p.expect(TOKEN_IDENTIFIER)
+		}
 
 		// Check if this is a method call
 		// Allow method calls even inside function calls, but need to look ahead
@@ -4751,16 +4818,26 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 				}
 			}
 		} else {
-			// Simple member access - validate in lint mode
-			if p.LintMode {
-				p.validateMemberAccess(object, member.Value, member.Line)
-			}
+			// Check if this is the special .type property
+			if member.Value == "type" {
+				object = &ASTNode{
+					Type:     NODE_TYPE_PROPERTY,
+					Value:    "type",
+					Line:     member.Line,
+					Children: []*ASTNode{object},
+				}
+			} else {
+				// Simple member access - validate in lint mode
+				if p.LintMode {
+					p.validateMemberAccess(object, member.Value, member.Line)
+				}
 
-			object = &ASTNode{
-				Type:     NODE_MEMBER_ACCESS,
-				Value:    member.Value,
-				Line:     member.Line,
-				Children: []*ASTNode{object},
+				object = &ASTNode{
+					Type:     NODE_MEMBER_ACCESS,
+					Value:    member.Value,
+					Line:     member.Line,
+					Children: []*ASTNode{object},
+				}
 			}
 		}
 	}
