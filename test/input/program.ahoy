@@ -1,0 +1,7 @@
+program example
+
+@ main :: || void:
+	print|"Program, Example!"|
+	number: multiply_two_numbers|5, 10|
+	print|f"5 * 10 = {number}"|
+$

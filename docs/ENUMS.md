@@ -2,13 +2,13 @@
 
 
 ```ahoy
-enum number:
+enum numbers:
 	ten
 	twenty_nine
 	ninety_two
 $
 
-enum number_with_values:
+enum numbers_with_values:
 	1 one
 	5 five
 	10 ten

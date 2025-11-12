@@ -1,0 +1,4 @@
+? Enums test
+x: 1
+print|x| ? should print: 1
+

@@ -15,13 +15,13 @@ The Ahoy language supports inline conditionals and uses the `anif` keyword for e
 ### 1. Inline If Statements
 Put the condition and statement on the same line:
 ```ahoy
-if x is 10 then ahoy|"x is 10\n"|
+if x is 10 then ahoy|"x is 10\n"|$
 ```
 
 ### 2. Inline If-Else
 Chain if and else on a single line:
 ```ahoy
-if y greater 10 then ahoy|"Big\n"| else ahoy|"Small\n"|
+if y greater 10 then ahoy|"Big\n"| else ahoy|"Small\n"|$
 ```
 
 ### 3. The anif Keyword

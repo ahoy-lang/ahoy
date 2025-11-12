@@ -1,6 +1,7 @@
 package main
 
 import (
+	"regexp"
 	"strings"
 )
 
@@ -8,13 +9,16 @@ const INDENT_SIZE = 2
 
 // formatSource formats Ahoy source code with proper indentation
 func formatSource(source string) string {
+	// First, preprocess to split lines with $ at the end
+	source = preprocessDollarSigns(source)
+
 	lines := strings.Split(source, "\n")
 	var formatted []string
 	indentLevel := 0
 	structStack := []int{} // Stack to track struct indent levels
 
 	for _, line := range lines {
-		// Convert tabs to spaces
+		// Convert tabs to spaces initially for processing
 		line = strings.ReplaceAll(line, "\t", "    ")
 
 		// Trim trailing whitespace
@@ -58,8 +62,16 @@ func formatSource(source string) string {
 		// Check if this is a single-line construct (should NOT be indented on next line)
 		isSingleLine := isSingleLineConstruct(trimmed)
 
-		// Apply current indentation (even to comments)
-		indent := strings.Repeat(" ", indentLevel*INDENT_SIZE)
+		// Format the line content (spacing, etc.)
+		trimmed = formatLine(trimmed)
+
+		// Apply current indentation
+		// Use spaces (2 per level) or tab (for level 1 only in some cases)
+		var indent string
+		if indentLevel > 0 {
+			// Use 2 spaces per indent level
+			indent = strings.Repeat(" ", indentLevel*INDENT_SIZE)
+		}
 		formattedLine := indent + trimmed
 		formatted = append(formatted, formattedLine)
 
@@ -88,6 +100,277 @@ func formatSource(source string) string {
 
 	return result
 }
+
+// preprocessDollarSigns splits lines ending with $ onto separate lines
+func preprocessDollarSigns(source string) string {
+	lines := strings.Split(source, "\n")
+	var result []string
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// If line ends with $ and has content before it, split
+		if strings.HasSuffix(trimmed, " $") && trimmed != "$" {
+			contentPart := strings.TrimSuffix(trimmed, " $")
+			contentPart = strings.TrimSpace(contentPart)
+			result = append(result, contentPart)
+			result = append(result, "$")
+		} else {
+			result = append(result, line)
+		}
+	}
+
+	return strings.Join(result, "\n")
+}
+
+// 	if !strings.HasSuffix(result, "\n") {
+// 		result += "\n"
+// 	}
+
+// 	return result
+// }
+
+// formatLine applies formatting rules to a single line
+func formatLine(line string) string {
+	// Skip comments and empty lines
+	if strings.HasPrefix(line, "?") || line == "" {
+		return line
+	}
+
+	// Handle function definitions with ::
+	if strings.Contains(line, "::") {
+		line = formatFunctionDefinition(line)
+	}
+
+	// Handle function calls - add space after commas in arguments
+	line = formatFunctionCalls(line)
+
+	// Add spaces around binary operators
+	line = formatOperators(line)
+
+	// Normalize spacing around colons in type annotations
+	line = formatTypeAnnotations(line)
+
+	return line
+}
+
+// formatFunctionDefinition formats function definition lines
+func formatFunctionDefinition(line string) string {
+	// Pattern: @ name :: |params| return:
+	// Remove extra spaces around ::
+	line = regexp.MustCompile(`\s*::\s*`).ReplaceAllString(line, " :: ")
+
+	// Remove space immediately after opening | in parameters
+	// This handles | x:int -> |x:int
+	line = regexp.MustCompile(`\|\s+([a-zA-Z_])`).ReplaceAllString(line, "|$1")
+
+	// Add space after commas in parameter list (between pipes)
+	line = formatParameterList(line)
+
+	// Add space after commas in return types
+	line = formatReturnTypes(line)
+
+	return line
+}
+
+// formatParameterList adds space after commas in parameter lists
+func formatParameterList(line string) string {
+	// Find content between | |
+	re := regexp.MustCompile(`\|([^|]+)\|`)
+	return re.ReplaceAllStringFunc(line, func(match string) string {
+		// Remove the pipes temporarily
+		content := strings.Trim(match, "|")
+		// Add space after commas
+		content = regexp.MustCompile(`,\s*`).ReplaceAllString(content, ", ")
+		return "|" + content + "|"
+	})
+}
+
+// formatReturnTypes adds space after commas in return type lists
+func formatReturnTypes(line string) string {
+	// Pattern: |params| type1,type2:
+	// Find return types between last | and final :
+	if !strings.Contains(line, "::") {
+		return line
+	}
+
+	// Split on ::
+	parts := strings.SplitN(line, "::", 2)
+	if len(parts) != 2 {
+		return line
+	}
+
+	rightPart := parts[1]
+
+	// Find the last | and the final :
+	lastPipe := strings.LastIndex(rightPart, "|")
+	lastColon := strings.LastIndex(rightPart, ":")
+
+	if lastPipe != -1 && lastColon != -1 && lastColon > lastPipe {
+		// Extract return types between | and :
+		returnTypes := rightPart[lastPipe+1 : lastColon]
+		// Format commas
+		returnTypes = regexp.MustCompile(`,\s*`).ReplaceAllString(returnTypes, ", ")
+		// Reconstruct
+		rightPart = rightPart[:lastPipe+1] + returnTypes + rightPart[lastColon:]
+	}
+
+	return parts[0] + "::" + rightPart
+}
+
+// formatFunctionCalls adds space after commas in function calls
+func formatFunctionCalls(line string) string {
+	// Remove space before | in function calls: print| -> print|
+	line = regexp.MustCompile(`(\w+)\s+\|`).ReplaceAllString(line, "$1|")
+
+	// Pattern: func|arg1,arg2|
+	// Find all function calls (text followed by |...|)
+	re := regexp.MustCompile(`(\w+)\|([^|]+)\|`)
+	return re.ReplaceAllStringFunc(line, func(match string) string {
+		// Extract function name and args
+		parts := regexp.MustCompile(`(\w+)\|([^|]+)\|`).FindStringSubmatch(match)
+		if len(parts) != 3 {
+			return match
+		}
+		funcName := parts[1]
+		args := parts[2]
+
+		// Don't add spaces inside string literals
+		// Simple approach: format commas that are not inside quotes
+		args = formatCommasOutsideStrings(args)
+
+		return funcName + "|" + args + "|"
+	})
+}
+
+// formatCommasOutsideStrings adds space after commas outside of string literals
+func formatCommasOutsideStrings(s string) string {
+	var result strings.Builder
+	inString := false
+	escapeNext := false
+
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+
+		if escapeNext {
+			result.WriteByte(ch)
+			escapeNext = false
+			continue
+		}
+
+		if ch == '\\' {
+			result.WriteByte(ch)
+			escapeNext = true
+			continue
+		}
+
+		if ch == '"' {
+			inString = !inString
+			result.WriteByte(ch)
+			continue
+		}
+
+		if ch == ',' && !inString {
+			result.WriteByte(',')
+			// Skip any existing spaces
+			for i+1 < len(s) && s[i+1] == ' ' {
+				i++
+			}
+			result.WriteByte(' ')
+			continue
+		}
+
+		result.WriteByte(ch)
+	}
+
+	return result.String()
+}
+
+// formatOperators adds spaces around binary operators
+func formatOperators(line string) string {
+	// Add space around + operator (but not inside strings)
+	// Simple pattern - add space around + when not in quotes
+	line = formatOperatorOutsideStrings(line, '+')
+	return line
+}
+
+// formatOperatorOutsideStrings adds spaces around operator outside strings
+func formatOperatorOutsideStrings(s string, op byte) string {
+	var result strings.Builder
+	inString := false
+	escapeNext := false
+
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+
+		if escapeNext {
+			result.WriteByte(ch)
+			escapeNext = false
+			continue
+		}
+
+		if ch == '\\' {
+			result.WriteByte(ch)
+			escapeNext = true
+			continue
+		}
+
+		if ch == '"' {
+			inString = !inString
+			result.WriteByte(ch)
+			continue
+		}
+
+		if ch == op && !inString {
+			// Add spaces around operator
+			// Check if there's already a space before
+			if result.Len() > 0 {
+				lastByte := result.String()[result.Len()-1]
+				if lastByte != ' ' {
+					result.WriteByte(' ')
+				}
+			}
+			result.WriteByte(ch)
+			// Skip any existing spaces after
+			for i+1 < len(s) && s[i+1] == ' ' {
+				i++
+			}
+			// Add space after if next char exists and isn't space
+			if i+1 < len(s) {
+				result.WriteByte(' ')
+			}
+			continue
+		}
+
+		result.WriteByte(ch)
+	}
+
+	return result.String()
+}
+
+// formatTypeAnnotations normalizes spacing around colons in declarations
+func formatTypeAnnotations(line string) string {
+	// Pattern: varname:type or varname : type
+	// Normalize to: varname : type (space before and after colon)
+
+	// Skip function definitions (contain ::)
+	if strings.Contains(line, "::") {
+		return line
+	}
+
+	// Skip comments
+	if strings.HasPrefix(line, "?") {
+		return line
+	}
+
+	// For variable declarations: name:type or name : type
+	// But NOT for the final : in function defs or case labels
+	// Pattern: word followed by : followed by word (type)
+	line = regexp.MustCompile(`(\w+)\s*:\s*(\w+)`).ReplaceAllString(line, "$1 : $2")
+
+	return line
+}
+
+// isSingleLineConstruct checks if a line is a complete single-line construct
 
 // isSingleLineConstruct checks if a line is a complete single-line construct
 // Examples: "if x > 0 then ahoy|x|", "loop i to 10 do print|i|"

@@ -21,6 +21,7 @@ loop:x less_than 10 do
         halt
     print|"x = %d", x|
     x: x plus 1
+$
 ? Output: x = 0, 1, 2, 3, 4
 ```
 
@@ -35,6 +36,7 @@ loop num in numbers do
         found: true
         print|"Found %d!", target|
         halt
+$
 ```
 
 **Nested loops - halts only inner:**

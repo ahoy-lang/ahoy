@@ -1,0 +1,6 @@
+program example
+
+@ multiply_two_numbers ::|a:int, b:int| int :
+		result: a * b
+		return result
+$

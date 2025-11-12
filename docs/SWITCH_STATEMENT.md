@@ -29,10 +29,10 @@ $
 testfunc ::|test| void: return print|"boris"|
 
 grade: 'B'
-switch grade on
-	'A':ahoy|"6. Excellent!\n"|
-	'B':ahoy|"6. Good job! (char switch works!)\n"|
-  'C':ahoy|"6. Average\n"|
+switch grade:
+	on 'A':ahoy|"6. Excellent!\n"|
+	on 'B':ahoy|"6. Good job! (char switch works!)\n"|
+  on 'C':ahoy|"6. Average\n"|
 	_: ahoy|"6. Needs improvement\n"|
 $
 

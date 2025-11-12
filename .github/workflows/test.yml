@@ -1,0 +1,44 @@
+name: Ahoy Tests
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  test:
+    name: Run Ahoy Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.25"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc build-essential
+
+      - name: Build compiler
+        run: |
+          cd source
+          go build -o ahoy-compiler .
+
+      - name: Run Go tests
+        run: |
+          cd test
+          go test -v
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-outputs
+          path: test/output/
+          retention-days: 7

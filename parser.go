@@ -2630,7 +2630,8 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 
 func (p *Parser) parseCallArgument() *ASTNode {
 	// Parse an expression but stop at comma or pipe
-	return p.parseAdditiveExpression()
+	// Use parseOrExpression to get full expressions including comparisons and member access
+	return p.parseOrExpression()
 }
 
 func (p *Parser) parseBlock() *ASTNode {
@@ -2883,9 +2884,18 @@ func (p *Parser) parseEqualityExpression() *ASTNode {
 func (p *Parser) parseRelationalExpression() *ASTNode {
 	left := p.parseAdditiveExpression()
 
-	for p.current().Type == TOKEN_LANGLE || p.current().Type == TOKEN_RANGLE ||
+	for (p.current().Type == TOKEN_LANGLE || p.current().Type == TOKEN_RANGLE ||
 		p.current().Type == TOKEN_LESS_EQUAL || p.current().Type == TOKEN_GREATER_EQUAL ||
-		p.current().Type == TOKEN_LESSER_WORD || p.current().Type == TOKEN_GREATER_WORD {
+		p.current().Type == TOKEN_LESSER_WORD || p.current().Type == TOKEN_GREATER_WORD) {
+		
+		// Don't treat > as comparison operator if we're inside angle brackets for object/array access
+		// Check if the next token suggests we're closing an access expression
+		if p.current().Type == TOKEN_RANGLE && p.inFunctionCall {
+			// If we're in a function call (like print|obj<"prop">|), stop parsing
+			// The > is likely closing an object/array access, not a comparison
+			break
+		}
+		
 		op := p.current()
 		p.advance()
 		right := p.parseAdditiveExpression()
@@ -3685,6 +3695,11 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 			p.advance()
 		}
 
+		// Check for $ terminator (allows inline $ for single line enums)
+		if p.current().Type == TOKEN_END {
+			break
+		}
+
 		// For one-line enums, stop at newline or EOF
 		if isOneLine && (p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_EOF) {
 			break
@@ -3699,17 +3714,15 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 		p.advance()
 	}
 
-	// Consume 'end' keyword only for multi-line enums
-	if !isOneLine {
-		if p.current().Type == TOKEN_END {
-			p.advance()
+	// Consume 'end' keyword ($) - now optional for one-line enums without explicit $
+	if p.current().Type == TOKEN_END {
+		p.advance()
+	} else if !isOneLine {
+		errMsg := fmt.Sprintf("Expected '$' to close enum at line %d", startLine)
+		if p.LintMode {
+			p.recordErrorAtLine(errMsg, startLine)
 		} else {
-			errMsg := fmt.Sprintf("Expected '$' to close enum at line %d", startLine)
-			if p.LintMode {
-				p.recordErrorAtLine(errMsg, startLine)
-			} else {
-				panic(errMsg)
-			}
+			panic(errMsg)
 		}
 	}
 
@@ -4422,6 +4435,11 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 			p.advance()
 		}
 
+		// Check for $ terminator (allows inline $ for structs)
+		if p.current().Type == TOKEN_END {
+			break
+		}
+
 		// For one-line structs, stop at newline or EOF
 		if isOneLine && (p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_EOF) {
 			break
@@ -4436,17 +4454,15 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 		p.advance()
 	}
 
-	// Consume 'end' keyword only for multi-line structs
-	if !isOneLine {
-		if p.current().Type == TOKEN_END {
-			p.advance()
+	// Consume 'end' keyword ($) - now optional for one-line structs without explicit $
+	if p.current().Type == TOKEN_END {
+		p.advance()
+	} else if !isOneLine {
+		errMsg := fmt.Sprintf("Expected '$' to close struct at line %d", startLine)
+		if p.LintMode {
+			p.recordErrorAtLine(errMsg, startLine)
 		} else {
-			errMsg := fmt.Sprintf("Expected '$' to close struct at line %d", startLine)
-			if p.LintMode {
-				p.recordErrorAtLine(errMsg, startLine)
-			} else {
-				panic(errMsg)
-			}
+			panic(errMsg)
 		}
 	}
 
@@ -4663,8 +4679,8 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 		p.advance()
 		member := p.expect(TOKEN_IDENTIFIER)
 
-		// Check if this is a method call
-		if p.current().Type == TOKEN_PIPE {
+		// Check if this is a method call (but not if we're already inside a function call)
+		if p.current().Type == TOKEN_PIPE && !p.inFunctionCall {
 			p.advance()
 
 			// Parse arguments
@@ -4874,10 +4890,81 @@ func (p *Parser) parseLambdaBody() *ASTNode {
 	return expr
 }
 
+// lookupVariableType looks up the type of a variable in the current scope
+func (p *Parser) lookupVariableType(varName string) string {
+	// Check function scope first if we're in a function
+	if p.currentFunctionRet != "" && p.functionScope != nil {
+		if varType, ok := p.functionScope[varName]; ok {
+			return varType
+		}
+	}
+	// Check global scope
+	if varType, ok := p.variableTypes[varName]; ok {
+		return varType
+	}
+	return ""
+}
+
 // validateTupleAssignment validates that tuple assignment types match
 func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int) {
 	if leftSide == nil || rightSide == nil {
 		return
+	}
+
+	// Check if this is a simple tuple swap (a, b : b, a)
+	// where right side contains only identifiers
+	if len(leftSide.Children) == len(rightSide.Children) {
+		isSimpleSwap := true
+		for _, rightExpr := range rightSide.Children {
+			if rightExpr.Type != NODE_IDENTIFIER {
+				isSimpleSwap = false
+				break
+			}
+		}
+
+		if isSimpleSwap {
+			// Validate that types match for swap
+			for i, leftVar := range leftSide.Children {
+				if i >= len(rightSide.Children) {
+					break
+				}
+				rightVar := rightSide.Children[i]
+
+				// Get or infer types
+				leftType := leftVar.DataType
+				if leftType == "" {
+					leftType = p.lookupVariableType(leftVar.Value)
+				}
+
+				rightType := rightVar.DataType
+				if rightType == "" {
+					rightType = p.lookupVariableType(rightVar.Value)
+				}
+
+				// Both must have known types for validation
+				if leftType != "" && rightType != "" {
+					if !p.checkTypeCompatibility(leftType, rightType) {
+						errMsg := fmt.Sprintf("Tuple swap type mismatch at position %d: '%s' is type %s but '%s' is type %s",
+							i+1, leftVar.Value, leftType, rightVar.Value, rightType)
+						p.recordError(errMsg)
+					}
+				}
+
+				// Register/update variable type with inferred type from right side
+				varType := leftType
+				if varType == "" {
+					varType = rightType
+				}
+				if varType != "" {
+					targetScope := p.variableTypes
+					if p.currentFunctionRet != "" && p.functionScope != nil {
+						targetScope = p.functionScope
+					}
+					targetScope[leftVar.Value] = varType
+				}
+			}
+			return
+		}
 	}
 
 	// Check if right side is a single switch statement returning tuples

@@ -16,18 +16,18 @@ func snakeToPascal(s string) string {
 
 	// Common acronyms that should be uppercase
 	acronyms := map[string]string{
-		"fps": "FPS",
-		"api": "API",
-		"url": "URL",
-		"http": "HTTP",
+		"fps":   "FPS",
+		"api":   "API",
+		"url":   "URL",
+		"http":  "HTTP",
 		"https": "HTTPS",
-		"rgb": "RGB",
-		"rgba": "RGBA",
-		"gpu": "GPU",
-		"cpu": "CPU",
-		"ui": "UI",
-		"id": "ID",
-		"uuid": "UUID",
+		"rgb":   "RGB",
+		"rgba":  "RGBA",
+		"gpu":   "GPU",
+		"cpu":   "CPU",
+		"ui":    "UI",
+		"id":    "ID",
+		"uuid":  "UUID",
 	}
 
 	parts := strings.Split(s, "_")
@@ -45,42 +45,61 @@ func snakeToPascal(s string) string {
 	return strings.Join(parts, "")
 }
 
+type StructField struct {
+	Name string
+	Type string
+}
+
+type StructInfo struct {
+	Name   string
+	Fields []StructField
+}
+
 type CodeGenerator struct {
-	output         strings.Builder
-	indent         int
-	varCounter     int
-	funcDecls      strings.Builder
-	includes       map[string]bool
-	variables      map[string]string // variable name -> type (global scope)
-	functionVars   map[string]string // variable name -> type (function scope)
-	constants      map[string]bool   // constant name -> declared
-	enums          map[string]map[string]bool // enum name -> {member names}
-	userFunctions  map[string]bool   // user-defined function names (keep snake_case)
-	hasError       bool              // Track if error occurred
-	arrayImpls     bool              // Track if we've added array implementation
-	arrayMethods   map[string]bool   // Track which array methods are used
-	stringMethods  map[string]bool   // Track which string methods are used
-	dictMethods    map[string]bool   // Track which dict methods are used
-	loopCounters   []string          // Stack of loop counter variable names
-	currentFunction string           // Current function being generated
-	currentFunctionReturnType string // Return type of current function
-	currentFunctionHasMultiReturn bool // Whether current function has multiple returns
-	hasMainFunc    bool              // Whether there's an Ahoy main function
+	output                        strings.Builder
+	indent                        int
+	varCounter                    int
+	funcDecls                     strings.Builder
+	includes                      map[string]bool
+	variables                     map[string]string          // variable name -> type (global scope)
+	functionVars                  map[string]string          // variable name -> type (function scope)
+	constants                     map[string]bool            // constant name -> declared
+	enums                         map[string]map[string]bool // enum name -> {member names}
+	userFunctions                 map[string]bool            // user-defined function names (keep snake_case)
+	hasError                      bool                       // Track if error occurred
+	arrayImpls                    bool                       // Track if we've added array implementation
+	arrayMethods                  map[string]bool            // Track which array methods are used
+	stringMethods                 map[string]bool            // Track which string methods are used
+	dictMethods                   map[string]bool            // Track which dict methods are used
+	loopCounters                  []string                   // Stack of loop counter variable names
+	currentFunction               string                     // Current function being generated
+	currentFunctionReturnType     string                     // Return type of current function
+	currentFunctionHasMultiReturn bool                       // Whether current function has multiple returns
+	hasMainFunc                   bool                       // Whether there's an Ahoy main function
+	arrayElementTypes             map[string]string          // array variable name -> element type
+	structs                       map[string]*StructInfo     // struct name -> struct info
+}
+
+// GenerateC generates C code from an AST (exported for testing)
+func GenerateC(ast *ahoy.ASTNode) string {
+	return generateC(ast)
 }
 
 func generateC(ast *ahoy.ASTNode) string {
 	gen := &CodeGenerator{
-		includes:      make(map[string]bool),
-		variables:     make(map[string]string),
-		constants:     make(map[string]bool),
-		enums:         make(map[string]map[string]bool),
-		userFunctions: make(map[string]bool),
-		hasError:      false,
-		arrayImpls:    false,
-		arrayMethods:  make(map[string]bool),
-		stringMethods: make(map[string]bool),
-		dictMethods:   make(map[string]bool),
-		hasMainFunc:   false,
+		includes:          make(map[string]bool),
+		variables:         make(map[string]string),
+		constants:         make(map[string]bool),
+		enums:             make(map[string]map[string]bool),
+		userFunctions:     make(map[string]bool),
+		hasError:          false,
+		arrayImpls:        false,
+		arrayMethods:      make(map[string]bool),
+		stringMethods:     make(map[string]bool),
+		dictMethods:       make(map[string]bool),
+		hasMainFunc:       false,
+		arrayElementTypes: make(map[string]string),
+		structs:           make(map[string]*StructInfo),
 	}
 
 	// Add standard includes
@@ -98,7 +117,7 @@ func generateC(ast *ahoy.ASTNode) string {
 
 	// Generate main code
 	gen.generateNode(ast)
-	
+
 	// Check if there were any errors
 	if gen.hasError {
 		return "" // Return empty string to indicate error
@@ -112,6 +131,9 @@ func generateC(ast *ahoy.ASTNode) string {
 
 	// Generate string helper functions if any string methods were used
 	gen.writeStringHelperFunctions()
+
+	// Generate struct print helper functions
+	gen.writeStructHelperFunctions()
 
 	// Build final output
 	var result strings.Builder
@@ -303,18 +325,18 @@ func (gen *CodeGenerator) checkForMainFunction(node *ahoy.ASTNode) {
 	if node == nil {
 		return
 	}
-	
+
 	if node.Type == ahoy.NODE_FUNCTION {
 		// Register this as a user-defined function
 		funcName := node.Value
 		gen.userFunctions[funcName] = true
-		
+
 		// Check if it's the main function
 		if funcName == "main" {
 			gen.hasMainFunc = true
 		}
 	}
-	
+
 	for _, child := range node.Children {
 		gen.checkForMainFunction(child)
 	}
@@ -447,7 +469,7 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 
 	case ahoy.NODE_ARRAY_LITERAL:
 		gen.generateArrayLiteral(node)
-	
+
 	case ahoy.NODE_OBJECT_LITERAL:
 		gen.generateObjectLiteral(node)
 
@@ -456,7 +478,7 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 
 	case ahoy.NODE_DICT_ACCESS:
 		gen.generateDictAccess(node)
-	
+
 	case ahoy.NODE_OBJECT_ACCESS:
 		gen.generateObjectAccess(node)
 
@@ -491,19 +513,19 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 
 func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	funcName := node.Value
-	
+
 	// Rename main to ahoy_main to avoid conflict with C's main
 	cFuncName := funcName
 	if funcName == "main" {
 		cFuncName = "ahoy_main"
 	}
-	
+
 	// Track this as a user-defined function (keep snake_case)
 	gen.userFunctions[funcName] = true
-	
+
 	returnType := "void"
 	returnTypes := []string{}
-	
+
 	// Check if we have multiple return types (comma-separated in DataType)
 	if node.DataType != "" {
 		if strings.Contains(node.DataType, ",") {
@@ -512,7 +534,7 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 			for _, part := range parts {
 				returnTypes = append(returnTypes, strings.TrimSpace(part))
 			}
-			
+
 			// Generate struct definition for multi-return
 			structName := fmt.Sprintf("%s_return", funcName)
 			gen.funcDecls.WriteString(fmt.Sprintf("typedef struct {\n"))
@@ -526,7 +548,7 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 			returnType = gen.mapType(node.DataType)
 		}
 	}
-	
+
 	// Build parameter list for both declaration and forward declaration
 	params := node.Children[0]
 	paramList := ""
@@ -549,12 +571,12 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	oldOutput := gen.output
 	gen.output = strings.Builder{}
 	gen.indent++
-	
+
 	// Store current function info for return statement generation
 	gen.currentFunction = cFuncName
 	gen.currentFunctionReturnType = returnType
 	gen.currentFunctionHasMultiReturn = len(returnTypes) > 1
-	
+
 	// Initialize function-local variable scope
 	gen.functionVars = make(map[string]string)
 
@@ -576,11 +598,26 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 
 	// Check if this is a property/element assignment (obj<'prop'>: value or dict{"key"}: value)
 	// In this case, Children[0] is the access node, Children[1] is the value
-	if len(node.Children) == 2 && 
-	   (node.Children[0].Type == ahoy.NODE_OBJECT_ACCESS || 
-	    node.Children[0].Type == ahoy.NODE_DICT_ACCESS ||
-	    node.Children[0].Type == ahoy.NODE_ARRAY_ACCESS) {
-		// Generate the access expression
+	if len(node.Children) == 2 &&
+		(node.Children[0].Type == ahoy.NODE_OBJECT_ACCESS ||
+			node.Children[0].Type == ahoy.NODE_DICT_ACCESS ||
+			node.Children[0].Type == ahoy.NODE_ARRAY_ACCESS) {
+
+		// Special handling for dict assignment - use hashMapPut
+		if node.Children[0].Type == ahoy.NODE_DICT_ACCESS {
+			dictName := node.Children[0].Value
+			keyNode := node.Children[0].Children[0]
+			valueNode := node.Children[1]
+
+			gen.output.WriteString(fmt.Sprintf("hashMapPut(%s, ", dictName))
+			gen.generateNode(keyNode)
+			gen.output.WriteString(", (void*)(intptr_t)")
+			gen.generateNode(valueNode)
+			gen.output.WriteString(");\n")
+			return
+		}
+
+		// For object/array access, direct assignment works
 		gen.generateNode(node.Children[0])
 		gen.output.WriteString(" = ")
 		gen.generateNode(node.Children[1])
@@ -591,7 +628,7 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 	// Check if variable already exists (function scope first, then global)
 	_, existsInFunc := gen.functionVars[node.Value]
 	_, existsGlobal := gen.variables[node.Value]
-	
+
 	if existsInFunc || existsGlobal {
 		// Just assignment
 		valueNode := node.Children[0]
@@ -606,7 +643,7 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 	} else {
 		// Type inference and declaration
 		valueNode := node.Children[0]
-		
+
 		// Special handling for object literals - they define their own type inline
 		if valueNode.Type == ahoy.NODE_OBJECT_LITERAL {
 			// Check if this is a typed struct literal (e.g., rectangle<...>)
@@ -616,7 +653,7 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				gen.output.WriteString(fmt.Sprintf("%s %s = ", structName, node.Value))
 				gen.generateNode(valueNode)
 				gen.output.WriteString(";\n")
-				
+
 				// Track variable in appropriate scope
 				if gen.currentFunction != "" && gen.functionVars != nil {
 					gen.functionVars[node.Value] = valueNode.Value
@@ -624,34 +661,48 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 					gen.variables[node.Value] = valueNode.Value
 				}
 			} else {
-				// Anonymous struct
-				gen.output.WriteString("struct { ")
-				// Generate field declarations
+				// Anonymous struct - create a named struct for it
+				anonStructName := fmt.Sprintf("__anon_struct_%s", node.Value)
+
+				// Generate typedef struct
+				gen.funcDecls.WriteString(fmt.Sprintf("typedef struct {\n"))
+
+				// Track struct fields
+				structInfo := &StructInfo{
+					Name:   anonStructName,
+					Fields: make([]StructField, 0),
+				}
+
 				for _, prop := range valueNode.Children {
 					if prop.Type == ahoy.NODE_OBJECT_PROPERTY {
 						propType := gen.inferType(prop.Children[0])
-						gen.output.WriteString(propType)
-						gen.output.WriteString(" ")
-						gen.output.WriteString(prop.Value)
-						gen.output.WriteString("; ")
+						cType := gen.mapType(propType)
+						gen.funcDecls.WriteString(fmt.Sprintf("    %s %s;\n", cType, prop.Value))
+
+						structInfo.Fields = append(structInfo.Fields, StructField{
+							Name: prop.Value,
+							Type: cType,
+						})
 					}
 				}
-				gen.output.WriteString("} ")
-				gen.output.WriteString(node.Value)
-				gen.output.WriteString(" = ")
+				gen.funcDecls.WriteString(fmt.Sprintf("} %s;\n\n", anonStructName))
+				gen.structs[anonStructName] = structInfo
+
+				// Generate variable declaration
+				gen.output.WriteString(fmt.Sprintf("%s %s = ", anonStructName, node.Value))
 				gen.generateNode(valueNode)
 				gen.output.WriteString(";\n")
-				
+
 				// Track variable in appropriate scope
 				if gen.currentFunction != "" && gen.functionVars != nil {
-					gen.functionVars[node.Value] = "object"
+					gen.functionVars[node.Value] = anonStructName
 				} else {
-					gen.variables[node.Value] = "object"
+					gen.variables[node.Value] = anonStructName
 				}
 			}
 		} else {
 			varType := gen.inferType(valueNode)
-			
+
 			// Track variable in appropriate scope
 			if gen.currentFunction != "" && gen.functionVars != nil {
 				// Inside a function - use function scope
@@ -661,8 +712,14 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				gen.variables[node.Value] = varType
 			}
 
+			// If this is an array literal, track the element type
+			if valueNode.Type == ahoy.NODE_ARRAY_LITERAL && len(valueNode.Children) > 0 {
+				elemType := gen.inferType(valueNode.Children[0])
+				gen.arrayElementTypes[node.Value] = elemType
+			}
+
 			cType := gen.mapType(varType)
-			
+
 			// Check if value is a switch expression
 			if valueNode.Type == ahoy.NODE_SWITCH_STATEMENT {
 				// Generate switch as expression (assign in each case)
@@ -724,26 +781,26 @@ func (gen *CodeGenerator) generateIfStatement(node *ahoy.ASTNode) {
 func (gen *CodeGenerator) generateSwitchExpression(node *ahoy.ASTNode, targetVar string) {
 	switchExpr := node.Children[0]
 	switchExprType := gen.inferType(switchExpr)
-	
+
 	// Check if this is a string switch - need to use if-else with strcmp
 	if switchExprType == "char*" || switchExprType == "string" {
 		gen.generateStringSwitchExpression(node, targetVar)
 		return
 	}
-	
+
 	// Generate normal switch with assignments in each case
 	gen.writeIndent()
 	gen.output.WriteString("switch (")
 	gen.generateNode(switchExpr)
 	gen.output.WriteString(") {\n")
-	
+
 	// Generate cases
 	for i := 1; i < len(node.Children); i++ {
 		caseNode := node.Children[i]
 		if caseNode.Type == ahoy.NODE_SWITCH_CASE {
 			caseValue := caseNode.Children[0]
 			caseBody := caseNode.Children[1]
-			
+
 			// Check if it's a list of cases or range
 			if caseValue.Type == ahoy.NODE_SWITCH_CASE_LIST {
 				// Multiple cases
@@ -791,7 +848,7 @@ func (gen *CodeGenerator) generateSwitchExpression(node *ahoy.ASTNode, targetVar
 				// Single case or default
 				gen.indent++
 				gen.writeIndent()
-				
+
 				if caseValue.Type == ahoy.NODE_IDENTIFIER && caseValue.Value == "_" {
 					gen.output.WriteString("default:\n")
 				} else {
@@ -799,7 +856,7 @@ func (gen *CodeGenerator) generateSwitchExpression(node *ahoy.ASTNode, targetVar
 					gen.generateNode(caseValue)
 					gen.output.WriteString(":\n")
 				}
-				
+
 				gen.indent++
 				gen.generateSwitchCaseAssignment(caseBody, targetVar)
 				gen.writeIndent()
@@ -809,7 +866,7 @@ func (gen *CodeGenerator) generateSwitchExpression(node *ahoy.ASTNode, targetVar
 			}
 		}
 	}
-	
+
 	gen.writeIndent()
 	gen.output.WriteString("}\n")
 }
@@ -840,24 +897,24 @@ func (gen *CodeGenerator) generateSwitchCaseAssignment(caseBody *ahoy.ASTNode, t
 // generateStringSwitchExpression generates if-else chain for string switches
 func (gen *CodeGenerator) generateStringSwitchExpression(node *ahoy.ASTNode, targetVar string) {
 	switchExpr := node.Children[0]
-	
+
 	first := true
 	hasDefault := false
 	var defaultBody *ahoy.ASTNode
-	
+
 	for i := 1; i < len(node.Children); i++ {
 		caseNode := node.Children[i]
 		if caseNode.Type == ahoy.NODE_SWITCH_CASE {
 			caseValue := caseNode.Children[0]
 			caseBody := caseNode.Children[1]
-			
+
 			// Check for default case
 			if caseValue.Type == ahoy.NODE_IDENTIFIER && caseValue.Value == "_" {
 				hasDefault = true
 				defaultBody = caseBody
 				continue
 			}
-			
+
 			gen.writeIndent()
 			if first {
 				gen.output.WriteString("if (")
@@ -865,7 +922,7 @@ func (gen *CodeGenerator) generateStringSwitchExpression(node *ahoy.ASTNode, tar
 			} else {
 				gen.output.WriteString("else if (")
 			}
-			
+
 			// Handle multiple cases
 			if caseValue.Type == ahoy.NODE_SWITCH_CASE_LIST {
 				for j, val := range caseValue.Children {
@@ -885,7 +942,7 @@ func (gen *CodeGenerator) generateStringSwitchExpression(node *ahoy.ASTNode, tar
 				gen.generateNode(caseValue)
 				gen.output.WriteString(") == 0")
 			}
-			
+
 			gen.output.WriteString(") {\n")
 			gen.indent++
 			gen.generateSwitchCaseAssignment(caseBody, targetVar)
@@ -894,7 +951,7 @@ func (gen *CodeGenerator) generateStringSwitchExpression(node *ahoy.ASTNode, tar
 			gen.output.WriteString("}")
 		}
 	}
-	
+
 	// Handle default case
 	if hasDefault {
 		if !first {
@@ -974,7 +1031,7 @@ func (gen *CodeGenerator) generateSwitchStatement(node *ahoy.ASTNode) {
 				// Single case value or default case
 				gen.indent++
 				gen.writeIndent()
-				
+
 				// Check if it's a default case (underscore)
 				if caseValue.Type == ahoy.NODE_IDENTIFIER && caseValue.Value == "_" {
 					gen.output.WriteString("default:\n")
@@ -1163,12 +1220,12 @@ func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 	if len(node.Children) == 3 && node.Children[0].Type == ahoy.NODE_IDENTIFIER {
 		// Pattern 1 or 2: loop i:start: (forever loop with explicit variable and start value)
 		loopVar := node.Children[0].Value
-		
+
 		// Use block scope to avoid variable redeclaration
 		gen.output.WriteString("{\n")
 		gen.indent++
 		gen.writeIndent()
-		
+
 		gen.output.WriteString(fmt.Sprintf("int %s = ", loopVar))
 		gen.generateNode(node.Children[1])
 		gen.output.WriteString(";\n")
@@ -1181,19 +1238,19 @@ func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 
 		gen.writeIndent()
 		gen.output.WriteString("}\n")
-		
+
 		gen.indent--
 		gen.writeIndent()
 		gen.output.WriteString("}\n")
 	} else if len(node.Children) == 2 && node.Children[0].Type == ahoy.NODE_IDENTIFIER {
 		// Old pattern: loop i do (forever loop with explicit variable starting at 0)
 		loopVar := node.Children[0].Value
-		
+
 		// Use block scope to avoid variable redeclaration
 		gen.output.WriteString("{\n")
 		gen.indent++
 		gen.writeIndent()
-		
+
 		gen.output.WriteString(fmt.Sprintf("int %s = 0;\n", loopVar))
 		gen.writeIndent()
 		gen.output.WriteString(fmt.Sprintf("for (; ; %s++) {\n", loopVar))
@@ -1204,7 +1261,7 @@ func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 
 		gen.writeIndent()
 		gen.output.WriteString("}\n")
-		
+
 		gen.indent--
 		gen.writeIndent()
 		gen.output.WriteString("}\n")
@@ -1277,7 +1334,7 @@ func (gen *CodeGenerator) generateForInArrayLoop(node *ahoy.ASTNode) {
 
 	// Check if we're iterating over a string
 	iterableType := gen.inferType(iterableExpr)
-	
+
 	if iterableType == "char*" || iterableType == "string" {
 		// String iteration - iterate over characters
 		iterableName := gen.nodeToString(iterableExpr)
@@ -1482,7 +1539,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 	// Keep user-defined functions as snake_case
 	// Convert C library functions to PascalCase
 	funcName := node.Value
-	
+
 	// Special case: rename main to ahoy_main
 	if funcName == "main" {
 		funcName = "ahoy_main"
@@ -1502,7 +1559,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 		// Check if we have multiple arguments or if first arg is a format string
 		hasMultipleArgs := len(node.Children) > 1
 		firstIsString := len(node.Children) > 0 && node.Children[0].Type == ahoy.NODE_STRING
-		
+
 		// If first argument is a string AND it looks like a format string (has {} or %), treat it as one
 		if firstIsString && !hasMultipleArgs {
 			// Single string argument - just print it
@@ -1537,7 +1594,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 			// Build a single format string with spaces between arguments (Python-style)
 			if len(node.Children) > 0 {
 				formatParts := []string{}
-				
+
 				// Build format string with spaces between arguments
 				for _, arg := range node.Children {
 					argType := gen.inferType(arg)
@@ -1547,27 +1604,86 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 						formatSpec = "%s"
 					case "int":
 						formatSpec = "%d"
-					case "float":
+					case "float", "double":
 						formatSpec = "%f"
 					case "bool":
 						formatSpec = "%d"
 					case "char":
 						formatSpec = "%c"
+					case "array":
+						formatSpec = "%s" // Will use print_array_helper
+					case "dict":
+						formatSpec = "%s" // Will use print_dict_helper
+					case "struct":
+						formatSpec = "%s" // Will use print_struct_helper
 					default:
-						formatSpec = "%d"
+						// Check if it's a known struct type
+						if _, isStruct := gen.structs[argType]; isStruct {
+							formatSpec = "%s" // Will use print_struct_helper
+						} else {
+							formatSpec = "%d"
+						}
 					}
-					
+
 					formatParts = append(formatParts, formatSpec)
 				}
-				
+
 				// Join with spaces and add newline
 				formatStr := strings.Join(formatParts, " ") + "\\n"
 				gen.output.WriteString(fmt.Sprintf("\"%s\"", formatStr))
-				
+
 				// Output all arguments
 				for _, arg := range node.Children {
 					gen.output.WriteString(", ")
-					gen.generateNode(arg)
+					argType := gen.inferType(arg)
+
+					// Special handling for arrays and dicts
+					if argType == "array" {
+						// Check if we know the element type for this array
+						if arg.Type == ahoy.NODE_IDENTIFIER {
+							if elemType, exists := gen.arrayElementTypes[arg.Value]; exists {
+								if elemType == "char*" || elemType == "string" {
+									// String array - use special helper
+									gen.arrayMethods["print_string_array"] = true
+									gen.output.WriteString("print_string_array_helper(")
+									gen.generateNode(arg)
+									gen.output.WriteString(")")
+								} else {
+									// Int/numeric array - use regular helper
+									gen.arrayMethods["print_array"] = true
+									gen.output.WriteString("print_array_helper(")
+									gen.generateNode(arg)
+									gen.output.WriteString(")")
+								}
+							} else {
+								// Unknown type, use default
+								gen.arrayMethods["print_array"] = true
+								gen.output.WriteString("print_array_helper(")
+								gen.generateNode(arg)
+								gen.output.WriteString(")")
+							}
+						} else {
+							gen.arrayMethods["print_array"] = true
+							gen.output.WriteString("print_array_helper(")
+							gen.generateNode(arg)
+							gen.output.WriteString(")")
+						}
+					} else if argType == "dict" {
+						gen.dictMethods["print_dict"] = true
+						gen.output.WriteString("print_dict_helper(")
+						gen.generateNode(arg)
+						gen.output.WriteString(")")
+					} else if argType == "struct" || gen.structs[argType] != nil {
+						// Struct type - use print helper
+						gen.arrayMethods["print_struct"] = true
+						gen.output.WriteString("print_struct_helper_")
+						gen.output.WriteString(argType)
+						gen.output.WriteString("(")
+						gen.generateNode(arg)
+						gen.output.WriteString(")")
+					} else {
+						gen.generateNode(arg)
+					}
 				}
 			}
 			gen.output.WriteString(")")
@@ -1633,7 +1749,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 		if len(node.Children) > 0 {
 			argType := gen.inferType(node.Children[0])
 			gen.output.WriteString("({ char* __cast_buf = malloc(32); ")
-			
+
 			switch argType {
 			case "int":
 				gen.output.WriteString("sprintf(__cast_buf, \"%d\", ")
@@ -1742,7 +1858,7 @@ func (gen *CodeGenerator) generateBinaryOp(node *ahoy.ASTNode) {
 
 func (gen *CodeGenerator) generateConstant(node *ahoy.ASTNode) {
 	constName := node.Value
-	
+
 	// Check if constant already declared
 	if gen.constants[constName] {
 		fmt.Printf("\n❌ Error at line %d: Cannot redeclare constant '%s'\n", node.Line, constName)
@@ -1751,10 +1867,10 @@ func (gen *CodeGenerator) generateConstant(node *ahoy.ASTNode) {
 		gen.hasError = true
 		return
 	}
-	
+
 	// Mark constant as declared
 	gen.constants[constName] = true
-	
+
 	gen.writeIndent()
 	constType := gen.mapType(node.DataType)
 	gen.output.WriteString(fmt.Sprintf("const %s %s = ", constType, constName))
@@ -1923,11 +2039,11 @@ func (gen *CodeGenerator) generateArrayLiteral(node *ahoy.ASTNode) {
 	gen.output.WriteString(fmt.Sprintf("AhoyArray* %s = malloc(sizeof(AhoyArray)); ", arrName))
 	gen.output.WriteString(fmt.Sprintf("%s->length = %d; ", arrName, len(node.Children)))
 	gen.output.WriteString(fmt.Sprintf("%s->capacity = %d; ", arrName, len(node.Children)))
-	gen.output.WriteString(fmt.Sprintf("%s->data = malloc(%d * sizeof(int)); ", arrName, len(node.Children)))
+	gen.output.WriteString(fmt.Sprintf("%s->data = malloc(%d * sizeof(intptr_t)); ", arrName, len(node.Children)))
 
-	// Add elements
+	// Add elements - cast to intptr_t for pointer safety
 	for i, child := range node.Children {
-		gen.output.WriteString(fmt.Sprintf("%s->data[%d] = ", arrName, i))
+		gen.output.WriteString(fmt.Sprintf("%s->data[%d] = (intptr_t)", arrName, i))
 		gen.generateNode(child)
 		gen.output.WriteString("; ")
 	}
@@ -1936,15 +2052,32 @@ func (gen *CodeGenerator) generateArrayLiteral(node *ahoy.ASTNode) {
 }
 
 func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
-	gen.output.WriteString(fmt.Sprintf("%s->data[", node.Value))
+	arrayName := node.Value
+
+	// Check if we know the element type
+	if elemType, exists := gen.arrayElementTypes[arrayName]; exists {
+		cType := gen.mapType(elemType)
+		// Cast to the appropriate type for non-int types (need intptr_t intermediate for pointer safety)
+		if cType != "int" {
+			gen.output.WriteString(fmt.Sprintf("((%s)(intptr_t)%s->data[", cType, arrayName))
+			gen.generateNode(node.Children[0])
+			gen.output.WriteString("])")
+			return
+		}
+	}
+
+	// Default: no cast needed for int
+	gen.output.WriteString(fmt.Sprintf("%s->data[", arrayName))
 	gen.generateNode(node.Children[0])
 	gen.output.WriteString("]")
 }
 
 func (gen *CodeGenerator) generateDictAccess(node *ahoy.ASTNode) {
-	gen.output.WriteString(fmt.Sprintf("hashMapGet(%s, ", node.Value))
+	// Cast to char* for string values (common case)
+	// TODO: Track dict value types like we do for arrays
+	gen.output.WriteString(fmt.Sprintf("((char*)hashMapGet(%s, ", node.Value))
 	gen.generateNode(node.Children[0])
-	gen.output.WriteString(")")
+	gen.output.WriteString("))")
 }
 
 func (gen *CodeGenerator) generateDictLiteral(node *ahoy.ASTNode) {
@@ -1959,7 +2092,14 @@ func (gen *CodeGenerator) generateDictLiteral(node *ahoy.ASTNode) {
 		value := node.Children[i+1]
 
 		gen.output.WriteString(fmt.Sprintf("hashMapPut(%s, ", dictName))
-		gen.generateNode(key)
+
+		// If key is an identifier, convert to string literal
+		if key.Type == ahoy.NODE_IDENTIFIER {
+			gen.output.WriteString(fmt.Sprintf("\"%s\"", key.Value))
+		} else {
+			gen.generateNode(key)
+		}
+
 		gen.output.WriteString(", (void*)(intptr_t)")
 		gen.generateNode(value)
 		gen.output.WriteString("); ")
@@ -2006,6 +2146,12 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		return "dict"
 	case ahoy.NODE_ARRAY_LITERAL:
 		return "array"
+	case ahoy.NODE_OBJECT_LITERAL:
+		// Check if it's a typed object literal
+		if node.Value != "" {
+			return node.Value
+		}
+		return "struct"
 	case ahoy.NODE_CALL:
 		// Infer return type of function calls
 		if node.Value == "sprintf" {
@@ -2116,7 +2262,67 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		if varType, exists := gen.variables[node.Value]; exists {
 			return varType
 		}
+		if varType, exists := gen.functionVars[node.Value]; exists {
+			return varType
+		}
 		return "int"
+	case ahoy.NODE_ARRAY_ACCESS:
+		// Get the array variable name and look up its element type
+		arrayName := node.Value
+		if elemType, exists := gen.arrayElementTypes[arrayName]; exists {
+			return elemType
+		}
+		// Default to int if we don't know the element type
+		return "int"
+	case ahoy.NODE_DICT_ACCESS:
+		// Dictionary values are typically strings for now
+		// TODO: Track dict value types
+		return "char*"
+	case ahoy.NODE_OBJECT_ACCESS:
+		// Object property access with angle brackets - look up struct field type
+		if len(node.Children) > 0 {
+			objectName := node.Value
+			propertyName := node.Children[0].Value // String literal with property name
+
+			// Get the type of the object variable
+			objectType := ""
+			if varType, exists := gen.variables[objectName]; exists {
+				objectType = varType
+			} else if varType, exists := gen.functionVars[objectName]; exists {
+				objectType = varType
+			}
+
+			// Look up the struct definition
+			if structInfo, exists := gen.structs[objectType]; exists {
+				// Find the field type
+				for _, field := range structInfo.Fields {
+					if field.Name == propertyName {
+						return field.Type
+					}
+				}
+			}
+		}
+		return "char*"
+	case ahoy.NODE_MEMBER_ACCESS:
+		// Member access (dot notation) - look up struct field type
+		if len(node.Children) > 0 {
+			objectNode := node.Children[0]
+			memberName := node.Value
+
+			// Get the type of the object
+			objectType := gen.inferType(objectNode)
+
+			// Look up the struct definition
+			if structInfo, exists := gen.structs[objectType]; exists {
+				// Find the field type
+				for _, field := range structInfo.Fields {
+					if field.Name == memberName {
+						return field.Type
+					}
+				}
+			}
+		}
+		return "char*"
 	default:
 		return "int"
 	}
@@ -2127,12 +2333,12 @@ func (gen *CodeGenerator) inferSwitchCaseType(body *ahoy.ASTNode) string {
 	if body == nil {
 		return "int"
 	}
-	
+
 	// If it's a block, infer from last statement
 	if body.Type == ahoy.NODE_BLOCK && len(body.Children) > 0 {
 		return gen.inferType(body.Children[len(body.Children)-1])
 	}
-	
+
 	return gen.inferType(body)
 }
 
@@ -2251,10 +2457,10 @@ func (gen *CodeGenerator) generateEnum(node *ahoy.ASTNode) {
 	nextAutoValue := 0
 	for _, member := range node.Children {
 		gen.writeIndent()
-		
+
 		// Track this member
 		gen.enums[enumName][member.Value] = true
-		
+
 		// Check if member has a custom value (stored in DataType field)
 		if member.DataType != "" {
 			// Use the custom value
@@ -2316,30 +2522,30 @@ func (gen *CodeGenerator) generateTupleSwitchAssignment(leftSide *ahoy.ASTNode, 
 			gen.variables[target.Value] = "int"
 		}
 	}
-	
+
 	// Generate switch with tuple assignments in each case
 	switchExpr := switchNode.Children[0]
 	switchExprType := gen.inferType(switchExpr)
-	
+
 	// Check if this is a string switch
 	if switchExprType == "char*" || switchExprType == "string" {
 		gen.generateTupleStringSwitchExpression(switchNode, leftSide)
 		return
 	}
-	
+
 	// Generate normal switch with tuple assignments
 	gen.writeIndent()
 	gen.output.WriteString("switch (")
 	gen.generateNode(switchExpr)
 	gen.output.WriteString(") {\n")
-	
+
 	// Generate cases
 	for i := 1; i < len(switchNode.Children); i++ {
 		caseNode := switchNode.Children[i]
 		if caseNode.Type == ahoy.NODE_SWITCH_CASE {
 			caseValue := caseNode.Children[0]
 			caseBody := caseNode.Children[1]
-			
+
 			// Generate case label
 			gen.indent++
 			gen.writeIndent()
@@ -2350,7 +2556,7 @@ func (gen *CodeGenerator) generateTupleSwitchAssignment(leftSide *ahoy.ASTNode, 
 				gen.generateNode(caseValue)
 				gen.output.WriteString(":\n")
 			}
-			
+
 			gen.indent++
 			// Generate tuple assignments
 			if caseBody.Type == ahoy.NODE_BLOCK {
@@ -2369,7 +2575,7 @@ func (gen *CodeGenerator) generateTupleSwitchAssignment(leftSide *ahoy.ASTNode, 
 			gen.indent--
 		}
 	}
-	
+
 	gen.writeIndent()
 	gen.output.WriteString("}\n")
 }
@@ -2377,24 +2583,24 @@ func (gen *CodeGenerator) generateTupleSwitchAssignment(leftSide *ahoy.ASTNode, 
 // generateTupleStringSwitchExpression handles tuple assignment from string switch
 func (gen *CodeGenerator) generateTupleStringSwitchExpression(switchNode *ahoy.ASTNode, leftSide *ahoy.ASTNode) {
 	switchExpr := switchNode.Children[0]
-	
+
 	first := true
 	hasDefault := false
 	var defaultBody *ahoy.ASTNode
-	
+
 	for i := 1; i < len(switchNode.Children); i++ {
 		caseNode := switchNode.Children[i]
 		if caseNode.Type == ahoy.NODE_SWITCH_CASE {
 			caseValue := caseNode.Children[0]
 			caseBody := caseNode.Children[1]
-			
+
 			// Check for default case
 			if caseValue.Type == ahoy.NODE_IDENTIFIER && caseValue.Value == "_" {
 				hasDefault = true
 				defaultBody = caseBody
 				continue
 			}
-			
+
 			gen.writeIndent()
 			if first {
 				gen.output.WriteString("if (")
@@ -2402,13 +2608,13 @@ func (gen *CodeGenerator) generateTupleStringSwitchExpression(switchNode *ahoy.A
 			} else {
 				gen.output.WriteString("else if (")
 			}
-			
+
 			gen.output.WriteString("strcmp(")
 			gen.generateNode(switchExpr)
 			gen.output.WriteString(", ")
 			gen.generateNode(caseValue)
 			gen.output.WriteString(") == 0) {\n")
-			
+
 			gen.indent++
 			// Generate tuple assignments
 			if caseBody.Type == ahoy.NODE_BLOCK {
@@ -2426,7 +2632,7 @@ func (gen *CodeGenerator) generateTupleStringSwitchExpression(switchNode *ahoy.A
 			gen.output.WriteString("}")
 		}
 	}
-	
+
 	// Handle default case
 	if hasDefault {
 		gen.output.WriteString(" else {\n")
@@ -2457,16 +2663,16 @@ func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 	if len(rightSide.Children) == 1 && rightSide.Children[0].Type == ahoy.NODE_CALL {
 		callNode := rightSide.Children[0]
 		funcName := callNode.Value
-		
+
 		// Generate the function call into a temp struct
 		tempVar := fmt.Sprintf("__multi_ret_%d", gen.varCounter)
 		gen.varCounter++
-		
+
 		gen.writeIndent()
 		gen.output.WriteString(fmt.Sprintf("%s_return %s = ", funcName, tempVar))
 		gen.generateNode(callNode)
 		gen.output.WriteString(";\n")
-		
+
 		// Assign struct fields to left side variables
 		for i, target := range leftSide.Children {
 			gen.writeIndent()
@@ -2526,6 +2732,12 @@ func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 func (gen *CodeGenerator) generateStruct(node *ahoy.ASTNode) {
 	structName := node.Value
 
+	// Track struct info
+	structInfo := &StructInfo{
+		Name:   structName,
+		Fields: make([]StructField, 0),
+	}
+
 	gen.writeIndent()
 	gen.output.WriteString(fmt.Sprintf("typedef struct {\n"))
 	gen.indent++
@@ -2534,11 +2746,20 @@ func (gen *CodeGenerator) generateStruct(node *ahoy.ASTNode) {
 		fieldType := gen.mapType(field.DataType)
 		gen.writeIndent()
 		gen.output.WriteString(fmt.Sprintf("%s %s;\n", fieldType, field.Value))
+
+		// Track field info
+		structInfo.Fields = append(structInfo.Fields, StructField{
+			Name: field.Value,
+			Type: fieldType,
+		})
 	}
 
 	gen.indent--
 	gen.writeIndent()
 	gen.output.WriteString(fmt.Sprintf("} %s;\n\n", structName))
+
+	// Store struct info
+	gen.structs[structName] = structInfo
 }
 
 // Generate method call
@@ -2561,11 +2782,11 @@ func (gen *CodeGenerator) generateMemberAccess(node *ahoy.ASTNode) {
 	}
 
 	gen.generateNodeInternal(object, false)
-	
+
 	// Check if object is a pointer type (array, dict, or struct pointer)
 	objectType := gen.inferType(object)
 	if objectType == "AhoyArray*" || objectType == "HashMap*" || objectType == "array" || objectType == "dict" ||
-	   strings.HasSuffix(objectType, "*") {
+		strings.HasSuffix(objectType, "*") {
 		gen.output.WriteString("->")
 	} else {
 		gen.output.WriteString(".")
@@ -2580,7 +2801,7 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 		// Array structure definition
 		gen.funcDecls.WriteString("\n// Array Helper Structure\n")
 		gen.funcDecls.WriteString("typedef struct {\n")
-		gen.funcDecls.WriteString("    int* data;\n")
+		gen.funcDecls.WriteString("    intptr_t* data;\n")
 		gen.funcDecls.WriteString("    int length;\n")
 		gen.funcDecls.WriteString("    int capacity;\n")
 		gen.funcDecls.WriteString("} AhoyArray;\n\n")
@@ -2601,10 +2822,10 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 
 	// push method
 	if gen.arrayMethods["push"] {
-		gen.funcDecls.WriteString("AhoyArray* ahoy_array_push(AhoyArray* arr, int value) {\n")
+		gen.funcDecls.WriteString("AhoyArray* ahoy_array_push(AhoyArray* arr, intptr_t value) {\n")
 		gen.funcDecls.WriteString("    if (arr->length >= arr->capacity) {\n")
 		gen.funcDecls.WriteString("        arr->capacity = arr->capacity == 0 ? 4 : arr->capacity * 2;\n")
-		gen.funcDecls.WriteString("        arr->data = realloc(arr->data, arr->capacity * sizeof(int));\n")
+		gen.funcDecls.WriteString("        arr->data = realloc(arr->data, arr->capacity * sizeof(intptr_t));\n")
 		gen.funcDecls.WriteString("    }\n")
 		gen.funcDecls.WriteString("    arr->data[arr->length++] = value;\n")
 		gen.funcDecls.WriteString("    return arr;\n")
@@ -2613,7 +2834,7 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 
 	// pop method
 	if gen.arrayMethods["pop"] {
-		gen.funcDecls.WriteString("int ahoy_array_pop(AhoyArray* arr) {\n")
+		gen.funcDecls.WriteString("intptr_t ahoy_array_pop(AhoyArray* arr) {\n")
 		gen.funcDecls.WriteString("    if (arr->length == 0) return 0;\n")
 		gen.funcDecls.WriteString("    return arr->data[--arr->length];\n")
 		gen.funcDecls.WriteString("}\n\n")
@@ -2624,7 +2845,7 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 		gen.funcDecls.WriteString("int ahoy_array_sum(AhoyArray* arr) {\n")
 		gen.funcDecls.WriteString("    int total = 0;\n")
 		gen.funcDecls.WriteString("    for (int i = 0; i < arr->length; i++) {\n")
-		gen.funcDecls.WriteString("        total += arr->data[i];\n")
+		gen.funcDecls.WriteString("        total += (int)arr->data[i];\n")
 		gen.funcDecls.WriteString("    }\n")
 		gen.funcDecls.WriteString("    return total;\n")
 		gen.funcDecls.WriteString("}\n\n")
@@ -2632,7 +2853,7 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 
 	// has method
 	if gen.arrayMethods["has"] {
-		gen.funcDecls.WriteString("int ahoy_array_has(AhoyArray* arr, int value) {\n")
+		gen.funcDecls.WriteString("int ahoy_array_has(AhoyArray* arr, intptr_t value) {\n")
 		gen.funcDecls.WriteString("    for (int i = 0; i < arr->length; i++) {\n")
 		gen.funcDecls.WriteString("        if (arr->data[i] == value) return 1;\n")
 		gen.funcDecls.WriteString("    }\n")
@@ -2643,10 +2864,10 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 	// sort method
 	if gen.arrayMethods["sort"] {
 		gen.funcDecls.WriteString("int __ahoy_compare_ints(const void* a, const void* b) {\n")
-		gen.funcDecls.WriteString("    return (*(int*)a - *(int*)b);\n")
+		gen.funcDecls.WriteString("    return (*(intptr_t*)a - *(intptr_t*)b);\n")
 		gen.funcDecls.WriteString("}\n\n")
 		gen.funcDecls.WriteString("AhoyArray* ahoy_array_sort(AhoyArray* arr) {\n")
-		gen.funcDecls.WriteString("    qsort(arr->data, arr->length, sizeof(int), __ahoy_compare_ints);\n")
+		gen.funcDecls.WriteString("    qsort(arr->data, arr->length, sizeof(intptr_t), __ahoy_compare_ints);\n")
 		gen.funcDecls.WriteString("    return arr;\n")
 		gen.funcDecls.WriteString("}\n\n")
 	}
@@ -2655,7 +2876,7 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 	if gen.arrayMethods["reverse"] {
 		gen.funcDecls.WriteString("AhoyArray* ahoy_array_reverse(AhoyArray* arr) {\n")
 		gen.funcDecls.WriteString("    for (int i = 0; i < arr->length / 2; i++) {\n")
-		gen.funcDecls.WriteString("        int temp = arr->data[i];\n")
+		gen.funcDecls.WriteString("        intptr_t temp = arr->data[i];\n")
 		gen.funcDecls.WriteString("        arr->data[i] = arr->data[arr->length - 1 - i];\n")
 		gen.funcDecls.WriteString("        arr->data[arr->length - 1 - i] = temp;\n")
 		gen.funcDecls.WriteString("    }\n")
@@ -2669,7 +2890,7 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 		gen.funcDecls.WriteString("    srand(time(NULL));\n")
 		gen.funcDecls.WriteString("    for (int i = arr->length - 1; i > 0; i--) {\n")
 		gen.funcDecls.WriteString("        int j = rand() % (i + 1);\n")
-		gen.funcDecls.WriteString("        int temp = arr->data[i];\n")
+		gen.funcDecls.WriteString("        intptr_t temp = arr->data[i];\n")
 		gen.funcDecls.WriteString("        arr->data[i] = arr->data[j];\n")
 		gen.funcDecls.WriteString("        arr->data[j] = temp;\n")
 		gen.funcDecls.WriteString("    }\n")
@@ -2679,7 +2900,7 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 
 	// pick method
 	if gen.arrayMethods["pick"] {
-		gen.funcDecls.WriteString("int ahoy_array_pick(AhoyArray* arr) {\n")
+		gen.funcDecls.WriteString("intptr_t ahoy_array_pick(AhoyArray* arr) {\n")
 		gen.funcDecls.WriteString("    if (arr->length == 0) return 0;\n")
 		gen.funcDecls.WriteString("    srand(time(NULL));\n")
 		gen.funcDecls.WriteString("    return arr->data[rand() % arr->length];\n")
@@ -2695,7 +2916,24 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 		gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \"[\");\n")
 		gen.funcDecls.WriteString("    for (int i = 0; i < arr->length; i++) {\n")
 		gen.funcDecls.WriteString("        if (i > 0) offset += sprintf(buffer + offset, \", \");\n")
-		gen.funcDecls.WriteString("        offset += sprintf(buffer + offset, \"%d\", arr->data[i]);\n")
+		gen.funcDecls.WriteString("        offset += sprintf(buffer + offset, \"%d\", (int)arr->data[i]);\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \"]\");\n")
+		gen.funcDecls.WriteString("    return buffer;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// print_string_array helper - formats string array for printing
+	if gen.arrayMethods["print_string_array"] {
+		gen.funcDecls.WriteString("char* print_string_array_helper(AhoyArray* arr) {\n")
+		gen.funcDecls.WriteString("    if (arr == NULL || arr->length == 0) return \"[]\";\n")
+		gen.funcDecls.WriteString("    char* buffer = malloc(4096);\n")
+		gen.funcDecls.WriteString("    int offset = 0;\n")
+		gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \"[\");\n")
+		gen.funcDecls.WriteString("    for (int i = 0; i < arr->length; i++) {\n")
+		gen.funcDecls.WriteString("        if (i > 0) offset += sprintf(buffer + offset, \", \");\n")
+		gen.funcDecls.WriteString("        char* str = (char*)(intptr_t)arr->data[i];\n")
+		gen.funcDecls.WriteString("        offset += sprintf(buffer + offset, \"\\\"%s\\\"\", str);\n")
 		gen.funcDecls.WriteString("    }\n")
 		gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \"]\");\n")
 		gen.funcDecls.WriteString("    return buffer;\n")
@@ -2720,7 +2958,7 @@ func (gen *CodeGenerator) writeDictHelperFunctions() {
 			// Add array structure if not already added
 			gen.funcDecls.WriteString("// Array Helper Structure\n")
 			gen.funcDecls.WriteString("typedef struct {\n")
-			gen.funcDecls.WriteString("    int* data;\n")
+			gen.funcDecls.WriteString("    intptr_t* data;\n")
 			gen.funcDecls.WriteString("    int length;\n")
 			gen.funcDecls.WriteString("    int capacity;\n")
 			gen.funcDecls.WriteString("} AhoyArray;\n\n")
@@ -2879,6 +3117,36 @@ func (gen *CodeGenerator) writeDictHelperFunctions() {
 		gen.funcDecls.WriteString("    }\n")
 		gen.funcDecls.WriteString("    \n")
 		gen.funcDecls.WriteString("    return merged;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// print_dict helper - formats dict for printing
+	if gen.dictMethods["print_dict"] {
+		gen.funcDecls.WriteString("char* print_dict_helper(HashMap* dict) {\n")
+		gen.funcDecls.WriteString("    if (dict == NULL || dict->size == 0) return \"{}\";\n")
+		gen.funcDecls.WriteString("    char* buffer = malloc(4096);\n")
+		gen.funcDecls.WriteString("    int offset = 0;\n")
+		gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \"{\");\n")
+		gen.funcDecls.WriteString("    int count = 0;\n")
+		gen.funcDecls.WriteString("    for (int i = 0; i < dict->capacity; i++) {\n")
+		gen.funcDecls.WriteString("        HashMapEntry* entry = dict->buckets[i];\n")
+		gen.funcDecls.WriteString("        while (entry != NULL) {\n")
+		gen.funcDecls.WriteString("            if (count > 0) offset += sprintf(buffer + offset, \", \");\n")
+		gen.funcDecls.WriteString("            offset += sprintf(buffer + offset, \"\\\"%s\\\": \", entry->key);\n")
+		gen.funcDecls.WriteString("            // Try to print value as string if it looks like a pointer to string\n")
+		gen.funcDecls.WriteString("            if (entry->value != NULL) {\n")
+		gen.funcDecls.WriteString("                char* str_val = (char*)entry->value;\n")
+		gen.funcDecls.WriteString("                // Simple heuristic: if it's a readable string, print as string\n")
+		gen.funcDecls.WriteString("                offset += sprintf(buffer + offset, \"\\\"%s\\\"\", str_val);\n")
+		gen.funcDecls.WriteString("            } else {\n")
+		gen.funcDecls.WriteString("                offset += sprintf(buffer + offset, \"null\");\n")
+		gen.funcDecls.WriteString("            }\n")
+		gen.funcDecls.WriteString("            count++;\n")
+		gen.funcDecls.WriteString("            entry = entry->next;\n")
+		gen.funcDecls.WriteString("        }\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \"}\");\n")
+		gen.funcDecls.WriteString("    return buffer;\n")
 		gen.funcDecls.WriteString("}\n\n")
 	}
 }
@@ -3069,13 +3337,65 @@ func (gen *CodeGenerator) generateFilterInline(arrayNode *ahoy.ASTNode, lambda *
 	gen.output.WriteString("__result; })")
 }
 
+func (gen *CodeGenerator) writeStructHelperFunctions() {
+	// Generate print helper for each struct type
+	for _, structInfo := range gen.structs {
+		gen.funcDecls.WriteString(fmt.Sprintf("\n// Print helper for %s\n", structInfo.Name))
+		gen.funcDecls.WriteString(fmt.Sprintf("char* print_struct_helper_%s(%s obj) {\n", structInfo.Name, structInfo.Name))
+		gen.funcDecls.WriteString("    static char buffer[512];\n")
+		gen.funcDecls.WriteString("    sprintf(buffer, \"{")
+
+		for i, field := range structInfo.Fields {
+			if i > 0 {
+				gen.funcDecls.WriteString(", ")
+			}
+			gen.funcDecls.WriteString(field.Name)
+			gen.funcDecls.WriteString(": ")
+
+			// Add format specifier based on field type
+			switch field.Type {
+			case "int":
+				gen.funcDecls.WriteString("%d")
+			case "float", "double":
+				gen.funcDecls.WriteString("%.2f")
+			case "char*", "const char*":
+				gen.funcDecls.WriteString("\\\"%s\\\"")
+			case "char":
+				gen.funcDecls.WriteString("%c")
+			case "bool":
+				gen.funcDecls.WriteString("%s")
+			default:
+				gen.funcDecls.WriteString("%p")
+			}
+		}
+
+		gen.funcDecls.WriteString("}\", ")
+
+		// Add field values
+		for i, field := range structInfo.Fields {
+			if i > 0 {
+				gen.funcDecls.WriteString(", ")
+			}
+			if field.Type == "bool" {
+				gen.funcDecls.WriteString(fmt.Sprintf("obj.%s ? \"true\" : \"false\"", field.Name))
+			} else {
+				gen.funcDecls.WriteString(fmt.Sprintf("obj.%s", field.Name))
+			}
+		}
+
+		gen.funcDecls.WriteString(");\n")
+		gen.funcDecls.WriteString("    return buffer;\n")
+		gen.funcDecls.WriteString("}\n")
+	}
+}
+
 func (gen *CodeGenerator) writeStringHelperFunctions() {
 	if len(gen.stringMethods) == 0 {
 		return
 	}
 
-	gen.includes["ctype.h"] = true  // For tolower/toupper
-	gen.includes["regex.h"] = true  // For regex matching
+	gen.includes["ctype.h"] = true // For tolower/toupper
+	gen.includes["regex.h"] = true // For regex matching
 
 	// Helper function to duplicate strings
 	gen.funcDecls.WriteString("\n// String Helper Functions\n")
@@ -3381,15 +3701,15 @@ func (gen *CodeGenerator) generateObjectLiteral(node *ahoy.ASTNode) {
 	// Generate compound literal initialization
 	// If node.Value is set, it's a typed literal (e.g., rectangle<...>)
 	// Need to generate: (Rectangle){...}
-	
+
 	if node.Value != "" {
 		// Typed object literal - capitalize first letter for C struct name
 		structName := capitalizeFirst(node.Value)
 		gen.output.WriteString(fmt.Sprintf("(%s)", structName))
 	}
-	
+
 	gen.output.WriteString("{")
-	
+
 	// Generate field initializations
 	first := true
 	for _, prop := range node.Children {
@@ -3404,7 +3724,7 @@ func (gen *CodeGenerator) generateObjectLiteral(node *ahoy.ASTNode) {
 			first = false
 		}
 	}
-	
+
 	gen.output.WriteString("}")
 }
 
@@ -3422,7 +3742,7 @@ func (gen *CodeGenerator) generateObjectAccess(node *ahoy.ASTNode) {
 	// Note: The tokenizer already strips quotes from strings
 	gen.output.WriteString(node.Value)
 	gen.output.WriteString(".")
-	
+
 	if len(node.Children) > 0 && node.Children[0].Type == ahoy.NODE_STRING {
 		// Use the property name directly - quotes are already stripped by tokenizer
 		gen.output.WriteString(node.Children[0].Value)

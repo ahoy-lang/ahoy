@@ -628,3 +628,48 @@ For more examples and documentation, see:
 - ✅ Multiple return values
 
 Ahoy! 🏴‍☠️
+
+## Testing
+
+Ahoy includes a comprehensive test suite with automated CI/CD.
+
+### Run All Tests
+```bash
+./run_tests.sh
+```
+
+### Run Single Test
+```bash
+./source/ahoy-compiler -f test/input/arrays_test.ahoy -r
+```
+
+### Test Categories
+- **arrays_test.ahoy** - Array operations
+- **dictionaries_test.ahoy** - Dictionary methods
+- **objects_structs_test.ahoy** - Object literals and structs
+- **conditionals_test.ahoy** - If and switch statements
+- **loops_test.ahoy** - All loop types
+- **tuples_test.ahoy** - Tuple operations
+- **enums_test.ahoy** - Enum declarations
+- **functions_test.ahoy** - Function features
+
+### Continuous Integration
+
+GitHub Actions automatically runs tests on every push to `master`/`main`:
+- Compiles all test files
+- Executes and validates output
+- Stores test artifacts
+
+See [TESTING.md](TESTING.md) for detailed testing documentation.
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add/update tests
+5. Ensure tests pass: `./run_tests.sh`
+6. Submit a pull request
+
+Tests run automatically on PRs via GitHub Actions.
+

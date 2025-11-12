@@ -1,0 +1,34 @@
+? Conditionals - if statements and switch
+
+? Basic if
+x: 10
+if x is 10 then
+    print|"ten"|
+$
+
+? If-else
+y: 5
+if y greater_than 10 then
+    print|"big"|
+else
+    print|"small"|
+$
+
+? Switch statement
+day: 2
+result:string= switch day:
+    on 1: "Mon"
+    on 2: "Tue"
+    on 3: "Wed"
+    _: "Other"
+$
+print|result|
+
+? Switch with multiple values
+grade: 'B'
+quality:string= switch grade:
+    on 'A', 'B': "Good"
+    on 'C': "OK"
+    _: "Poor"
+$
+print|quality|

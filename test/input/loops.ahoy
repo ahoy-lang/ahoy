@@ -1,0 +1,26 @@
+? Loops test
+arr: [1, 2, 3]
+loop item in arr do
+    print|item| ? should print: 1, 2, 3
+$
+
+numbers: [10, 20, 30, 40]
+loop num in numbers do
+    ahoy|num| ? should print: 10, 20 (then halt)
+    if num is 20 then
+        halt
+    $
+$
+
+values: [1, 2, 3, 4]
+loop val in values do
+    if val is 2 then
+        next
+    $
+    print|val| ? should print: 1, 3, 4 (skips 2)
+$
+
+? config : {"host": "localhost", "port": 8080}
+? loop key, value in config do
+?     print|f"Key: {key}, Value: {value}"|
+? $
