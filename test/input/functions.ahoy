@@ -8,13 +8,32 @@ expected.push|"15"|
 
 
 
-? @ multi :: |name,phone| infer:
-? 	return name, phone
-? $
-? name, phone: multi|"Alice", 123-456-7890|
-? print|name,phone|
-? expected.push|"Alice",123-45-7890|
+@ multiple :: |name:string,phone:int| string, int:
+	return name, phone
+$
 
+name, phone: multiple|"Alice", 1234567890|
+print|name,phone|
+expected.push|"Alice 1234567890"|
+
+
+? multiple infer
+@ multiple_infer :: |name:string,phone| infer:
+	return name, phone
+$
+
+name, phone : multiple_infer|"Alice", 1234567890|
+print|name,phone|
+expected.push|"Alice 1234567890"|
+
+? test_generics infer
+@ test_generics :: |name,phone,location:generic,postcode| infer:
+	return name, phone,location,postcode
+$
+
+name, phone,location,postcode : test_generics|"Alice", 1234567890,"madrid",9220|
+print|name.type,phone.type,location.type,postcode.type|
+expected.push|"string int string int"|
 
 ? Print expected values for test validation
 print|expected|

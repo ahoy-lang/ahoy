@@ -4746,6 +4746,18 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 			member = p.expect(TOKEN_IDENTIFIER)
 		}
 
+		// Check if this is the special .type property first (before method call check)
+		if member.Value == "type" {
+			// This is a .type property access, not a method call
+			object = &ASTNode{
+				Type:     NODE_TYPE_PROPERTY,
+				Value:    "type",
+				Line:     member.Line,
+				Children: []*ASTNode{object},
+			}
+			continue // Don't process as method call
+		}
+
 		// Check if this is a method call
 		// Allow method calls even inside function calls, but need to look ahead
 		// to ensure we have a matching closing pipe

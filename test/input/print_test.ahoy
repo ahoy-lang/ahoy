@@ -1,0 +1,28 @@
+expected: []
+? Test print with multiple arguments (should be on one line like Python)
+
+? Single argument
+print|"Hello"|
+expected.push|"Hello"|
+
+? Multiple arguments - should print on one line with spaces
+print|"Alice", 25, "Developer"|
+expected.push|"Alice 25 Developer"|
+
+? Multiple variables
+name: "Bob"; age: 30; job: "Engineer"
+print|name, age, job|
+expected.push|"Bob 30 Engineer"|
+
+? Mix of literals and variables
+x: 10
+y: 20
+print|"Sum:", x + y|
+expected.push|"Sum: 30"|
+
+? test ahoy
+ahoy|"Sum:", x + y|
+expected.push|"Sum: 30"|
+
+? Print expected
+print|expected|

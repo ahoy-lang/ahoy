@@ -1,14 +1,14 @@
 expected: []
 
-? Test array
+? Test array (untyped - should be just "array")
 numbers: [1, 2, 3]
 print|numbers|
 expected.push|"[1, 2, 3]"|
 
-? Test .type property
+? Test .type property on untyped array
 arr_type: numbers.type
 print|arr_type|
-expected.push|"array[int]"|
+expected.push|"array"|
 
 ? Print expected
 print|expected|

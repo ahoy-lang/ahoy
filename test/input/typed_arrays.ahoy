@@ -6,9 +6,14 @@ numbers: array[int]= [1, 2, 3]
 print|numbers|
 expected.push|"[1, 2, 3]"|
 
-? Create typed string array
-words: array[string]= ["hello", "world"]
-print|words|
+? Create typed string array - explicit type
+words_typed: array[string]= ["hello", "world"]
+print|words_typed|
+expected.push|"[\"hello\", \"world\"]"|
+
+? Create untyped string array - should be just array, not array[string]
+words_untyped: ["hello", "world"]
+print|words_untyped|
 expected.push|"[\"hello\", \"world\"]"|
 
 ? TODO: Typed dict with string keys and int values
@@ -16,15 +21,30 @@ expected.push|"[\"hello\", \"world\"]"|
 ? print|scores{"alice"}|
 ? expected.push|"95"|
 
-? Test .type property on arrays
+? Test .type property on typed int array
 arr_type: numbers.type
 print|arr_type|
 expected.push|"array[int]"|
 
-? Test .type property on string arrays
-str_type: words.type
-print|str_type|
+? Test .type property on typed string array
+str_type_typed: words_typed.type
+print|str_type_typed|
 expected.push|"array[string]"|
+
+? Test .type property on untyped string array (should be just "array")
+str_type_untyped: words_untyped.type
+print|str_type_untyped|
+expected.push|"array"|
+
+? Test mixed array (no type annotation)
+mixed: [1, "hello", 3.14]
+print|mixed|
+expected.push|"[1, \"hello\", 3.140000]"|
+
+? Test .type on mixed array (should be just "array")
+mixed_type: mixed.type
+print|mixed_type|
+expected.push|"array"|
 
 ? TODO: Test .type property on dicts
 ? dict_type: scores.type
