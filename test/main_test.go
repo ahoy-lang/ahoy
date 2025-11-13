@@ -13,7 +13,7 @@ import (
 // TestConsolidatedFiles tests all consolidated test files
 func TestConsolidatedFiles(t *testing.T) {
 	// Build the compiler first
-	compilerPath := "../source/ahoy-compiler"
+	compilerPath := "../ahoy-bin"
 	if _, err := os.Stat(compilerPath); os.IsNotExist(err) {
 		// Try to build it
 		cmd := exec.Command("go", "build", "-o", compilerPath, "../source")
@@ -34,7 +34,7 @@ func TestConsolidatedFiles(t *testing.T) {
 		testName := strings.TrimSuffix(baseName, ".ahoy")
 		testName = strings.ReplaceAll(testName, "_", " ")
 		testName = strings.Title(testName) + " Test"
-		
+
 		t.Run(testName, func(t *testing.T) {
 			t.Parallel()
 			output, err := compileAndRun(t, file, compilerPath)

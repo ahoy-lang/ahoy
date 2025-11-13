@@ -30,5 +30,112 @@ expected.push|"1"|
 expected.push|"3"|
 expected.push|"4"|
 
+? Loop range from 0 to 5
+loop i to 5:
+    print|f"Count {i}"|
+$
+expected.push|"Count 0"|
+expected.push|"Count 1"|
+expected.push|"Count 2"|
+expected.push|"Count 3"|
+expected.push|"Count 4"|
+
+? Loop range from 0 to 5
+loop i:5 to 10+1:
+    print|f"Count {i}"|
+$
+expected.push|"Count 5"|
+expected.push|"Count 6"|
+expected.push|"Count 7"|
+expected.push|"Count 8"|
+expected.push|"Count 9"|
+expected.push|"Count 10"|
+
+i:3
+if i < 10 then print|"Less than 10"|$
+expected.push|"Less than 10"|
+
+? Loop conditional with word operators
+loop i:0 till i < 5 do print|f"Value: {i}"|$
+expected.push|"Value: 0"|
+expected.push|"Value: 1"|
+expected.push|"Value: 2"|
+expected.push|"Value: 3"|
+expected.push|"Value: 4"|
+
+? Loop conditional with symbol operators
+number:2
+loop till number <= 5:
+    ahoy|f"Count {number}"|
+    number: number + 1
+$
+expected.push|"Count 2"|
+expected.push|"Count 3"|
+expected.push|"Count 4"|
+expected.push|"Count 5"|
+
+values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+loop val:0 to values.length:
+    print|f"Value: {val}"|
+$
+expected.push|"Value: 0"|
+expected.push|"Value: 1"|
+expected.push|"Value: 2"|
+expected.push|"Value: 3"|
+expected.push|"Value: 4"|
+expected.push|"Value: 5"|
+expected.push|"Value: 6"|
+expected.push|"Value: 7"|
+expected.push|"Value: 8"|
+expected.push|"Value: 9"|
+
+? TODO: Loop forever with explicit counter - syntax needs review
+? loop i:0:
+?   print|f"Loop {i}\n"|
+?   if i is 5 do halt
+? $
+
+? Alternative syntax (also works)
+loop i:0 till i less_than 5 do
+    ahoy|f"Count {i}"|
+$
+expected.push|"Count 0"|
+expected.push|"Count 1"|
+expected.push|"Count 2"|
+expected.push|"Count 3"|
+expected.push|"Count 4"|
+
+? Alternative syntax (also works)
+loop i till i < 2 do
+  ahoy|f"Count {i}"|
+$
+expected.push|"Count 0"|
+expected.push|"Count 1"|
+
+? Array iteration
+values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+loop val in values do
+    print|f"Value: {val}"|
+$
+expected.push|"Value: 0"|
+expected.push|"Value: 1"|
+expected.push|"Value: 2"|
+expected.push|"Value: 3"|
+expected.push|"Value: 4"|
+expected.push|"Value: 5"|
+expected.push|"Value: 6"|
+expected.push|"Value: 7"|
+expected.push|"Value: 8"|
+expected.push|"Value: 9"|
+
+? Dictionary Iteration
+config: {"name":"Ahoy", "version":"1.0", "active":"yes"}
+loop key,val in config do
+  print|f"Key: {key}, Value: {val}"|
+$
+expected.push|"Key: active, Value: yes"|
+expected.push|"Key: name, Value: Ahoy"|
+expected.push|"Key: version, Value: 1.0"|
+
 ? Print expected values for test validation
 print|expected|

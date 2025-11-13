@@ -2598,13 +2598,19 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					// Validate typed collections match
 					if strings.HasPrefix(explicitType, "array[") || strings.HasPrefix(explicitType, "dict[") {
 						inferredType := p.inferType(value)
-						// For typed collections, inferred type should match base type
-						if strings.HasPrefix(explicitType, "array[") && inferredType != "array" {
-							errMsg := fmt.Sprintf("Type mismatch (line %d): expected %s but got %s", line, explicitType, inferredType)
-							p.recordError(errMsg)
-						} else if strings.HasPrefix(explicitType, "dict[") && inferredType != "dict" {
-							errMsg := fmt.Sprintf("Type mismatch (line %d): expected %s but got %s", line, explicitType, inferredType)
-							p.recordError(errMsg)
+						// For explicitly typed collections, we validate the base type matches
+						// array[string] should have inferredType "array", dict[string,int] should have inferredType "dict"
+						// The explicit type annotation provides the full type information
+						if strings.HasPrefix(explicitType, "array[") {
+							if inferredType != "array" && inferredType != "unknown" {
+								errMsg := fmt.Sprintf("Type mismatch (line %d): expected %s but got %s", line, explicitType, inferredType)
+								p.recordError(errMsg)
+							}
+						} else if strings.HasPrefix(explicitType, "dict[") {
+							if inferredType != "dict" && inferredType != "unknown" {
+								errMsg := fmt.Sprintf("Type mismatch (line %d): expected %s but got %s", line, explicitType, inferredType)
+								p.recordError(errMsg)
+							}
 						}
 					}
 				} else {
@@ -3137,7 +3143,49 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 		}
 
 		// Check for object instantiation identifier<...> or old-style access identifier<index>
+		// But NOT if this is a comparison operator (e.g., "i < 10")
 		if p.current().Type == TOKEN_LANGLE {
+			// Lookahead to determine if this is a comparison or object access
+			// If the next token looks like it could be the right side of a comparison,
+			// treat this as a comparison operator rather than object access.
+			// Object literals would have property names (identifier/string followed by colon)
+			// or be empty (<>).
+			nextToken := p.peek(1)
+			isLikelyComparison := false
+			
+			// Check for patterns that suggest comparison:
+			// 1. Next token is a number: i < 10
+			// 2. Next token is an identifier that's likely a value: i < max
+			// 3. Next token is a string or boolean literal: i < "value"
+			if nextToken.Type == TOKEN_NUMBER ||
+				nextToken.Type == TOKEN_STRING ||
+				nextToken.Type == TOKEN_TRUE ||
+				nextToken.Type == TOKEN_FALSE {
+				isLikelyComparison = true
+			} else if nextToken.Type == TOKEN_IDENTIFIER {
+				// Check if this looks like a value reference (another variable)
+				// If peek(2) is not ':', it's not a property definition
+				if p.peek(2).Type != TOKEN_ASSIGN {
+					isLikelyComparison = true
+				}
+			}
+			
+			// If this looks like a comparison, don't parse as object access
+			// Return the identifier and let the relational expression parser handle <
+			if isLikelyComparison {
+				node := &ASTNode{
+					Type:  NODE_IDENTIFIER,
+					Value: token.Value,
+					Line:  token.Line,
+				}
+				// Check for member access
+				if p.current().Type == TOKEN_DOT {
+					return p.parseMemberAccessChain(node)
+				}
+				return node
+			}
+			
+			// Otherwise, proceed with object access parsing
 			p.advance()
 
 			// Check for empty object instantiation identifier<>
@@ -3901,7 +3949,11 @@ func (p *Parser) parseFunctionDeclaration() *ASTNode {
 	}
 	
 	name := p.expect(TOKEN_IDENTIFIER)
-	p.expect(TOKEN_DOUBLE_COLON)
+	
+	// Double colon is now optional
+	if p.current().Type == TOKEN_DOUBLE_COLON {
+		p.advance()
+	}
 	
 	p.functionDepth++ // Entering function definition
 	defer func() { p.functionDepth-- }() // Exiting function definition
