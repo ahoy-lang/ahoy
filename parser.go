@@ -2270,9 +2270,43 @@ func (p *Parser) parseWalrusAssignment() *ASTNode {
 }
 
 func (p *Parser) parseAssignmentOrExpression() *ASTNode {
-	// Check for object/dict property assignment: obj<'prop'>: value or dict{"key"}: value
+	// Check for object property assignment: obj{'prop'}: value
+	if p.pos+2 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_LBRACE {
+		// Check if this is obj{'prop'}: pattern
+		savedPos := p.pos
+		p.advance() // skip identifier
+		p.advance() // skip {
+		// Skip the accessor
+		depth := 1
+		for p.pos < len(p.tokens) && depth > 0 {
+			if p.current().Type == TOKEN_LBRACE {
+				depth++
+			} else if p.current().Type == TOKEN_RBRACE {
+				depth--
+			}
+			p.advance()
+		}
+		isAssignment := p.current().Type == TOKEN_ASSIGN
+		p.pos = savedPos // restore position
+
+		if isAssignment {
+			// Parse as object property assignment
+			target := p.parsePrimaryExpression() // This will parse obj{'prop'}
+			p.expect(TOKEN_ASSIGN)
+			value := p.parseExpression()
+
+			// Convert to assignment node
+			return &ASTNode{
+				Type:     NODE_ASSIGNMENT,
+				Children: []*ASTNode{target, value},
+				Line:     target.Line,
+			}
+		}
+	}
+	
+	// Check for dict property assignment: dict<key>: value
 	if p.pos+2 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_LANGLE {
-		// Check if this is obj<'prop'>: pattern
+		// Check if this is dict<key>: pattern
 		savedPos := p.pos
 		p.advance() // skip identifier
 		p.advance() // skip <
@@ -2290,8 +2324,8 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 		p.pos = savedPos // restore position
 
 		if isAssignment {
-			// Parse as object/dict property assignment
-			target := p.parsePrimaryExpression() // This will parse obj<'prop'> or dict{"key"}
+			// Parse as dict property assignment
+			target := p.parsePrimaryExpression() // This will parse dict<key>
 			p.expect(TOKEN_ASSIGN)
 			value := p.parseExpression()
 
@@ -2370,8 +2404,9 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 		}
 	}
 
-	// Check for dict property assignment: dict{"key"}: value
-	if p.pos+2 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_LBRACE {
+	// OLD: dict property assignment (deprecated syntax, already handled above)
+	// Check for dict property assignment: dict{"key"}: value - DEPRECATED
+	if false && p.pos+2 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_LBRACE {
 		savedPos := p.pos
 		p.advance() // skip identifier
 		p.advance() // skip {
@@ -2446,29 +2481,64 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				p.peek(1).Type == TOKEN_LPAREN {
 				// This is a cast like int(5), not a type annotation
 				// Fall through to parse it as an expression
+			} else if p.current().Type == TOKEN_IDENTIFIER && p.peek(1).Type == TOKEN_LANGLE {
+				// Check if this is a type annotation (Type<...>) or dict access (var<key>)
+				// Types are capitalized, variables are lowercase
+				// Exception: 'dict' is a type keyword even though lowercase
+				identValue := p.current().Value
+				isType := (len(identValue) > 0 && identValue[0] >= 'A' && identValue[0] <= 'Z') || identValue == "dict" || identValue == "array"
+				
+				if !isType {
+					// This is a variable followed by <, not a type annotation
+					// Fall through to parse as expression (dict access)
+				} else {
+					// This is a type annotation, continue with type parsing
+					possibleType := p.current().Value
+					
+					// Handle type<...> syntax
+					if p.peek(1).Type == TOKEN_EQUALS || p.peek(1).Type == TOKEN_LANGLE {
+						// Non-collection types with = or <
+						explicitType = possibleType
+						p.advance() // consume type
+						if p.current().Type == TOKEN_EQUALS {
+							p.advance() // consume =
+						}
+						// If TOKEN_LANGLE, DON'T consume it - but we need to handle it specially below
+					}
+				}
 			} else {
 				// This might be a type annotation
 				possibleType := p.current().Value
 				
-				// Check for typed collections: array[type]= or dict[key,value]=
-				if (p.current().Type == TOKEN_ARRAY_TYPE || p.current().Type == TOKEN_DICT_TYPE) &&
-					p.peek(1).Type == TOKEN_LBRACKET {
+				// Check for typed collections: array[type]= or dict[key,value]= or dict<key,value>=
+				if (p.current().Type == TOKEN_ARRAY_TYPE || p.current().Type == TOKEN_DICT_TYPE || 
+					(p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "dict")) &&
+					(p.peek(1).Type == TOKEN_LBRACKET || p.peek(1).Type == TOKEN_LANGLE) {
 					baseType := possibleType
-					isDict := p.current().Type == TOKEN_DICT_TYPE
+					isDict := p.current().Type == TOKEN_DICT_TYPE || p.current().Value == "dict"
+					bracketType := p.peek(1).Type
 					p.advance() // consume array/dict
-					p.advance() // consume [
+					p.advance() // consume [ or <
 					
 					if isDict {
-						// dict[key_type, value_type]=
+						// dict[key_type, value_type]= or dict<key_type, value_type>=
 						keyType := p.current().Value
 						p.advance()
 						if p.current().Type == TOKEN_COMMA {
 							p.advance()
 							valueType := p.current().Value
 							p.advance()
-							if p.current().Type == TOKEN_RBRACKET {
-								p.advance() // consume ]
-								possibleType = fmt.Sprintf("%s[%s,%s]", baseType, keyType, valueType)
+							endBracket := TOKEN_RBRACKET
+							if bracketType == TOKEN_LANGLE {
+								endBracket = TOKEN_RANGLE
+							}
+							if p.current().Type == endBracket {
+								p.advance() // consume ] or >
+								if bracketType == TOKEN_LANGLE {
+									possibleType = fmt.Sprintf("%s<%s,%s>", baseType, keyType, valueType)
+								} else {
+									possibleType = fmt.Sprintf("%s[%s,%s]", baseType, keyType, valueType)
+								}
 								explicitType = possibleType
 								// Expect = after typed collection
 								if p.current().Type == TOKEN_EQUALS {
@@ -2506,9 +2576,10 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 		// Special handling: if we have explicitType and current token is LANGLE,
 		// this is struct initialization like: name : type<...>
 		// We need to parse it as identifier<...> pattern to preserve the type name
+		// But NOT for dict types - those use <> for literals
 		var value *ASTNode
-		if explicitType != "" && p.current().Type == TOKEN_LANGLE {
-			// Manually handle the object literal with type name
+		if explicitType != "" && p.current().Type == TOKEN_LANGLE && !strings.Contains(explicitType, "dict") {
+			// Manually handle the object literal with type name (not dict)
 			p.advance() // consume <
 
 			// Check for empty <>
@@ -2598,17 +2669,18 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					}
 					
 					// Validate typed collections match
-					if strings.HasPrefix(explicitType, "array[") || strings.HasPrefix(explicitType, "dict[") {
+					if strings.HasPrefix(explicitType, "array[") || strings.HasPrefix(explicitType, "dict[") || 
+					   strings.HasPrefix(explicitType, "dict<") {
 						inferredType := p.inferType(value)
 						// For explicitly typed collections, we validate the base type matches
-						// array[string] should have inferredType "array", dict[string,int] should have inferredType "dict"
+						// array[string] should have inferredType "array", dict[string,int] or dict<string,int> should have inferredType "dict"
 						// The explicit type annotation provides the full type information
 						if strings.HasPrefix(explicitType, "array[") {
 							if inferredType != "array" && inferredType != "unknown" {
 								errMsg := fmt.Sprintf("Type mismatch (line %d): expected %s but got %s", line, explicitType, inferredType)
 								p.recordError(errMsg)
 							}
-						} else if strings.HasPrefix(explicitType, "dict[") {
+						} else if strings.HasPrefix(explicitType, "dict[") || strings.HasPrefix(explicitType, "dict<") {
 							if inferredType != "dict" && inferredType != "unknown" {
 								errMsg := fmt.Sprintf("Type mismatch (line %d): expected %s but got %s", line, explicitType, inferredType)
 								p.recordError(errMsg)
@@ -2950,6 +3022,45 @@ func (p *Parser) parseRelationalExpression() *ASTNode {
 		p.current().Type == TOKEN_LESS_EQUAL || p.current().Type == TOKEN_GREATER_EQUAL ||
 		p.current().Type == TOKEN_LESSER_WORD || p.current().Type == TOKEN_GREATER_WORD) {
 		
+		// Check if this is dict access (identifier<"key">) instead of comparison
+		if p.current().Type == TOKEN_LANGLE && left.Type == NODE_IDENTIFIER {
+			// Lookahead to determine if this is dict access or comparison
+			nextToken := p.peek(1)
+			peek2 := p.peek(2)
+			
+			isDictAccess := false
+			if nextToken.Type == TOKEN_STRING && peek2.Type == TOKEN_RANGLE {
+				// dict<"key"> pattern
+				isDictAccess = true
+			} else if nextToken.Type == TOKEN_IDENTIFIER && peek2.Type == TOKEN_RANGLE {
+				// dict<varKey> pattern
+				isDictAccess = true
+			} else if (nextToken.Type == TOKEN_STRING || nextToken.Type == TOKEN_IDENTIFIER) && peek2.Type == TOKEN_ASSIGN {
+				// Special type or dict literal: <key: value>
+				isDictAccess = true
+			}
+			
+			
+			if isDictAccess {
+				// Parse as dict access, not comparison
+				p.advance() // consume <
+				
+				// Parse dict access: dict<key>
+				key := p.parseCallArgument()
+				p.expect(TOKEN_RANGLE)
+				
+				left = &ASTNode{
+					Type:     NODE_DICT_ACCESS,
+					Value:    left.Value,
+					Children: []*ASTNode{key},
+					Line:     left.Line,
+				}
+				
+				// Continue to check for more operations
+				continue
+			}
+		}
+		
 		// Don't treat > as comparison operator if we're inside angle brackets for object/array access
 		// Check if the next token suggests we're closing an access expression
 		if p.current().Type == TOKEN_RANGLE && p.inFunctionCall {
@@ -3144,66 +3255,13 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			return node
 		}
 
-		// Check for object instantiation identifier<...> or old-style access identifier<index>
-		// But NOT if this is a comparison operator (e.g., "i < 10")
-		if p.current().Type == TOKEN_LANGLE {
-			// Special case: color and vector2 always use < > syntax, never comparison
-			isSpecialType := token.Value == "color" || token.Value == "vector2"
-			
-			// Lookahead to determine if this is a comparison or object access
-			// If the next token looks like it could be the right side of a comparison,
-			// treat this as a comparison operator rather than object access.
-			// Object literals would have property names (identifier/string followed by colon)
-			// or be empty (<>).
-			nextToken := p.peek(1)
-			isLikelyComparison := false
-			
-			if !isSpecialType {
-				// Check for patterns that suggest comparison:
-				// 1. Next token is a number: i < 10
-				// 2. Next token is an identifier that's likely a value: i < max
-				// 3. Next token is a string or boolean literal: i < "value"
-				//    BUT not obj<'string'> which is property access
-				if nextToken.Type == TOKEN_NUMBER ||
-					nextToken.Type == TOKEN_TRUE ||
-					nextToken.Type == TOKEN_FALSE {
-					isLikelyComparison = true
-				} else if nextToken.Type == TOKEN_STRING {
-					// Check if this is property access: obj<'prop'>
-					// If peek(2) is '>', it's property access, not comparison
-					if p.peek(2).Type != TOKEN_RANGLE {
-						isLikelyComparison = true
-					}
-				} else if nextToken.Type == TOKEN_IDENTIFIER {
-					// Check if this looks like a value reference (another variable)
-					// If peek(2) is not ':', it's not a property definition
-					if p.peek(2).Type != TOKEN_ASSIGN {
-						isLikelyComparison = true
-					}
-				}
-			}
-			
-			// If this looks like a comparison, don't parse as object access
-			// Return the identifier and let the relational expression parser handle <
-			if isLikelyComparison {
-				node := &ASTNode{
-					Type:  NODE_IDENTIFIER,
-					Value: token.Value,
-					Line:  token.Line,
-				}
-				// Check for member access
-				if p.current().Type == TOKEN_DOT {
-					return p.parseMemberAccessChain(node)
-				}
-				return node
-			}
-			
-			// Otherwise, proceed with object access parsing
+		// Check for object instantiation identifier{...} or object property access identifier{'key'}
+		if p.current().Type == TOKEN_LBRACE {
 			p.advance()
 
-			// Check for empty object instantiation identifier<>
-			if p.current().Type == TOKEN_RANGLE {
-				p.advance() // consume >
+			// Check for empty object instantiation identifier{}
+			if p.current().Type == TOKEN_RBRACE {
+				p.advance() // consume }
 				obj := &ASTNode{
 					Type:     NODE_OBJECT_LITERAL,
 					DataType: "object",
@@ -3222,34 +3280,26 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			if (p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_STRING) &&
 				p.peek(1).Type == TOKEN_ASSIGN {
 				// This is object instantiation with named properties
-				obj := p.parseObjectLiteral() // Will consume the closing >
+				obj := p.parseObjectLiteral() // Will consume the closing }
 				obj.Value = token.Value       // Set the type name
 				return obj
 			}
 
-			// Otherwise, it's old-style array/object access
+			// Otherwise, it's object property access: obj{'key'}
 			accessor := p.parseCallArgument()
-			p.expect(TOKEN_RANGLE)
+			p.expect(TOKEN_RBRACE)
 
-			// Determine if this is object property access or array access
-			// Object property access uses string literals: obj<'prop'> or obj<"prop">
-			// Array access uses numbers/variables: arr<0> or arr<i>
-			nodeType := NODE_ARRAY_ACCESS
-			if accessor.Type == NODE_STRING {
-				nodeType = NODE_OBJECT_ACCESS
-			}
+			// Object property access uses string literals: obj{'prop'}
+			nodeType := NODE_OBJECT_ACCESS
 
 			// Validate access syntax in lint mode
 			if p.LintMode {
 				if varType, ok := p.variableTypes[token.Value]; ok {
-					if varType == "array" && nodeType == NODE_OBJECT_ACCESS {
-						errMsg := fmt.Sprintf("Invalid array access syntax, use array[] instead of object<>")
+					if varType == "array" {
+						errMsg := fmt.Sprintf("Invalid array access syntax, use array[] instead of object{}")
 						p.recordError(errMsg)
 					} else if varType == "dict" {
-						errMsg := fmt.Sprintf("Invalid dict access syntax, use dict{} instead of object<>")
-						p.recordError(errMsg)
-					} else if varType == "array" && nodeType == NODE_ARRAY_ACCESS {
-						errMsg := fmt.Sprintf("Invalid array access syntax, use array[] instead of object<>")
+						errMsg := fmt.Sprintf("Invalid dict access syntax, use dict<> instead of object{}")
 						p.recordError(errMsg)
 					}
 				}
@@ -3262,10 +3312,84 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 				Line:     token.Line,
 			}
 
-			// Validate array bounds for array access
-			if p.LintMode && nodeType == NODE_ARRAY_ACCESS {
-				identNode := &ASTNode{Type: NODE_IDENTIFIER, Value: token.Value}
-				p.validateArrayAccess(identNode, accessor, token.Line)
+			// Check for member access
+			if p.current().Type == TOKEN_DOT {
+				return p.parseMemberAccessChain(node)
+			}
+			return node
+		}
+
+		// Check for dict access identifier<key>
+		if p.current().Type == TOKEN_LANGLE {
+			// Lookahead to determine if this is a comparison or dict access
+			nextToken := p.peek(1)
+			peek2 := p.peek(2)
+			isLikelyComparison := false
+			
+			{
+				// Check for patterns that suggest comparison:
+				// 1. Next token is a number: i < 10
+				// 2. Next token is an identifier that's likely a value: i < max
+				// 3. Next token is a string/bool literal - but check context
+				if nextToken.Type == TOKEN_NUMBER {
+					isLikelyComparison = true
+				} else if nextToken.Type == TOKEN_TRUE || nextToken.Type == TOKEN_FALSE {
+					isLikelyComparison = true
+				} else if nextToken.Type == TOKEN_STRING {
+					// dict<"key"> has STRING followed by RANGLE
+					// comparison d < "x" has STRING followed by something else
+					if peek2.Type == TOKEN_RANGLE {
+						// This is dict access: dict<"key">
+						isLikelyComparison = false
+					} else if peek2.Type == TOKEN_ASSIGN {
+						// This is dict literal property: <"key": value>
+						isLikelyComparison = false
+					} else {
+						// Something else after string, likely comparison
+						isLikelyComparison = true
+					}
+				} else if nextToken.Type == TOKEN_IDENTIFIER {
+					// Check peek2 to distinguish cases
+					if peek2.Type == TOKEN_RANGLE {
+						// dict<key> - dict access with variable key
+						isLikelyComparison = false
+					} else if peek2.Type == TOKEN_ASSIGN {
+						// <key: value> - dict literal property
+						isLikelyComparison = false
+					} else {
+						// Likely comparison: x < max
+						isLikelyComparison = true
+					}
+				}
+			}
+			
+			// If this looks like a comparison, don't parse as dict access
+			// Return the identifier and let the relational expression parser handle <
+			if isLikelyComparison {
+				node := &ASTNode{
+					Type:  NODE_IDENTIFIER,
+					Value: token.Value,
+					Line:  token.Line,
+				}
+				// Check for member access
+				if p.current().Type == TOKEN_DOT {
+					return p.parseMemberAccessChain(node)
+				}
+				return node
+			}
+			
+			// Otherwise, proceed with dict access
+			p.advance()
+
+			// It's dict access: dict<key>
+			accessor := p.parseCallArgument()
+			p.expect(TOKEN_RANGLE)
+
+			node := &ASTNode{
+				Type:     NODE_DICT_ACCESS,
+				Value:    token.Value,
+				Children: []*ASTNode{accessor},
+				Line:     token.Line,
 			}
 
 			// Check for member access
@@ -3275,8 +3399,8 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			return node
 		}
 
-		// Check for dict access identifier{"key"}
-		if p.current().Type == TOKEN_LBRACE {
+		// OLD: Check for dict access identifier{"key"} - deprecated, keeping for backward compatibility
+		if false && p.current().Type == TOKEN_LBRACE {
 			p.advance()
 			key := p.parseExpression()
 			p.expect(TOKEN_RBRACE)
@@ -3402,10 +3526,13 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 		}
 
 	case TOKEN_LBRACE:
+		// Could be object literal or empty block - need context
+		// For now, treat as dict literal (will be handled by identifier{} case)
 		return p.parseDictLiteral()
 
 	case TOKEN_LANGLE:
-		return p.parseArrayLiteral()
+		// Dict literal with <> syntax
+		return p.parseDictLiteral()
 
 	case TOKEN_LBRACKET:
 		return p.parseArrayLiteralBracket()
@@ -3427,20 +3554,49 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 		token := p.current()
 		p.advance()
 
-		// Check if this is object instantiation with <>
+		// Check if this is object instantiation with {}
+		if p.current().Type == TOKEN_LBRACE {
+			p.advance()
+
+			// Check for empty object: vector2{}
+			if p.current().Type == TOKEN_RBRACE {
+				p.advance()
+				return &ASTNode{
+					Type:     NODE_OBJECT_LITERAL,
+					DataType: "object",
+					Value:    token.Value,
+					Children: []*ASTNode{},
+					Line:     token.Line,
+				}
+			}
+
+			// Check if this has named properties (for instantiation)
+			if (p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_STRING) &&
+				p.peek(1).Type == TOKEN_ASSIGN {
+				// Object instantiation with properties: vector2{x: 10, y: 20}
+				obj := p.parseObjectLiteral()
+				obj.Value = token.Value // Set the type name
+				return obj
+			}
+
+			// Otherwise error - unexpected syntax
+			panic(fmt.Sprintf("Unexpected token in object literal at line %d", p.current().Line))
+		}
+		
+		// Check if this is old dict literal syntax with <>
 		if p.current().Type == TOKEN_LANGLE {
 			p.advance()
 
 			// Check if this has named properties (for instantiation)
 			if (p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_STRING) &&
 				p.peek(1).Type == TOKEN_ASSIGN {
-				// Object instantiation with properties: vector2<"x": 10, "y": 20>
+				// Old object instantiation: vector2<x: 10, y: 20> - convert to new syntax warning
 				obj := p.parseObjectLiteral()
 				obj.Value = token.Value // Set the type name
 				return obj
 			}
 
-			// Otherwise parse as comma-separated values: vector2<10,20>
+			// Otherwise parse as comma-separated values: OLD vector2<10,20> syntax
 			args := []*ASTNode{}
 			for p.current().Type != TOKEN_RANGLE && p.current().Type != TOKEN_EOF {
 				arg := p.parseAdditiveExpression() // Use additive to avoid consuming > as comparison
@@ -3572,7 +3728,7 @@ func (p *Parser) parseArrayLiteral() *ASTNode {
 }
 
 func (p *Parser) parseObjectLiteral() *ASTNode {
-	// TOKEN_LANGLE already consumed by parseArrayLiteral
+	// TOKEN_LBRACE already consumed by caller
 
 	object := &ASTNode{
 		Type:     NODE_OBJECT_LITERAL,
@@ -3582,7 +3738,7 @@ func (p *Parser) parseObjectLiteral() *ASTNode {
 
 	p.inObjectLiteral = true
 
-	for p.current().Type != TOKEN_RANGLE && p.current().Type != TOKEN_EOF {
+	for p.current().Type != TOKEN_RBRACE && p.current().Type != TOKEN_EOF {
 		// Parse property name (can be identifier or string)
 		if p.current().Type != TOKEN_IDENTIFIER && p.current().Type != TOKEN_STRING {
 			if p.LintMode {
@@ -3608,8 +3764,8 @@ func (p *Parser) parseObjectLiteral() *ASTNode {
 		}
 		p.advance()
 
-		// Parse property value - use parseAdditiveExpression to avoid comparison operators
-		propValue := p.parseAdditiveExpression()
+		// Parse property value
+		propValue := p.parseCallArgument()
 
 		// Create property node
 		prop := &ASTNode{
@@ -3623,9 +3779,9 @@ func (p *Parser) parseObjectLiteral() *ASTNode {
 		// Check for comma or end
 		if p.current().Type == TOKEN_COMMA {
 			p.advance()
-		} else if p.current().Type != TOKEN_RANGLE {
+		} else if p.current().Type != TOKEN_RBRACE {
 			if p.LintMode {
-				p.recordError(fmt.Sprintf("Expected ',' or '>' in object literal at line %d", p.current().Line))
+				p.recordError(fmt.Sprintf("Expected ',' or '}' in object literal at line %d", p.current().Line))
 				break
 			} else {
 				break
@@ -3634,7 +3790,7 @@ func (p *Parser) parseObjectLiteral() *ASTNode {
 	}
 
 	p.inObjectLiteral = false
-	p.expect(TOKEN_RANGLE)
+	p.expect(TOKEN_RBRACE)
 
 	// Check for member access after object literal
 	if p.current().Type == TOKEN_DOT {
@@ -3709,7 +3865,20 @@ func (p *Parser) parseObjectOrVector2Literal() *ASTNode {
 }
 
 func (p *Parser) parseDictLiteral() *ASTNode {
-	p.expect(TOKEN_LBRACE)
+	// Dict literals now use <> syntax
+	startToken := p.current().Type
+	var endToken TokenType
+	
+	if startToken == TOKEN_LANGLE {
+		p.advance()
+		endToken = TOKEN_RANGLE
+	} else if startToken == TOKEN_LBRACE {
+		// Legacy support for old {} syntax (backward compatibility)
+		p.advance()
+		endToken = TOKEN_RBRACE
+	} else {
+		panic(fmt.Sprintf("Expected '<' or '{' for dict literal at line %d", p.current().Line))
+	}
 
 	dict := &ASTNode{
 		Type:     NODE_DICT_LITERAL,
@@ -3718,7 +3887,7 @@ func (p *Parser) parseDictLiteral() *ASTNode {
 
 	p.inDictLiteral = true
 
-	for p.current().Type != TOKEN_RBRACE {
+	for p.current().Type != endToken && p.current().Type != TOKEN_EOF {
 		// Parse key (can be string or identifier)
 		key := p.parseCallArgument()
 		p.expect(TOKEN_ASSIGN) // Using : as separator between key and value
@@ -3729,13 +3898,13 @@ func (p *Parser) parseDictLiteral() *ASTNode {
 
 		if p.current().Type == TOKEN_COMMA {
 			p.advance()
-		} else if p.current().Type != TOKEN_RBRACE {
+		} else if p.current().Type != endToken {
 			break
 		}
 	}
 
 	p.inDictLiteral = false
-	p.expect(TOKEN_RBRACE)
+	p.expect(endToken)
 
 	// Check for member access after dict literal
 	if p.current().Type == TOKEN_DOT {
@@ -4471,7 +4640,15 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 func (p *Parser) parseStructDeclaration() *ASTNode {
 	startLine := p.current().Line
 	p.expect(TOKEN_STRUCT)
-	name := p.expect(TOKEN_IDENTIFIER)
+	
+	// Allow vector2 and color as struct names even though they're keywords
+	var name Token
+	if p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_VECTOR2_TYPE || p.current().Type == TOKEN_COLOR_TYPE {
+		name = p.current()
+		p.advance()
+	} else {
+		name = p.expect(TOKEN_IDENTIFIER)
+	}
 	p.expect(TOKEN_ASSIGN)
 
 	// Check if this is a one-line struct (no newline after colon)
@@ -4560,8 +4737,16 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 								Line:  p.current().Line,
 							}
 							p.advance()
+						} else if (p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_VECTOR2_TYPE || p.current().Type == TOKEN_COLOR_TYPE) && 
+									p.peek(1).Type == TOKEN_LBRACE {
+							// Parse object literal default value: Type{...}
+							typeName := p.current().Value
+							p.advance() // consume type name
+							p.advance() // consume {
+							defaultValue = p.parseObjectLiteral()
+							defaultValue.Value = typeName
 						} else if p.current().Type == TOKEN_LANGLE {
-							// Parse vector2 or object literal default value
+							// Parse dict or old-style literal default value
 							defaultValue = p.parseObjectOrVector2Literal()
 						} else if p.current().Type == TOKEN_STRING {
 							defaultValue = &ASTNode{
@@ -4647,8 +4832,16 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 					Line:  p.current().Line,
 				}
 				p.advance()
+			} else if (p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_VECTOR2_TYPE || p.current().Type == TOKEN_COLOR_TYPE) && 
+						p.peek(1).Type == TOKEN_LBRACE {
+				// Parse object literal default value: Type{...}
+				typeName := p.current().Value
+				p.advance() // consume type name
+				p.advance() // consume {
+				defaultValue = p.parseObjectLiteral()
+				defaultValue.Value = typeName
 			} else if p.current().Type == TOKEN_LANGLE {
-				// Parse vector2 or object literal default value
+				// Parse dict or old-style literal default value
 				defaultValue = p.parseObjectOrVector2Literal()
 			} else if p.current().Type == TOKEN_STRING {
 				defaultValue = &ASTNode{
@@ -4874,15 +5067,26 @@ func (p *Parser) validatePropertyAssignment(target *ASTNode, value *ASTNode, lin
 		return
 	}
 
-	// Get the root object
-	root := target.Children[0]
-	propertyName := target.Value
-
+	// For nested access like obj.position.x, we need to walk the chain
+	// and validate each level
+	current := target
+	var accessChain []string
+	
+	// Build the access chain from right to left
+	for current.Type == NODE_MEMBER_ACCESS {
+		accessChain = append([]string{current.Value}, accessChain...)
+		if len(current.Children) > 0 {
+			current = current.Children[0]
+		} else {
+			break
+		}
+	}
+	
+	// Get the root variable
 	varName := ""
 	objectType := ""
-
-	if root.Type == NODE_IDENTIFIER {
-		varName = root.Value
+	if current.Type == NODE_IDENTIFIER {
+		varName = current.Value
 		if vtype, ok := p.variableTypes[varName]; ok {
 			objectType = vtype
 		}
@@ -4895,33 +5099,52 @@ func (p *Parser) validatePropertyAssignment(target *ASTNode, value *ASTNode, lin
 	// Normalize struct type
 	objectType = strings.TrimPrefix(objectType, "struct:")
 
-	// Check if it's an object literal
-	if objectType == "object" || objectType == "object_literal" {
-		if props, ok := p.objectLiterals[varName]; ok {
-			if !props[propertyName] {
-				errMsg := fmt.Sprintf("object literal can't have new properties added at runtime (line %d)", line)
-				p.recordError(errMsg)
+	// Walk through each property in the chain
+	for i, propName := range accessChain {
+		isLastProp := i == len(accessChain)-1
+		
+		// Check if it's an object literal
+		if objectType == "object" || objectType == "object_literal" {
+			if props, ok := p.objectLiterals[varName]; ok {
+				if !props[propName] {
+					if isLastProp {
+						errMsg := fmt.Sprintf("object literal can't have new properties added at runtime (line %d)", line)
+						p.recordError(errMsg)
+					}
+					return
+				}
 			}
+			// For object literals, we can't check nested types
+			return
 		}
-		return
-	}
 
-	// Check if it's a struct type
-	if structDef, ok := p.structs[objectType]; ok {
-		if !p.structHasField(objectType, propertyName) {
-			errMsg := fmt.Sprintf("Object property not found: %s does not exist on type %s (line %d)",
-				propertyName, structDef.Name, line)
-			p.recordError(errMsg)
-		} else {
-			// Validate type compatibility
-			fieldType := p.getStructFieldType(objectType, propertyName)
-			valueType := p.inferType(value)
-
-			if !p.checkTypeCompatibility(fieldType, valueType) {
-				errMsg := fmt.Sprintf("Type mismatch: %s:%s cannot be assigned %s value (line %d)",
-					propertyName, fieldType, valueType, line)
+		// Check if it's a struct type
+		if structDef, ok := p.structs[objectType]; ok {
+			if !p.structHasField(objectType, propName) {
+				errMsg := fmt.Sprintf("Property not found: '%s' does not exist on type '%s' (line %d)",
+					propName, structDef.Name, line)
 				p.recordError(errMsg)
+				return
 			}
+			
+			// Get the type of this property for next iteration
+			propType := p.getStructFieldType(objectType, propName)
+			
+			if isLastProp {
+				// Validate type compatibility for the final assignment
+				valueType := p.inferType(value)
+				if !p.checkTypeCompatibility(propType, valueType) {
+					errMsg := fmt.Sprintf("Type mismatch: %s:%s cannot be assigned %s value (line %d)",
+						propName, propType, valueType, line)
+					p.recordError(errMsg)
+				}
+			} else {
+				// Move to the next level in the chain
+				objectType = propType
+			}
+		} else {
+			// Unknown type, can't validate further
+			return
 		}
 	}
 }

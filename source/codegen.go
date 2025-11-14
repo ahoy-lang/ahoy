@@ -207,7 +207,8 @@ func generateC(ast *ahoy.ASTNode) string {
 		}
 		result.WriteString("char* print_array_helper(AhoyArray* arr);\n")
 		
-		// Define Color and Vector2 types for helpers (even if not using raylib)
+		// Define Color and Vector2 types for helpers
+		// Note: User-defined color/vector2 structs override these
 		result.WriteString("typedef struct Color { unsigned char r; unsigned char g; unsigned char b; unsigned char a; } Color;\n")
 		result.WriteString("typedef struct Vector2 { float x; float y; } Vector2;\n")
 		result.WriteString("char* color_to_string(Color c);\n")
@@ -1900,10 +1901,21 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 					argType := gen.inferType(arg)
 					formatSpec := ""
 					
+					// Check if this is HashMap member access - we can't determine type at codegen time
+					isHashMapAccess := false
+					if arg.Type == ahoy.NODE_MEMBER_ACCESS && len(arg.Children) > 0 {
+						objType := gen.inferType(arg.Children[0])
+						if objType == "HashMap*" || objType == "dict" {
+							isHashMapAccess = true
+							// For HashMap, format as string by default (will use print_dict_value helper)
+							formatSpec = "%s"
+						}
+					}
+					
 					// Check if argument is an enum itself (needs special handling)
-					if arg.Type == ahoy.NODE_IDENTIFIER && gen.isEnumType(arg.Value) {
+					if !isHashMapAccess && arg.Type == ahoy.NODE_IDENTIFIER && gen.isEnumType(arg.Value) {
 						formatSpec = "%s" // enum print function returns string
-					} else {
+					} else if !isHashMapAccess {
 						switch argType {
 						case "string", "char*", "const char*":
 							formatSpec = "%s"
@@ -2009,12 +2021,33 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 						// Struct type - use print helper
 						gen.arrayMethods["print_struct"] = true
 						gen.output.WriteString("print_struct_helper_")
-						gen.output.WriteString(argType)
+						// Convert C type to lowercase Ahoy type (Vector2 -> vector2)
+						ahoyType := argType
+						if argType == "Vector2" {
+							ahoyType = "vector2"
+						} else if argType == "Color" {
+							ahoyType = "color"
+						}
+						gen.output.WriteString(ahoyType)
 						gen.output.WriteString("(")
 						gen.generateNode(arg)
 						gen.output.WriteString(")")
 					} else {
-						gen.generateNode(arg)
+						// Check if this is HashMap member access
+						if arg.Type == ahoy.NODE_MEMBER_ACCESS && len(arg.Children) > 0 {
+							objType := gen.inferType(arg.Children[0])
+							if objType == "HashMap*" || objType == "dict" {
+								// Use format_hashmap_value helper
+								gen.dictMethods["print_dict"] = true
+								gen.output.WriteString("format_hashmap_value(")
+								gen.generateNode(arg.Children[0])
+								gen.output.WriteString(fmt.Sprintf(", \"%s\")", arg.Value))
+							} else {
+								gen.generateNode(arg)
+							}
+						} else {
+							gen.generateNode(arg)
+						}
 					}
 				}
 			}
@@ -2516,7 +2549,7 @@ func (gen *CodeGenerator) mapType(langType string) string {
 	if strings.HasPrefix(langType, "array[") {
 		return "AhoyArray*"
 	}
-	if strings.HasPrefix(langType, "dict[") {
+	if strings.HasPrefix(langType, "dict[") || strings.HasPrefix(langType, "dict<") {
 		return "HashMap*"
 	}
 	
@@ -2683,9 +2716,23 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		return "int"
 	case ahoy.NODE_IDENTIFIER:
 		if varType, exists := gen.variables[node.Value]; exists {
+			// Normalize dict types
+			if strings.HasPrefix(varType, "dict<") || strings.HasPrefix(varType, "dict[") {
+				return "dict"
+			}
+			if strings.HasPrefix(varType, "array[") {
+				return "array"
+			}
 			return varType
 		}
 		if varType, exists := gen.functionVars[node.Value]; exists {
+			// Normalize dict types
+			if strings.HasPrefix(varType, "dict<") || strings.HasPrefix(varType, "dict[") {
+				return "dict"
+			}
+			if strings.HasPrefix(varType, "array[") {
+				return "array"
+			}
 			return varType
 		}
 		return "int"
@@ -3765,6 +3812,31 @@ func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 // Generate struct declaration
 func (gen *CodeGenerator) generateStruct(node *ahoy.ASTNode) {
 	structName := node.Value
+	
+	// Skip vector2 and color - they're predefined
+	if structName == "vector2" || structName == "color" {
+		// Still register struct info for type checking
+		cStructName := capitalizeFirst(structName)
+		structInfo := &StructInfo{
+			Name:   structName,
+			Fields: make([]StructField, 0),
+		}
+		
+		// Add fields for tracking
+		for _, field := range node.Children {
+			if field.Type != ahoy.NODE_TYPE {
+				fieldType := gen.mapType(field.DataType)
+				structInfo.Fields = append(structInfo.Fields, StructField{
+					Name: field.Value,
+					Type: fieldType,
+				})
+			}
+		}
+		
+		gen.structs[structName] = structInfo
+		gen.structs[cStructName] = structInfo
+		return
+	}
 
 	// Separate regular fields from nested types
 	var baseFields []*ahoy.ASTNode
@@ -3827,25 +3899,44 @@ func (gen *CodeGenerator) generateDefaultValue(node *ahoy.ASTNode) string {
 		}
 		return "false"
 	case ahoy.NODE_CALL:
-		// Handle function calls like vector2(x, y)
+		// Handle old-style function calls (backward compatibility)
 		if node.Value == "vector2" && len(node.Children) == 2 {
 			x := gen.generateDefaultValue(node.Children[0])
 			y := gen.generateDefaultValue(node.Children[1])
-			return fmt.Sprintf("vector2(%s, %s)", x, y)
+			return fmt.Sprintf("(Vector2){.x = %s, .y = %s}", x, y)
 		}
 		if node.Value == "color" && len(node.Children) == 4 {
 			r := gen.generateDefaultValue(node.Children[0])
 			g := gen.generateDefaultValue(node.Children[1])
 			b := gen.generateDefaultValue(node.Children[2])
 			a := gen.generateDefaultValue(node.Children[3])
-			return fmt.Sprintf("color(%s, %s, %s, %s)", r, g, b, a)
+			return fmt.Sprintf("(Color){.r = %s, .g = %s, .b = %s, .a = %s}", r, g, b, a)
 		}
 	case ahoy.NODE_OBJECT_LITERAL:
-		// Handle <x,y> syntax for vector2
-		if len(node.Children) == 2 {
-			x := gen.generateDefaultValue(node.Children[0])
-			y := gen.generateDefaultValue(node.Children[1])
-			return fmt.Sprintf("vector2(%s, %s)", x, y)
+		// Handle object literal default values like vector2{x:10, y:20}
+		if node.Value != "" {
+			// Typed object literal
+			typeName := capitalizeFirst(node.Value)
+			var builder strings.Builder
+			builder.WriteString(fmt.Sprintf("(%s){", typeName))
+			
+			first := true
+			for _, prop := range node.Children {
+				if prop.Type == ahoy.NODE_OBJECT_PROPERTY {
+					if !first {
+						builder.WriteString(", ")
+					}
+					builder.WriteString(".")
+					builder.WriteString(prop.Value)
+					builder.WriteString(" = ")
+					if len(prop.Children) > 0 {
+						builder.WriteString(gen.generateDefaultValue(prop.Children[0]))
+					}
+					first = false
+				}
+			}
+			builder.WriteString("}")
+			return builder.String()
 		}
 	}
 	return ""
@@ -3863,9 +3954,9 @@ func (gen *CodeGenerator) getTypeDefault(cType string) string {
 	case "bool":
 		return "false"
 	case "Vector2":
-		return "vector2(0, 0)"
+		return "(Vector2){.x = 0, .y = 0}"
 	case "Color":
-		return "color(0, 0, 0, 0)"
+		return "(Color){.r = 0, .g = 0, .b = 0, .a = 0}"
 	default:
 		return ""
 	}
@@ -3951,11 +4042,21 @@ func (gen *CodeGenerator) generateMemberAccess(node *ahoy.ASTNode) {
 		}
 	}
 
+	// Check if object is a HashMap (anonymous object) - need special handling
+	objectType := gen.inferType(object)
+	if objectType == "HashMap*" || objectType == "dict" {
+		// Anonymous object stored in HashMap - use hashMapGet
+		// Note: returns void*, caller needs to cast appropriately
+		gen.output.WriteString("hashMapGet(")
+		gen.generateNodeInternal(object, false)
+		gen.output.WriteString(fmt.Sprintf(", \"%s\")", memberName))
+		return
+	}
+
 	gen.generateNodeInternal(object, false)
 
-	// Check if object is a pointer type (array, dict, or struct pointer)
-	objectType := gen.inferType(object)
-	if objectType == "AhoyArray*" || objectType == "HashMap*" || objectType == "array" || objectType == "dict" ||
+	// Check if object is a pointer type (array or struct pointer)
+	if objectType == "AhoyArray*" || objectType == "array" ||
 		strings.HasSuffix(objectType, "*") {
 		gen.output.WriteString("->")
 	} else {
@@ -4418,11 +4519,22 @@ func (gen *CodeGenerator) writeDictHelperFunctions() {
 		gen.funcDecls.WriteString("        while (entry != NULL) {\n")
 		gen.funcDecls.WriteString("            if (count > 0) offset += sprintf(buffer + offset, \", \");\n")
 		gen.funcDecls.WriteString("            offset += sprintf(buffer + offset, \"\\\"%s\\\": \", entry->key);\n")
-		gen.funcDecls.WriteString("            // Try to print value as string if it looks like a pointer to string\n")
+		gen.funcDecls.WriteString("            // Print value based on type\n")
 		gen.funcDecls.WriteString("            if (entry->value != NULL) {\n")
-		gen.funcDecls.WriteString("                char* str_val = (char*)entry->value;\n")
-		gen.funcDecls.WriteString("                // Simple heuristic: if it's a readable string, print as string\n")
-		gen.funcDecls.WriteString("                offset += sprintf(buffer + offset, \"\\\"%s\\\"\", str_val);\n")
+		gen.funcDecls.WriteString("                switch(entry->valueType) {\n")
+		gen.funcDecls.WriteString("                    case AHOY_TYPE_INT:\n")
+		gen.funcDecls.WriteString("                        offset += sprintf(buffer + offset, \"%d\", (int)(intptr_t)entry->value);\n")
+		gen.funcDecls.WriteString("                        break;\n")
+		gen.funcDecls.WriteString("                    case AHOY_TYPE_FLOAT:\n")
+		gen.funcDecls.WriteString("                        offset += sprintf(buffer + offset, \"%g\", *((double*)&entry->value));\n")
+		gen.funcDecls.WriteString("                        break;\n")
+		gen.funcDecls.WriteString("                    case AHOY_TYPE_STRING:\n")
+		gen.funcDecls.WriteString("                        offset += sprintf(buffer + offset, \"\\\"%s\\\"\", (char*)entry->value);\n")
+		gen.funcDecls.WriteString("                        break;\n")
+		gen.funcDecls.WriteString("                    default:\n")
+		gen.funcDecls.WriteString("                        offset += sprintf(buffer + offset, \"%p\", entry->value);\n")
+		gen.funcDecls.WriteString("                        break;\n")
+		gen.funcDecls.WriteString("                }\n")
 		gen.funcDecls.WriteString("            } else {\n")
 		gen.funcDecls.WriteString("                offset += sprintf(buffer + offset, \"null\");\n")
 		gen.funcDecls.WriteString("            }\n")
@@ -4432,6 +4544,34 @@ func (gen *CodeGenerator) writeDictHelperFunctions() {
 		gen.funcDecls.WriteString("    }\n")
 		gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \"}\");\n")
 		gen.funcDecls.WriteString("    return buffer;\n")
+		gen.funcDecls.WriteString("}\n\n")
+		
+		// Helper to format a single HashMap value as string
+		gen.funcDecls.WriteString("char* format_hashmap_value(HashMap* dict, const char* key) {\n")
+		gen.funcDecls.WriteString("    static char buffer[256];\n")
+		gen.funcDecls.WriteString("    // Find the entry\n")
+		gen.funcDecls.WriteString("    unsigned int index = hash(key) % dict->capacity;\n")
+		gen.funcDecls.WriteString("    HashMapEntry* entry = dict->buckets[index];\n")
+		gen.funcDecls.WriteString("    while (entry != NULL) {\n")
+		gen.funcDecls.WriteString("        if (strcmp(entry->key, key) == 0) {\n")
+		gen.funcDecls.WriteString("            switch(entry->valueType) {\n")
+		gen.funcDecls.WriteString("                case AHOY_TYPE_INT:\n")
+		gen.funcDecls.WriteString("                    sprintf(buffer, \"%d\", (int)(intptr_t)entry->value);\n")
+		gen.funcDecls.WriteString("                    break;\n")
+		gen.funcDecls.WriteString("                case AHOY_TYPE_FLOAT:\n")
+		gen.funcDecls.WriteString("                    sprintf(buffer, \"%g\", *((double*)&entry->value));\n")
+		gen.funcDecls.WriteString("                    break;\n")
+		gen.funcDecls.WriteString("                case AHOY_TYPE_STRING:\n")
+		gen.funcDecls.WriteString("                    return (char*)entry->value;\n")
+		gen.funcDecls.WriteString("                default:\n")
+		gen.funcDecls.WriteString("                    sprintf(buffer, \"%p\", entry->value);\n")
+		gen.funcDecls.WriteString("                    break;\n")
+		gen.funcDecls.WriteString("            }\n")
+		gen.funcDecls.WriteString("            return buffer;\n")
+		gen.funcDecls.WriteString("        }\n")
+		gen.funcDecls.WriteString("        entry = entry->next;\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    return \"(null)\";\n")
 		gen.funcDecls.WriteString("}\n\n")
 	}
 }
@@ -4695,11 +4835,11 @@ func (gen *CodeGenerator) writeStructHelperFunctions() {
 		gen.funcDecls.WriteString(fmt.Sprintf("char* print_struct_helper_%s(%s obj) {\n", structInfo.Name, cStructName))
 		gen.funcDecls.WriteString("    static char buffer[512];\n")
 		
-		// Anonymous structs use {} format, named structs use name<> format
+		// Anonymous structs use {} format, named structs use name{} format
 		if strings.HasPrefix(structInfo.Name, "__anon_struct_") {
 			gen.funcDecls.WriteString("    sprintf(buffer, \"{")
 		} else {
-			gen.funcDecls.WriteString(fmt.Sprintf("    sprintf(buffer, \"%s<", structInfo.Name))
+			gen.funcDecls.WriteString(fmt.Sprintf("    sprintf(buffer, \"%s{", structInfo.Name))
 		}
 
 		for i, field := range structInfo.Fields {
@@ -4735,12 +4875,8 @@ func (gen *CodeGenerator) writeStructHelperFunctions() {
 			}
 		}
 
-		// Close with > for named structs, } for anonymous
-		if strings.HasPrefix(structInfo.Name, "__anon_struct_") {
-			gen.funcDecls.WriteString("}\", ")
-		} else {
-			gen.funcDecls.WriteString(">\", ")
-		}
+		// Close with } for all structs
+		gen.funcDecls.WriteString("}\", ")
 
 		// Add field values
 		for i, field := range structInfo.Fields {
@@ -5077,13 +5213,30 @@ func (gen *CodeGenerator) writeStringHelperFunctions() {
 func (gen *CodeGenerator) generateObjectLiteral(node *ahoy.ASTNode) {
 	// Generate compound literal initialization
 	// If node.Value is set, it's a typed literal (e.g., rectangle<...>)
-	// Need to generate: (Rectangle){...}
+	// If node.Value is empty, it's an anonymous object - use HashMap
 
 	structName := ""
 	if node.Value != "" {
 		// Typed object literal - capitalize first letter for C struct name
 		structName = capitalizeFirst(node.Value)
+		
+		// Check if this is a known struct type
+		_, hasStructInfo := gen.structs[node.Value]
+		if !hasStructInfo {
+			_, hasStructInfo = gen.structs[structName]
+		}
+		
+		if !hasStructInfo {
+			// Unknown type, treat as anonymous object using HashMap
+			gen.generateAnonymousObject(node)
+			return
+		}
+		
 		gen.output.WriteString(fmt.Sprintf("(%s)", structName))
+	} else {
+		// Anonymous object - use HashMap
+		gen.generateAnonymousObject(node)
+		return
 	}
 
 	gen.output.WriteString("{")
@@ -5146,6 +5299,50 @@ func (gen *CodeGenerator) generateObjectLiteral(node *ahoy.ASTNode) {
 	}
 
 	gen.output.WriteString("}")
+}
+
+// generateAnonymousObject generates a HashMap for anonymous object literals
+func (gen *CodeGenerator) generateAnonymousObject(node *ahoy.ASTNode) {
+	dictName := fmt.Sprintf("dict_%d", gen.varCounter)
+	gen.varCounter++
+
+	gen.output.WriteString(fmt.Sprintf("({ HashMap* %s = createHashMap(16); ", dictName))
+
+	// Add properties
+	for _, prop := range node.Children {
+		if prop.Type == ahoy.NODE_OBJECT_PROPERTY {
+			// Determine value type
+			var valueType string
+			if len(prop.Children) > 0 {
+				valueType = gen.inferType(prop.Children[0])
+			} else {
+				valueType = "string"
+			}
+			
+			ahoyTypeEnum := "AHOY_TYPE_STRING"
+			switch valueType {
+			case "int":
+				ahoyTypeEnum = "AHOY_TYPE_INT"
+			case "float":
+				ahoyTypeEnum = "AHOY_TYPE_FLOAT"
+			case "char":
+				ahoyTypeEnum = "AHOY_TYPE_CHAR"
+			default:
+				ahoyTypeEnum = "AHOY_TYPE_STRING"
+			}
+
+			gen.output.WriteString(fmt.Sprintf("hashMapPutTyped(%s, \"%s\", (void*)(intptr_t)", 
+				dictName, prop.Value))
+			if len(prop.Children) > 0 {
+				gen.generateNode(prop.Children[0])
+			} else {
+				gen.output.WriteString("0")
+			}
+			gen.output.WriteString(fmt.Sprintf(", %s); ", ahoyTypeEnum))
+		}
+	}
+
+	gen.output.WriteString(fmt.Sprintf("%s; })", dictName))
 }
 
 // capitalizeFirst capitalizes the first letter of a string

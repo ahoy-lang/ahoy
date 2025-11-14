@@ -11,8 +11,8 @@ A modern, expressive programming language with clean syntax and powerful feature
 - **Pipe Syntax**: Function calls with `|args|`
 - **Word Operators**: Use `plus`, `minus`, `times`, etc.
 - **Arrays**: Built-in with `[]` syntax
-- **Objects/Structs**: Built-in with `<>` syntax
-- **Dictionaries**: Python-style hash maps with `{}`
+- **Objects/Structs**: C-style with `{}` syntax
+- **Dictionaries**: Hash maps with `<>` syntax
 - **F-Strings**: String interpolation with `f"...{var}..."`
 - **LSP Support**: Real-time linting and validation
 - **Single-Line Statements**: Use `;` to combine statements
@@ -252,38 +252,77 @@ loop num in numbers
 
 ### Objects/Structs
 
-```ahoy
-? Declaration with <> (for struct-like data)
-person: <name: "Alice", age: 30, active: true>
+**NEW SYNTAX**: Objects now use `{}` braces!
 
-? Access
+```ahoy
+? Anonymous object (uses HashMap internally)
+person: {name: "Alice", age: 30, active: true}
+
+? Access with dot notation
 name: person.name
 age: person.age
 
-? Nested
-config: <
-    server: <host: "localhost", port: 8080>,
-    debug: true
->
-host: config.server.host
+? Access with bracket notation (for dynamic keys)
+key: "name"
+value: person{key}
+
+? Struct definitions
+struct Point:
+  x: float,
+  y: float
+$
+
+? Typed object instantiation
+origin: Point{x: 0.0, y: 0.0}
+point: Point{x: 10.5, y: 20.3}
+
+? Access nested properties
+point.x: 15.0
+print|point.x|
+
+? Built-in structs (Raylib compatible)
+struct vector2:
+  x: float,
+  y: float
+$
+
+struct color:
+  r: int,
+  g: int,
+  b: int,
+  a: int
+$
+
+position: vector2{x: 100.0, y: 200.0}
+red: color{r: 255, g: 0, b: 0, a: 255}
 ```
 
 ### Dictionaries
 
+**NEW SYNTAX**: Dictionaries now use `<>` angle brackets!
+
 ```ahoy
-? Declaration with {}
-person: {"name": "Alice", "age": 30, "active": true}
+? Untyped dictionary (inferred)
+settings: <"theme": "dark", "lang": "en">
 
-? Access
-name: person["name"]
-age: person["age"]
+? Typed dictionary (explicit key/value types)
+scores:dict<string,int> = <"Alice": 100, "Bob": 95>
 
-? Type annotation
-config:dict= {"host": "localhost", "port": 8080}
+? Access with angle brackets
+theme: settings<"theme">
+
+? Update values
+settings<"lang">: "es"
+
+? Type annotation with dict keyword
+config:dict = <"host": "localhost", "port": 8080>
 
 ? Iteration
-loop key, value in person
-    ahoy |f"{key}: {value}"|
+loop key, value in settings
+    print|f"{key}: {value}"|
+
+? Methods
+has_theme: settings.has|"theme"|  ? Returns 1 or 0
 ```
 
 ### Enums

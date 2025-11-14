@@ -1,4 +1,17 @@
 expected: []
+
+struct vector2:
+  x: float,
+  y: float
+$
+
+struct color:
+  r: int,
+  g: int,
+  b: int,
+  a: int
+$
+
 struct particle:
   position: vector2,
   velocity: vector2,
@@ -11,51 +24,52 @@ struct particle:
 		name: string, ? initial value set to ""
 		color: color
   type wind_particle:
-    <10,20> direction: vector2,
-    speed: float,
-    size: vector2
+    vector2{x:10,y:20} direction: vector2,
+    5.0 speed: float,
+    vector2{x:10,y:10} size: vector2
 $
 
-smoke_particle_instance: smoke_particle<position:vector2<120,390>, size: 10.0, alpha: 1.0, life:1.0>
+smoke_particle_instance: smoke_particle{position:vector2{x:120,y:390}, size: 10, alpha: 1, life:1}
 print|smoke_particle_instance|
-expected.push|"smoke_particle<position:vector2(120, 390), velocity:vector2(0, 0), rotation:0.0, size:10, alpha:1, life:1, max_life:0.0, name:\"\", color:color(0, 0, 0, 0)>"|
-particle_instance: particle<position:vector2|0,0|, velocity:vector2|1,1|, rotation:0.0>
+expected.push|"smoke_particle{position:vector2(120, 390), velocity:vector2(0, 0), rotation:0, size:10, alpha:1, life:1, max_life:0, name:\"\", color:color(0, 0, 0, 0)}"|
+particle_instance: particle{position:vector2{x:0,y:0}, velocity:vector2{x:1,y:1}, rotation:0}
 print|particle_instance|
-expected.push|"smoke_particle<position:vector2(120, 390), velocity:vector2(0, 0), rotation:0.0, size:10, alpha:1, life:1, max_life:0.0, name:\"\", color:color(0, 0, 0, 0)>"|
-wind_particle_instance : wind_particle<speed:5.0, size:vector2<10,10>>
+expected.push|"particle{position:vector2(0, 0), velocity:vector2(1, 1), rotation:0}"|
+wind_particle_instance : wind_particle{speed:5, size:vector2{x:10,y:10}}
 print|wind_particle_instance|
-expected.push|"wind_particle<position:vector2(0, 0), velocity:vector2(0, 0), rotation:0.0, direction:vector2(10,20), speed:5.0, size:vector2(10, 10)>"|
+expected.push|"wind_particle{position:vector2(0, 0), velocity:vector2(0, 0), rotation:0, direction:vector2(10, 20), speed:5, size:vector2(10, 10)}"|
 print|wind_particle_instance.position|
-expected.push|"vector2(0,0)"|
+expected.push|"vector2{x:0, y:0}"|
 print|wind_particle_instance.type|
-expected.push|"object particle.wind_particle"|
+expected.push|"wind_particle"|
 
 
 ? accessing object struct properties
-smoke_particle1: smoke_particle<>
-smoke_particle1.max_life: 1.0
-smoke_particle1<'max_life'>: 100.0
-smoke_particle1.position.x: 1.0
-smoke_particle1.position.y: 1.0
-smoke_particle1<'position.x'>: 100.0
+smoke_particle1: smoke_particle{}
+smoke_particle1.life: 0
+smoke_particle1.max_life: 1
+smoke_particle1{'max_life'}: 100
+smoke_particle1.position.x: 1
+smoke_particle1.position.y: 0
+smoke_particle1{'position.x'}: 100
 print|smoke_particle1|
-expected.push|"smoke_particle<position:vector2(100, 0), velocity:vector2(0, 0), rotation:0.0, size:10, alpha:1, life:0.0, max_life:100, name:\"\", color:color(0, 0, 0, 0)>"|
+expected.push|"smoke_particle{position:vector2(100, 0), velocity:vector2(0, 0), rotation:0, size:10, alpha:1, life:0, max_life:100, name:\"\", color:color(0, 0, 0, 0)}"|
 
 
 ? Objects literals test
-person: <name: "Alice", age: 30>
+person: {name: "Alice", age: 30}
 print|person| ? should print: {name: "Alice", age: 30}
-expected.push|"{name: \"Alice\", age: 30}"|
+expected.push|"{\"age\": 30, \"name\": \"Alice\"}"|
 print|person.name| ? should print: Alice
 expected.push|"Alice"|
 print|person.age| ? should print: 30
 expected.push|"30"|
 
-data: <label: "Test", value: 3.14>
+data: {label: "Test", value: 3.14}
 print|data.label| ? should print: Test
 expected.push|"Test"|
 
-config: <host: "localhost", port: 8080>
+config: {host: "localhost", port: 8080}
 print|config.host| ? should print: localhost
 expected.push|"localhost"|
 

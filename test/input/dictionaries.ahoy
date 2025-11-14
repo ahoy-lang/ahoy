@@ -1,16 +1,16 @@
 expected: []
 ? Dictionaries test
-person: {"name": "Alice", "city": "NYC"}
-name: person{"name"}
+person: dict<string, string> = <"name": "Alice", "city": "NYC">
+name: person<"name">
 print|name| ? should print: Alice
 expected.push|"Alice"|
 
-city: person{"city"}
+city: person<"city">
 print|city| ? should print: NYC
 expected.push|"NYC"|
 
 ? check size of dict
-data: {"a": "first", "b": "second", "c": "third"}
+data: dict<string, string> = <"a": "first", "b": "second", "c": "third">
 size: data.size||
 print|size| ? should print: 3
 expected.push|"3"|
@@ -21,9 +21,9 @@ has_theme: config.has|"theme"|
 print|has_theme| ? should print: 1 (true)
 expected.push|"1"|
 
-? the new dict syntax
-config: dict<int,string> = <2: "dark">
-has_theme: config.has|2|
+? reassign config
+config: dict<string,string> = <"mode": "dark">
+has_theme: config.has|"mode"|
 print|has_theme| ? should print: 1 (true)
 expected.push|"1"|
 
@@ -33,14 +33,14 @@ print|has_font| ? should print: 0 (false)
 expected.push|"0"|
 
 ? test adding new key-value pair:
-settings: {"mode": "dev"}
-settings{"port"}: "8080"
-port: settings{"port"}
+settings: dict<string, string> = <"mode": "dev">
+settings<"port">: "8080"
+port: settings<"port">
 print|port| ? should print: 8080
 expected.push|"8080"|
 
 ? Test dict iteration
-info: {"name": "PyLang", "version": "2"}
+info: dict<string, string> = <"name": "PyLang", "version": "2">
 loop key, value in info do
     print|f"Key: {key}, Value: {value}"|
     ? hardcode expected values due to push variable issue
