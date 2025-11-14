@@ -2691,9 +2691,9 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 }
 
 func (p *Parser) parseCallArgument() *ASTNode {
-	// Parse an expression but stop at comma or pipe
-	// Use parseOrExpression to get full expressions including comparisons and member access
-	return p.parseOrExpression()
+	// Parse an expression but stop at comma, pipe, or comparison operators
+	// Use parseAdditiveExpression to avoid treating <> as comparisons
+	return p.parseAdditiveExpression()
 }
 
 func (p *Parser) parseBlock() *ASTNode {
@@ -3163,11 +3163,17 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 				// 1. Next token is a number: i < 10
 				// 2. Next token is an identifier that's likely a value: i < max
 				// 3. Next token is a string or boolean literal: i < "value"
+				//    BUT not obj<'string'> which is property access
 				if nextToken.Type == TOKEN_NUMBER ||
-					nextToken.Type == TOKEN_STRING ||
 					nextToken.Type == TOKEN_TRUE ||
 					nextToken.Type == TOKEN_FALSE {
 					isLikelyComparison = true
+				} else if nextToken.Type == TOKEN_STRING {
+					// Check if this is property access: obj<'prop'>
+					// If peek(2) is '>', it's property access, not comparison
+					if p.peek(2).Type != TOKEN_RANGLE {
+						isLikelyComparison = true
+					}
 				} else if nextToken.Type == TOKEN_IDENTIFIER {
 					// Check if this looks like a value reference (another variable)
 					// If peek(2) is not ':', it's not a property definition
@@ -3456,7 +3462,31 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			}
 		}
 
-		// Check if this is a cast (followed by parenthesis)
+		// Check if this is a cast (followed by parenthesis or pipe)
+		if p.current().Type == TOKEN_PIPE {
+			// vector2|x,y| syntax
+			p.advance() // consume |
+			args := []*ASTNode{}
+			for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
+				arg := p.parseAdditiveExpression()
+				args = append(args, arg)
+
+				if p.current().Type == TOKEN_COMMA {
+					p.advance()
+				} else if p.current().Type != TOKEN_PIPE {
+					break
+				}
+			}
+			p.expect(TOKEN_PIPE)
+
+			return &ASTNode{
+				Type:     NODE_CALL,
+				Value:    token.Value,
+				Children: args,
+				Line:     token.Line,
+			}
+		}
+		
 		if p.current().Type != TOKEN_LPAREN {
 			// Not a cast or instantiation - treat as unexpected
 			errMsg := fmt.Sprintf("Unexpected type keyword '%s' at line %d:%d",
@@ -4481,9 +4511,27 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 				p.advance()
 
 				// Parse fields of nested type
-				for p.current().Type != TOKEN_DEDENT && p.current().Type != TOKEN_EOF {
+				for p.current().Type != TOKEN_EOF {
 					if p.current().Type == TOKEN_NEWLINE {
 						p.advance()
+						continue
+					}
+
+					// If we encounter a DEDENT, check if there are more fields after it
+					if p.current().Type == TOKEN_DEDENT {
+						p.advance()
+						// If next token is not a field starter, we're done with this type
+						if p.current().Type != TOKEN_IDENTIFIER && p.current().Type != TOKEN_NUMBER &&
+							p.current().Type != TOKEN_LANGLE && p.current().Type != TOKEN_STRING &&
+							p.current().Type != TOKEN_TRUE && p.current().Type != TOKEN_FALSE &&
+							p.current().Type != TOKEN_LBRACKET && p.current().Type != TOKEN_LBRACE &&
+							p.current().Type != TOKEN_INT_TYPE && p.current().Type != TOKEN_FLOAT_TYPE &&
+							p.current().Type != TOKEN_STRING_TYPE && p.current().Type != TOKEN_CHAR_TYPE &&
+							p.current().Type != TOKEN_BOOL_TYPE && p.current().Type != TOKEN_DICT_TYPE &&
+							p.current().Type != TOKEN_ARRAY_TYPE && p.current().Type != TOKEN_VECTOR2_TYPE &&
+							p.current().Type != TOKEN_COLOR_TYPE {
+							break
+						}
 						continue
 					}
 
@@ -4495,7 +4543,12 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 					if p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_NUMBER ||
 						p.current().Type == TOKEN_LANGLE || p.current().Type == TOKEN_STRING ||
 						p.current().Type == TOKEN_TRUE || p.current().Type == TOKEN_FALSE ||
-						p.current().Type == TOKEN_LBRACKET || p.current().Type == TOKEN_LBRACE {
+						p.current().Type == TOKEN_LBRACKET || p.current().Type == TOKEN_LBRACE ||
+						p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
+						p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_CHAR_TYPE ||
+						p.current().Type == TOKEN_BOOL_TYPE || p.current().Type == TOKEN_DICT_TYPE ||
+						p.current().Type == TOKEN_ARRAY_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
+						p.current().Type == TOKEN_COLOR_TYPE {
 						// Check for default value syntax: "value field: type"
 						var defaultValue *ASTNode
 
@@ -4532,7 +4585,19 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 							defaultValue = p.parseDictLiteral()
 						}
 
-						fieldName := p.expect(TOKEN_IDENTIFIER)
+						// Get field name (could be identifier or type keyword used as name)
+						var fieldName Token
+						if p.current().Type == TOKEN_IDENTIFIER ||
+							p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
+							p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_CHAR_TYPE ||
+							p.current().Type == TOKEN_BOOL_TYPE || p.current().Type == TOKEN_DICT_TYPE ||
+							p.current().Type == TOKEN_ARRAY_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
+							p.current().Type == TOKEN_COLOR_TYPE {
+							fieldName = p.current()
+							p.advance()
+						} else {
+							fieldName = p.expect(TOKEN_IDENTIFIER)
+						}
 						p.expect(TOKEN_ASSIGN)
 
 						// Get type
@@ -4558,15 +4623,14 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 						}
 						nestedType.Children = append(nestedType.Children, field)
 
-						p.skipNewlines()
+						// Skip optional delimiters (comma, semicolon, or newline)
+						for p.current().Type == TOKEN_COMMA || p.current().Type == TOKEN_SEMICOLON || p.current().Type == TOKEN_NEWLINE {
+							p.advance()
+						}
 					} else {
 						// Unknown token, skip to avoid infinite loop
 						p.advance()
 					}
-				}
-
-				if p.current().Type == TOKEN_DEDENT {
-					p.advance()
 				}
 			}
 
@@ -4608,7 +4672,19 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 				defaultValue = p.parseDictLiteral()
 			}
 
-			fieldName := p.expect(TOKEN_IDENTIFIER)
+			// Get field name (could be identifier or type keyword used as name)
+			var fieldName Token
+			if p.current().Type == TOKEN_IDENTIFIER ||
+				p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
+				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_CHAR_TYPE ||
+				p.current().Type == TOKEN_BOOL_TYPE || p.current().Type == TOKEN_DICT_TYPE ||
+				p.current().Type == TOKEN_ARRAY_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
+				p.current().Type == TOKEN_COLOR_TYPE {
+				fieldName = p.current()
+				p.advance()
+			} else {
+				fieldName = p.expect(TOKEN_IDENTIFIER)
+			}
 			p.expect(TOKEN_ASSIGN)
 
 			// Get type
@@ -4654,8 +4730,11 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 		}
 	}
 
-	if !isOneLine && p.current().Type == TOKEN_DEDENT {
-		p.advance()
+	// Consume all dedents (may be multiple from nested types)
+	if !isOneLine {
+		for p.current().Type == TOKEN_DEDENT {
+			p.advance()
+		}
 	}
 
 	// Consume 'end' keyword ($) - now optional for one-line structs without explicit $

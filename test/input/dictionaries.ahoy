@@ -15,9 +15,15 @@ size: data.size||
 print|size| ? should print: 3
 expected.push|"3"|
 
-? check has key
-config: {"theme": "dark"}
+? the new dict syntax
+config: dict<string,string> = <"theme": "dark">
 has_theme: config.has|"theme"|
+print|has_theme| ? should print: 1 (true)
+expected.push|"1"|
+
+? the new dict syntax
+config: dict<int,string> = <2: "dark">
+has_theme: config.has|2|
 print|has_theme| ? should print: 1 (true)
 expected.push|"1"|
 

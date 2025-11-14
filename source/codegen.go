@@ -46,8 +46,9 @@ func snakeToPascal(s string) string {
 }
 
 type StructField struct {
-	Name string
-	Type string
+	Name         string
+	Type         string
+	DefaultValue string // C code for default value (if any)
 }
 
 type StructInfo struct {
@@ -60,6 +61,7 @@ type CodeGenerator struct {
 	indent                        int
 	varCounter                    int
 	funcDecls                     strings.Builder
+	structDecls                   strings.Builder
 	includes                      map[string]bool
 	variables                     map[string]string          // variable name -> type (global scope)
 	functionVars                  map[string]string          // variable name -> type (function scope)
@@ -144,6 +146,9 @@ func generateC(ast *ahoy.ASTNode) string {
 
 	// Generate struct print helper functions
 	gen.writeStructHelperFunctions()
+	
+	// Generate vector2 and color constructors
+	gen.writeTypeConstructors()
 
 	// Build final output
 	var result strings.Builder
@@ -210,6 +215,10 @@ func generateC(ast *ahoy.ASTNode) string {
 		result.WriteString("\n")
 	}
 
+	// Write struct declarations (typedefs)
+	result.WriteString(gen.structDecls.String())
+	result.WriteString("\n")
+	
 	// Write function declarations
 	result.WriteString(gen.funcDecls.String())
 	result.WriteString("\n")
@@ -711,12 +720,13 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 	gen.writeIndent()
 
-	// Check if this is a property/element assignment (obj<'prop'>: value or dict{"key"}: value)
+	// Check if this is a property/element assignment (obj<'prop'>: value or dict{"key"}: value or obj.prop: value)
 	// In this case, Children[0] is the access node, Children[1] is the value
 	if len(node.Children) == 2 &&
 		(node.Children[0].Type == ahoy.NODE_OBJECT_ACCESS ||
 			node.Children[0].Type == ahoy.NODE_DICT_ACCESS ||
-			node.Children[0].Type == ahoy.NODE_ARRAY_ACCESS) {
+			node.Children[0].Type == ahoy.NODE_ARRAY_ACCESS ||
+			node.Children[0].Type == ahoy.NODE_MEMBER_ACCESS) {
 
 		// Special handling for dict assignment - use hashMapPut
 		if node.Children[0].Type == ahoy.NODE_DICT_ACCESS {
@@ -2525,7 +2535,15 @@ func (gen *CodeGenerator) mapType(langType string) string {
 		return "AhoyArray*"
 	case "void":
 		return "void"
+	case "vector2":
+		return "Vector2"
+	case "color":
+		return "Color"
 	default:
+		// Check if it's a struct type (capitalize first letter)
+		if _, exists := gen.structs[langType]; exists {
+			return capitalizeFirst(langType)
+		}
 		return "int"
 	}
 }
@@ -3748,20 +3766,35 @@ func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 func (gen *CodeGenerator) generateStruct(node *ahoy.ASTNode) {
 	structName := node.Value
 
-	// Track struct info
+	// Separate regular fields from nested types
+	var baseFields []*ahoy.ASTNode
+	var nestedTypes []*ahoy.ASTNode
+	
+	for _, child := range node.Children {
+		if child.Type == ahoy.NODE_TYPE {
+			nestedTypes = append(nestedTypes, child)
+		} else {
+			baseFields = append(baseFields, child)
+		}
+	}
+
+	// Generate nested types first (they inherit from base struct)
+	for _, nestedType := range nestedTypes {
+		gen.generateNestedStruct(nestedType, structName, baseFields)
+	}
+
+	// Generate base struct - write to structDecls instead of output
+	cStructName := capitalizeFirst(structName)
 	structInfo := &StructInfo{
 		Name:   structName,
 		Fields: make([]StructField, 0),
 	}
 
-	gen.writeIndent()
-	gen.output.WriteString(fmt.Sprintf("typedef struct {\n"))
-	gen.indent++
+	gen.structDecls.WriteString(fmt.Sprintf("typedef struct {\n"))
 
-	for _, field := range node.Children {
+	for _, field := range baseFields {
 		fieldType := gen.mapType(field.DataType)
-		gen.writeIndent()
-		gen.output.WriteString(fmt.Sprintf("%s %s;\n", fieldType, field.Value))
+		gen.structDecls.WriteString(fmt.Sprintf("    %s %s;\n", fieldType, field.Value))
 
 		// Track field info
 		structInfo.Fields = append(structInfo.Fields, StructField{
@@ -3770,12 +3803,133 @@ func (gen *CodeGenerator) generateStruct(node *ahoy.ASTNode) {
 		})
 	}
 
-	gen.indent--
-	gen.writeIndent()
-	gen.output.WriteString(fmt.Sprintf("} %s;\n\n", structName))
+	gen.structDecls.WriteString(fmt.Sprintf("} %s;\n\n", cStructName))
 
-	// Store struct info
+	// Store struct info with both lowercase and capitalized names
 	gen.structs[structName] = structInfo
+	gen.structs[cStructName] = structInfo
+}
+
+// Helper to generate C code for a default value
+func (gen *CodeGenerator) generateDefaultValue(node *ahoy.ASTNode) string {
+	if node == nil {
+		return ""
+	}
+	
+	switch node.Type {
+	case ahoy.NODE_NUMBER:
+		return node.Value
+	case ahoy.NODE_STRING:
+		return fmt.Sprintf("\"%s\"", node.Value)
+	case ahoy.NODE_BOOLEAN:
+		if node.Value == "true" {
+			return "true"
+		}
+		return "false"
+	case ahoy.NODE_CALL:
+		// Handle function calls like vector2(x, y)
+		if node.Value == "vector2" && len(node.Children) == 2 {
+			x := gen.generateDefaultValue(node.Children[0])
+			y := gen.generateDefaultValue(node.Children[1])
+			return fmt.Sprintf("vector2(%s, %s)", x, y)
+		}
+		if node.Value == "color" && len(node.Children) == 4 {
+			r := gen.generateDefaultValue(node.Children[0])
+			g := gen.generateDefaultValue(node.Children[1])
+			b := gen.generateDefaultValue(node.Children[2])
+			a := gen.generateDefaultValue(node.Children[3])
+			return fmt.Sprintf("color(%s, %s, %s, %s)", r, g, b, a)
+		}
+	case ahoy.NODE_OBJECT_LITERAL:
+		// Handle <x,y> syntax for vector2
+		if len(node.Children) == 2 {
+			x := gen.generateDefaultValue(node.Children[0])
+			y := gen.generateDefaultValue(node.Children[1])
+			return fmt.Sprintf("vector2(%s, %s)", x, y)
+		}
+	}
+	return ""
+}
+
+// Get default value for a type
+func (gen *CodeGenerator) getTypeDefault(cType string) string {
+	switch cType {
+	case "int":
+		return "0"
+	case "double", "float":
+		return "0.0"
+	case "char*", "const char*":
+		return "\"\""
+	case "bool":
+		return "false"
+	case "Vector2":
+		return "vector2(0, 0)"
+	case "Color":
+		return "color(0, 0, 0, 0)"
+	default:
+		return ""
+	}
+}
+
+// Generate a nested struct type that inherits fields from parent
+func (gen *CodeGenerator) generateNestedStruct(node *ahoy.ASTNode, parentName string, parentFields []*ahoy.ASTNode) {
+	typeName := node.Value
+	cTypeName := capitalizeFirst(typeName)
+	
+	// Track struct info
+	structInfo := &StructInfo{
+		Name:   typeName,
+		Fields: make([]StructField, 0),
+	}
+
+	gen.structDecls.WriteString(fmt.Sprintf("typedef struct {\n"))
+
+	// First, include parent fields
+	for _, field := range parentFields {
+		fieldType := gen.mapType(field.DataType)
+		gen.structDecls.WriteString(fmt.Sprintf("    %s %s;\n", fieldType, field.Value))
+
+		// Track field info with default value
+		defaultValue := ""
+		if field.DefaultValue != nil {
+			defaultValue = gen.generateDefaultValue(field.DefaultValue)
+		} else {
+			defaultValue = gen.getTypeDefault(fieldType)
+		}
+		
+		structInfo.Fields = append(structInfo.Fields, StructField{
+			Name:         field.Value,
+			Type:         fieldType,
+			DefaultValue: defaultValue,
+		})
+	}
+
+	// Then, add nested type's own fields
+	for _, field := range node.Children {
+		fieldType := gen.mapType(field.DataType)
+		gen.structDecls.WriteString(fmt.Sprintf("    %s %s;\n", fieldType, field.Value))
+
+		// Track field info with default value if present
+		defaultValue := ""
+		if field.DefaultValue != nil {
+			defaultValue = gen.generateDefaultValue(field.DefaultValue)
+		} else {
+			// Apply type-specific defaults
+			defaultValue = gen.getTypeDefault(fieldType)
+		}
+		
+		structInfo.Fields = append(structInfo.Fields, StructField{
+			Name:         field.Value,
+			Type:         fieldType,
+			DefaultValue: defaultValue,
+		})
+	}
+
+	gen.structDecls.WriteString(fmt.Sprintf("} %s;\n\n", cTypeName))
+
+	// Store struct info with both lowercase and capitalized names
+	gen.structs[typeName] = structInfo
+	gen.structs[cTypeName] = structInfo
 }
 
 // Generate method call
@@ -4069,26 +4223,16 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 	// Add color_to_string helper
 	gen.funcDecls.WriteString("char* color_to_string(Color c) {\n")
 	gen.funcDecls.WriteString("    char* buffer = malloc(64);\n")
-	gen.funcDecls.WriteString("    sprintf(buffer, \"color<%d, %d, %d, %d>\", c.r, c.g, c.b, c.a);\n")
+	gen.funcDecls.WriteString("    sprintf(buffer, \"color(%d, %d, %d, %d)\", c.r, c.g, c.b, c.a);\n")
 	gen.funcDecls.WriteString("    return buffer;\n")
 	gen.funcDecls.WriteString("}\n\n")
 	
-	// Only add vector2_to_string if vector2 enums are used
-	hasVector2 := false
-	for _, enumType := range gen.enumTypes {
-		if enumType == "vector2" {
-			hasVector2 = true
-			break
-		}
-	}
-	
-	if hasVector2 {
-		gen.funcDecls.WriteString("char* vector2_to_string(Vector2 v) {\n")
-		gen.funcDecls.WriteString("    char* buffer = malloc(64);\n")
-		gen.funcDecls.WriteString("    sprintf(buffer, \"vector2<%.2f, %.2f>\", v.x, v.y);\n")
-		gen.funcDecls.WriteString("    return buffer;\n")
-		gen.funcDecls.WriteString("}\n\n")
-	}
+	// Add vector2_to_string helper
+	gen.funcDecls.WriteString("char* vector2_to_string(Vector2 v) {\n")
+	gen.funcDecls.WriteString("    char* buffer = malloc(64);\n")
+	gen.funcDecls.WriteString("    sprintf(buffer, \"vector2(%g, %g)\", v.x, v.y);\n")
+	gen.funcDecls.WriteString("    return buffer;\n")
+	gen.funcDecls.WriteString("}\n\n")
 }
 
 // Generate dictionary helper functions
@@ -4518,39 +4662,85 @@ func (gen *CodeGenerator) generateFilterInline(arrayNode *ahoy.ASTNode, lambda *
 	gen.output.WriteString("__result; })")
 }
 
+func (gen *CodeGenerator) writeTypeConstructors() {
+	// Generate Vector2 constructor
+	gen.funcDecls.WriteString("\n// Vector2 constructor\n")
+	gen.funcDecls.WriteString("Vector2 vector2(float x, float y) {\n")
+	gen.funcDecls.WriteString("    Vector2 v = {x, y};\n")
+	gen.funcDecls.WriteString("    return v;\n")
+	gen.funcDecls.WriteString("}\n\n")
+	
+	// Generate Color constructor
+	gen.funcDecls.WriteString("// Color constructor\n")
+	gen.funcDecls.WriteString("Color color(unsigned char r, unsigned char g, unsigned char b, unsigned char a) {\n")
+	gen.funcDecls.WriteString("    Color c = {r, g, b, a};\n")
+	gen.funcDecls.WriteString("    return c;\n")
+	gen.funcDecls.WriteString("}\n\n")
+}
+
 func (gen *CodeGenerator) writeStructHelperFunctions() {
 	// Generate print helper for each struct type
+	// Track which structs we've processed to avoid duplicates (since we store both lowercase and capitalized)
+	processed := make(map[string]bool)
+	
 	for _, structInfo := range gen.structs {
+		// Skip if already processed (avoid duplicates from lowercase/capitalized pairs)
+		if processed[structInfo.Name] {
+			continue
+		}
+		processed[structInfo.Name] = true
+		
+		cStructName := capitalizeFirst(structInfo.Name)
 		gen.funcDecls.WriteString(fmt.Sprintf("\n// Print helper for %s\n", structInfo.Name))
-		gen.funcDecls.WriteString(fmt.Sprintf("char* print_struct_helper_%s(%s obj) {\n", structInfo.Name, structInfo.Name))
+		gen.funcDecls.WriteString(fmt.Sprintf("char* print_struct_helper_%s(%s obj) {\n", structInfo.Name, cStructName))
 		gen.funcDecls.WriteString("    static char buffer[512];\n")
-		gen.funcDecls.WriteString("    sprintf(buffer, \"{")
+		
+		// Anonymous structs use {} format, named structs use name<> format
+		if strings.HasPrefix(structInfo.Name, "__anon_struct_") {
+			gen.funcDecls.WriteString("    sprintf(buffer, \"{")
+		} else {
+			gen.funcDecls.WriteString(fmt.Sprintf("    sprintf(buffer, \"%s<", structInfo.Name))
+		}
 
 		for i, field := range structInfo.Fields {
 			if i > 0 {
 				gen.funcDecls.WriteString(", ")
 			}
 			gen.funcDecls.WriteString(field.Name)
-			gen.funcDecls.WriteString(": ")
+			// Anonymous structs use ": " (space), named structs use ":" (no space)
+			if strings.HasPrefix(structInfo.Name, "__anon_struct_") {
+				gen.funcDecls.WriteString(": ")
+			} else {
+				gen.funcDecls.WriteString(":")
+			}
 
 			// Add format specifier based on field type
 			switch field.Type {
 			case "int":
 				gen.funcDecls.WriteString("%d")
 			case "float", "double":
-				gen.funcDecls.WriteString("%.2f")
+				gen.funcDecls.WriteString("%g")
 			case "char*", "const char*":
 				gen.funcDecls.WriteString("\\\"%s\\\"")
 			case "char":
 				gen.funcDecls.WriteString("%c")
 			case "bool":
 				gen.funcDecls.WriteString("%s")
+			case "Vector2":
+				gen.funcDecls.WriteString("%s")  // Will use vector2_to_string
+			case "Color":
+				gen.funcDecls.WriteString("%s")  // Will use color_to_string
 			default:
 				gen.funcDecls.WriteString("%p")
 			}
 		}
 
-		gen.funcDecls.WriteString("}\", ")
+		// Close with > for named structs, } for anonymous
+		if strings.HasPrefix(structInfo.Name, "__anon_struct_") {
+			gen.funcDecls.WriteString("}\", ")
+		} else {
+			gen.funcDecls.WriteString(">\", ")
+		}
 
 		// Add field values
 		for i, field := range structInfo.Fields {
@@ -4559,6 +4749,12 @@ func (gen *CodeGenerator) writeStructHelperFunctions() {
 			}
 			if field.Type == "bool" {
 				gen.funcDecls.WriteString(fmt.Sprintf("obj.%s ? \"true\" : \"false\"", field.Name))
+			} else if field.Type == "Vector2" {
+				gen.funcDecls.WriteString(fmt.Sprintf("vector2_to_string(obj.%s)", field.Name))
+			} else if field.Type == "Color" {
+				gen.funcDecls.WriteString(fmt.Sprintf("color_to_string(obj.%s)", field.Name))
+			} else if field.Type == "char*" || field.Type == "const char*" {
+				gen.funcDecls.WriteString(fmt.Sprintf("(obj.%s ? obj.%s : \"\")", field.Name, field.Name))
 			} else {
 				gen.funcDecls.WriteString(fmt.Sprintf("obj.%s", field.Name))
 			}
@@ -4883,26 +5079,69 @@ func (gen *CodeGenerator) generateObjectLiteral(node *ahoy.ASTNode) {
 	// If node.Value is set, it's a typed literal (e.g., rectangle<...>)
 	// Need to generate: (Rectangle){...}
 
+	structName := ""
 	if node.Value != "" {
 		// Typed object literal - capitalize first letter for C struct name
-		structName := capitalizeFirst(node.Value)
+		structName = capitalizeFirst(node.Value)
 		gen.output.WriteString(fmt.Sprintf("(%s)", structName))
 	}
 
 	gen.output.WriteString("{")
 
-	// Generate field initializations
-	first := true
+	// Collect explicitly set properties
+	explicitProps := make(map[string]bool)
 	for _, prop := range node.Children {
 		if prop.Type == ahoy.NODE_OBJECT_PROPERTY {
+			explicitProps[prop.Value] = true
+		}
+	}
+
+	// If this is a typed literal with a struct definition, apply defaults
+	structInfo, hasStructInfo := gen.structs[node.Value]
+	if !hasStructInfo && structName != "" {
+		structInfo, hasStructInfo = gen.structs[structName]
+	}
+	
+	first := true
+	if hasStructInfo {
+		// Generate all fields with defaults or explicit values
+		for _, field := range structInfo.Fields {
 			if !first {
 				gen.output.WriteString(", ")
 			}
 			gen.output.WriteString(".")
-			gen.output.WriteString(prop.Value)
+			gen.output.WriteString(field.Name)
 			gen.output.WriteString(" = ")
-			gen.generateNodeInternal(prop.Children[0], false)
+			
+			// Check if this field was explicitly set
+			fieldSet := false
+			for _, prop := range node.Children {
+				if prop.Type == ahoy.NODE_OBJECT_PROPERTY && prop.Value == field.Name {
+					gen.generateNodeInternal(prop.Children[0], false)
+					fieldSet = true
+					break
+				}
+			}
+			
+			// If not explicitly set, use default value
+			if !fieldSet && field.DefaultValue != "" {
+				gen.output.WriteString(field.DefaultValue)
+			}
 			first = false
+		}
+	} else {
+		// No struct info, just output explicit properties
+		for _, prop := range node.Children {
+			if prop.Type == ahoy.NODE_OBJECT_PROPERTY {
+				if !first {
+					gen.output.WriteString(", ")
+				}
+				gen.output.WriteString(".")
+				gen.output.WriteString(prop.Value)
+				gen.output.WriteString(" = ")
+				gen.generateNodeInternal(prop.Children[0], false)
+				first = false
+			}
 		}
 	}
 

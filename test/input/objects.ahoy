@@ -1,4 +1,3 @@
-import "raylib.h"
 expected: []
 struct particle:
   position: vector2,
@@ -17,15 +16,19 @@ struct particle:
     size: vector2
 $
 
-smoke_particle_instance: smoke_particle<position:vector2|120,390|, size: 10.0, alpha: 1.0, life:1.0>
+smoke_particle_instance: smoke_particle<position:vector2<120,390>, size: 10.0, alpha: 1.0, life:1.0>
 print|smoke_particle_instance|
 expected.push|"smoke_particle<position:vector2(120, 390), velocity:vector2(0, 0), rotation:0.0, size:10, alpha:1, life:1, max_life:0.0, name:\"\", color:color(0, 0, 0, 0)>"|
 particle_instance: particle<position:vector2|0,0|, velocity:vector2|1,1|, rotation:0.0>
 print|particle_instance|
 expected.push|"smoke_particle<position:vector2(120, 390), velocity:vector2(0, 0), rotation:0.0, size:10, alpha:1, life:1, max_life:0.0, name:\"\", color:color(0, 0, 0, 0)>"|
-wind_particle_instance : wind_particle<speed:5.0, size:vector2|10,10|>
+wind_particle_instance : wind_particle<speed:5.0, size:vector2<10,10>>
 print|wind_particle_instance|
 expected.push|"wind_particle<position:vector2(0, 0), velocity:vector2(0, 0), rotation:0.0, direction:vector2(10,20), speed:5.0, size:vector2(10, 10)>"|
+print|wind_particle_instance.position|
+expected.push|"vector2(0,0)"|
+print|wind_particle_instance.type|
+expected.push|"object particle.wind_particle"|
 
 
 ? accessing object struct properties
