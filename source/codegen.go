@@ -65,6 +65,8 @@ type CodeGenerator struct {
 	functionVars                  map[string]string          // variable name -> type (function scope)
 	constants                     map[string]bool            // constant name -> declared
 	enums                         map[string]map[string]bool // enum name -> {member names}
+	enumMemberTypes               map[string]string          // "enumName.memberName" -> type
+	enumTypes                     map[string]string          // enum name -> enum type (int, string, etc.)
 	userFunctions                 map[string]bool            // user-defined function names (keep snake_case)
 	hasError                      bool                       // Track if error occurred
 	arrayImpls                    bool                       // Track if we've added array implementation
@@ -93,6 +95,8 @@ func generateC(ast *ahoy.ASTNode) string {
 		variables:           make(map[string]string),
 		constants:           make(map[string]bool),
 		enums:               make(map[string]map[string]bool),
+		enumMemberTypes:     make(map[string]string),
+		enumTypes:           make(map[string]string),
 		userFunctions:       make(map[string]bool),
 		hasError:            false,
 		arrayImpls:          false,
@@ -197,6 +201,12 @@ func generateC(ast *ahoy.ASTNode) string {
 			result.WriteString("int ahoy_array_length(AhoyArray* arr);\n")
 		}
 		result.WriteString("char* print_array_helper(AhoyArray* arr);\n")
+		
+		// Define Color and Vector2 types for helpers (even if not using raylib)
+		result.WriteString("typedef struct Color { unsigned char r; unsigned char g; unsigned char b; unsigned char a; } Color;\n")
+		result.WriteString("typedef struct Vector2 { float x; float y; } Vector2;\n")
+		result.WriteString("char* color_to_string(Color c);\n")
+		result.WriteString("char* vector2_to_string(Vector2 v);\n")
 		result.WriteString("\n")
 	}
 
@@ -1879,33 +1889,45 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 				for _, arg := range node.Children {
 					argType := gen.inferType(arg)
 					formatSpec := ""
-					switch argType {
-					case "string", "char*":
-						formatSpec = "%s"
-					case "int":
-						formatSpec = "%d"
-					case "float", "double":
-						formatSpec = "%f"
-					case "bool":
-						formatSpec = "%d"
-					case "char":
-						formatSpec = "%c"
-					case "array":
-						formatSpec = "%s" // Will use print_array_helper
-					case "dict":
-						formatSpec = "%s" // Will use print_dict_helper
-					case "struct":
-						formatSpec = "%s" // Will use print_struct_helper
-					default:
-						// Check for typed collections
-						if strings.HasPrefix(argType, "array[") {
-							formatSpec = "%s" // Will use print_array_helper
-						} else if strings.HasPrefix(argType, "dict[") {
-							formatSpec = "%s" // Will use print_dict_helper
-						} else if _, isStruct := gen.structs[argType]; isStruct {
-							formatSpec = "%s" // Will use print_struct_helper
-						} else {
+					
+					// Check if argument is an enum itself (needs special handling)
+					if arg.Type == ahoy.NODE_IDENTIFIER && gen.isEnumType(arg.Value) {
+						formatSpec = "%s" // enum print function returns string
+					} else {
+						switch argType {
+						case "string", "char*", "const char*":
+							formatSpec = "%s"
+						case "int":
 							formatSpec = "%d"
+						case "intptr_t":
+							formatSpec = "%ld"
+						case "float", "double":
+							formatSpec = "%f"
+						case "bool":
+							formatSpec = "%d"
+						case "char":
+							formatSpec = "%c"
+						case "color":
+							formatSpec = "%s" // Will use color_to_string helper
+						case "vector2":
+							formatSpec = "%s" // Will use vector2_to_string helper
+						case "array":
+							formatSpec = "%s" // Will use print_array_helper
+						case "dict":
+							formatSpec = "%s" // Will use print_dict_helper
+						case "struct":
+							formatSpec = "%s" // Will use print_struct_helper
+						default:
+							// Check for typed collections
+							if strings.HasPrefix(argType, "array[") {
+								formatSpec = "%s" // Will use print_array_helper
+							} else if strings.HasPrefix(argType, "dict[") {
+								formatSpec = "%s" // Will use print_dict_helper
+							} else if _, isStruct := gen.structs[argType]; isStruct {
+								formatSpec = "%s" // Will use print_struct_helper
+							} else {
+								formatSpec = "%d"
+							}
 						}
 					}
 
@@ -1920,6 +1942,12 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 				for _, arg := range node.Children {
 					gen.output.WriteString(", ")
 					argType := gen.inferType(arg)
+
+					// Check if argument is an enum itself (print the whole enum)
+					if arg.Type == ahoy.NODE_IDENTIFIER && gen.isEnumType(arg.Value) {
+						gen.output.WriteString(fmt.Sprintf("print_%s()", arg.Value))
+						continue
+					}
 
 					// Special handling for arrays and dicts
 					if argType == "array" || strings.HasPrefix(argType, "array[") {
@@ -1955,6 +1983,16 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 					} else if argType == "dict" || strings.HasPrefix(argType, "dict[") {
 						gen.dictMethods["print_dict"] = true
 						gen.output.WriteString("print_dict_helper(")
+						gen.generateNode(arg)
+						gen.output.WriteString(")")
+					} else if argType == "color" {
+						// Color type - use helper
+						gen.output.WriteString("color_to_string(")
+						gen.generateNode(arg)
+						gen.output.WriteString(")")
+					} else if argType == "vector2" {
+						// Vector2 type - use helper
+						gen.output.WriteString("vector2_to_string(")
 						gen.generateNode(arg)
 						gen.output.WriteString(")")
 					} else if argType == "struct" || gen.structs[argType] != nil {
@@ -2676,6 +2714,14 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			objectNode := node.Children[0]
 			memberName := node.Value
 
+			// Check if this is enum member access
+			if objectNode.Type == ahoy.NODE_IDENTIFIER {
+				enumMemberKey := fmt.Sprintf("%s.%s", objectNode.Value, memberName)
+				if memberType, exists := gen.enumMemberTypes[enumMemberKey]; exists {
+					return memberType
+				}
+			}
+
 			// Get the type of the object
 			objectType := gen.inferType(objectNode)
 
@@ -2889,11 +2935,66 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 // Generate enum declaration
 func (gen *CodeGenerator) generateEnum(node *ahoy.ASTNode) {
 	enumName := node.Value
+	enumType := node.EnumType
 
 	// Track enum members for validation
 	if gen.enums[enumName] == nil {
 		gen.enums[enumName] = make(map[string]bool)
 	}
+
+	// Determine generation strategy based on type
+	// If no type specified AND no explicit type, analyze members to determine type
+	if enumType == "" || enumType == "int" {
+		// Check if all members are compatible with int enum
+		allInt := true
+		for _, member := range node.Children {
+			if len(member.Children) > 0 {
+				if member.Children[0].Type != ahoy.NODE_NUMBER {
+					allInt = false
+					break
+				}
+				// Check if it's a float
+				if strings.Contains(member.Children[0].Value, ".") {
+					allInt = false
+					break
+				}
+			}
+		}
+		
+		if allInt && enumType == "int" {
+			// Pure int enum - use C enum
+			gen.generateIntEnum(node)
+		} else if !allInt && enumType == "" {
+			// Mixed types - use flexible struct
+			gen.generateMixedEnum(node)
+		} else {
+			// enumType is explicitly "int" - use int enum
+			gen.generateIntEnum(node)
+		}
+	} else if enumType == "string" {
+		// Use struct for string enums
+		gen.generateStringEnum(node)
+	} else if enumType == "array" || enumType == "dict" {
+		// Use struct for collection enums
+		gen.generateCollectionEnum(node, enumType)
+	} else if enumType == "float" {
+		// Use struct for float enums
+		gen.generateFloatEnum(node)
+	} else if enumType == "color" || enumType == "vector2" {
+		// Use struct for color/vector2 enums
+		gen.generateColorEnum(node, enumType)
+	} else {
+		// Custom types or explicitly mixed - use flexible struct
+		gen.generateMixedEnum(node)
+	}
+}
+
+// Generate int enum using C typedef enum
+func (gen *CodeGenerator) generateIntEnum(node *ahoy.ASTNode) {
+	enumName := node.Value
+
+	// Track enum type
+	gen.enumTypes[enumName] = "int"
 
 	gen.writeIndent()
 	gen.output.WriteString(fmt.Sprintf("typedef enum {\n"))
@@ -2905,13 +3006,15 @@ func (gen *CodeGenerator) generateEnum(node *ahoy.ASTNode) {
 
 		// Track this member
 		gen.enums[enumName][member.Value] = true
+		// Track member type
+		gen.enumMemberTypes[fmt.Sprintf("%s.%s", enumName, member.Value)] = "int"
 
-		// Check if member has a custom value (stored in DataType field)
-		if member.DataType != "" {
-			// Use the custom value
-			gen.output.WriteString(fmt.Sprintf("%s_%s = %s,\n", enumName, member.Value, member.DataType))
+		// Check if member has a custom value (in Children[0])
+		if len(member.Children) > 0 && member.Children[0].Type == ahoy.NODE_NUMBER {
+			value := member.Children[0].Value
+			gen.output.WriteString(fmt.Sprintf("%s_%s = %s,\n", enumName, member.Value, value))
 			// Parse the value to set nextAutoValue for next member
-			if val, err := strconv.Atoi(member.DataType); err == nil {
+			if val, err := strconv.Atoi(value); err == nil {
 				nextAutoValue = val + 1
 			}
 		} else {
@@ -2923,7 +3026,433 @@ func (gen *CodeGenerator) generateEnum(node *ahoy.ASTNode) {
 
 	gen.indent--
 	gen.writeIndent()
-	gen.output.WriteString(fmt.Sprintf("} %s;\n\n", enumName))
+	gen.output.WriteString(fmt.Sprintf("} %s_enum;\n\n", enumName))
+
+	// Also generate a struct instance for member access (e.g., numbers.one)
+	gen.generateEnumAccessStruct(node, "int")
+	
+	// Generate enum print helper
+	gen.generateEnumPrintHelper(node, enumName, "int")
+}
+
+// Generate string enum using struct
+func (gen *CodeGenerator) generateStringEnum(node *ahoy.ASTNode) {
+	enumName := node.Value
+
+	// Track enum type
+	gen.enumTypes[enumName] = "string"
+
+	// Generate struct typedef
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("typedef struct {\n"))
+	gen.indent++
+
+	for _, member := range node.Children {
+		gen.writeIndent()
+		gen.enums[enumName][member.Value] = true
+		// Track member type
+		gen.enumMemberTypes[fmt.Sprintf("%s.%s", enumName, member.Value)] = "char*"
+
+		// Check if member is mutable
+		if member.IsMutable {
+			gen.output.WriteString(fmt.Sprintf("char* %s;\n", member.Value))
+		} else {
+			gen.output.WriteString(fmt.Sprintf("const char* %s;\n", member.Value))
+		}
+	}
+
+	gen.indent--
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("} %s_struct;\n\n", enumName))
+
+	// Generate instance with initializer
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("%s_struct %s = {\n", enumName, enumName))
+	gen.indent++
+
+	for _, member := range node.Children {
+		gen.writeIndent()
+		var value string
+		if len(member.Children) > 0 && member.Children[0].Type == ahoy.NODE_STRING {
+			// String value - make sure it has quotes
+			rawValue := member.Children[0].Value
+			if !strings.HasPrefix(rawValue, "\"") {
+				value = fmt.Sprintf("\"%s\"", rawValue)
+			} else {
+				value = rawValue
+			}
+		} else {
+			// Default value for string is empty string
+			value = "\"\""
+		}
+		gen.output.WriteString(fmt.Sprintf(".%s = %s,\n", member.Value, value))
+	}
+
+	gen.indent--
+	gen.writeIndent()
+	gen.output.WriteString("};\n\n")
+}
+
+// Generate float enum using struct
+func (gen *CodeGenerator) generateFloatEnum(node *ahoy.ASTNode) {
+	enumName := node.Value
+
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("typedef struct {\n"))
+	gen.indent++
+
+	for _, member := range node.Children {
+		gen.writeIndent()
+		gen.enums[enumName][member.Value] = true
+
+		if member.IsMutable {
+			gen.output.WriteString(fmt.Sprintf("float %s;\n", member.Value))
+		} else {
+			gen.output.WriteString(fmt.Sprintf("const float %s;\n", member.Value))
+		}
+	}
+
+	gen.indent--
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("} %s_struct;\n\n", enumName))
+
+	// Generate instance
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("%s_struct %s = {\n", enumName, enumName))
+	gen.indent++
+
+	for _, member := range node.Children {
+		gen.writeIndent()
+		var value string
+		if len(member.Children) > 0 && member.Children[0].Type == ahoy.NODE_NUMBER {
+			value = member.Children[0].Value
+		} else {
+			value = "0.0"
+		}
+		gen.output.WriteString(fmt.Sprintf(".%s = %s,\n", member.Value, value))
+	}
+
+	gen.indent--
+	gen.writeIndent()
+	gen.output.WriteString("};\n\n")
+}
+
+// Generate color/vector2 enum using struct
+func (gen *CodeGenerator) generateColorEnum(node *ahoy.ASTNode, enumType string) {
+	enumName := node.Value
+	
+	// Track enum type
+	gen.enumTypes[enumName] = enumType
+	
+	// Color and Vector2 types are defined globally
+	
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("typedef struct {\n"))
+	gen.indent++
+	
+	for _, member := range node.Children {
+		gen.writeIndent()
+		gen.enums[enumName][member.Value] = true
+		// Track member type
+		gen.enumMemberTypes[fmt.Sprintf("%s.%s", enumName, member.Value)] = enumType
+		
+		// Check if member is mutable
+		if member.IsMutable {
+			gen.output.WriteString(fmt.Sprintf("%s %s;\n", enumType, member.Value))
+		} else {
+			gen.output.WriteString(fmt.Sprintf("const %s %s;\n", enumType, member.Value))
+		}
+	}
+	
+	gen.indent--
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("} %s_struct;\n\n", enumName))
+	
+	// Generate instance with initializer
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("%s_struct %s = {\n", enumName, enumName))
+	gen.indent++
+	
+	for _, member := range node.Children {
+		gen.writeIndent()
+		var value string
+		if len(member.Children) > 0 && member.Children[0].Type == ahoy.NODE_OBJECT_LITERAL {
+			// Has color/vector2 value
+			valueNode := member.Children[0]
+			if enumType == "color" && len(valueNode.Children) == 4 {
+				// Color<r,g,b,a>
+				r := valueNode.Children[0].Value
+				g := valueNode.Children[1].Value
+				b := valueNode.Children[2].Value
+				a := valueNode.Children[3].Value
+				value = fmt.Sprintf("(Color){%s, %s, %s, %s}", r, g, b, a)
+			} else if enumType == "vector2" && len(valueNode.Children) == 2 {
+				// Vector2<x,y>
+				x := valueNode.Children[0].Value
+				y := valueNode.Children[1].Value
+				value = fmt.Sprintf("(Vector2){%s, %s}", x, y)
+			} else {
+				// Default to zero
+				if enumType == "color" {
+					value = "(Color){0, 0, 0, 0}"
+				} else {
+					value = "(Vector2){0, 0}"
+				}
+			}
+		} else {
+			// Default to zero
+			if enumType == "color" {
+				value = "(Color){0, 0, 0, 0}"
+			} else {
+				value = "(Vector2){0, 0}"
+			}
+		}
+		gen.output.WriteString(fmt.Sprintf(".%s = %s,\n", member.Value, value))
+	}
+	
+	gen.indent--
+	gen.writeIndent()
+	gen.output.WriteString("};\n\n")
+}
+
+// Generate collection (array/dict) enum using struct
+func (gen *CodeGenerator) generateCollectionEnum(node *ahoy.ASTNode, enumType string) {
+	enumName := node.Value
+	cType := "AhoyArray*"
+	if enumType == "dict" {
+		cType = "HashMap*"
+	}
+
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("typedef struct {\n"))
+	gen.indent++
+
+	for _, member := range node.Children {
+		gen.writeIndent()
+		gen.enums[enumName][member.Value] = true
+		// Collections are always mutable (pointer-based)
+		gen.output.WriteString(fmt.Sprintf("%s %s;\n", cType, member.Value))
+	}
+
+	gen.indent--
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("} %s_struct;\n\n", enumName))
+
+	// Generate instance - initialized later or in init function
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("%s_struct %s;\n\n", enumName, enumName))
+
+	// TODO: Generate initialization function for arrays/dicts
+}
+
+// Generate mixed enum using struct with generic types
+func (gen *CodeGenerator) generateMixedEnum(node *ahoy.ASTNode) {
+	enumName := node.Value
+
+	// Track enum type
+	gen.enumTypes[enumName] = "mixed"
+
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("typedef struct {\n"))
+	gen.indent++
+
+	for _, member := range node.Children {
+		gen.writeIndent()
+		gen.enums[enumName][member.Value] = true
+
+		// Infer type from value
+		var memberType string
+		if len(member.Children) > 0 {
+			switch member.Children[0].Type {
+			case ahoy.NODE_NUMBER:
+				// Check if it's float or int
+				if strings.Contains(member.Children[0].Value, ".") {
+					memberType = "float"
+				} else {
+					memberType = "intptr_t"
+				}
+			case ahoy.NODE_STRING:
+				memberType = "const char*"
+			case ahoy.NODE_BOOLEAN:
+				memberType = "int"
+			case ahoy.NODE_ARRAY_LITERAL:
+				memberType = "AhoyArray*"
+			case ahoy.NODE_DICT_LITERAL:
+				memberType = "HashMap*"
+			default:
+				memberType = "intptr_t" // generic fallback
+			}
+		} else {
+			memberType = "intptr_t" // default
+		}
+
+		// Track member type for proper formatting in print
+		gen.enumMemberTypes[fmt.Sprintf("%s.%s", enumName, member.Value)] = memberType
+
+		// Make mutable if specified
+		if member.IsMutable || memberType == "AhoyArray*" || memberType == "HashMap*" {
+			gen.output.WriteString(fmt.Sprintf("%s %s;\n", memberType, member.Value))
+		} else {
+			// Add const for immutable non-pointer types
+			if !strings.Contains(memberType, "*") {
+				gen.output.WriteString(fmt.Sprintf("const %s %s;\n", memberType, member.Value))
+			} else {
+				gen.output.WriteString(fmt.Sprintf("%s %s;\n", memberType, member.Value))
+			}
+		}
+	}
+
+	gen.indent--
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("} %s_struct;\n\n", enumName))
+
+	// Generate instance with initializers
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("%s_struct %s = {\n", enumName, enumName))
+	gen.indent++
+
+	for _, member := range node.Children {
+		gen.writeIndent()
+		var value string
+		if len(member.Children) > 0 {
+			switch member.Children[0].Type {
+			case ahoy.NODE_NUMBER:
+				value = member.Children[0].Value
+			case ahoy.NODE_STRING:
+				// Make sure string has quotes
+				rawValue := member.Children[0].Value
+				if !strings.HasPrefix(rawValue, "\"") {
+					value = fmt.Sprintf("\"%s\"", rawValue)
+				} else {
+					value = rawValue
+				}
+			case ahoy.NODE_BOOLEAN:
+				if member.Children[0].Value == "true" {
+					value = "1"
+				} else {
+					value = "0"
+				}
+			case ahoy.NODE_ARRAY_LITERAL:
+				// Generate array initialization inline
+				arrayNode := member.Children[0]
+				if len(arrayNode.Children) > 0 {
+					// Create array literal
+					tempBuf := &strings.Builder{}
+					tempBuf.WriteString("({ AhoyArray* arr = malloc(sizeof(AhoyArray)); ")
+					tempBuf.WriteString(fmt.Sprintf("arr->length = %d; ", len(arrayNode.Children)))
+					tempBuf.WriteString(fmt.Sprintf("arr->capacity = %d; ", len(arrayNode.Children)))
+					tempBuf.WriteString("arr->data = malloc(")
+					tempBuf.WriteString(fmt.Sprintf("%d * sizeof(intptr_t)); ", len(arrayNode.Children)))
+					tempBuf.WriteString("arr->types = malloc(")
+					tempBuf.WriteString(fmt.Sprintf("%d * sizeof(AhoyValueType)); ", len(arrayNode.Children)))
+					tempBuf.WriteString("arr->is_typed = 0; ")
+					
+					// Initialize elements
+					for i, elem := range arrayNode.Children {
+						if elem.Type == ahoy.NODE_NUMBER {
+							tempBuf.WriteString(fmt.Sprintf("arr->data[%d] = %s; ", i, elem.Value))
+							tempBuf.WriteString(fmt.Sprintf("arr->types[%d] = AHOY_TYPE_INT; ", i))
+						}
+					}
+					
+					tempBuf.WriteString("arr; })")
+					value = tempBuf.String()
+				} else {
+					value = "NULL"
+				}
+			case ahoy.NODE_DICT_LITERAL:
+				value = "NULL" // TODO: proper dict initialization
+			default:
+				value = "0"
+			}
+		} else {
+			value = "0"
+		}
+		gen.output.WriteString(fmt.Sprintf(".%s = %s,\n", member.Value, value))
+	}
+
+	gen.indent--
+	gen.writeIndent()
+	gen.output.WriteString("};\n\n")
+}
+
+// Generate helper struct for enum member access (for int enums)
+func (gen *CodeGenerator) generateEnumAccessStruct(node *ahoy.ASTNode, baseType string) {
+	enumName := node.Value
+
+	// Generate access struct
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("typedef struct {\n"))
+	gen.indent++
+
+	for _, member := range node.Children {
+		gen.writeIndent()
+		gen.output.WriteString(fmt.Sprintf("const int %s;\n", member.Value))
+	}
+
+	gen.indent--
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("} %s_struct;\n\n", enumName))
+
+	// Generate instance
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("%s_struct %s = {\n", enumName, enumName))
+	gen.indent++
+
+	nextAutoValue := 0
+	for _, member := range node.Children {
+		gen.writeIndent()
+		var value int
+		if len(member.Children) > 0 && member.Children[0].Type == ahoy.NODE_NUMBER {
+			if val, err := strconv.Atoi(member.Children[0].Value); err == nil {
+				value = val
+				nextAutoValue = val + 1
+			} else {
+				value = nextAutoValue
+				nextAutoValue++
+			}
+		} else {
+			value = nextAutoValue
+			nextAutoValue++
+		}
+		gen.output.WriteString(fmt.Sprintf(".%s = %d,\n", member.Value, value))
+	}
+
+	gen.indent--
+	gen.writeIndent()
+	gen.output.WriteString("};\n\n")
+}
+
+// Generate enum print helper function
+func (gen *CodeGenerator) generateEnumPrintHelper(node *ahoy.ASTNode, enumName string, enumType string) {
+	// Generate a helper function that returns a string representation of the enum
+	funcName := fmt.Sprintf("print_%s", enumName)
+	
+	gen.funcDecls.WriteString(fmt.Sprintf("char* %s() {\n", funcName))
+	gen.funcDecls.WriteString("    char* buffer = malloc(512);\n")
+	gen.funcDecls.WriteString("    int offset = 0;\n")
+	gen.funcDecls.WriteString(fmt.Sprintf("    offset += sprintf(buffer + offset, \"enum:%s %s(\");\n", enumType, enumName))
+	
+	for i, member := range node.Children {
+		if i > 0 {
+			gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \", \");\n")
+		}
+		
+		// Get member value
+		var valueStr string
+		if len(member.Children) > 0 && member.Children[0].Type == ahoy.NODE_NUMBER {
+			valueStr = member.Children[0].Value
+		} else {
+			valueStr = fmt.Sprintf("%d", i) // Auto-value
+		}
+		
+		gen.funcDecls.WriteString(fmt.Sprintf("    offset += sprintf(buffer + offset, \"%s:%s\");\n", 
+			member.Value, valueStr))
+	}
+	
+	gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \")\");\n")
+	gen.funcDecls.WriteString("    return buffer;\n")
+	gen.funcDecls.WriteString("}\n\n")
 }
 
 // Generate constant declaration
@@ -3260,9 +3789,9 @@ func (gen *CodeGenerator) generateMemberAccess(node *ahoy.ASTNode) {
 	if object.Type == ahoy.NODE_IDENTIFIER {
 		// Check if the identifier is an enum name
 		if gen.isEnumType(object.Value) {
-			// Generate as: enum_name_MEMBER
+			// New: Generate as struct member access: enum_name.member
 			gen.output.WriteString(object.Value)
-			gen.output.WriteString("_")
+			gen.output.WriteString(".")
 			gen.output.WriteString(memberName)
 			return
 		}
@@ -3289,6 +3818,34 @@ func (gen *CodeGenerator) generateTypeProperty(node *ahoy.ASTNode) {
 	// Extract object name/identifier
 	if object.Type == ahoy.NODE_IDENTIFIER {
 		objectName = object.Value
+	} else if object.Type == ahoy.NODE_MEMBER_ACCESS {
+		// For enum.member.type
+		if len(object.Children) > 0 && object.Children[0].Type == ahoy.NODE_IDENTIFIER {
+			enumName := object.Children[0].Value
+			memberName := object.Value
+			if gen.isEnumType(enumName) {
+				// Get the member type
+				memberKey := fmt.Sprintf("%s.%s", enumName, memberName)
+				if memberType, exists := gen.enumMemberTypes[memberKey]; exists {
+					ahoyType := gen.cTypeToAhoyType(memberType)
+					gen.output.WriteString(fmt.Sprintf("\"%s\"", ahoyType))
+					return
+				}
+			}
+		}
+	}
+	
+	// Check if this is an enum type itself (enum.type)
+	if object.Type == ahoy.NODE_IDENTIFIER && gen.isEnumType(objectName) {
+		if enumType, exists := gen.enumTypes[objectName]; exists {
+			// For mixed enums, just print "enum"
+			if enumType == "mixed" || enumType == "" {
+				gen.output.WriteString("\"enum\"")
+			} else {
+				gen.output.WriteString(fmt.Sprintf("\"enum:%s\"", enumType))
+			}
+			return
+		}
 	}
 	
 	// Generate inline expression that returns type string
@@ -3505,6 +4062,30 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 		gen.funcDecls.WriteString("        offset += sprintf(buffer + offset, \"\\\"%s\\\"\", str);\n")
 		gen.funcDecls.WriteString("    }\n")
 		gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \"]\");\n")
+		gen.funcDecls.WriteString("    return buffer;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	
+	// Add color_to_string helper
+	gen.funcDecls.WriteString("char* color_to_string(Color c) {\n")
+	gen.funcDecls.WriteString("    char* buffer = malloc(64);\n")
+	gen.funcDecls.WriteString("    sprintf(buffer, \"color<%d, %d, %d, %d>\", c.r, c.g, c.b, c.a);\n")
+	gen.funcDecls.WriteString("    return buffer;\n")
+	gen.funcDecls.WriteString("}\n\n")
+	
+	// Only add vector2_to_string if vector2 enums are used
+	hasVector2 := false
+	for _, enumType := range gen.enumTypes {
+		if enumType == "vector2" {
+			hasVector2 = true
+			break
+		}
+	}
+	
+	if hasVector2 {
+		gen.funcDecls.WriteString("char* vector2_to_string(Vector2 v) {\n")
+		gen.funcDecls.WriteString("    char* buffer = malloc(64);\n")
+		gen.funcDecls.WriteString("    sprintf(buffer, \"vector2<%.2f, %.2f>\", v.x, v.y);\n")
 		gen.funcDecls.WriteString("    return buffer;\n")
 		gen.funcDecls.WriteString("}\n\n")
 	}

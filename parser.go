@@ -69,6 +69,8 @@ type ASTNode struct {
 	DataType     string
 	Line         int
 	DefaultValue *ASTNode // For default parameter values
+	EnumType     string   // Type of enum (int, string, color, etc.) or "" for mixed
+	IsMutable    bool     // For enum members marked as mutable
 }
 
 type ParseError struct {
@@ -3145,6 +3147,9 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 		// Check for object instantiation identifier<...> or old-style access identifier<index>
 		// But NOT if this is a comparison operator (e.g., "i < 10")
 		if p.current().Type == TOKEN_LANGLE {
+			// Special case: color and vector2 always use < > syntax, never comparison
+			isSpecialType := token.Value == "color" || token.Value == "vector2"
+			
 			// Lookahead to determine if this is a comparison or object access
 			// If the next token looks like it could be the right side of a comparison,
 			// treat this as a comparison operator rather than object access.
@@ -3153,20 +3158,22 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			nextToken := p.peek(1)
 			isLikelyComparison := false
 			
-			// Check for patterns that suggest comparison:
-			// 1. Next token is a number: i < 10
-			// 2. Next token is an identifier that's likely a value: i < max
-			// 3. Next token is a string or boolean literal: i < "value"
-			if nextToken.Type == TOKEN_NUMBER ||
-				nextToken.Type == TOKEN_STRING ||
-				nextToken.Type == TOKEN_TRUE ||
-				nextToken.Type == TOKEN_FALSE {
-				isLikelyComparison = true
-			} else if nextToken.Type == TOKEN_IDENTIFIER {
-				// Check if this looks like a value reference (another variable)
-				// If peek(2) is not ':', it's not a property definition
-				if p.peek(2).Type != TOKEN_ASSIGN {
+			if !isSpecialType {
+				// Check for patterns that suggest comparison:
+				// 1. Next token is a number: i < 10
+				// 2. Next token is an identifier that's likely a value: i < max
+				// 3. Next token is a string or boolean literal: i < "value"
+				if nextToken.Type == TOKEN_NUMBER ||
+					nextToken.Type == TOKEN_STRING ||
+					nextToken.Type == TOKEN_TRUE ||
+					nextToken.Type == TOKEN_FALSE {
 					isLikelyComparison = true
+				} else if nextToken.Type == TOKEN_IDENTIFIER {
+					// Check if this looks like a value reference (another variable)
+					// If peek(2) is not ':', it's not a property definition
+					if p.peek(2).Type != TOKEN_ASSIGN {
+						isLikelyComparison = true
+					}
 				}
 			}
 			
@@ -3714,16 +3721,56 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 	// Expect 'enum' keyword
 	p.expect(TOKEN_ENUM)
 
+	// Check for enum type specifier: enum:type
+	var enumType string
+	if p.current().Type == TOKEN_ASSIGN {
+		p.advance() // consume ':'
+		// Parse the type
+		if p.current().Type == TOKEN_INT_TYPE {
+			enumType = "int"
+			p.advance()
+		} else if p.current().Type == TOKEN_STRING_TYPE {
+			enumType = "string"
+			p.advance()
+		} else if p.current().Type == TOKEN_FLOAT_TYPE {
+			enumType = "float"
+			p.advance()
+		} else if p.current().Type == TOKEN_BOOL_TYPE {
+			enumType = "bool"
+			p.advance()
+		} else if p.current().Type == TOKEN_COLOR_TYPE {
+			enumType = "color"
+			p.advance()
+		} else if p.current().Type == TOKEN_VECTOR2_TYPE {
+			enumType = "vector2"
+			p.advance()
+		} else if p.current().Type == TOKEN_ARRAY_TYPE {
+			enumType = "array"
+			p.advance()
+		} else if p.current().Type == TOKEN_DICT_TYPE {
+			enumType = "dict"
+			p.advance()
+		} else if p.current().Type == TOKEN_IDENTIFIER {
+			// Custom type
+			enumType = p.current().Value
+			p.advance()
+		} else {
+			errMsg := fmt.Sprintf("Expected type after 'enum:' at line %d", p.current().Line)
+			if p.LintMode {
+				p.recordError(errMsg)
+				enumType = "int" // default
+			} else {
+				panic(errMsg)
+			}
+		}
+	} else {
+		// No type specified - leave empty for auto-detection
+		enumType = ""
+	}
+
 	// Get the enum name
 	var name Token
-	if p.current().Type == TOKEN_IDENTIFIER ||
-		p.current().Type == TOKEN_COLOR_TYPE ||
-		p.current().Type == TOKEN_VECTOR2_TYPE ||
-		p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
-		p.current().Type == TOKEN_INT_TYPE ||
-		p.current().Type == TOKEN_FLOAT_TYPE ||
-		p.current().Type == TOKEN_STRING_TYPE ||
-		p.current().Type == TOKEN_BOOL_TYPE {
+	if p.current().Type == TOKEN_IDENTIFIER {
 		name = p.current()
 		p.advance()
 	} else {
@@ -3737,9 +3784,12 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 		}
 	}
 
-	p.expect(TOKEN_ASSIGN) // colon
+	// Expect ':' after enum name (optional for simple cases)
+	if p.current().Type == TOKEN_ASSIGN {
+		p.advance() // consume ':'
+	}
 
-	// Check if this is a one-line enum (no newline after colon)
+	// Check if this is a one-line enum (no newline after name/colon)
 	isOneLine := p.current().Type != TOKEN_NEWLINE && p.current().Type != TOKEN_INDENT
 
 	if !isOneLine {
@@ -3750,45 +3800,127 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 	}
 
 	enum := &ASTNode{
-		Type:  NODE_ENUM_DECLARATION,
-		Value: name.Value,
-		Line:  name.Line,
+		Type:     NODE_ENUM_DECLARATION,
+		Value:    name.Value,
+		Line:     name.Line,
+		EnumType: enumType,
 	}
 
-	// Parse enum members - support multiple lines with optional values
-	for p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_NUMBER {
-		var value string
+	// Parse enum members based on type
+	for p.current().Type != TOKEN_END && p.current().Type != TOKEN_DEDENT && p.current().Type != TOKEN_EOF {
+		// Skip any leading newlines
+		p.skipNewlines()
+		
+		// Check if we've reached the end
+		if p.current().Type == TOKEN_END || p.current().Type == TOKEN_DEDENT || p.current().Type == TOKEN_EOF {
+			break
+		}
+		
+		var valueNode *ASTNode
 		var memberName string
+		var isMutable bool
 
-		// Check if we have a number first (custom value)
+		// Parse value expression first (if present)
+		// Value can be: number, string, bool, array, dict, color, vector2
 		if p.current().Type == TOKEN_NUMBER {
-			value = p.current().Value
+			valueNode = &ASTNode{
+				Type:  NODE_NUMBER,
+				Value: p.current().Value,
+				Line:  p.current().Line,
+			}
 			p.advance()
-
-			// Now expect the identifier
-			if p.current().Type != TOKEN_IDENTIFIER {
-				errMsg := fmt.Sprintf("Expected identifier after enum value at line %d", p.current().Line)
-				if p.LintMode {
-					p.recordError(errMsg)
-					break
-				} else {
-					panic(errMsg)
+		} else if p.current().Type == TOKEN_STRING {
+			valueNode = &ASTNode{
+				Type:  NODE_STRING,
+				Value: p.current().Value,
+				Line:  p.current().Line,
+			}
+			p.advance()
+		} else if p.current().Type == TOKEN_TRUE || p.current().Type == TOKEN_FALSE {
+			valueNode = &ASTNode{
+				Type:  NODE_BOOLEAN,
+				Value: p.current().Value,
+				Line:  p.current().Line,
+			}
+			p.advance()
+		} else if p.current().Type == TOKEN_LBRACKET {
+			// Array literal
+			valueNode = p.parseArrayLiteral()
+		} else if p.current().Type == TOKEN_LBRACE {
+			// Dict literal
+			valueNode = p.parseDictLiteral()
+		} else if p.current().Type == TOKEN_IDENTIFIER && (p.current().Value == "color" || p.current().Value == "vector2") {
+			// Parse color<r,g,b,a> or vector2<x,y>
+			typeName := p.current().Value
+			typeToken := p.current()
+			p.advance() // consume type name
+			
+			if p.current().Type == TOKEN_LANGLE {
+				p.advance() // consume '<'
+				values := []*ASTNode{}
+				
+				// Parse comma-separated values
+				for p.current().Type != TOKEN_RANGLE && p.current().Type != TOKEN_EOF && p.current().Type != TOKEN_END {
+					if p.current().Type == TOKEN_NUMBER {
+						values = append(values, &ASTNode{
+							Type:  NODE_NUMBER,
+							Value: p.current().Value,
+							Line:  p.current().Line,
+						})
+						p.advance()
+					} else if p.current().Type == TOKEN_COMMA {
+						p.advance() // skip comma
+					} else {
+						// Unexpected token
+						p.advance()
+					}
+				}
+				
+				if p.current().Type == TOKEN_RANGLE {
+					p.advance() // consume '>'
+				}
+				
+				valueNode = &ASTNode{
+					Type:     NODE_OBJECT_LITERAL,
+					Value:    typeName,
+					Children: values,
+					Line:     typeToken.Line,
 				}
 			}
-			memberName = p.current().Value
-			p.advance()
-		} else {
-			// Just an identifier (auto-increment value)
-			memberName = p.current().Value
-			value = "" // Will be auto-assigned during codegen
-			p.advance()
+		}
+		// If no value was parsed, it will be auto-assigned (for int enums) or use default
+
+		// Now parse the member name (required)
+		if p.current().Type != TOKEN_IDENTIFIER {
+			// No identifier found, might be end of enum
+			break
+		}
+		memberName = p.current().Value
+		p.advance()
+
+		// Check for :mutable modifier
+		if p.current().Type == TOKEN_ASSIGN {
+			p.advance() // consume ':'
+			if p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "mutable" {
+				isMutable = true
+				p.advance()
+			} else {
+				errMsg := fmt.Sprintf("Expected 'mutable' after ':' in enum member at line %d", p.current().Line)
+				if p.LintMode {
+					p.recordError(errMsg)
+				}
+			}
 		}
 
 		member := &ASTNode{
-			Type:     NODE_IDENTIFIER,
-			Value:    memberName,
-			DataType: value, // Store the enum value in DataType field
-			Line:     p.current().Line,
+			Type:      NODE_IDENTIFIER,
+			Value:     memberName,
+			IsMutable: isMutable,
+			Line:      p.current().Line,
+			Children:  []*ASTNode{},
+		}
+		if valueNode != nil {
+			member.Children = append(member.Children, valueNode)
 		}
 		enum.Children = append(enum.Children, member)
 
@@ -3797,7 +3929,7 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 			p.advance()
 		}
 
-		// Check for $ terminator (allows inline $ for single line enums)
+		// Check for $ terminator
 		if p.current().Type == TOKEN_END {
 			break
 		}
@@ -3805,10 +3937,6 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 		// For one-line enums, stop at newline or EOF
 		if isOneLine && (p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_EOF) {
 			break
-		}
-
-		if !isOneLine {
-			p.skipNewlines()
 		}
 	}
 
@@ -3826,36 +3954,6 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 		} else {
 			panic(errMsg)
 		}
-	}
-
-	// Check for duplicate enum declaration
-	if p.LintMode {
-		if existing, exists := p.enums[name.Value]; exists {
-			errMsg := fmt.Sprintf("Redeclaration of enum '%s' (previously declared at line %d)", name.Value, existing.Line)
-			p.recordErrorAtLine(errMsg, startLine)
-		}
-		// Check if name conflicts with struct
-		if existing, exists := p.structs[name.Value]; exists {
-			errMsg := fmt.Sprintf("Redeclaration of '%s' as enum (previously declared as struct at line %d)", name.Value, existing.Line)
-			p.recordErrorAtLine(errMsg, startLine)
-		}
-		// Check if name conflicts with function
-		if existing, exists := p.functions[name.Value]; exists {
-			errMsg := fmt.Sprintf("Redeclaration of '%s' as enum (previously declared as function at line %d)", name.Value, existing.Line)
-			p.recordErrorAtLine(errMsg, startLine)
-		}
-		// Check if name conflicts with constant
-		if existingLine, exists := p.constants[name.Value]; exists {
-			errMsg := fmt.Sprintf("Redeclaration of '%s' as enum (previously declared as constant at line %d)", name.Value, existingLine)
-			p.recordErrorAtLine(errMsg, startLine)
-		}
-	}
-
-	// Always track enum members (needed for codegen and validation)
-	p.enums[name.Value] = &EnumDefinition{
-		Name:    name.Value,
-		Members: enum.Children,
-		Line:    startLine,
 	}
 
 	return enum
