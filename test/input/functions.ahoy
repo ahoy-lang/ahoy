@@ -33,7 +33,25 @@ $
 
 name, phone,location,postcode : test_generics|"Alice", 1234567890,"madrid",9220|
 print|name.type,phone.type,location.type,postcode.type|
-expected.push|"string int string int"|
+expected.push|"string int string int"|;
+
+
+? test_defer in function
+@ test_defer || void:
+	print|"no-defer1"|
+	defer print|"defer1"|
+	defer print|"defer2"|
+	defer print|"defer3"|
+	print|"no-defer2"|
+$
+test_defer||
+
+expected.push|"no-defer1"|
+expected.push|"no-defer2"|
+expected.push|"defer3"|
+expected.push|"defer2"|
+expected.push|"defer1"|
+
 
 ? Print expected values for test validation
 print|expected|

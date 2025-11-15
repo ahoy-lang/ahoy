@@ -556,6 +556,7 @@ func tokenTypeName(t TokenType) string {
 		TOKEN_DOUBLE_COLON: "'::'", TOKEN_WALRUS: "':='", TOKEN_QUESTION: "'?'", TOKEN_TERNARY: "'??'",
 		TOKEN_EQUALS: "'='", TOKEN_INFER: "'infer'", TOKEN_VOID: "'void'",
 		TOKEN_AT: "'@'", TOKEN_END: "'$'",
+		TOKEN_PLUS_ASSIGN: "'+='", TOKEN_MINUS_ASSIGN: "'-='",
 	}
 	if name, ok := names[t]; ok {
 		return name
@@ -566,6 +567,36 @@ func tokenTypeName(t TokenType) string {
 func (p *Parser) advance() {
 	if p.pos < len(p.tokens) {
 		p.pos++
+	}
+}
+
+// copyASTNode creates a deep copy of an AST node
+func (p *Parser) copyASTNode(node *ASTNode) *ASTNode {
+	if node == nil {
+		return nil
+	}
+	
+	// Copy children recursively
+	children := make([]*ASTNode, len(node.Children))
+	for i, child := range node.Children {
+		children[i] = p.copyASTNode(child)
+	}
+	
+	// Copy default value if present
+	var defaultValue *ASTNode
+	if node.DefaultValue != nil {
+		defaultValue = p.copyASTNode(node.DefaultValue)
+	}
+	
+	return &ASTNode{
+		Type:         node.Type,
+		Value:        node.Value,
+		Children:     children,
+		DataType:     node.DataType,
+		Line:         node.Line,
+		DefaultValue: defaultValue,
+		EnumType:     node.EnumType,
+		IsMutable:    node.IsMutable,
 	}
 }
 
@@ -2338,7 +2369,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 		}
 	}
 
-	// Check for array index assignment: arr[index]: value
+	// Check for array index assignment: arr[index]: value or arr[index] += value
 	if p.pos+2 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_LBRACKET {
 		savedPos := p.pos
 		p.advance() // skip identifier
@@ -2354,17 +2385,50 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			p.advance()
 		}
 		isAssignment := p.current().Type == TOKEN_ASSIGN
+		isCompoundAssignment := p.current().Type == TOKEN_PLUS_ASSIGN || p.current().Type == TOKEN_MINUS_ASSIGN
 		p.pos = savedPos // restore position
 
-		if isAssignment {
+		if isAssignment || isCompoundAssignment {
 			target := p.parsePrimaryExpression() // This will parse arr[index]
-			p.expect(TOKEN_ASSIGN)
-			value := p.parseExpression()
+			
+			if isCompoundAssignment {
+				// Handle += and -=
+				opToken := p.current()
+				p.advance() // consume += or -=
+				value := p.parseExpression()
+				
+				// Convert to: target: target + value or target: target - value
+				var op string
+				if opToken.Type == TOKEN_PLUS_ASSIGN {
+					op = "+"
+				} else {
+					op = "-"
+				}
+				
+				// Create a copy of target for the right side of the binary op
+				targetCopy := p.copyASTNode(target)
+				
+				binaryOp := &ASTNode{
+					Type:     NODE_BINARY_OP,
+					Value:    op,
+					Children: []*ASTNode{targetCopy, value},
+					Line:     target.Line,
+				}
+				
+				return &ASTNode{
+					Type:     NODE_ASSIGNMENT,
+					Children: []*ASTNode{target, binaryOp},
+					Line:     target.Line,
+				}
+			} else {
+				p.expect(TOKEN_ASSIGN)
+				value := p.parseExpression()
 
-			return &ASTNode{
-				Type:     NODE_ASSIGNMENT,
-				Children: []*ASTNode{target, value},
-				Line:     target.Line,
+				return &ASTNode{
+					Type:     NODE_ASSIGNMENT,
+					Children: []*ASTNode{target, value},
+					Line:     target.Line,
+				}
 			}
 		}
 	}
@@ -2433,6 +2497,46 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				Children: []*ASTNode{target, value},
 				Line:     target.Line,
 			}
+		}
+	}
+
+	// Check for compound assignment: identifier += value or identifier -= value
+	if p.pos+1 < len(p.tokens) && (p.tokens[p.pos+1].Type == TOKEN_PLUS_ASSIGN || p.tokens[p.pos+1].Type == TOKEN_MINUS_ASSIGN) {
+		name := p.expect(TOKEN_IDENTIFIER)
+		line := name.Line
+		opToken := p.current()
+		p.advance() // consume += or -=
+		value := p.parseExpression()
+		
+		// Convert to: identifier: identifier + value or identifier: identifier - value
+		var op string
+		if opToken.Type == TOKEN_PLUS_ASSIGN {
+			op = "+"
+		} else {
+			op = "-"
+		}
+		
+		// Create identifier node for the right side of binary op
+		identNode := &ASTNode{
+			Type:  NODE_IDENTIFIER,
+			Value: name.Value,
+			Line:  line,
+		}
+		
+		// Create binary operation: identifier + value
+		binaryOp := &ASTNode{
+			Type:     NODE_BINARY_OP,
+			Value:    op,
+			Children: []*ASTNode{identNode, value},
+			Line:     line,
+		}
+		
+		// Create assignment: identifier: (identifier + value)
+		return &ASTNode{
+			Type:     NODE_ASSIGNMENT,
+			Value:    name.Value,  // Variable name goes in Value field
+			Children: []*ASTNode{binaryOp},  // Binary op is the value being assigned
+			Line:     line,
 		}
 	}
 

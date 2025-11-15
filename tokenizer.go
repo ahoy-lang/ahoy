@@ -97,6 +97,8 @@ const (
 	TOKEN_VOID         // void (no return value)
 	TOKEN_END          // $ or ⚓ (block terminator)
 	TOKEN_AT           // @ (function declaration prefix)
+	TOKEN_PLUS_ASSIGN  // +=
+	TOKEN_MINUS_ASSIGN // -=
 )
 
 type Token struct {
@@ -327,6 +329,14 @@ func Tokenize(input string) []Token {
 					continue
 				case ">=":
 					tokens = append(tokens, Token{Type: TOKEN_GREATER_EQUAL, Value: ">=", Line: lineNum + 1, Column: i + 1})
+					i += 2
+					continue
+				case "+=":
+					tokens = append(tokens, Token{Type: TOKEN_PLUS_ASSIGN, Value: "+=", Line: lineNum + 1, Column: i + 1})
+					i += 2
+					continue
+				case "-=":
+					tokens = append(tokens, Token{Type: TOKEN_MINUS_ASSIGN, Value: "-=", Line: lineNum + 1, Column: i + 1})
 					i += 2
 					continue
 				}

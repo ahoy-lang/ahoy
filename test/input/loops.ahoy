@@ -133,5 +133,41 @@ expected.push|"Key: active, Value: yes"|
 expected.push|"Key: name, Value: Ahoy"|
 expected.push|"Key: version, Value: 1.0"|
 
+my_numbers: [10, 20, 30]
+loop n to my_numbers.length do
+	my_numbers[n] +=1
+$
+print|my_numbers|
+expected.push|"[11, 21, 31]"|
+
+
+
+i:0
+loop till i <= 5:
+    ahoy|f"Count {i}"|
+    i+=1
+$
+
+expected.push|"Count 0"|
+expected.push|"Count 1"|
+expected.push|"Count 2"|
+expected.push|"Count 3"|
+expected.push|"Count 4"|
+expected.push|"Count 5"|
+
+
+
+i:0
+loop till i >= -5:
+    ahoy|f"Count {i}"|
+    i-=1
+$
+expected.push|"Count 0"|
+expected.push|"Count -1"|
+expected.push|"Count -2"|
+expected.push|"Count -3"|
+expected.push|"Count -4"|
+expected.push|"Count -5"|
+
 ? Print expected values for test validation
 print|expected|

@@ -287,9 +287,10 @@ func formatCommasOutsideStrings(s string) string {
 
 // formatOperators adds spaces around binary operators
 func formatOperators(line string) string {
-	// Add space around + operator (but not inside strings)
-	// Simple pattern - add space around + when not in quotes
+	// Add space around + and - operators (but not inside strings or compound operators)
+	// Simple pattern - add space around +/- when not in quotes and not part of += or -=
 	line = formatOperatorOutsideStrings(line, '+')
+	line = formatOperatorOutsideStrings(line, '-')
 	return line
 }
 
@@ -321,6 +322,21 @@ func formatOperatorOutsideStrings(s string, op byte) string {
 		}
 
 		if ch == op && !inString {
+			// Check if this is part of a compound operator (+=, -=)
+			// Look ahead past any spaces to see if there's an '='
+			if ch == '+' || ch == '-' {
+				nextIdx := i + 1
+				// Skip spaces
+				for nextIdx < len(s) && s[nextIdx] == ' ' {
+					nextIdx++
+				}
+				// If we found '=', this is a compound operator - don't format it
+				if nextIdx < len(s) && s[nextIdx] == '=' {
+					result.WriteByte(ch)
+					continue
+				}
+			}
+			
 			// Add spaces around operator
 			// Check if there's already a space before
 			if result.Len() > 0 {
