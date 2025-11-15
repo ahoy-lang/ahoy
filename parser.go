@@ -4745,9 +4745,15 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 							p.advance() // consume {
 							defaultValue = p.parseObjectLiteral()
 							defaultValue.Value = typeName
+						} else if p.current().Type == TOKEN_LBRACE {
+							// Parse object literal without type prefix: {...}
+							// Type will be inferred from field declaration
+							p.advance() // consume {
+							defaultValue = p.parseObjectLiteral()
+							// Leave Value empty - will be set from field type
 						} else if p.current().Type == TOKEN_LANGLE {
-							// Parse dict or old-style literal default value
-							defaultValue = p.parseObjectOrVector2Literal()
+							// Parse dict literal default value
+							defaultValue = p.parseDictLiteral()
 						} else if p.current().Type == TOKEN_STRING {
 							defaultValue = &ASTNode{
 								Type:  NODE_STRING,
@@ -4785,20 +4791,51 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 						}
 						p.expect(TOKEN_ASSIGN)
 
-						// Get type
-						fieldType := p.current().Value
-						if p.current().Type == TOKEN_IDENTIFIER ||
-							p.current().Type == TOKEN_INT_TYPE ||
-							p.current().Type == TOKEN_FLOAT_TYPE ||
-							p.current().Type == TOKEN_STRING_TYPE ||
-							p.current().Type == TOKEN_BOOL_TYPE ||
-							p.current().Type == TOKEN_VECTOR2_TYPE ||
-							p.current().Type == TOKEN_DICT_TYPE ||
-							p.current().Type == TOKEN_ARRAY_TYPE ||
-							p.current().Type == TOKEN_COLOR_TYPE {
+						// Get type - handle array[type] and dict<key,val> syntax
+						fieldType := ""
+						if p.current().Type == TOKEN_ARRAY_TYPE {
+							fieldType = "array"
 							p.advance()
+							if p.current().Type == TOKEN_LBRACKET {
+								p.advance() // consume [
+								fieldType += "[" + p.current().Value
+								p.advance() // consume type
+								p.expect(TOKEN_RBRACKET)
+								fieldType += "]"
+							}
+						} else if p.current().Type == TOKEN_DICT_TYPE {
+							fieldType = "dict"
+							p.advance()
+							if p.current().Type == TOKEN_LANGLE {
+								p.advance() // consume <
+								fieldType += "<" + p.current().Value
+								p.advance() // consume key type
+								if p.current().Type == TOKEN_COMMA {
+									p.advance()
+									fieldType += "," + p.current().Value
+									p.advance() // consume value type
+								}
+								p.expect(TOKEN_RANGLE)
+								fieldType += ">"
+							}
+						} else {
+							fieldType = p.current().Value
+							if p.current().Type == TOKEN_IDENTIFIER ||
+								p.current().Type == TOKEN_INT_TYPE ||
+								p.current().Type == TOKEN_FLOAT_TYPE ||
+								p.current().Type == TOKEN_STRING_TYPE ||
+								p.current().Type == TOKEN_BOOL_TYPE ||
+								p.current().Type == TOKEN_VECTOR2_TYPE ||
+								p.current().Type == TOKEN_COLOR_TYPE {
+								p.advance()
+							}
 						}
 
+						// If defaultValue is an object literal without a type, set it from fieldType
+						if defaultValue != nil && defaultValue.Type == NODE_OBJECT_LITERAL && defaultValue.Value == "" {
+							defaultValue.Value = fieldType
+						}
+						
 						field := &ASTNode{
 							Type:         NODE_IDENTIFIER,
 							Value:        fieldName.Value,
@@ -4840,9 +4877,15 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 				p.advance() // consume {
 				defaultValue = p.parseObjectLiteral()
 				defaultValue.Value = typeName
+			} else if p.current().Type == TOKEN_LBRACE {
+				// Parse object literal without type prefix: {...}
+				// Type will be inferred from field declaration
+				p.advance() // consume {
+				defaultValue = p.parseObjectLiteral()
+				// Leave Value empty - will be set from field type
 			} else if p.current().Type == TOKEN_LANGLE {
-				// Parse dict or old-style literal default value
-				defaultValue = p.parseObjectOrVector2Literal()
+				// Parse dict literal default value
+				defaultValue = p.parseDictLiteral()
 			} else if p.current().Type == TOKEN_STRING {
 				defaultValue = &ASTNode{
 					Type:  NODE_STRING,
@@ -4880,19 +4923,51 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 			}
 			p.expect(TOKEN_ASSIGN)
 
-			// Get type
-			fieldType := p.current().Value
-			if p.current().Type == TOKEN_IDENTIFIER ||
-				p.current().Type == TOKEN_INT_TYPE ||
-				p.current().Type == TOKEN_FLOAT_TYPE ||
-				p.current().Type == TOKEN_STRING_TYPE ||
-				p.current().Type == TOKEN_BOOL_TYPE ||
-				p.current().Type == TOKEN_VECTOR2_TYPE ||
-				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
-				p.current().Type == TOKEN_COLOR_TYPE {
+			// Get type - handle array[type] and dict<key,val> syntax
+			fieldType := ""
+			if p.current().Type == TOKEN_ARRAY_TYPE {
+				fieldType = "array"
 				p.advance()
+				if p.current().Type == TOKEN_LBRACKET {
+					p.advance() // consume [
+					fieldType += "[" + p.current().Value
+					p.advance() // consume type
+					p.expect(TOKEN_RBRACKET)
+					fieldType += "]"
+				}
+			} else if p.current().Type == TOKEN_DICT_TYPE {
+				fieldType = "dict"
+				p.advance()
+				if p.current().Type == TOKEN_LANGLE {
+					p.advance() // consume <
+					fieldType += "<" + p.current().Value
+					p.advance() // consume key type
+					if p.current().Type == TOKEN_COMMA {
+						p.advance()
+						fieldType += "," + p.current().Value
+						p.advance() // consume value type
+					}
+					p.expect(TOKEN_RANGLE)
+					fieldType += ">"
+				}
+			} else {
+				fieldType = p.current().Value
+				if p.current().Type == TOKEN_IDENTIFIER ||
+					p.current().Type == TOKEN_INT_TYPE ||
+					p.current().Type == TOKEN_FLOAT_TYPE ||
+					p.current().Type == TOKEN_STRING_TYPE ||
+					p.current().Type == TOKEN_BOOL_TYPE ||
+					p.current().Type == TOKEN_VECTOR2_TYPE ||
+					p.current().Type == TOKEN_COLOR_TYPE {
+					p.advance()
+				}
 			}
 
+			// If defaultValue is an object literal without a type, set it from fieldType
+			if defaultValue != nil && defaultValue.Type == NODE_OBJECT_LITERAL && defaultValue.Value == "" {
+				defaultValue.Value = fieldType
+			}
+			
 			field := &ASTNode{
 				Type:         NODE_IDENTIFIER,
 				Value:        fieldName.Value,

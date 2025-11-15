@@ -21,13 +21,18 @@ struct particle:
 		1.0 alpha: float, ? initial value set to 1.0
 	 	1 life: float, ? initial value set to 1.0
 		max_life: float, ? initial value set to 0.0
-		name: string, ? initial value set to ""
-		color: color
+		name: string,
+		color: color,
   type wind_particle:
-    vector2{x:10,y:20} direction: vector2,
+    {x:10,y:20} direction: vector2,
     5.0 speed: float,
-    vector2{x:10,y:10} size: vector2
+    {x:10,y:10} size: vector2,
+    test_array: array[int],
+    test_dict1: dict,
+    [1,2,3,4,5] test_array2: array[int],
+    <"a": 1, "b": 2> test_dict2: dict<string,int>
 $
+
 
 smoke_particle_instance: smoke_particle{position:vector2{x:120,y:390}, size: 10, alpha: 1, life:1}
 print|smoke_particle_instance|
@@ -37,7 +42,7 @@ print|particle_instance|
 expected.push|"particle{position:vector2(0, 0), velocity:vector2(1, 1), rotation:0}"|
 wind_particle_instance : wind_particle{speed:5, size:vector2{x:10,y:10}}
 print|wind_particle_instance|
-expected.push|"wind_particle{position:vector2(0, 0), velocity:vector2(0, 0), rotation:0, direction:vector2(10, 20), speed:5, size:vector2(10, 10)}"|
+expected.push|"wind_particle{position:vector2(0, 0), velocity:vector2(0, 0), rotation:0, direction:vector2(10, 20), speed:5, size:vector2(10, 10), test_array:[], test_dict1:<>, test_array2:[], test_dict2:<>}"|
 print|wind_particle_instance.position|
 expected.push|"vector2{x:0, y:0}"|
 print|wind_particle_instance.type|

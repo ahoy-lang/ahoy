@@ -60,6 +60,7 @@ type CodeGenerator struct {
 	output                        strings.Builder
 	indent                        int
 	varCounter                    int
+	dictCounter                   int                        // Counter for inline dict/array literals
 	funcDecls                     strings.Builder
 	structDecls                   strings.Builder
 	includes                      map[string]bool
@@ -3938,6 +3939,60 @@ func (gen *CodeGenerator) generateDefaultValue(node *ahoy.ASTNode) string {
 			builder.WriteString("}")
 			return builder.String()
 		}
+	case ahoy.NODE_ARRAY_LITERAL:
+		// Generate array literal inline
+		var builder strings.Builder
+		dictName := fmt.Sprintf("arr_%d", gen.dictCounter)
+		gen.dictCounter++
+		builder.WriteString("({ AhoyArray* ")
+		builder.WriteString(dictName)
+		builder.WriteString(" = malloc(sizeof(AhoyArray)); ")
+		builder.WriteString(dictName)
+		builder.WriteString("->length = 0; ")
+		builder.WriteString(dictName)
+		builder.WriteString("->capacity = 0; ")
+		builder.WriteString(dictName)
+		builder.WriteString("->data = malloc(0 * sizeof(intptr_t)); ")
+		builder.WriteString(dictName)
+		builder.WriteString("->types = malloc(0 * sizeof(AhoyValueType)); ")
+		builder.WriteString(dictName)
+		builder.WriteString("->is_typed = 0; ")
+		for _, elem := range node.Children {
+			builder.WriteString("ahoy_array_push(")
+			builder.WriteString(dictName)
+			builder.WriteString(", (intptr_t)")
+			builder.WriteString(gen.generateDefaultValue(elem))
+			valueType := gen.inferType(elem)
+			builder.WriteString(fmt.Sprintf(", %s); ", gen.getAhoyTypeEnum(valueType)))
+		}
+		builder.WriteString(dictName)
+		builder.WriteString("; })")
+		return builder.String()
+	case ahoy.NODE_DICT_LITERAL:
+		// Generate dict literal inline
+		var builder strings.Builder
+		dictName := fmt.Sprintf("dict_%d", gen.dictCounter)
+		gen.dictCounter++
+		builder.WriteString("({ HashMap* ")
+		builder.WriteString(dictName)
+		builder.WriteString(" = createHashMap(16); ")
+		for i := 0; i < len(node.Children); i += 2 {
+			if i+1 < len(node.Children) {
+				key := node.Children[i]
+				value := node.Children[i+1]
+				builder.WriteString("hashMapPutTyped(")
+				builder.WriteString(dictName)
+				builder.WriteString(", ")
+				builder.WriteString(gen.generateDefaultValue(key))
+				builder.WriteString(", (void*)(intptr_t)")
+				builder.WriteString(gen.generateDefaultValue(value))
+				valueType := gen.inferType(value)
+				builder.WriteString(fmt.Sprintf(", %s); ", gen.getAhoyTypeEnum(valueType)))
+			}
+		}
+		builder.WriteString(dictName)
+		builder.WriteString("; })")
+		return builder.String()
 	}
 	return ""
 }
@@ -3957,6 +4012,10 @@ func (gen *CodeGenerator) getTypeDefault(cType string) string {
 		return "(Vector2){.x = 0, .y = 0}"
 	case "Color":
 		return "(Color){.r = 0, .g = 0, .b = 0, .a = 0}"
+	case "AhoyArray*":
+		return "({ AhoyArray* arr = malloc(sizeof(AhoyArray)); arr->length = 0; arr->capacity = 0; arr->data = malloc(0 * sizeof(intptr_t)); arr->types = malloc(0 * sizeof(AhoyValueType)); arr->is_typed = 0; arr; })"
+	case "HashMap*":
+		return "createHashMap(16)"
 	default:
 		return ""
 	}
@@ -4870,6 +4929,10 @@ func (gen *CodeGenerator) writeStructHelperFunctions() {
 				gen.funcDecls.WriteString("%s")  // Will use vector2_to_string
 			case "Color":
 				gen.funcDecls.WriteString("%s")  // Will use color_to_string
+			case "AhoyArray*":
+				gen.funcDecls.WriteString("[]")  // Show as empty array
+			case "HashMap*":
+				gen.funcDecls.WriteString("<>")  // Show as empty dict
 			default:
 				gen.funcDecls.WriteString("%p")
 			}
@@ -4878,11 +4941,19 @@ func (gen *CodeGenerator) writeStructHelperFunctions() {
 		// Close with } for all structs
 		gen.funcDecls.WriteString("}\", ")
 
-		// Add field values
-		for i, field := range structInfo.Fields {
-			if i > 0 {
+		// Add field values (only for non-array/dict fields)
+		firstValue := true
+		for _, field := range structInfo.Fields {
+			// Skip arrays and dicts - they're already in the format string
+			if field.Type == "AhoyArray*" || field.Type == "HashMap*" {
+				continue
+			}
+			
+			if !firstValue {
 				gen.funcDecls.WriteString(", ")
 			}
+			firstValue = false
+			
 			if field.Type == "bool" {
 				gen.funcDecls.WriteString(fmt.Sprintf("obj.%s ? \"true\" : \"false\"", field.Name))
 			} else if field.Type == "Vector2" {

@@ -1,0 +1,9 @@
+import "/home/lee/Documents/ahoy-lang/ahoy/repos/raylib/src/raylib.h"
+
+init_window|800, 450, "Ahoy Raylib Test"|
+loop till not window_should_close do
+	begin_drawing||
+	clear_background|RAYWHITE|
+	draw_text|"Hello, Raylib with Ahoy!", 190, 200, 20, LIGHTGRAY|
+	end_drawing||
+$
