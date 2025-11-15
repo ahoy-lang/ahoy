@@ -4,10 +4,10 @@ init_window|800, 450, "Ahoy Raylib Test"|
 set_target_fps|60|
 ball_position : vector2{x: 100.0,y: 100.0 };
 loop till not window_should_close do
-	? if is_key_down|KEY_RIGHT| then ball_position.x += 2.0 $
-	? if is_key_down|KEY_LEFT| then ball_position.x -= 2.0 $
-	? if is_key_down|KEY_UP| then ball_position.y -= 2.0 $
-	? if is_key_down|KEY_DOWN| then ball_position.y $
+	if is_key_down|KEY_RIGHT| then ball_position.x += 2.0 $
+	if is_key_down|KEY_LEFT| then ball_position.x -= 2.0 $
+	if is_key_down|KEY_UP| then ball_position.y -= 2.0 $
+	if is_key_down|KEY_DOWN| then ball_position.y +=2.0 $
 	begin_drawing||
 	clear_background|RAYWHITE|
 	? draw_text|"Hello, Raylib with Ahoy!", 190, 200, 20, LIGHTGRAY|

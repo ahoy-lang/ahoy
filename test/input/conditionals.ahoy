@@ -3,11 +3,11 @@ expected: []
 
 ? Basic if
 x: 10
-if x is 10 then print|"ten"| expected.push|"ten"| $
 
+if x is 10 then print|"ten"| expected.push|"ten"| $
 ? If-else
 y: 5
-if y greater_than 10 then print|"big"| expected.push|"big"|
+if y greater_than 10 then print|"big"|; expected.push|"big"|;
 else print|"small"| expected.push|"small"|
 $
 
@@ -65,10 +65,44 @@ expected.push|"Poor"|
 ? test calling print
 grade: 'F'
 switch grade:
-    on 'A', 'B': print|"Good"| expected.push|"Good"|
-    on 'C': print|"OK"| expected.push|"OK"|
-    _: print|"Poor"| expected.push|"Poor"|
+  on 'A', 'B': print|"Good"| expected.push|"Good"|
+  on 'C': print|"OK"| expected.push|"OK"|
+  _: print|"Poor"| expected.push|"Poor"|
 $
 
+
+struct vector2:
+  x: float,
+  y: float
+$
+? test += or -= in conditionals
+KEY_RIGHT::true
+ball_position : vector2{x:0,y:0};
+if KEY_RIGHT then ball_position.x += 2.0 $
+if KEY_RIGHT then ball_position.y -= 2.0 $
+print|ball_position.x|
+print|ball_position.y|
+expected.push|"2.000000"|
+expected.push|"-2.000000"|
+
+? test *= /= %= in conditionals
+value:10
+if value is 10 then value *= 3 $
+print|value|
+expected.push|"30"|
+
+if value is 30 then value /= 2 $
+print|value|
+expected.push|"15"|
+
+if value is 15 then value %= 7 $
+print|value|
+expected.push|"1"|
+
+? test compound operators in switch
+num:5
+switch num: on 5: num += 10 _: num: 0 $
+print|num|
+expected.push|"15"|
 ? Print expected values for test validation
 print|expected|

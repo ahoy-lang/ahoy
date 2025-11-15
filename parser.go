@@ -557,6 +557,7 @@ func tokenTypeName(t TokenType) string {
 		TOKEN_EQUALS: "'='", TOKEN_INFER: "'infer'", TOKEN_VOID: "'void'",
 		TOKEN_AT: "'@'", TOKEN_END: "'$'",
 		TOKEN_PLUS_ASSIGN: "'+='", TOKEN_MINUS_ASSIGN: "'-='",
+		TOKEN_MULTIPLY_ASSIGN: "'*='", TOKEN_DIVIDE_ASSIGN: "'/='", TOKEN_MODULO_ASSIGN: "'%='",
 	}
 	if name, ok := names[t]; ok {
 		return name
@@ -567,6 +568,33 @@ func tokenTypeName(t TokenType) string {
 func (p *Parser) advance() {
 	if p.pos < len(p.tokens) {
 		p.pos++
+	}
+}
+
+// isCompoundAssignOp checks if a token type is a compound assignment operator
+func (p *Parser) isCompoundAssignOp(tokenType TokenType) bool {
+	return tokenType == TOKEN_PLUS_ASSIGN || 
+		   tokenType == TOKEN_MINUS_ASSIGN ||
+		   tokenType == TOKEN_MULTIPLY_ASSIGN ||
+		   tokenType == TOKEN_DIVIDE_ASSIGN ||
+		   tokenType == TOKEN_MODULO_ASSIGN
+}
+
+// getCompoundAssignOp returns the binary operator for a compound assignment operator
+func (p *Parser) getCompoundAssignOp(tokenType TokenType) string {
+	switch tokenType {
+	case TOKEN_PLUS_ASSIGN:
+		return "+"
+	case TOKEN_MINUS_ASSIGN:
+		return "-"
+	case TOKEN_MULTIPLY_ASSIGN:
+		return "*"
+	case TOKEN_DIVIDE_ASSIGN:
+		return "/"
+	case TOKEN_MODULO_ASSIGN:
+		return "%"
+	default:
+		return ""
 	}
 }
 
@@ -1263,6 +1291,9 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 					stmt = p.parseSwitchStatement()
 				case TOKEN_LOOP:
 					stmt = p.parseLoop()
+				case TOKEN_IDENTIFIER:
+					// Could be assignment or expression
+					stmt = p.parseAssignmentOrExpression()
 				default:
 					// Try to parse as expression (potentially tuple)
 					stmt = p.parseSwitchCaseExpression()
@@ -2385,25 +2416,20 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			p.advance()
 		}
 		isAssignment := p.current().Type == TOKEN_ASSIGN
-		isCompoundAssignment := p.current().Type == TOKEN_PLUS_ASSIGN || p.current().Type == TOKEN_MINUS_ASSIGN
+		isCompoundAssignment := p.isCompoundAssignOp(p.current().Type)
 		p.pos = savedPos // restore position
 
 		if isAssignment || isCompoundAssignment {
 			target := p.parsePrimaryExpression() // This will parse arr[index]
 			
 			if isCompoundAssignment {
-				// Handle += and -=
+				// Handle +=, -=, *=, /=, %=
 				opToken := p.current()
-				p.advance() // consume += or -=
+				p.advance() // consume compound operator
 				value := p.parseExpression()
 				
-				// Convert to: target: target + value or target: target - value
-				var op string
-				if opToken.Type == TOKEN_PLUS_ASSIGN {
-					op = "+"
-				} else {
-					op = "-"
-				}
+				// Convert to: target: target op value
+				op := p.getCompoundAssignOp(opToken.Type)
 				
 				// Create a copy of target for the right side of the binary op
 				targetCopy := p.copyASTNode(target)
@@ -2448,22 +2474,55 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			}
 		}
 		isAssignment := p.current().Type == TOKEN_ASSIGN
+		isCompoundAssignment := p.isCompoundAssignOp(p.current().Type)
 		p.pos = savedPos // restore position
 
-		if isAssignment {
+		if isAssignment || isCompoundAssignment {
 			target := p.parsePrimaryExpression() // This will parse obj.property
-			p.expect(TOKEN_ASSIGN)
-			value := p.parseExpression()
+			
+			if isCompoundAssignment {
+				// Handle +=, -=, *=, /=, %=
+				opToken := p.current()
+				p.advance() // consume compound operator
+				value := p.parseExpression()
+				
+				// Convert to: target: target op value
+				op := p.getCompoundAssignOp(opToken.Type)
+				
+				// Create a copy of target for the right side of the binary op
+				targetCopy := p.copyASTNode(target)
+				
+				binaryOp := &ASTNode{
+					Type:     NODE_BINARY_OP,
+					Value:    op,
+					Children: []*ASTNode{targetCopy, value},
+					Line:     target.Line,
+				}
+				
+				// Validate property assignment in lint mode
+				if p.LintMode && target.Type == NODE_MEMBER_ACCESS {
+					p.validatePropertyAssignment(target, binaryOp, target.Line)
+				}
+				
+				return &ASTNode{
+					Type:     NODE_ASSIGNMENT,
+					Children: []*ASTNode{target, binaryOp},
+					Line:     target.Line,
+				}
+			} else {
+				p.expect(TOKEN_ASSIGN)
+				value := p.parseExpression()
 
-			// Validate property assignment in lint mode
-			if p.LintMode && target.Type == NODE_MEMBER_ACCESS {
-				p.validatePropertyAssignment(target, value, target.Line)
-			}
+				// Validate property assignment in lint mode
+				if p.LintMode && target.Type == NODE_MEMBER_ACCESS {
+					p.validatePropertyAssignment(target, value, target.Line)
+				}
 
-			return &ASTNode{
-				Type:     NODE_ASSIGNMENT,
-				Children: []*ASTNode{target, value},
-				Line:     target.Line,
+				return &ASTNode{
+					Type:     NODE_ASSIGNMENT,
+					Children: []*ASTNode{target, value},
+					Line:     target.Line,
+				}
 			}
 		}
 	}
@@ -2500,21 +2559,16 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 		}
 	}
 
-	// Check for compound assignment: identifier += value or identifier -= value
-	if p.pos+1 < len(p.tokens) && (p.tokens[p.pos+1].Type == TOKEN_PLUS_ASSIGN || p.tokens[p.pos+1].Type == TOKEN_MINUS_ASSIGN) {
+	// Check for compound assignment: identifier +=/-=/*=/=/%= value
+	if p.pos+1 < len(p.tokens) && p.isCompoundAssignOp(p.tokens[p.pos+1].Type) {
 		name := p.expect(TOKEN_IDENTIFIER)
 		line := name.Line
 		opToken := p.current()
-		p.advance() // consume += or -=
+		p.advance() // consume compound operator
 		value := p.parseExpression()
 		
-		// Convert to: identifier: identifier + value or identifier: identifier - value
-		var op string
-		if opToken.Type == TOKEN_PLUS_ASSIGN {
-			op = "+"
-		} else {
-			op = "-"
-		}
+		// Convert to: identifier: identifier op value
+		op := p.getCompoundAssignOp(opToken.Type)
 		
 		// Create identifier node for the right side of binary op
 		identNode := &ASTNode{

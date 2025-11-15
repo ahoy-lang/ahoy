@@ -322,9 +322,9 @@ func formatOperatorOutsideStrings(s string, op byte) string {
 		}
 
 		if ch == op && !inString {
-			// Check if this is part of a compound operator (+=, -=)
+			// Check if this is part of a compound operator (+=, -=, *=, /=, %=)
 			// Look ahead past any spaces to see if there's an '='
-			if ch == '+' || ch == '-' {
+			if ch == '+' || ch == '-' || ch == '*' || ch == '/' || ch == '%' {
 				nextIdx := i + 1
 				// Skip spaces
 				for nextIdx < len(s) && s[nextIdx] == ' ' {

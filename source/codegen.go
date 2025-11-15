@@ -85,6 +85,8 @@ type CodeGenerator struct {
 	structs                       map[string]*StructInfo     // struct name -> struct info
 	currentTypeContext            string                     // Current type annotation context (e.g., "array[int]")
 	functionReturnTypes           map[string][]string        // function name -> return types (for inferred functions)
+	deferredStatements            []string                   // Stack of deferred statements for current function
+	functionParamTypes            map[string][]string        // function name -> parameter types
 }
 
 // GenerateC generates C code from an AST (exported for testing)
@@ -110,6 +112,7 @@ func generateC(ast *ahoy.ASTNode) string {
 		arrayElementTypes:   make(map[string]string),
 		structs:             make(map[string]*StructInfo),
 		functionReturnTypes: make(map[string][]string),
+		functionParamTypes:  make(map[string][]string),
 	}
 
 	// Add standard includes
@@ -676,10 +679,21 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 		paramList += fmt.Sprintf("%s %s", paramType, param.Value)
 	}
 	
-	// Store return types for this function (for later lookup in tuple assignment)
+	// Store return types and parameter types for this function (for later lookup)
 	if len(returnTypes) > 0 {
 		gen.functionReturnTypes[funcName] = returnTypes
 	}
+	
+	// Store parameter types
+	paramTypes := []string{}
+	for _, param := range params.Children {
+		if param.DataType != "" {
+			paramTypes = append(paramTypes, param.DataType)
+		} else {
+			paramTypes = append(paramTypes, "generic")
+		}
+	}
+	gen.functionParamTypes[funcName] = paramTypes
 
 	gen.funcDecls.WriteString(fmt.Sprintf("%s %s(%s);\n", returnType, cFuncName, paramList))
 	gen.funcDecls.WriteString(fmt.Sprintf("%s %s(%s) {\n", returnType, cFuncName, paramList))
@@ -706,7 +720,17 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 		}
 	}
 
+	// Initialize deferred statements stack for this function
+	gen.deferredStatements = []string{}
+
 	gen.generateNodeInternal(body, false)
+
+	// Execute deferred statements in LIFO order before function end
+	if len(gen.deferredStatements) > 0 {
+		for i := len(gen.deferredStatements) - 1; i >= 0; i-- {
+			gen.output.WriteString(gen.deferredStatements[i])
+		}
+	}
 
 	gen.funcDecls.WriteString(gen.output.String())
 	gen.funcDecls.WriteString("}\n\n")
@@ -717,6 +741,7 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	gen.currentFunctionReturnType = ""
 	gen.currentFunctionHasMultiReturn = false
 	gen.functionVars = nil // Clear function scope
+	gen.deferredStatements = nil // Clear deferred statements
 }
 
 func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
@@ -1774,6 +1799,13 @@ func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
 }
 
 func (gen *CodeGenerator) generateReturnStatement(node *ahoy.ASTNode) {
+	// Execute deferred statements in LIFO order before return
+	if len(gen.deferredStatements) > 0 {
+		for i := len(gen.deferredStatements) - 1; i >= 0; i-- {
+			gen.output.WriteString(gen.deferredStatements[i])
+		}
+	}
+	
 	gen.writeIndent()
 	gen.output.WriteString("return")
 	if len(node.Children) > 0 {
@@ -1784,11 +1816,24 @@ func (gen *CodeGenerator) generateReturnStatement(node *ahoy.ASTNode) {
 			gen.output.WriteString("(")
 			gen.output.WriteString(gen.currentFunctionReturnType)
 			gen.output.WriteString("){")
+			
+			// Get the return types for casting
+			returnTypes, hasReturnTypes := gen.functionReturnTypes[gen.currentFunction]
+			
 			for i, child := range node.Children {
 				if i > 0 {
 					gen.output.WriteString(", ")
 				}
 				gen.output.WriteString(fmt.Sprintf(".ret%d = ", i))
+				
+				// If this return type is generic (intptr_t) and value is string, cast
+				if hasReturnTypes && i < len(returnTypes) && returnTypes[i] == "generic" {
+					childType := gen.inferType(child)
+					if childType == "string" || childType == "char*" || childType == "const char*" {
+						gen.output.WriteString("(intptr_t)")
+					}
+				}
+				
 				gen.generateNode(child)
 			}
 			gen.output.WriteString("}")
@@ -1811,19 +1856,22 @@ func (gen *CodeGenerator) generateAssertStatement(node *ahoy.ASTNode) {
 }
 
 func (gen *CodeGenerator) generateDeferStatement(node *ahoy.ASTNode) {
-	// Defer is complex in C - we need to use cleanup attribute or manually track
-	// For simplicity, we'll just add a comment and execute the statement immediately
-	// A proper implementation would require tracking deferred statements and executing them
-	// before each return statement and at function end
-	gen.writeIndent()
-	gen.output.WriteString("/* DEFER: Execute before function return */ ")
+	// Collect deferred statements to execute in LIFO order at function end
 	if len(node.Children) > 0 {
-		// Generate the deferred statement
-		// Remove the indent since we already added it
+		// Generate the deferred statement into a temporary buffer
+		savedOutput := gen.output
+		gen.output = strings.Builder{}
 		savedIndent := gen.indent
 		gen.indent = 0
-		gen.generateNodeInternal(node.Children[0], false)
+		
+		gen.generateNodeInternal(node.Children[0], true) // Generate as statement
+		
+		deferredCode := gen.output.String()
+		gen.output = savedOutput
 		gen.indent = savedIndent
+		
+		// Add to deferred statements stack
+		gen.deferredStatements = append(gen.deferredStatements, deferredCode)
 	}
 }
 
@@ -2140,10 +2188,23 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 
 	default:
 		gen.output.WriteString(fmt.Sprintf("%s(", funcName))
+		
+		// Check if we have parameter type information for this function
+		paramTypes, hasParamInfo := gen.functionParamTypes[node.Value]
+		
 		for i, arg := range node.Children {
 			if i > 0 {
 				gen.output.WriteString(", ")
 			}
+			
+			// If this parameter is generic and the argument is a string, cast to intptr_t
+			if hasParamInfo && i < len(paramTypes) && paramTypes[i] == "generic" {
+				argType := gen.inferType(arg)
+				if argType == "string" || argType == "char*" || argType == "const char*" {
+					gen.output.WriteString("(intptr_t)")
+				}
+			}
+			
 			gen.generateNode(arg)
 		}
 		gen.output.WriteString(")")

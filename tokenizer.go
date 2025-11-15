@@ -95,10 +95,13 @@ const (
 	TOKEN_EQUALS       // = (for default arguments)
 	TOKEN_INFER        // infer (inferred return type)
 	TOKEN_VOID         // void (no return value)
-	TOKEN_END          // $ or ⚓ (block terminator)
-	TOKEN_AT           // @ (function declaration prefix)
-	TOKEN_PLUS_ASSIGN  // +=
-	TOKEN_MINUS_ASSIGN // -=
+	TOKEN_END            // $ or ⚓ (block terminator)
+	TOKEN_AT             // @ (function declaration prefix)
+	TOKEN_PLUS_ASSIGN    // +=
+	TOKEN_MINUS_ASSIGN   // -=
+	TOKEN_MULTIPLY_ASSIGN // *=
+	TOKEN_DIVIDE_ASSIGN   // /=
+	TOKEN_MODULO_ASSIGN   // %=
 )
 
 type Token struct {
@@ -337,6 +340,18 @@ func Tokenize(input string) []Token {
 					continue
 				case "-=":
 					tokens = append(tokens, Token{Type: TOKEN_MINUS_ASSIGN, Value: "-=", Line: lineNum + 1, Column: i + 1})
+					i += 2
+					continue
+				case "*=":
+					tokens = append(tokens, Token{Type: TOKEN_MULTIPLY_ASSIGN, Value: "*=", Line: lineNum + 1, Column: i + 1})
+					i += 2
+					continue
+				case "/=":
+					tokens = append(tokens, Token{Type: TOKEN_DIVIDE_ASSIGN, Value: "/=", Line: lineNum + 1, Column: i + 1})
+					i += 2
+					continue
+				case "%=":
+					tokens = append(tokens, Token{Type: TOKEN_MODULO_ASSIGN, Value: "%=", Line: lineNum + 1, Column: i + 1})
 					i += 2
 					continue
 				}
