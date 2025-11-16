@@ -89,7 +89,6 @@ expected.push|"Value: 9"|
 ? loop i:0:
 ?   print|f"Loop {i}\n"|
 ?   if i is 5 do halt
-? $
 
 ? Alternative syntax (also works)
 loop i:0 till i less_than 5 do
@@ -134,8 +133,8 @@ expected.push|"Key: name, Value: Ahoy"|
 expected.push|"Key: version, Value: 1.0"|
 
 my_numbers: [10, 20, 30]
-loop n to my_numbers.length do
-	my_numbers[n] +=1
+loop n:0 to my_numbers.length do
+  my_numbers[n] +=1
 $
 print|my_numbers|
 expected.push|"[11, 21, 31]"|

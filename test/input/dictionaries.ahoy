@@ -21,14 +21,14 @@ has_theme: config.has|"theme"|
 print|has_theme| ? should print: 1 (true)
 expected.push|"1"|
 
-? reassign config
-config: dict<string,string> = <"mode": "dark">
-has_theme: config.has|"mode"|
-print|has_theme| ? should print: 1 (true)
+? new config variable to test has with different key
+config2: dict<string,string> = <"mode": "dark">
+has_mode: config2.has|"mode"|
+print|has_mode| ? should print: 1 (true)
 expected.push|"1"|
 
 ? check has key
-has_font: config.has|"font"|
+has_font: config2.has|"font"|
 print|has_font| ? should print: 0 (false)
 expected.push|"0"|
 

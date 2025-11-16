@@ -1,5 +1,8 @@
 program example
 
+@ multiply_two_numbers ::|a:int, b:int| int :
+	return a * b
+$
 
 @ main :: || void:
 	expected:[]

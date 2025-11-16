@@ -48,6 +48,8 @@ const (
 	NODE_CONSTANT_DECLARATION
 	NODE_TUPLE_ASSIGNMENT
 	NODE_STRUCT_DECLARATION
+	NODE_ALIAS_DECLARATION
+	NODE_UNION_DECLARATION
 	NODE_METHOD_CALL
 	NODE_MEMBER_ACCESS
 	NODE_HALT
@@ -177,6 +179,8 @@ type Parser struct {
 	constants          map[string]int                // Track constant declarations (name -> line number)
 	structs            map[string]*StructDefinition  // Track struct definitions
 	enums              map[string]*EnumDefinition    // Track enum definitions
+	typeAliases        map[string]string             // Track type aliases
+	unionTypes         map[string][]string           // Track union types
 	objectLiterals     map[string]map[string]bool    // Track object literal properties by variable name
 	currentFunctionRet string                        // Track current function return type
 	functionScope      map[string]string             // Track function-local variables
@@ -202,6 +206,8 @@ func Parse(tokens []Token) *ASTNode {
 		constants:          make(map[string]int),
 		structs:            make(map[string]*StructDefinition),
 		enums:              make(map[string]*EnumDefinition),
+		typeAliases:        make(map[string]string),
+		unionTypes:         make(map[string][]string),
 		objectLiterals:     make(map[string]map[string]bool),
 		currentFunctionRet: "",
 		functionScope:      make(map[string]string),
@@ -228,6 +234,8 @@ func ParseLint(tokens []Token) (*ASTNode, []ParseError) {
 		constants:          make(map[string]int),
 		structs:            make(map[string]*StructDefinition),
 		enums:              make(map[string]*EnumDefinition),
+		typeAliases:        make(map[string]string),
+		unionTypes:         make(map[string][]string),
 		objectLiterals:     make(map[string]map[string]bool),
 		currentFunctionRet: "",
 		functionScope:      make(map[string]string),
@@ -373,6 +381,22 @@ func (p *Parser) inferType(node *ASTNode) string {
 func (p *Parser) checkTypeCompatibility(expectedType, actualType string) bool {
 	if expectedType == "unknown" || actualType == "unknown" {
 		return true // Can't check unknown types
+	}
+
+	// Check if expectedType is a union type
+	if unionTypes, isUnion := p.unionTypes[expectedType]; isUnion {
+		// Check if actualType matches any of the union's types
+		for _, unionType := range unionTypes {
+			if p.checkTypeCompatibility(unionType, actualType) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Check if expectedType is a type alias - resolve it
+	if aliasedType, isAlias := p.typeAliases[expectedType]; isAlias {
+		return p.checkTypeCompatibility(aliasedType, actualType)
 	}
 
 	// Allow int to float conversion
@@ -704,6 +728,10 @@ func (p *Parser) parseStatement() *ASTNode {
 		return p.parseEnumDeclaration()
 	case TOKEN_STRUCT:
 		return p.parseStructDeclaration()
+	case TOKEN_ALIAS:
+		return p.parseAliasDeclaration()
+	case TOKEN_UNION:
+		return p.parseUnionDeclaration()
 	case TOKEN_FUNC:
 		return p.parseFunction()
 	case TOKEN_IF:
@@ -2921,6 +2949,29 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 }
 
 func (p *Parser) parseCallArgument() *ASTNode {
+	// Check for named argument: name: value
+	// Only parse as named arg if we're in a function call context
+	// and not in an object/dict/array literal
+	if !p.inObjectLiteral && !p.inDictLiteral && !p.inArrayLiteral &&
+		p.current().Type == TOKEN_IDENTIFIER && p.peek(1).Type == TOKEN_ASSIGN {
+		paramName := p.current().Value
+		p.advance() // consume identifier
+		p.advance() // consume :
+		
+		// Parse the value
+		value := p.parseAdditiveExpression()
+		
+		// Create a special node to represent named argument
+		return &ASTNode{
+			Type:     NODE_BINARY_OP,
+			Value:    "named_arg",
+			Children: []*ASTNode{
+				{Type: NODE_IDENTIFIER, Value: paramName},
+				value,
+			},
+		}
+	}
+	
 	// Parse an expression but stop at comma, pipe, or comparison operators
 	// Use parseAdditiveExpression to avoid treating <> as comparisons
 	return p.parseAdditiveExpression()
@@ -4374,7 +4425,9 @@ func (p *Parser) parseConstantDeclaration() *ASTNode {
 	// In lint mode, track the constant's type
 	if p.LintMode {
 		if explicitType != "" {
-			p.variableTypes[varName] = explicitType
+			// Resolve type aliases
+			resolvedType := p.resolveTypeAlias(explicitType)
+			p.variableTypes[varName] = resolvedType
 		} else {
 			inferredType := p.inferType(value)
 			if inferredType != "unknown" {
@@ -4792,6 +4845,120 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 		Line:     line,
 		Children: []*ASTNode{leftSide, rightSide},
 	}
+}
+
+// Parse alias declaration: alias name: type
+func (p *Parser) parseAliasDeclaration() *ASTNode {
+	startLine := p.current().Line
+	p.expect(TOKEN_ALIAS)
+	
+	name := p.expect(TOKEN_IDENTIFIER)
+	p.expect(TOKEN_ASSIGN) // :
+	
+	// Parse the type being aliased
+	var aliasedType string
+	if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
+		p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
+		p.current().Type == TOKEN_CHAR_TYPE || p.current().Type == TOKEN_DICT_TYPE ||
+		p.current().Type == TOKEN_ARRAY_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
+		p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_IDENTIFIER {
+		aliasedType = p.current().Value
+		p.advance()
+		
+		// Handle array[type] syntax
+		if p.current().Type == TOKEN_LBRACKET {
+			p.advance()
+			if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
+				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
+				p.current().Type == TOKEN_IDENTIFIER {
+				aliasedType = aliasedType + "[" + p.current().Value + "]"
+				p.advance()
+			}
+			p.expect(TOKEN_RBRACKET)
+		}
+	} else {
+		errMsg := fmt.Sprintf("Expected type after 'alias %s:' at line %d", name.Value, startLine)
+		if p.LintMode {
+			p.recordError(errMsg)
+			aliasedType = "int" // default
+		} else {
+			panic(errMsg)
+		}
+	}
+	
+	// Register the alias in the type system
+	if p.typeAliases == nil {
+		p.typeAliases = make(map[string]string)
+	}
+	p.typeAliases[name.Value] = aliasedType
+	
+	return &ASTNode{
+		Type:     NODE_ALIAS_DECLARATION,
+		Value:    name.Value,
+		DataType: aliasedType,
+		Line:     startLine,
+	}
+}
+
+// Parse union declaration: union name: type1, type2, ... $
+func (p *Parser) parseUnionDeclaration() *ASTNode {
+	startLine := p.current().Line
+	p.expect(TOKEN_UNION)
+	
+	name := p.expect(TOKEN_IDENTIFIER)
+	p.expect(TOKEN_ASSIGN) // :
+	
+	// Parse the types in the union
+	types := []string{}
+	for {
+		if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
+			p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
+			p.current().Type == TOKEN_CHAR_TYPE || p.current().Type == TOKEN_DICT_TYPE ||
+			p.current().Type == TOKEN_ARRAY_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
+			p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_IDENTIFIER {
+			types = append(types, p.current().Value)
+			p.advance()
+			
+			if p.current().Type == TOKEN_COMMA {
+				p.advance()
+			} else {
+				break
+			}
+		} else {
+			break
+		}
+	}
+	
+	if len(types) < 2 {
+		errMsg := fmt.Sprintf("Union type '%s' must have at least 2 types at line %d", name.Value, startLine)
+		if p.LintMode {
+			p.recordError(errMsg)
+		} else {
+			panic(errMsg)
+		}
+	}
+	
+	// Register the union in the type system
+	if p.unionTypes == nil {
+		p.unionTypes = make(map[string][]string)
+	}
+	p.unionTypes[name.Value] = types
+	
+	unionNode := &ASTNode{
+		Type:  NODE_UNION_DECLARATION,
+		Value: name.Value,
+		Line:  startLine,
+	}
+	
+	// Add type nodes as children
+	for _, typeName := range types {
+		unionNode.Children = append(unionNode.Children, &ASTNode{
+			Type:  NODE_TYPE,
+			Value: typeName,
+		})
+	}
+	
+	return unionNode
 }
 
 // Parse struct declaration
@@ -5542,6 +5709,50 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 	return object
 }
 
+// inferMemberAccessType infers the type of a member access chain
+func (p *Parser) inferMemberAccessType(node *ASTNode) string {
+	if node.Type == NODE_IDENTIFIER {
+		if vtype, ok := p.variableTypes[node.Value]; ok {
+			return vtype
+		}
+		return ""
+	}
+	
+	if node.Type == NODE_MEMBER_ACCESS && len(node.Children) > 0 {
+		// Get the type of the object being accessed
+		objType := p.inferMemberAccessType(node.Children[0])
+		if objType == "" {
+			return ""
+		}
+		
+		// Normalize struct type
+		objType = strings.TrimPrefix(objType, "struct:")
+		
+		// Look up the field type in the struct
+		if structDef, ok := p.structs[objType]; ok {
+			memberName := node.Value
+			for _, field := range structDef.Fields {
+				if field.Name == memberName {
+					return field.Type
+				}
+			}
+		}
+		
+		// Check for built-in types with fields (vector2, color)
+		if objType == "vector2" {
+			if node.Value == "x" || node.Value == "y" {
+				return "float"
+			}
+		} else if objType == "color" {
+			if node.Value == "r" || node.Value == "g" || node.Value == "b" || node.Value == "a" {
+				return "int"
+			}
+		}
+	}
+	
+	return ""
+}
+
 // Validate member access for struct types and object literals
 func (p *Parser) validateMemberAccess(object *ASTNode, memberName string, line int) {
 	// Get the type of the object
@@ -5572,17 +5783,8 @@ func (p *Parser) validateMemberAccess(object *ASTNode, memberName string, line i
 			return
 		}
 	} else if object.Type == NODE_MEMBER_ACCESS {
-		// For chained access, get the root variable
-		root := object
-		for root.Type == NODE_MEMBER_ACCESS && len(root.Children) > 0 {
-			root = root.Children[0]
-		}
-		if root.Type == NODE_IDENTIFIER {
-			varName = root.Value
-			if vtype, ok := p.variableTypes[varName]; ok {
-				objectType = vtype
-			}
-		}
+		// For chained access like obj.field1.field2, resolve the intermediate type
+		objectType = p.inferMemberAccessType(object)
 	} else if object.Type == NODE_OBJECT_LITERAL {
 		objectType = "object_literal"
 		// For object literals, check if this is a known variable
@@ -5596,6 +5798,23 @@ func (p *Parser) validateMemberAccess(object *ASTNode, memberName string, line i
 	// Normalize struct type
 	objectType = strings.TrimPrefix(objectType, "struct:")
 
+	// Check for built-in types with fields (vector2, color)
+	if objectType == "vector2" {
+		if memberName != "x" && memberName != "y" {
+			errMsg := fmt.Sprintf("Property not found: '%s' does not exist on type 'vector2' (line %d)",
+				memberName, line)
+			p.recordError(errMsg)
+		}
+		return
+	} else if objectType == "color" {
+		if memberName != "r" && memberName != "g" && memberName != "b" && memberName != "a" {
+			errMsg := fmt.Sprintf("Property not found: '%s' does not exist on type 'color' (line %d)",
+				memberName, line)
+			p.recordError(errMsg)
+		}
+		return
+	}
+	
 	// Check if it's a struct type
 	if structDef, ok := p.structs[objectType]; ok {
 		if !p.structHasField(objectType, memberName) {
@@ -5650,26 +5869,78 @@ func (p *Parser) parseArrayLiteralBracket() *ASTNode {
 
 // Check if the current position is a lambda expression (param: expr)
 func (p *Parser) isLambda() bool {
-	// Look ahead for pattern: IDENTIFIER ASSIGN expression
-	if p.pos+1 < len(p.tokens) {
-		// Save position
-		saved := p.pos
+	// Look ahead for pattern: IDENTIFIER ASSIGN expression or (params): expression
+	saved := p.pos
+	
+	// Check for multi-param lambda: (param1, param2): expression
+	if p.current().Type == TOKEN_LPAREN {
 		p.advance()
-
-		// Check for colon (ASSIGN)
+		// Look for identifiers and commas until )
+		for p.current().Type != TOKEN_RPAREN && p.current().Type != TOKEN_EOF {
+			if p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_COMMA {
+				p.advance()
+			} else {
+				p.pos = saved
+				return false
+			}
+		}
+		if p.current().Type == TOKEN_RPAREN {
+			p.advance()
+			isLambdaSyntax := p.current().Type == TOKEN_ASSIGN
+			p.pos = saved
+			return isLambdaSyntax
+		}
+		p.pos = saved
+		return false
+	}
+	
+	// Check for single-param lambda: param: expression
+	if p.pos+1 < len(p.tokens) {
+		p.advance()
 		isLambdaSyntax := p.current().Type == TOKEN_ASSIGN
-
-		// Restore position
 		p.pos = saved
 		return isLambdaSyntax
 	}
+	
+	p.pos = saved
 	return false
 }
 
-// Parse lambda expression: param: expression
+// Parse lambda expression: param: expression or (param1, param2): expression
 func (p *Parser) parseLambda() *ASTNode {
-	// Get parameter name
-	param := p.expect(TOKEN_IDENTIFIER)
+	startLine := p.current().Line
+	params := []*ASTNode{}
+	
+	// Check for multi-parameter lambda with parentheses
+	if p.current().Type == TOKEN_LPAREN {
+		p.advance() // consume (
+		
+		// Parse parameters
+		for p.current().Type != TOKEN_RPAREN && p.current().Type != TOKEN_EOF {
+			param := p.expect(TOKEN_IDENTIFIER)
+			params = append(params, &ASTNode{
+				Type:  NODE_IDENTIFIER,
+				Value: param.Value,
+				Line:  param.Line,
+			})
+			
+			if p.current().Type == TOKEN_COMMA {
+				p.advance()
+			} else if p.current().Type != TOKEN_RPAREN {
+				break
+			}
+		}
+		
+		p.expect(TOKEN_RPAREN)
+	} else {
+		// Single parameter (no parentheses)
+		param := p.expect(TOKEN_IDENTIFIER)
+		params = append(params, &ASTNode{
+			Type:  NODE_IDENTIFIER,
+			Value: param.Value,
+			Line:  param.Line,
+		})
+	}
 
 	// Expect colon
 	p.expect(TOKEN_ASSIGN)
@@ -5677,12 +5948,18 @@ func (p *Parser) parseLambda() *ASTNode {
 	// Parse expression until we hit PIPE
 	expr := p.parseLambdaBody()
 
-	return &ASTNode{
-		Type:     NODE_LAMBDA,
-		Value:    param.Value,
-		Children: []*ASTNode{expr},
-		Line:     param.Line,
+	// Create lambda node with parameters as children followed by body
+	lambda := &ASTNode{
+		Type:  NODE_LAMBDA,
+		Value: fmt.Sprintf("%d", len(params)), // Store param count in Value
+		Line:  startLine,
 	}
+	
+	// Add parameters and body as children
+	lambda.Children = append(lambda.Children, params...)
+	lambda.Children = append(lambda.Children, expr)
+
+	return lambda
 }
 
 // Parse lambda body - stops at PIPE
@@ -5710,6 +5987,15 @@ func (p *Parser) lookupVariableType(varName string) string {
 		return varType
 	}
 	return ""
+}
+
+// resolveTypeAlias resolves a type alias to its underlying type
+func (p *Parser) resolveTypeAlias(typeName string) string {
+	// Recursively resolve aliases
+	if aliasedType, exists := p.typeAliases[typeName]; exists {
+		return p.resolveTypeAlias(aliasedType)
+	}
+	return typeName
 }
 
 // validateTupleAssignment validates that tuple assignment types match

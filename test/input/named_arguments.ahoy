@@ -1,0 +1,56 @@
+expected: []
+? Named arguments test
+
+? Test 1: Named arguments with defaults
+@ create_window |width:int=800, height:int=600, title:string="App"| void:
+    print|width, height, title|
+$
+
+? Call with all named args in different order
+create_window|title: "My App", height: 1080, width: 1920|
+expected.push|"1920 1080 My App"|
+
+? Call with some named args (rest use defaults)
+create_window|title: "Test"|
+expected.push|"800 600 Test"|
+
+? Call with positional args (original order)
+create_window|640, 480, "Small"|
+expected.push|"640 480 Small"|
+
+? Test 2: Mixed named and positional (positional first)
+@ greet |first:string, last:string, age:int=25| void:
+    print|first, last, age|
+$
+
+greet|"John", last: "Doe", age: 30|
+expected.push|"John Doe 30"|
+
+? Test 3: All named args
+greet|age: 40, first: "Jane", last: "Smith"|
+expected.push|"Jane Smith 40"|
+
+? Test 4: Function returning values with named args
+@ calculate |x:int, y:int=10, z:int=5| int:
+    return x + y + z
+$
+
+result1: calculate|x: 100|
+print|result1|
+expected.push|"115"|
+
+result2: calculate|z: 20, x: 50, y: 30|
+print|result2|
+expected.push|"100"|
+
+? Test 5: Named arguments with numeric types
+@ compute |a:int, b:int=10| int:
+    return a * b
+$
+
+res: compute|a: 5, b: 3|
+print|res|
+expected.push|"15"|
+
+? Print expected values for test validation
+print|expected|

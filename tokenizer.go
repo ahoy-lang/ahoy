@@ -83,6 +83,8 @@ const (
 	TOKEN_ENUM
 	TOKEN_STRUCT
 	TOKEN_TYPE
+	TOKEN_ALIAS        // alias (type alias)
+	TOKEN_UNION        // union (union types)
 	TOKEN_DO
 	TOKEN_HALT         // halt (break from loop)
 	TOKEN_NEXT         // next (continue to next iteration)
@@ -161,6 +163,8 @@ func Tokenize(input string) []Token {
 		"enum":         TOKEN_ENUM,
 		"struct":       TOKEN_STRUCT,
 		"type":         TOKEN_TYPE,
+		"alias":        TOKEN_ALIAS,
+		"union":        TOKEN_UNION,
 		"do":           TOKEN_DO,
 		"halt":         TOKEN_HALT,
 		"next":         TOKEN_NEXT,

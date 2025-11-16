@@ -87,6 +87,8 @@ type CodeGenerator struct {
 	functionReturnTypes           map[string][]string        // function name -> return types (for inferred functions)
 	deferredStatements            []string                   // Stack of deferred statements for current function
 	functionParamTypes            map[string][]string        // function name -> parameter types
+	functionParamNames            map[string][]string        // function name -> parameter names
+	functionParamDefaults         map[string][]*ahoy.ASTNode // function name -> parameter default values
 }
 
 // GenerateC generates C code from an AST (exported for testing)
@@ -111,8 +113,10 @@ func generateC(ast *ahoy.ASTNode) string {
 		hasMainFunc:         false,
 		arrayElementTypes:   make(map[string]string),
 		structs:             make(map[string]*StructInfo),
-		functionReturnTypes: make(map[string][]string),
-		functionParamTypes:  make(map[string][]string),
+		functionReturnTypes:   make(map[string][]string),
+		functionParamTypes:    make(map[string][]string),
+		functionParamNames:    make(map[string][]string),
+		functionParamDefaults: make(map[string][]*ahoy.ASTNode),
 	}
 
 	// Add standard includes
@@ -568,6 +572,12 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 		gen.generateTupleAssignment(node)
 	case ahoy.NODE_STRUCT_DECLARATION:
 		gen.generateStruct(node)
+	case ahoy.NODE_ALIAS_DECLARATION:
+		// Type aliases are compile-time only, no C code needed
+		return
+	case ahoy.NODE_UNION_DECLARATION:
+		// Union types are compile-time only, no C code needed
+		return
 	case ahoy.NODE_METHOD_CALL:
 		if isStatement {
 			gen.writeIndent()
@@ -684,9 +694,13 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 		gen.functionReturnTypes[funcName] = returnTypes
 	}
 	
-	// Store parameter types
+	// Store parameter types, names, and default values
 	paramTypes := []string{}
+	paramNames := []string{}
+	paramDefaults := []*ahoy.ASTNode{}
 	for _, param := range params.Children {
+		paramNames = append(paramNames, param.Value)
+		paramDefaults = append(paramDefaults, param.DefaultValue)
 		if param.DataType != "" {
 			paramTypes = append(paramTypes, param.DataType)
 		} else {
@@ -694,6 +708,8 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 		}
 	}
 	gen.functionParamTypes[funcName] = paramTypes
+	gen.functionParamNames[funcName] = paramNames
+	gen.functionParamDefaults[funcName] = paramDefaults
 
 	gen.funcDecls.WriteString(fmt.Sprintf("%s %s(%s);\n", returnType, cFuncName, paramList))
 	gen.funcDecls.WriteString(fmt.Sprintf("%s %s(%s) {\n", returnType, cFuncName, paramList))
@@ -2192,20 +2208,104 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 		// Check if we have parameter type information for this function
 		paramTypes, hasParamInfo := gen.functionParamTypes[node.Value]
 		
-		for i, arg := range node.Children {
-			if i > 0 {
-				gen.output.WriteString(", ")
+		// Check if any arguments are named (node.Value == "named_arg")
+		hasNamedArgs := false
+		for _, arg := range node.Children {
+			if arg.Type == ahoy.NODE_BINARY_OP && arg.Value == "named_arg" {
+				hasNamedArgs = true
+				break
 			}
+		}
+		
+		if hasNamedArgs {
+			// Handle named arguments by reordering based on function signature
+			paramNames, hasParamNames := gen.functionParamNames[node.Value]
 			
-			// If this parameter is generic and the argument is a string, cast to intptr_t
-			if hasParamInfo && i < len(paramTypes) && paramTypes[i] == "generic" {
-				argType := gen.inferType(arg)
-				if argType == "string" || argType == "char*" || argType == "const char*" {
-					gen.output.WriteString("(intptr_t)")
+			if hasParamNames && hasParamInfo {
+				// Create a map to store arguments by name
+				namedArgs := make(map[string]*ahoy.ASTNode)
+				positionalArgs := []*ahoy.ASTNode{}
+				positionalIndex := 0
+				
+				// Separate named and positional arguments
+				for _, arg := range node.Children {
+					if arg.Type == ahoy.NODE_BINARY_OP && arg.Value == "named_arg" {
+						argName := arg.Children[0].Value
+						namedArgs[argName] = arg.Children[1]
+					} else {
+						positionalArgs = append(positionalArgs, arg)
+					}
+				}
+				
+				// Generate arguments in the order defined by function signature
+				for i, paramName := range paramNames {
+					if i > 0 {
+						gen.output.WriteString(", ")
+					}
+					
+					// Check if this parameter was provided as named argument
+					if argNode, exists := namedArgs[paramName]; exists {
+						if hasParamInfo && i < len(paramTypes) && paramTypes[i] == "generic" {
+							argType := gen.inferType(argNode)
+							if argType == "string" || argType == "char*" || argType == "const char*" {
+								gen.output.WriteString("(intptr_t)")
+							}
+						}
+						gen.generateNode(argNode)
+					} else if positionalIndex < len(positionalArgs) {
+						// Use positional argument
+						argNode := positionalArgs[positionalIndex]
+						positionalIndex++
+						if hasParamInfo && i < len(paramTypes) && paramTypes[i] == "generic" {
+							argType := gen.inferType(argNode)
+							if argType == "string" || argType == "char*" || argType == "const char*" {
+								gen.output.WriteString("(intptr_t)")
+							}
+						}
+						gen.generateNode(argNode)
+					} else {
+						// Parameter not provided - use default value
+						paramDefaults, hasDefaults := gen.functionParamDefaults[node.Value]
+						if hasDefaults && i < len(paramDefaults) && paramDefaults[i] != nil {
+							// Generate the default value
+							gen.generateNode(paramDefaults[i])
+						} else {
+							// No default value - error case
+							gen.output.WriteString("0 /* missing arg */")
+						}
+					}
+				}
+			} else {
+				// No parameter info - generate in order provided
+				for i, arg := range node.Children {
+					if i > 0 {
+						gen.output.WriteString(", ")
+					}
+					
+					if arg.Type == ahoy.NODE_BINARY_OP && arg.Value == "named_arg" {
+						gen.generateNode(arg.Children[1])
+					} else {
+						gen.generateNode(arg)
+					}
 				}
 			}
-			
-			gen.generateNode(arg)
+		} else {
+			// Regular positional arguments
+			for i, arg := range node.Children {
+				if i > 0 {
+					gen.output.WriteString(", ")
+				}
+				
+				// If this parameter is generic and the argument is a string, cast to intptr_t
+				if hasParamInfo && i < len(paramTypes) && paramTypes[i] == "generic" {
+					argType := gen.inferType(arg)
+					if argType == "string" || argType == "char*" || argType == "const char*" {
+						gen.output.WriteString("(intptr_t)")
+					}
+				}
+				
+				gen.generateNode(arg)
+			}
 		}
 		gen.output.WriteString(")")
 	}
@@ -4872,8 +4972,33 @@ func (gen *CodeGenerator) getAhoyTypeEnum(typeName string) string {
 
 // Generate inline map code
 func (gen *CodeGenerator) generateMapInline(arrayNode *ahoy.ASTNode, lambda *ahoy.ASTNode) {
-	paramName := lambda.Value
-	bodyExpr := lambda.Children[0]
+	// Parse lambda structure: Value contains param count, first N children are params, last child is body
+	paramCount := 1
+	if lambda.Value != "" {
+		if count, err := strconv.Atoi(lambda.Value); err == nil {
+			paramCount = count
+		}
+	}
+	
+	// Extract parameters and body
+	params := []string{}
+	var bodyExpr *ahoy.ASTNode
+	
+	if paramCount == 1 && len(lambda.Children) == 1 {
+		// Old format: single param in Value, body is first child
+		params = []string{lambda.Value}
+		bodyExpr = lambda.Children[0]
+	} else if len(lambda.Children) > paramCount {
+		// New format: first paramCount children are params, last is body
+		for i := 0; i < paramCount; i++ {
+			params = append(params, lambda.Children[i].Value)
+		}
+		bodyExpr = lambda.Children[paramCount]
+	} else {
+		// Fallback
+		params = []string{"x"}
+		bodyExpr = lambda.Children[0]
+	}
 
 	// Generate inline statement expression
 	gen.output.WriteString("({ ")
@@ -4883,10 +5008,23 @@ func (gen *CodeGenerator) generateMapInline(arrayNode *ahoy.ASTNode, lambda *aho
 	gen.output.WriteString("AhoyArray* __result = malloc(sizeof(AhoyArray)); ")
 	gen.output.WriteString("__result->length = __src->length; ")
 	gen.output.WriteString("__result->capacity = __src->length; ")
-	gen.output.WriteString("__result->data = malloc(__src->length * sizeof(int)); ")
+	gen.output.WriteString("__result->data = malloc(__src->length * sizeof(intptr_t)); ")
+	gen.output.WriteString("__result->types = malloc(__src->length * sizeof(AhoyValueType)); ")
+	gen.output.WriteString("__result->is_typed = 0; ")
 	gen.output.WriteString("for (int __i = 0; __i < __src->length; __i++) { ")
-	gen.output.WriteString(fmt.Sprintf("int %s = __src->data[__i]; ", paramName))
-	gen.output.WriteString("__result->data[__i] = (")
+	
+	// For multi-param lambdas, extract from nested array
+	if len(params) > 1 {
+		gen.output.WriteString("AhoyArray* __elem = (AhoyArray*)__src->data[__i]; ")
+		for i, paramName := range params {
+			gen.output.WriteString(fmt.Sprintf("int %s = __elem->data[%d]; ", paramName, i))
+		}
+	} else {
+		gen.output.WriteString(fmt.Sprintf("int %s = __src->data[__i]; ", params[0]))
+	}
+	
+	gen.output.WriteString("__result->types[__i] = AHOY_TYPE_INT; ")
+	gen.output.WriteString("__result->data[__i] = (intptr_t)(")
 
 	// Generate lambda body expression
 	gen.generateNodeInternal(bodyExpr, false)
@@ -4897,8 +5035,33 @@ func (gen *CodeGenerator) generateMapInline(arrayNode *ahoy.ASTNode, lambda *aho
 
 // Generate inline filter code
 func (gen *CodeGenerator) generateFilterInline(arrayNode *ahoy.ASTNode, lambda *ahoy.ASTNode) {
-	paramName := lambda.Value
-	condExpr := lambda.Children[0]
+	// Parse lambda structure: Value contains param count, first N children are params, last child is body
+	paramCount := 1
+	if lambda.Value != "" {
+		if count, err := strconv.Atoi(lambda.Value); err == nil {
+			paramCount = count
+		}
+	}
+	
+	// Extract parameters and condition
+	params := []string{}
+	var condExpr *ahoy.ASTNode
+	
+	if paramCount == 1 && len(lambda.Children) == 1 {
+		// Old format: single param in Value, body is first child
+		params = []string{lambda.Value}
+		condExpr = lambda.Children[0]
+	} else if len(lambda.Children) > paramCount {
+		// New format: first paramCount children are params, last is body
+		for i := 0; i < paramCount; i++ {
+			params = append(params, lambda.Children[i].Value)
+		}
+		condExpr = lambda.Children[paramCount]
+	} else {
+		// Fallback
+		params = []string{"x"}
+		condExpr = lambda.Children[0]
+	}
 
 	// Generate inline statement expression
 	gen.output.WriteString("({ ")
@@ -4907,17 +5070,35 @@ func (gen *CodeGenerator) generateFilterInline(arrayNode *ahoy.ASTNode, lambda *
 	gen.output.WriteString("; ")
 	gen.output.WriteString("AhoyArray* __result = malloc(sizeof(AhoyArray)); ")
 	gen.output.WriteString("__result->capacity = __src->length; ")
-	gen.output.WriteString("__result->data = malloc(__src->length * sizeof(int)); ")
+	gen.output.WriteString("__result->data = malloc(__src->length * sizeof(intptr_t)); ")
+	gen.output.WriteString("__result->types = malloc(__src->length * sizeof(AhoyValueType)); ")
+	gen.output.WriteString("__result->is_typed = 0; ")
 	gen.output.WriteString("__result->length = 0; ")
 	gen.output.WriteString("for (int __i = 0; __i < __src->length; __i++) { ")
-	gen.output.WriteString(fmt.Sprintf("int %s = __src->data[__i]; ", paramName))
+	
+	// For multi-param lambdas, extract from nested array
+	if len(params) > 1 {
+		gen.output.WriteString("AhoyArray* __elem = (AhoyArray*)__src->data[__i]; ")
+		for i, paramName := range params {
+			gen.output.WriteString(fmt.Sprintf("int %s = __elem->data[%d]; ", paramName, i))
+		}
+	} else {
+		gen.output.WriteString(fmt.Sprintf("int %s = __src->data[__i]; ", params[0]))
+	}
+	
 	gen.output.WriteString("if (")
 
 	// Generate lambda condition expression
 	gen.generateNodeInternal(condExpr, false)
 
 	gen.output.WriteString(") { ")
-	gen.output.WriteString(fmt.Sprintf("__result->data[__result->length++] = %s; ", paramName))
+	if len(params) > 1 {
+		gen.output.WriteString("__result->types[__result->length] = AHOY_TYPE_INT; ")
+		gen.output.WriteString("__result->data[__result->length++] = (intptr_t)__elem; ")
+	} else {
+		gen.output.WriteString("__result->types[__result->length] = AHOY_TYPE_INT; ")
+		gen.output.WriteString(fmt.Sprintf("__result->data[__result->length++] = (intptr_t)%s; ", params[0]))
+	}
 	gen.output.WriteString("} } ")
 	gen.output.WriteString("__result; })")
 }

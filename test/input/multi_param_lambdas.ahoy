@@ -1,0 +1,46 @@
+expected: []
+? Multi-parameter lambdas test
+
+? Test 1: Two-parameter lambda with map
+pairs: [[1, 2], [3, 4], [5, 6]]
+sums: pairs.map|(a, b): a + b|
+print|sums|
+expected.push|"[3, 7, 11]"|
+
+? Test 2: Two-parameter lambda - calculate distance
+points: [[3, 4], [5, 12], [8, 15]]
+distances: points.map|(x, y): x * x + y * y|
+print|distances|
+expected.push|"[25, 169, 289]"|
+
+? Test 3: Three-parameter lambda
+triplets: [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+products: triplets.map|(a, b, c): a * b * c|
+print|products|
+expected.push|"[6, 120, 504]"|
+
+? Test 4: Single parameter lambda (existing functionality)
+numbers: [1, 2, 3, 4]
+doubled: numbers.map|x: x * 2|
+print|doubled|
+expected.push|"[2, 4, 6, 8]"|
+
+? Test 5: Lambda with multiplication
+mult_pairs: [[2, 3], [4, 5], [6, 7]]
+products2: mult_pairs.map|(x, y): x * y|
+print|products2|
+expected.push|"[6, 20, 42]"|
+
+? Test 6: Filter with two parameters (if arrays have index support)
+? For now, test with reduce-like operation
+coords: [[10, 20], [30, 5], [15, 25]]
+x_values: coords.map|(x, y): x|
+print|x_values|
+expected.push|"[10, 30, 15]"|
+
+y_values: coords.map|(x, y): y|
+print|y_values|
+expected.push|"[20, 5, 25]"|
+
+? Print expected values for test validation
+print|expected|
