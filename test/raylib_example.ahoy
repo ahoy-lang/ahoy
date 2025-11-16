@@ -1,4 +1,3 @@
-program raylib_test
 import "/home/lee/Documents/ahoy-lang/ahoy/repos/raylib/src/raylib.h"
 
 
@@ -7,10 +6,13 @@ import "/home/lee/Documents/ahoy-lang/ahoy/repos/raylib/src/raylib.h"
 	set_target_fps|60|
 $
 
+
 @ main ||:
-	ball_position : vector2{x: 100.0,y: 100.0 };
 	init||
+	color_red : color{r: 255, g: 120, b: 0, a: 255};
+	ball_position : vector2{x: 100.0, y: 100.0 };
 	loop till not window_should_close do
+
 		if is_key_down|KEY_RIGHT| then ball_position.x += 2.0 $
 		if is_key_down|KEY_LEFT| then ball_position.x -= 2.0 $
 		if is_key_down|KEY_UP| then ball_position.y -= 2.0 $
@@ -18,7 +20,8 @@ $
 		begin_drawing||
 		clear_background|RAYWHITE|
 		? draw_text|"Hello, Raylib with Ahoy!", 190, 200, 20, LIGHTGRAY|
+		draw_circle_v|ball_position, 20, color_red|
 		end_drawing||
 	$
-	close_window
+	close_window||
 $

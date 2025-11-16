@@ -5525,7 +5525,7 @@ func (gen *CodeGenerator) writeStringHelperFunctions() {
 
 func (gen *CodeGenerator) generateObjectLiteral(node *ahoy.ASTNode) {
 	// Generate compound literal initialization
-	// If node.Value is set, it's a typed literal (e.g., rectangle<...>)
+	// If node.Value is set, it's a typed literal (e.g., rectangle{...} or vector2{...})
 	// If node.Value is empty, it's an anonymous object - use HashMap
 
 	structName := ""
@@ -5533,18 +5533,15 @@ func (gen *CodeGenerator) generateObjectLiteral(node *ahoy.ASTNode) {
 		// Typed object literal - capitalize first letter for C struct name
 		structName = capitalizeFirst(node.Value)
 		
-		// Check if this is a known struct type
+		// Check if this is a known Ahoy struct type
 		_, hasStructInfo := gen.structs[node.Value]
 		if !hasStructInfo {
 			_, hasStructInfo = gen.structs[structName]
 		}
 		
-		if !hasStructInfo {
-			// Unknown type, treat as anonymous object using HashMap
-			gen.generateAnonymousObject(node)
-			return
-		}
-		
+		// For typed object literals, generate C struct initialization even if we don't have
+		// the full struct definition (e.g., C structs from imported headers like Vector2)
+		// Trust that if node.Value is set, the parser validated it's a valid type
 		gen.output.WriteString(fmt.Sprintf("(%s)", structName))
 	} else {
 		// Anonymous object - use HashMap
