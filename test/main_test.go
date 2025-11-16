@@ -37,9 +37,9 @@ func TestLinting(t *testing.T) {
 		var output bytes.Buffer
 		cmd.Stdout = &output
 		cmd.Stderr = &output
-		
+
 		err := cmd.Run()
-		
+
 		// Lint errors will cause non-zero exit code
 		if err != nil {
 			hasErrors = true
@@ -61,8 +61,6 @@ func TestLinting(t *testing.T) {
 }
 
 // TestLSPDiagnostics runs LSP validation on all test files to catch semantic errors
-// Note: This test catches type mismatches, undefined variables, and other semantic errors
-// that the LSP detects. Some edge cases may require manual review.
 func TestLSPDiagnostics(t *testing.T) {
 	lspPath := "../../ahoy-lsp/ahoy-lsp"
 	if _, err := os.Stat(lspPath); os.IsNotExist(err) {
@@ -91,13 +89,13 @@ func TestLSPDiagnostics(t *testing.T) {
 		var output bytes.Buffer
 		cmd.Stdout = &output
 		cmd.Stderr = &output
-		
+
 		err = cmd.Run()
-		
+
 		// LSP validation errors will cause non-zero exit code
 		if err != nil {
 			outputStr := output.String()
-			// Filter out debug messages and known false positives
+			// Filter out debug messages only
 			var errorLines []string
 			for _, line := range strings.Split(outputStr, "\n") {
 				// Skip debug messages
@@ -108,17 +106,9 @@ func TestLSPDiagnostics(t *testing.T) {
 				if strings.TrimSpace(line) == "" {
 					continue
 				}
-				// Skip known false positive in loops.ahoy:137
-				// This is an edge case where the LSP reports a loop variable as undeclared
-				// even though the code compiles and runs correctly. The issue occurs in a
-				// complex file with many loop constructs and scopes.
-				if strings.Contains(line, "loops.ahoy") || 
-				   (strings.Contains(line, "Line 137") && strings.Contains(line, "undeclared variable 'n'")) {
-					continue
-				}
 				errorLines = append(errorLines, line)
 			}
-			
+
 			if len(errorLines) > 0 {
 				hasErrors = true
 				baseName := filepath.Base(file)

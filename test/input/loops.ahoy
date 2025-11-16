@@ -9,12 +9,13 @@ expected.push|"1"|
 expected.push|"2"|
 expected.push|"3"|
 
-numbers: [10, 20, 30, 40]
+numbers: [10, 20, 30, 40];
+
 loop num in numbers do
-    ahoy|num| ? should print: 10, 20 (then halt)
-    if num is 20 then
-        halt
-    $
+  ahoy|num| ? should print: 10, 20 (then halt)
+  if num is 20 then
+			halt
+  $
 $
 expected.push|"10"|
 expected.push|"20"|
@@ -39,7 +40,7 @@ expected.push|"Count 3"|
 expected.push|"Count 4"|
 
 ? Loop range from 0 to 5
-loop i:5 to 10+1 do print|f"Count {i}"| $
+loop i:5 to 10+1 do print|f"Count {i}"|$
 expected.push|"Count 5"|
 expected.push|"Count 6"|
 expected.push|"Count 7"|
@@ -139,22 +140,17 @@ $
 print|my_numbers|
 expected.push|"[11, 21, 31]"|
 
-
-
 i:0
 loop till i <= 5:
     ahoy|f"Count {i}"|
     i+=1
 $
-
 expected.push|"Count 0"|
 expected.push|"Count 1"|
 expected.push|"Count 2"|
 expected.push|"Count 3"|
 expected.push|"Count 4"|
 expected.push|"Count 5"|
-
-
 
 i:0
 loop till i >= -5:
