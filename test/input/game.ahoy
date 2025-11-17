@@ -1,0 +1,42 @@
+
+import "/home/lee/Documents/ahoy-lang/ahoy/repos/raylib/src/raylib.h"
+
+
+@ main || void:
+	set_config_flags|FLAG_WINDOW_RESIZABLE|
+
+	init_window|800,450,"Hello Ahoy!"|
+	set_target_fps|60|
+	? set_config_flags||
+	loop till not window_should_close|| do
+		clear_background|RAYWHITE|
+		begin_drawing||
+		draw_text|"Hello, Ahoy!",190,200,20,LIGHTGRAY|
+		grid : make_grid|10,10|
+		draw_board|grid|
+		end_drawing||
+	$
+$
+
+
+@ draw_board |grid:dict| void:
+	loop key,pos in grid do
+		x: pos[0]
+		y: pos[1]
+		draw_rectangle_lines|x,y,40,40,BLACK|
+		draw_text|key,x + 5,y + 5,10,BLACK|
+	$
+$
+
+@ make_grid |rows,cols| infer:
+	cell_size:50;
+	grid : <>;
+	loop r:0 to rows do
+		loop c:0 to cols do
+			x:c * cell_size
+			y:r * cell_size
+			grid<f"{r},{c}"> : [x,y]
+			$
+		$
+	return grid
+$

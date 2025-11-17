@@ -220,6 +220,7 @@ func parseStructField(line string, fields *[]CStructField) {
 func parseEnum(lines []string, startIdx int, info *CHeaderInfo) {
 	var enumName string
 	values := make(map[string]int)
+	valueLines := make(map[string]int)
 	currentValue := 0
 	
 	for i := startIdx + 1; i < len(lines); i++ {
@@ -234,21 +235,22 @@ func parseEnum(lines []string, startIdx int, info *CHeaderInfo) {
 		}
 		
 		if line != "" && !strings.HasPrefix(line, "//") {
-			parseEnumValue(line, &values, &currentValue)
+			parseEnumValue(line, &values, &valueLines, &currentValue, i+1)
 		}
 	}
 	
 	if enumName != "" {
 		info.Enums[enumName] = &CEnum{
-			Name:   enumName,
-			Values: values,
-			Line:   startIdx + 1,
+			Name:       enumName,
+			Values:     values,
+			ValueLines: valueLines,
+			Line:       startIdx + 1,
 		}
 	}
 }
 
 // parseEnumValue parses an enum value line
-func parseEnumValue(line string, values *map[string]int, currentValue *int) {
+func parseEnumValue(line string, values *map[string]int, valueLines *map[string]int, currentValue *int, lineNum int) {
 	if idx := strings.Index(line, "//"); idx != -1 {
 		line = line[:idx]
 	}
@@ -258,15 +260,20 @@ func parseEnumValue(line string, values *map[string]int, currentValue *int) {
 	parts := strings.Split(line, "=")
 	name := strings.TrimSpace(parts[0])
 	
-	if len(parts) > 1 {
-		valueStr := strings.TrimSpace(parts[1])
-		if val, err := strconv.Atoi(valueStr); err == nil {
-			(*values)[name] = val
-			*currentValue = val + 1
+	if name != "" {
+		(*valueLines)[name] = lineNum
+		
+		if len(parts) > 1 {
+			valueStr := strings.TrimSpace(parts[1])
+			// Try parsing as int (supports both decimal and hex with 0x prefix)
+			if val, err := strconv.ParseInt(valueStr, 0, 64); err == nil {
+				(*values)[name] = int(val)
+				*currentValue = int(val) + 1
+			}
+		} else {
+			(*values)[name] = *currentValue
+			*currentValue++
 		}
-	} else {
-		(*values)[name] = *currentValue
-		*currentValue++
 	}
 }
 

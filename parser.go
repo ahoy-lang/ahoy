@@ -137,9 +137,10 @@ type CParameter struct {
 }
 
 type CEnum struct {
-	Name   string
-	Values map[string]int
-	Line   int // Line number in header file
+	Name       string
+	Values     map[string]int
+	ValueLines map[string]int // Line number for each enum value
+	Line       int             // Line number in header file
 }
 
 type CDefine struct {
