@@ -70,6 +70,7 @@ type ASTNode struct {
 	Children     []*ASTNode
 	DataType     string
 	Line         int
+	Column       int      // Column position in source
 	DefaultValue *ASTNode // For default parameter values
 	EnumType     string   // Type of enum (int, string, color, etc.) or "" for mixed
 	IsMutable    bool     // For enum members marked as mutable
@@ -1689,10 +1690,16 @@ func (p *Parser) parseLoop() *ASTNode {
 				p.loopVarScopes = p.loopVarScopes[:len(p.loopVarScopes)-1]
 			}
 
-			loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
+			loopVarNode := &ASTNode{
+				Type:   NODE_IDENTIFIER,
+				Value:  loopVar.Value,
+				Line:   loopVar.Line,
+				Column: loopVar.Column,
+			}
 			return &ASTNode{
 				Type:     NODE_FOR_RANGE_LOOP,
 				Children: []*ASTNode{loopVarNode, startExpr, endExpr, body},
+				Line:     startLine,
 			}
 		} else if p.current().Type == TOKEN_TILL {
 			// loop i:start till condition
@@ -1733,10 +1740,16 @@ func (p *Parser) parseLoop() *ASTNode {
 				p.loopVarScopes = p.loopVarScopes[:len(p.loopVarScopes)-1]
 			}
 
-			loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
+			loopVarNode := &ASTNode{
+				Type:   NODE_IDENTIFIER,
+				Value:  loopVar.Value,
+				Line:   loopVar.Line,
+				Column: loopVar.Column,
+			}
 			return &ASTNode{
 				Type:     NODE_WHILE_LOOP,
 				Children: []*ASTNode{loopVarNode, startExpr, condition, body},
+				Line:     startLine,
 			}
 		} else if p.current().Type == TOKEN_ASSIGN {
 			// loop i:start: (forever loop with counter starting at start)
@@ -1855,11 +1868,17 @@ func (p *Parser) parseLoop() *ASTNode {
 
 		if loopVar != nil {
 			// loop i till condition - i should be initialized to 0 locally
-			loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
+			loopVarNode := &ASTNode{
+				Type:   NODE_IDENTIFIER,
+				Value:  loopVar.Value,
+				Line:   loopVar.Line,
+				Column: loopVar.Column,
+			}
 			zeroNode := &ASTNode{Type: NODE_NUMBER, Value: "0"}
 			return &ASTNode{
 				Type:     NODE_WHILE_LOOP,
 				Children: []*ASTNode{loopVarNode, zeroNode, condition, body},
+				Line:     startLine,
 			}
 		} else {
 			// loop till condition - no local var, should check outer scope in linting
@@ -1905,10 +1924,16 @@ func (p *Parser) parseLoop() *ASTNode {
 		p.blockDepth++
 		body := p.parseBlockUntilEnd("loop", startLine)
 
-		elementNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
+		elementNode := &ASTNode{
+			Type:   NODE_IDENTIFIER,
+			Value:  loopVar.Value,
+			Line:   loopVar.Line,
+			Column: loopVar.Column,
+		}
 		return &ASTNode{
 			Type:     NODE_FOR_IN_ARRAY_LOOP,
 			Children: []*ASTNode{elementNode, collectionExpr, body},
+			Line:     startLine,
 		}
 	} else if loopVar != nil && p.current().Type == TOKEN_COMMA {
 		// loop key,value in dict
@@ -1937,11 +1962,22 @@ func (p *Parser) parseLoop() *ASTNode {
 		p.blockDepth++
 		body := p.parseBlockUntilEnd("loop", startLine)
 
-		keyNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
-		valueNode := &ASTNode{Type: NODE_IDENTIFIER, Value: secondIdent.Value}
+		keyNode := &ASTNode{
+			Type:   NODE_IDENTIFIER,
+			Value:  loopVar.Value,
+			Line:   loopVar.Line,
+			Column: loopVar.Column,
+		}
+		valueNode := &ASTNode{
+			Type:   NODE_IDENTIFIER,
+			Value:  secondIdent.Value,
+			Line:   secondIdent.Line,
+			Column: secondIdent.Column,
+		}
 		return &ASTNode{
 			Type:     NODE_FOR_IN_DICT_LOOP,
 			Children: []*ASTNode{keyNode, valueNode, dictExpr, body},
+			Line:     startLine,
 		}
 	} else if p.current().Type == TOKEN_DO || p.current().Type == TOKEN_ASSIGN {
 		// loop [i] do or loop [i] : - infinite loop, optionally with counter
@@ -1957,12 +1993,18 @@ func (p *Parser) parseLoop() *ASTNode {
 
 		if loopVar != nil {
 			// loop i do - i starts at 0, increments each iteration
-			loopVarNode := &ASTNode{Type: NODE_IDENTIFIER, Value: loopVar.Value}
+			loopVarNode := &ASTNode{
+				Type:   NODE_IDENTIFIER,
+				Value:  loopVar.Value,
+				Line:   loopVar.Line,
+				Column: loopVar.Column,
+			}
 			zeroNode := &ASTNode{Type: NODE_NUMBER, Value: "0"}
 			return &ASTNode{
 				Type:     NODE_FOR_COUNT_LOOP,
 				Value:    loopVar.Value,
 				Children: []*ASTNode{loopVarNode, zeroNode, body},
+				Line:     startLine,
 			}
 		} else {
 			// loop do - infinite loop without counter
@@ -4563,6 +4605,8 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 			Value:        paramName.Value,
 			DataType:     paramType,
 			DefaultValue: defaultValue,
+			Line:         paramName.Line,
+			Column:       paramName.Column,
 		}
 		params.Children = append(params.Children, param)
 
