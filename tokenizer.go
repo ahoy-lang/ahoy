@@ -104,6 +104,8 @@ const (
 	TOKEN_MULTIPLY_ASSIGN // *=
 	TOKEN_DIVIDE_ASSIGN   // /=
 	TOKEN_MODULO_ASSIGN   // %=
+	TOKEN_CARET           // ^ (pointer dereference, Pascal-style)
+	TOKEN_AMPERSAND       // & (address-of, Pascal-style)
 )
 
 type Token struct {
@@ -403,6 +405,10 @@ func Tokenize(input string) []Token {
 				tokens = append(tokens, Token{Type: TOKEN_EQUALS, Value: "=", Line: lineNum + 1, Column: i + 1})
 			case '@':
 				tokens = append(tokens, Token{Type: TOKEN_AT, Value: "@", Line: lineNum + 1, Column: i + 1})
+			case '^':
+				tokens = append(tokens, Token{Type: TOKEN_CARET, Value: "^", Line: lineNum + 1, Column: i + 1})
+			case '&':
+				tokens = append(tokens, Token{Type: TOKEN_AMPERSAND, Value: "&", Line: lineNum + 1, Column: i + 1})
 			case '$':
 				// Check for $#N syntax (multiple block closures)
 				if i+1 < len(content) && content[i+1] == '#' {

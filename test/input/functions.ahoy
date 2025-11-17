@@ -53,5 +53,33 @@ expected.push|"defer2"|
 expected.push|"defer1"|
 
 
+
+@ return_typed_dict_and_array || array[int],dict<string,int>:
+  nums:array[int] = [1, 2, 3]
+  dictionary:dict<string,int> = <"a": 1, "b": 2>
+  print|"Data processed"|
+  print|nums|
+  return nums, dictionary
+$
+
+nums, dictionary : return_typed_dict_and_array||
+print|nums,dictionary|
+expected.push|"Data processed"|
+expected.push|"[1, 2, 3]"|
+expected.push|"[1, 2, 3] {\"a\": 1, \"b\": 2}"|
+
+? Test typed parameters
+@ test_typed_params |arr:array[string], count:int| void:
+  print|arr[0]|
+  print|arr[1]|
+  print|count|
+$
+
+array_test:array[string]= ["hello", "world"]
+test_typed_params|array_test, 42|
+expected.push|"hello"|
+expected.push|"world"|
+expected.push|42|
+
 ? Print expected values for test validation
 print|expected|

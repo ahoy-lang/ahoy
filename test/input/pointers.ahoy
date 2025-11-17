@@ -1,0 +1,10 @@
+@ test_pointers || void:
+    x: 42
+    ptr: &x
+    print|"Value of x:", x|
+    print|"Value at pointer:", ^ptr|
+    ^ptr: 100
+    print|"Modified x:", x|
+$
+test_pointers||
+print|["Value of x: 42", "Value at pointer: 42", "Modified x: 100"]|

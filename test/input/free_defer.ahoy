@@ -1,0 +1,20 @@
+
+expected:[]
+boog::"this is a const"
+@ work_with_data || infer:
+    nums: [1, 2, 3]
+    test_object: {"a": 1, "b": 2, "c": 3}
+    test_dict:dict<string,string> = <"key1": "value1", "key2": "value2">
+    ? defer free|nums|
+    print|test_dict|
+    print|nums|
+    print|test_object|
+    return nums
+$
+
+expected.push|"{\"key2\": \"value2\", \"key1\": \"value1\"}"|
+expected.push|"[1, 2, 3]"|
+expected.push|"{\"a\": 1, \"b\": 2, \"c\": 3}"|
+
+nums : work_with_data||
+print|expected|

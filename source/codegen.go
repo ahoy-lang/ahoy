@@ -223,6 +223,12 @@ func generateC(ast *ahoy.ASTNode) string {
 		result.WriteString("char* vector2_to_string(Vector2 v);\n")
 		result.WriteString("\n")
 	}
+	
+	// Add forward declarations for dict helper functions if needed
+	if gen.dictMethods["print_dict"] {
+		result.WriteString("char* print_dict_helper(HashMap* dict);\n")
+		result.WriteString("char* format_hashmap_value(HashMap* dict, const char* key);\n")
+	}
 
 	// Write struct declarations (typedefs)
 	result.WriteString(gen.structDecls.String())
@@ -645,6 +651,7 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 				returnType = structName
 			} else if len(inferredTypes) == 1 {
 				// Single inferred return type
+				returnTypes = inferredTypes // Store for lookup
 				returnType = gen.mapType(inferredTypes[0])
 			} else {
 				// No return statement found, default to void
@@ -652,10 +659,8 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 			}
 		} else if strings.Contains(node.DataType, ",") {
 			// Multiple return types - create a struct
-			parts := strings.Split(node.DataType, ",")
-			for _, part := range parts {
-				returnTypes = append(returnTypes, strings.TrimSpace(part))
-			}
+			// Use smart split that handles nested commas in dict<k,v>
+			returnTypes = splitReturnTypes(node.DataType)
 
 			// Generate struct definition for multi-return
 			structName := fmt.Sprintf("%s_return", funcName)
@@ -730,6 +735,12 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	for _, param := range params.Children {
 		if param.DataType != "" {
 			gen.functionVars[param.Value] = param.DataType
+			
+			// Track array element types for typed array parameters
+			if strings.HasPrefix(param.DataType, "array[") {
+				elemType := strings.TrimSuffix(strings.TrimPrefix(param.DataType, "array["), "]")
+				gen.arrayElementTypes[param.Value] = elemType
+			}
 		} else {
 			// Parameters without explicit type are generic
 			gen.functionVars[param.Value] = "generic"
@@ -763,13 +774,14 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 	gen.writeIndent()
 
-	// Check if this is a property/element assignment (obj<'prop'>: value or dict{"key"}: value or obj.prop: value)
+	// Check if this is a property/element/pointer assignment (obj<'prop'>: value or dict{"key"}: value or obj.prop: value or ^ptr: value)
 	// In this case, Children[0] is the access node, Children[1] is the value
 	if len(node.Children) == 2 &&
 		(node.Children[0].Type == ahoy.NODE_OBJECT_ACCESS ||
 			node.Children[0].Type == ahoy.NODE_DICT_ACCESS ||
 			node.Children[0].Type == ahoy.NODE_ARRAY_ACCESS ||
-			node.Children[0].Type == ahoy.NODE_MEMBER_ACCESS) {
+			node.Children[0].Type == ahoy.NODE_MEMBER_ACCESS ||
+			node.Children[0].Type == ahoy.NODE_UNARY_OP) {
 
 		// Special handling for dict assignment - use hashMapPut
 		if node.Children[0].Type == ahoy.NODE_DICT_ACCESS {
@@ -785,7 +797,7 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			return
 		}
 
-		// For object/array access, direct assignment works
+		// For object/array/pointer access, direct assignment works
 		gen.generateNode(node.Children[0])
 		gen.output.WriteString(" = ")
 		gen.generateNode(node.Children[1])
@@ -2397,11 +2409,34 @@ func (gen *CodeGenerator) generateConstant(node *ahoy.ASTNode) {
 	// Mark constant as declared
 	gen.constants[constName] = true
 
-	gen.writeIndent()
-	constType := gen.mapType(node.DataType)
-	gen.output.WriteString(fmt.Sprintf("const %s %s = ", constType, constName))
-	gen.generateNode(node.Children[0])
-	gen.output.WriteString(";\n")
+	// Determine the constant type - use explicit type if provided, otherwise infer
+	var constType string
+	if node.DataType != "" {
+		constType = gen.mapType(node.DataType)
+	} else {
+		// Infer type from the value
+		inferredType := gen.inferType(node.Children[0])
+		constType = gen.mapType(inferredType)
+	}
+
+	// Constants at global scope (not in a function) should go into funcDecls
+	if gen.currentFunction == "" {
+		savedOutput := gen.output
+		gen.output = strings.Builder{}
+		
+		gen.output.WriteString(fmt.Sprintf("const %s %s = ", constType, constName))
+		gen.generateNode(node.Children[0])
+		gen.output.WriteString(";\n")
+		
+		gen.funcDecls.WriteString(gen.output.String())
+		gen.output = savedOutput
+	} else {
+		// Local constants in functions
+		gen.writeIndent()
+		gen.output.WriteString(fmt.Sprintf("const %s %s = ", constType, constName))
+		gen.generateNode(node.Children[0])
+		gen.output.WriteString(";\n")
+	}
 }
 
 func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
@@ -2561,6 +2596,12 @@ func (gen *CodeGenerator) generateUnaryOp(node *ahoy.ASTNode) {
 	switch node.Value {
 	case "not":
 		gen.output.WriteString("!")
+	case "^":
+		// Pointer dereference - convert ^ to *
+		gen.output.WriteString("*")
+	case "&":
+		// Address-of operator
+		gen.output.WriteString("&")
 	default:
 		gen.output.WriteString(node.Value)
 	}
@@ -2715,12 +2756,20 @@ func (gen *CodeGenerator) mapType(langType string) string {
 		return "HashMap*"
 	}
 	
+	// Check for pointer types (e.g., "int*", "char*")
+	if strings.HasSuffix(langType, "*") {
+		baseType := strings.TrimSuffix(langType, "*")
+		// Recursively map the base type
+		mappedBase := gen.mapType(baseType)
+		return mappedBase + "*"
+	}
+	
 	switch langType {
 	case "int":
 		return "int"
 	case "float":
 		return "double"
-	case "string", "char*":
+	case "string", "char*", "char":
 		return "char*"
 	case "bool":
 		return "bool"
@@ -2746,16 +2795,16 @@ func (gen *CodeGenerator) mapType(langType string) string {
 func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 	switch node.Type {
 	case ahoy.NODE_TYPE_PROPERTY:
-		return "char*" // .type property returns a string
+		return "string" // .type property returns a string
 	case ahoy.NODE_NUMBER:
 		if strings.Contains(node.Value, ".") {
 			return "float"
 		}
 		return "int"
 	case ahoy.NODE_STRING:
-		return "char*"
+		return "string"
 	case ahoy.NODE_F_STRING:
-		return "char*"
+		return "string"
 	case ahoy.NODE_BOOLEAN:
 		return "bool"
 	case ahoy.NODE_DICT_LITERAL:
@@ -2787,6 +2836,12 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		}
 		if node.Value == "string" {
 			return "string"
+		}
+		// Check if we know the function's return type
+		if returnTypes, exists := gen.functionReturnTypes[node.Value]; exists && len(returnTypes) > 0 {
+			// For single return, return that type
+			// For multiple returns, this will be used in tuple assignment context
+			return returnTypes[0]
 		}
 		return "int"
 	case ahoy.NODE_METHOD_CALL:
@@ -2846,6 +2901,24 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			return "int"
 		}
 		return "int"
+	case ahoy.NODE_UNARY_OP:
+		// Handle unary operators
+		if node.Value == "&" {
+			// Address-of operator - return pointer to operand type
+			operandType := gen.inferType(node.Children[0])
+			return operandType + "*"
+		}
+		if node.Value == "^" || node.Value == "*" {
+			// Pointer dereference - return type pointed to
+			operandType := gen.inferType(node.Children[0])
+			// Remove trailing * if present
+			if strings.HasSuffix(operandType, "*") {
+				return strings.TrimSuffix(operandType, "*")
+			}
+			return "int" // fallback
+		}
+		// Other unary operators preserve type
+		return gen.inferType(node.Children[0])
 	case ahoy.NODE_BINARY_OP:
 		// Simple inference - could be more sophisticated
 		leftType := gen.inferType(node.Children[0])
@@ -2991,26 +3064,16 @@ func (gen *CodeGenerator) inferReturnTypes(funcNode *ahoy.ASTNode) []string {
 		}
 	}
 	
+	// Scan function body for variable declarations to track their types
+	gen.scanVariableDeclarations(body)
+	
 	// Find the first return statement
 	returnStmt := gen.findReturnStatement(body)
 	
-	// Restore functionVars
-	gen.functionVars = savedFunctionVars
-	
 	if returnStmt == nil {
+		// Restore functionVars
+		gen.functionVars = savedFunctionVars
 		return []string{}
-	}
-	
-	// Temporarily set up functionVars again for type inference
-	savedFunctionVars = gen.functionVars
-	gen.functionVars = make(map[string]string)
-	for _, param := range params.Children {
-		if param.DataType != "" {
-			gen.functionVars[param.Value] = param.DataType
-		} else {
-			// Parameters without explicit type are generic (will be inferred at call site)
-			gen.functionVars[param.Value] = "generic"
-		}
 	}
 	
 	// Infer types from each returned expression
@@ -3024,6 +3087,29 @@ func (gen *CodeGenerator) inferReturnTypes(funcNode *ahoy.ASTNode) []string {
 	gen.functionVars = savedFunctionVars
 	
 	return types
+}
+
+// scanVariableDeclarations scans a node tree and tracks variable declarations in functionVars
+func (gen *CodeGenerator) scanVariableDeclarations(node *ahoy.ASTNode) {
+	if node == nil {
+		return
+	}
+	
+	// Check if this is a variable declaration (assignment with no prior declaration)
+	if node.Type == ahoy.NODE_VARIABLE_DECLARATION || node.Type == ahoy.NODE_ASSIGNMENT {
+		varName := node.Value
+		if len(node.Children) > 0 {
+			valueNode := node.Children[0]
+			// Infer the type from the assigned value
+			varType := gen.inferType(valueNode)
+			gen.functionVars[varName] = varType
+		}
+	}
+	
+	// Recursively scan children
+	for _, child := range node.Children {
+		gen.scanVariableDeclarations(child)
+	}
 }
 
 // findReturnStatement recursively finds the first return statement in a node tree
@@ -5674,4 +5760,45 @@ func (gen *CodeGenerator) generateObjectAccess(node *ahoy.ASTNode) {
 		// Use the property name directly - quotes are already stripped by tokenizer
 		gen.output.WriteString(node.Children[0].Value)
 	}
+}
+
+// splitReturnTypes splits a comma-separated list of return types, handling nested commas in dict<k,v>
+func splitReturnTypes(typeStr string) []string {
+if typeStr == "" {
+return []string{}
+}
+
+var types []string
+var current strings.Builder
+depth := 0 // Track nesting level in <> or []
+
+for i := 0; i < len(typeStr); i++ {
+ch := typeStr[i]
+switch ch {
+case '<', '[':
+depth++
+current.WriteByte(ch)
+case '>', ']':
+depth--
+current.WriteByte(ch)
+case ',':
+if depth == 0 {
+// Top-level comma, split here
+types = append(types, strings.TrimSpace(current.String()))
+current.Reset()
+} else {
+// Nested comma, keep it
+current.WriteByte(ch)
+}
+default:
+current.WriteByte(ch)
+}
+}
+
+// Add the last type
+if current.Len() > 0 {
+types = append(types, strings.TrimSpace(current.String()))
+}
+
+return types
 }

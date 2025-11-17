@@ -833,6 +833,9 @@ func (p *Parser) parseStatement() *ASTNode {
 		return stmt
 	case TOKEN_COLOR_TYPE, TOKEN_VECTOR2_TYPE:
 		return p.parseExpression()
+	case TOKEN_CARET, TOKEN_AMPERSAND:
+		// Could be unary expression assignment like ^ptr: value
+		return p.parseAssignmentOrExpression()
 	case TOKEN_NEWLINE, TOKEN_SEMICOLON:
 		p.advance()
 		return nil
@@ -2132,7 +2135,8 @@ func (p *Parser) parseReturnStatement() *ASTNode {
 				// Expecting no return value
 				expectedTypes = []string{}
 			} else {
-				expectedTypes = strings.Split(expectedRet, ",")
+				// Use smart split that handles nested commas in dict<k,v>
+				expectedTypes = splitReturnTypes(expectedRet)
 			}
 
 			// Get actual return types
@@ -2360,6 +2364,25 @@ func (p *Parser) parseWalrusAssignment() *ASTNode {
 }
 
 func (p *Parser) parseAssignmentOrExpression() *ASTNode {
+	// Check for unary expression assignment: ^ptr: value or &var: value
+	if p.current().Type == TOKEN_CARET || p.current().Type == TOKEN_AMPERSAND {
+		// Look ahead to see if this is an assignment pattern
+		if p.pos+2 < len(p.tokens) && 
+		   p.tokens[p.pos+1].Type == TOKEN_IDENTIFIER && 
+		   p.tokens[p.pos+2].Type == TOKEN_ASSIGN {
+			// Parse the unary expression
+			target := p.parseUnaryExpression()
+			p.expect(TOKEN_ASSIGN)
+			value := p.parseExpression()
+			
+			return &ASTNode{
+				Type:     NODE_ASSIGNMENT,
+				Children: []*ASTNode{target, value},
+				Line:     target.Line,
+			}
+		}
+	}
+	
 	// Check for object property assignment: obj{'prop'}: value
 	if p.pos+2 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_LBRACE {
 		// Check if this is obj{'prop'}: pattern
@@ -3329,7 +3352,8 @@ func (p *Parser) parseMultiplicativeExpression() *ASTNode {
 }
 
 func (p *Parser) parseUnaryExpression() *ASTNode {
-	if p.current().Type == TOKEN_NOT || p.current().Type == TOKEN_MINUS {
+	if p.current().Type == TOKEN_NOT || p.current().Type == TOKEN_MINUS ||
+		p.current().Type == TOKEN_CARET || p.current().Type == TOKEN_AMPERSAND {
 		op := p.current()
 		p.advance()
 		expr := p.parseUnaryExpression()
@@ -4501,14 +4525,9 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 			p.advance()
 
 			// Type is optional - if not present, treat as generic
-			if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
-				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
-				p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
-				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
-				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
-				p.current().Type == TOKEN_IDENTIFIER {
-				paramType = p.current().Value
-				p.advance()
+			if p.isTypeToken(p.current().Type) {
+				// Parse complex types like array[int] or dict<string,int>
+				paramType = p.parseComplexReturnType()
 			} else {
 				// No type specified - generic parameter
 				paramType = "generic"
@@ -4565,6 +4584,7 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 
 	// Return type (optional, can be multiple types separated by comma)
 	var returnType string
+	var returnTypesArray []string
 	if p.current().Type != TOKEN_ASSIGN {
 		// Check for 'infer' keyword
 		if p.current().Type == TOKEN_INFER {
@@ -4576,27 +4596,15 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 		} else {
 			returnTypes := []string{}
 
-			// Parse first return type
-			if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
-				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
-				p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
-				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
-				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
-				p.current().Type == TOKEN_IDENTIFIER {
-				returnTypes = append(returnTypes, p.current().Value)
-				p.advance()
+			// Parse first return type (including complex types like array[int], dict<string,int>)
+			if p.isTypeToken(p.current().Type) {
+				returnTypes = append(returnTypes, p.parseComplexReturnType())
 
 				// Parse additional return types (multiple returns)
 				for p.current().Type == TOKEN_COMMA {
 					p.advance()
-					if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
-						p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
-						p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
-						p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
-						p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
-						p.current().Type == TOKEN_IDENTIFIER {
-						returnTypes = append(returnTypes, p.current().Value)
-						p.advance()
+					if p.isTypeToken(p.current().Type) {
+						returnTypes = append(returnTypes, p.parseComplexReturnType())
 					} else {
 						break
 					}
@@ -4606,6 +4614,7 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 			// Join multiple return types with comma
 			if len(returnTypes) > 0 {
 				returnType = strings.Join(returnTypes, ",")
+				returnTypesArray = returnTypes
 			}
 		}
 	}
@@ -4665,7 +4674,8 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 		if returnType == "infer" {
 			isInfer = true
 		} else if returnType != "" && returnType != "void" {
-			returnTypesList = strings.Split(returnType, ",")
+			// Use the parsed array instead of splitting the string to preserve complex types
+			returnTypesList = returnTypesArray
 		}
 
 		// Check for duplicate function declaration
@@ -6339,4 +6349,89 @@ func (p *Parser) parseCallWithName(funcName Token) *ASTNode {
 
 	p.inFunctionCall = false
 	return call
+}
+
+// splitReturnTypes splits a comma-separated list of return types, handling nested commas in dict<k,v>
+func splitReturnTypes(typeStr string) []string {
+	if typeStr == "" {
+		return []string{}
+	}
+	
+	var types []string
+	var current strings.Builder
+	depth := 0 // Track nesting level in <> or []
+	
+	for i := 0; i < len(typeStr); i++ {
+		ch := typeStr[i]
+		switch ch {
+		case '<', '[':
+			depth++
+			current.WriteByte(ch)
+		case '>', ']':
+			depth--
+			current.WriteByte(ch)
+		case ',':
+			if depth == 0 {
+				// Top-level comma, split here
+				types = append(types, strings.TrimSpace(current.String()))
+				current.Reset()
+			} else {
+				// Nested comma, keep it
+				current.WriteByte(ch)
+			}
+		default:
+			current.WriteByte(ch)
+		}
+	}
+	
+	// Add the last type
+	if current.Len() > 0 {
+		types = append(types, strings.TrimSpace(current.String()))
+	}
+	
+	return types
+}
+
+// isTypeToken checks if the given token type represents a type
+func (p *Parser) isTypeToken(tokenType TokenType) bool {
+return tokenType == TOKEN_INT_TYPE || tokenType == TOKEN_FLOAT_TYPE ||
+tokenType == TOKEN_STRING_TYPE || tokenType == TOKEN_BOOL_TYPE ||
+tokenType == TOKEN_COLOR_TYPE || tokenType == TOKEN_VECTOR2_TYPE ||
+tokenType == TOKEN_DICT_TYPE || tokenType == TOKEN_ARRAY_TYPE ||
+tokenType == TOKEN_IDENTIFIER
+}
+
+// parseComplexReturnType parses a return type that may include complex types like array[int] or dict<string,int>
+func (p *Parser) parseComplexReturnType() string {
+baseType := p.current().Value
+p.advance()
+
+// Check for array[type] syntax
+if baseType == "array" && p.current().Type == TOKEN_LBRACKET {
+p.advance() // consume [
+elementType := p.current().Value
+p.advance() // consume type
+p.expect(TOKEN_RBRACKET)
+return fmt.Sprintf("array[%s]", elementType)
+}
+
+// Check for dict<key,value> or dict[key,value] syntax
+if baseType == "dict" && (p.current().Type == TOKEN_LANGLE || p.current().Type == TOKEN_LBRACKET) {
+bracketType := p.current().Type
+p.advance() // consume < or [
+keyType := p.current().Value
+p.advance() // consume key type
+p.expect(TOKEN_COMMA)
+valueType := p.current().Value
+p.advance() // consume value type
+if bracketType == TOKEN_LANGLE {
+p.expect(TOKEN_RANGLE)
+return fmt.Sprintf("dict<%s,%s>", keyType, valueType)
+} else {
+p.expect(TOKEN_RBRACKET)
+return fmt.Sprintf("dict[%s,%s]", keyType, valueType)
+}
+}
+
+return baseType
 }
