@@ -148,6 +148,9 @@ func generateC(ast *ahoy.ASTNode) string {
 	// Generate type helper function if needed
 	gen.writeTypeEnumToStringHelper()
 
+	// Generate built-in type helpers (color, vector2)
+	gen.writeBuiltinTypeHelpers()
+
 	// Generate array helper functions if any array methods were used
 	gen.writeArrayHelperFunctions()
 
@@ -2062,9 +2065,9 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 							formatSpec = "%d"
 						case "char":
 							formatSpec = "%c"
-						case "color":
+						case "color", "Color":
 							formatSpec = "%s" // Will use color_to_string helper
-						case "vector2":
+						case "vector2", "Vector2":
 							formatSpec = "%s" // Will use vector2_to_string helper
 						case "array":
 							formatSpec = "%s" // Will use print_array_helper
@@ -2079,6 +2082,9 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 							} else if strings.HasPrefix(argType, "dict[") {
 								formatSpec = "%s" // Will use print_dict_helper
 							} else if _, isStruct := gen.structs[argType]; isStruct {
+								formatSpec = "%s" // Will use print_struct_helper
+							} else if _, isStruct := gen.structs[strings.ToLower(argType)]; isStruct {
+								// Check lowercase version for built-in types
 								formatSpec = "%s" // Will use print_struct_helper
 							} else {
 								formatSpec = "%d"
@@ -2145,22 +2151,17 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 						gen.output.WriteString("color_to_string(")
 						gen.generateNode(arg)
 						gen.output.WriteString(")")
-					} else if argType == "vector2" {
+					} else if argType == "vector2" || argType == "Vector2" {
 						// Vector2 type - use helper
 						gen.output.WriteString("vector2_to_string(")
 						gen.generateNode(arg)
 						gen.output.WriteString(")")
-					} else if argType == "struct" || gen.structs[argType] != nil {
+					} else if argType == "struct" || gen.structs[argType] != nil || gen.structs[strings.ToLower(argType)] != nil {
 						// Struct type - use print helper
 						gen.arrayMethods["print_struct"] = true
 						gen.output.WriteString("print_struct_helper_")
 						// Convert C type to lowercase Ahoy type (Vector2 -> vector2)
-						ahoyType := argType
-						if argType == "Vector2" {
-							ahoyType = "vector2"
-						} else if argType == "Color" {
-							ahoyType = "color"
-						}
+						ahoyType := strings.ToLower(argType)
 						gen.output.WriteString(ahoyType)
 						gen.output.WriteString("(")
 						gen.generateNode(arg)
@@ -4131,12 +4132,23 @@ func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 		if i < len(temps) {
 			gen.writeIndent()
 			// Check if variable needs to be declared
-			if _, exists := gen.variables[target.Value]; !exists {
+			existsInFunc := false
+			existsGlobal := false
+			if gen.functionVars != nil {
+				_, existsInFunc = gen.functionVars[target.Value]
+			}
+			_, existsGlobal = gen.variables[target.Value]
+			
+			if !existsInFunc && !existsGlobal {
 				// Need to declare variable - infer type from temp
 				tempType := gen.inferType(rightSide.Children[i])
 				cType := gen.mapType(tempType)
 				gen.output.WriteString(fmt.Sprintf("%s ", cType))
-				gen.variables[target.Value] = tempType
+				if gen.functionVars != nil {
+					gen.functionVars[target.Value] = tempType
+				} else {
+					gen.variables[target.Value] = tempType
+				}
 			}
 			gen.output.WriteString(fmt.Sprintf("%s = %s;\n", target.Value, temps[i]))
 		}
@@ -4712,7 +4724,10 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 		gen.funcDecls.WriteString("    return buffer;\n")
 		gen.funcDecls.WriteString("}\n\n")
 	}
-	
+}
+
+// Generate built-in type helpers (always available)
+func (gen *CodeGenerator) writeBuiltinTypeHelpers() {
 	// Add color_to_string helper
 	gen.funcDecls.WriteString("char* color_to_string(Color c) {\n")
 	gen.funcDecls.WriteString("    char* buffer = malloc(64);\n")

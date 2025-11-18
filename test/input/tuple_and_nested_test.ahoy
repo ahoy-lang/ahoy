@@ -1,0 +1,33 @@
+program tuple_and_nested_test
+
+@ get_number || int:
+    return 42
+$
+
+@ tuple_assignment_in_loop |grid:dict| void:
+	loop key,pos in grid do
+		x, y: pos[0], pos[1]
+		print|x,y|
+		print|Vector2{x:2,y:3}|
+	$
+$
+
+@ main || void:
+    ? Test 1: Tuple assignment without inline types
+    pos: [10, 20]
+    x, y: pos[0], pos[1]
+
+    ? Test 2: Nested function call in print
+    print|get_number|||
+
+    ? Test 3: Multiple tuple assignments
+    arr: [1, 2, 3, 4]
+    a, b: arr[0], arr[1]
+    c, d: arr[2], arr[3]
+
+    ? Test 4: Tuple assignment in loop
+    grid: <>
+    grid<"p1">: [5, 10]
+    grid<"p2">: [15, 20]
+    tuple_assignment_in_loop|grid|
+$

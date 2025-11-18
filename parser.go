@@ -171,7 +171,7 @@ type CHeaderInfo struct {
 type Parser struct {
 	tokens             []Token
 	pos                int
-	inFunctionCall     bool
+	inFunctionCall     int  // Depth counter for nested function calls
 	inArrayLiteral     bool
 	inObjectLiteral    bool
 	inDictLiteral      bool
@@ -2072,8 +2072,8 @@ func (p *Parser) parseAhoyStatement() *ASTNode {
 		Line:  p.current().Line,
 	}
 
-	// Set flag to prevent nested parsing issues
-	p.inFunctionCall = true
+	// Increment depth to allow nested function calls
+	p.inFunctionCall++
 
 	// Parse arguments until closing pipe
 	for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_NEWLINE && p.current().Type != TOKEN_EOF {
@@ -2092,7 +2092,7 @@ func (p *Parser) parseAhoyStatement() *ASTNode {
 		p.advance()
 	}
 
-	p.inFunctionCall = false
+	p.inFunctionCall--
 	return call
 }
 
@@ -2108,8 +2108,8 @@ func (p *Parser) parsePrintStatement() *ASTNode {
 		Line:  p.current().Line,
 	}
 
-	// Set flag to prevent nested parsing issues
-	p.inFunctionCall = true
+	// Increment depth to allow nested function calls
+	p.inFunctionCall++
 
 	// Parse arguments until closing pipe
 	for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_NEWLINE && p.current().Type != TOKEN_EOF {
@@ -2128,7 +2128,7 @@ func (p *Parser) parsePrintStatement() *ASTNode {
 		p.advance()
 	}
 
-	p.inFunctionCall = false
+	p.inFunctionCall--
 	return call
 }
 
@@ -3338,7 +3338,7 @@ func (p *Parser) parseRelationalExpression() *ASTNode {
 		
 		// Don't treat > as comparison operator if we're inside angle brackets for object/array access
 		// Check if the next token suggests we're closing an access expression
-		if p.current().Type == TOKEN_RANGLE && p.inFunctionCall {
+		if p.current().Type == TOKEN_RANGLE && p.inFunctionCall > 0 {
 			// If we're in a function call (like print|obj<"prop">|), stop parsing
 			// The > is likely closing an object/array access, not a comparison
 			break
@@ -3702,37 +3702,60 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			}
 		}
 
-		// Check for function call with pipes (but not if we're already in a function call)
-		if p.current().Type == TOKEN_PIPE && !p.inFunctionCall {
-			p.advance()
-			call := &ASTNode{
-				Type:  NODE_CALL,
-				Value: token.Value,
-				Line:  token.Line,
-			}
+		// Check for function call with pipes
+		// We need to be careful: identifier| could be:
+		// 1. A function call: func|| or func|args|
+		// 2. An identifier inside a call: print|x| where x is followed by closing |
+		// Only parse as function call if we're NOT inside another call OR if there's actual content
+		if p.current().Type == TOKEN_PIPE {
+			// If we're inside a function call, don't treat trailing | as function call start
+			// This prevents print|x| from parsing x as a function call
+			if p.inFunctionCall == 0 {
+				// Top-level: always parse as function call
+				p.advance()
+				call := &ASTNode{
+					Type:  NODE_CALL,
+					Value: token.Value,
+					Line:  token.Line,
+				}
 
-			// Set flag to prevent nested parsing issues
-			p.inFunctionCall = true
+				// Increment depth to allow nested function calls
+				p.inFunctionCall++
 
-			// Parse arguments until closing pipe
-			for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_NEWLINE && p.current().Type != TOKEN_EOF {
-				arg := p.parseCallArgument()
-				call.Children = append(call.Children, arg)
+				// Parse arguments until closing pipe
+				for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_NEWLINE && p.current().Type != TOKEN_EOF {
+					arg := p.parseCallArgument()
+					call.Children = append(call.Children, arg)
 
-				if p.current().Type == TOKEN_COMMA {
+					if p.current().Type == TOKEN_COMMA {
+						p.advance()
+					} else {
+						break
+					}
+				}
+
+				// Consume closing pipe
+				if p.current().Type == TOKEN_PIPE {
 					p.advance()
-				} else {
-					break
+				}
+
+				p.inFunctionCall--
+				return call
+			}
+			// If we're inside a function call, fall through to return identifier
+			// UNLESS we detect this is actually a nested call (identifier||)
+			nextToken := p.peek(1)
+			if nextToken.Type == TOKEN_PIPE {
+				// This is identifier|| - definitely a nested zero-arg function call
+				p.advance() // consume first |
+				p.advance() // consume second |
+				return &ASTNode{
+					Type:     NODE_CALL,
+					Value:    token.Value,
+					Line:     token.Line,
+					Children: []*ASTNode{},
 				}
 			}
-
-			// Consume closing pipe
-			if p.current().Type == TOKEN_PIPE {
-				p.advance()
-			}
-
-			p.inFunctionCall = false
-			return call
 		}
 
 		// Check if this could be a zero-argument function call (no || needed)
@@ -4788,20 +4811,25 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 			Line:  name.Line,
 		}
 
-		// Check for optional type annotation (identifier:type)
+		// Check for optional type annotation (identifier:type, ...)
+		// Only consume colon if followed by a type keyword AND a comma
+		// This prevents consuming the final colon before values
 		if p.current().Type == TOKEN_ASSIGN {
-			p.advance()
-			// Check if this is a type annotation (but NOT a generic identifier, as that would consume the right side)
-			if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
-				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
-				p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
-				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE {
+			nextToken := p.peek(1)
+			isTypeToken := nextToken.Type == TOKEN_INT_TYPE || nextToken.Type == TOKEN_FLOAT_TYPE ||
+				nextToken.Type == TOKEN_STRING_TYPE || nextToken.Type == TOKEN_BOOL_TYPE ||
+				nextToken.Type == TOKEN_COLOR_TYPE || nextToken.Type == TOKEN_VECTOR2_TYPE ||
+				nextToken.Type == TOKEN_DICT_TYPE || nextToken.Type == TOKEN_ARRAY_TYPE
+			
+			// Check if this is inline type annotation (has comma after type)
+			isInlineTypeAnnotation := isTypeToken && p.peek(2).Type == TOKEN_COMMA
+			
+			if isInlineTypeAnnotation {
+				p.advance() // consume :
 				idNode.DataType = p.current().Value
-				p.advance()
-			} else {
-				// Not a type annotation, put back the colon
-				p.pos--
+				p.advance() // consume type
 			}
+			// Otherwise don't consume the colon - it's the main assignment colon
 		}
 
 		leftSide.Children = append(leftSide.Children, idNode)
@@ -6019,13 +6047,12 @@ func (p *Parser) parseLambda() *ASTNode {
 
 // Parse lambda body - stops at PIPE
 func (p *Parser) parseLambdaBody() *ASTNode {
-	// Save the inFunctionCall flag
-	savedFlag := p.inFunctionCall
-	p.inFunctionCall = true
+	// Increment depth to allow nested function calls
+	p.inFunctionCall++
 
 	expr := p.parseOrExpression()
 
-	p.inFunctionCall = savedFlag
+	p.inFunctionCall--
 	return expr
 }
 
@@ -6372,8 +6399,8 @@ func (p *Parser) parseCallWithName(funcName Token) *ASTNode {
 		Line:  funcName.Line,
 	}
 
-	// Set flag to prevent nested parsing issues
-	p.inFunctionCall = true
+	// Increment depth to allow nested function calls
+	p.inFunctionCall++
 
 	// Parse arguments until closing pipe
 	for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_NEWLINE && p.current().Type != TOKEN_EOF {
@@ -6392,7 +6419,7 @@ func (p *Parser) parseCallWithName(funcName Token) *ASTNode {
 		p.advance()
 	}
 
-	p.inFunctionCall = false
+	p.inFunctionCall--
 	return call
 }
 
