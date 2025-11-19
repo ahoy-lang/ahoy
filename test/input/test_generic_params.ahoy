@@ -1,0 +1,373 @@
+
+import "/home/lee/Documents/ahoy-lang/ahoy/repos/raylib/src/raylib.h"
+import "/home/lee/Documents/ahoy-lang/ahoy/repos/raylib/src/raymath.h"
+
+@ main || void:
+	set_config_flags|FLAG_WINDOW_RESIZABLE|
+	init_window|1200,800,"Gridstone Card Game"|
+	set_target_fps|60|
+
+
+
+	hand: []
+	deck_count: 20
+	next_card_id: 0
+	selected_index: -1
+	dragging: false
+	hover_row: -1
+	hover_col: -1
+	placed_cards: <>
+	card_rotation: 0
+
+
+	draw_initial_cards|hand, 5, next_card_id|
+	next_card_id: next_card_id + 5
+
+	update_loop|hand, deck_count, next_card_id, selected_index, dragging, hover_row, hover_col, placed_cards, card_rotation|
+$
+
+@ draw_initial_cards|hand, count, start_id| void:
+	loop i:0 to count do
+		cid: start_id + i
+		card: create_card|cid|
+		len: hand.length||
+		hand[len]: card
+	$
+$
+
+@ create_card|id| infer:
+	card: <"id": id, "name": f"Card {id}", "health": 10, "attack": 5, "defence": 3, "resist_fire": 2, "resist_ice": 1, "resist_light": 0, "rotation": 0, "x": 0.0, "y": 0.0, "target_x": 0.0, "target_y": 0.0>
+	return card
+$
+
+@ update_loop|hand, deck_count, next_card_id, selected_index, dragging, hover_row, hover_col, placed_cards, card_rotation| void:
+	animating: false
+	anim_progress: 0.0
+	anim_from_x: 0.0
+	anim_from_y: 0.0
+	anim_to_x: 0.0
+	anim_to_y: 0.0
+
+	update_hand_positions|hand|
+
+	loop till not window_should_close|| do
+		hand_len: hand.length||
+
+		if animating then
+			anim_progress: anim_progress + 0.05
+			if anim_progress > 1.0 then
+				animating: false
+			$
+		$
+
+		loop i:0 to hand_len do
+			card: hand[i]
+			curr_x: card<"x">
+			curr_y: card<"y">
+			target_x: card<"target_x">
+			target_y: card<"target_y">
+			new_x: curr_x + (target_x - curr_x) * 0.2
+			new_y: curr_y + (target_y - curr_y) * 0.2
+			card<"x">: new_x
+			card<"y">: new_y
+		$
+
+		mouse_x: get_mouse_x||
+		mouse_y: get_mouse_y||
+
+		if is_key_pressed|KEY_Q| then
+			card_rotation: card_rotation - 1
+			if card_rotation < 0 then
+				card_rotation: 3
+			$
+		$
+
+		if is_key_pressed|KEY_E| then
+			card_rotation: card_rotation + 1
+			if card_rotation > 3 then
+				card_rotation: 0
+			$
+		$
+
+		if is_mouse_button_pressed|MOUSE_BUTTON_LEFT| then
+			deck_x: 50
+			screen_h: get_screen_height||
+			deck_y: screen_h / 2 - 60
+
+			if mouse_x > deck_x and mouse_x < deck_x + 80 then
+				if mouse_y > deck_y and mouse_y < deck_y + 120 then
+					if deck_count > 0 then
+						new_card: create_card|next_card_id|
+						next_card_id: next_card_id + 1
+						deck_count: deck_count - 1
+						new_card<"x">: 100.0
+						new_card<"y">: screen_h - 120.0
+						hand.push|new_card|
+						update_hand_positions|hand|
+
+						animating: true
+						anim_progress: 0.0
+						anim_from_x: 100.0
+						anim_from_y: screen_h - 100.0
+					$
+				$
+			$
+
+			loop i:0 to hand_len do
+				card: hand[i]
+				card_x: card<"x">
+				card_y: card<"y">
+				if mouse_x > card_x and mouse_x < card_x + 80 then
+					if mouse_y > card_y and mouse_y < card_y + 120 then
+						selected_index: i
+						dragging: true
+					$
+				$
+			$
+		$
+
+		if is_mouse_button_released|MOUSE_BUTTON_LEFT| then
+			if dragging then
+				if hover_row > -1 and hover_col > -1 then
+					key: f"{hover_row},{hover_col}"
+					has: placed_cards.has|key|
+					if has is 0 then
+						card: hand[selected_index]
+						card<"rotation">: card_rotation
+						card<"grid_row">: hover_row
+						card<"grid_col">: hover_col
+						placed_cards<key>: card
+
+						new_hand: []
+						loop i:0 to hand_len do
+							if i is not selected_index then
+								new_hand.push|hand[i]|
+							$
+						$
+						hand: new_hand
+						update_hand_positions|hand|
+					$
+				$
+				dragging: false
+				selected_index: -1
+			$
+		$
+
+		if dragging then
+			cell_size: get_cell_size||
+			grid_offset_x, grid_offset_y: get_grid_offset||
+			rel_x: mouse_x - grid_offset_x
+			rel_y: mouse_y - grid_offset_y
+
+			if rel_x > 0 and rel_y > 0 then
+				col: rel_x / cell_size
+				row: rel_y / cell_size
+				if row < 10 and col < 10 then
+					hover_row: row
+					hover_col: col
+				else then
+					hover_row: -1
+					hover_col: -1
+				$
+			else then
+				hover_row: -1
+				hover_col: -1
+			$
+		$
+
+		begin_drawing||
+		clear_background|RAYWHITE|
+
+		draw_board|hover_row, hover_col|
+		draw_deck|deck_count, animating, anim_progress|
+		draw_hand|hand, selected_index, dragging|
+		draw_placed_cards|placed_cards|
+
+		if dragging then
+			if selected_index > -1 then
+				card: hand[selected_index]
+				card_x: mouse_x - 40
+				card_y: mouse_y - 60
+				draw_card_display|card, card_x, card_y, card_rotation, 80, 120|
+			$
+		$
+
+		end_drawing||
+	$
+$
+
+@ update_hand_positions|hand| void:
+	hand_len: hand.length||
+	if hand_len is 0 then
+		return
+	$
+
+	screen_w: get_screen_width||
+	screen_h: get_screen_height||
+
+	card_spacing: 90
+	total_width: hand_len * card_spacing
+	start_x: screen_w / 2 - total_width / 2
+
+	loop i:0 to hand_len do
+		card: hand[i]
+		card<"target_x">: start_x + i * card_spacing
+		card<"target_y">: screen_h - 120.0
+	$
+$
+
+@ draw_board|hover_row, hover_col| void:
+	cell_size: get_cell_size||
+	grid_offset_x, grid_offset_y: get_grid_offset||
+
+	loop r:0 to 10 do
+		loop c:0 to 10 do
+			x: grid_offset_x + c * cell_size
+			y: grid_offset_y + r * cell_size
+
+			if hover_row is r and hover_col is c then
+				draw_rectangle|x, y, cell_size, cell_size, YELLOW|
+			$
+
+			draw_rectangle_lines|x, y, cell_size, cell_size, BLACK|
+		$
+	$
+$
+
+@ draw_deck|deck_count, animating, anim_progress| void:
+	deck_x: 50
+	screen_h: get_screen_height||
+	deck_y: screen_h / 2 - 60
+
+	draw_rectangle|deck_x, deck_y, 80, 120, DARKBLUE|
+	draw_rectangle_lines|deck_x, deck_y, 80, 120, BLACK|
+	draw_text|f"Deck", deck_x + 22, deck_y + 50, 12, WHITE|
+	draw_text|f"{deck_count}", deck_x + 32, deck_y + 65, 12, WHITE|
+
+	if animating then
+		screen_w: get_screen_width||
+		target_x: screen_w / 2
+		target_y: screen_h - 120.0
+
+		anim_x: deck_x + (target_x - deck_x) * anim_progress
+		anim_y: deck_y + (target_y - deck_y) * anim_progress
+
+		draw_rectangle|anim_x, anim_y, 80, 120, SKYBLUE|
+		draw_rectangle_lines|anim_x, anim_y, 80, 120, BLACK|
+	$
+$
+
+@ draw_hand|hand, selected_index, dragging| void:
+	hand_len: hand.length||
+
+	loop i:0 to hand_len do
+		should_draw: i not selected_index or not dragging
+		if should_draw then
+			card: hand[i]
+			card_x: card<"x">
+			card_y: card<"y">
+			card_rot: card<"rotation">
+			draw_card_display|card, card_x, card_y, card_rot, 80, 120|
+		$
+	$
+$
+
+@ draw_card_display|card, x, y, rotation, width, height| void:
+	draw_rectangle|x, y, width, height, SKYBLUE|
+	draw_rectangle_lines|x, y, width, height, BLACK|
+
+	name: card<"name">
+	health: card<"health">
+	attack: card<"attack">
+	defence: card<"defence">
+	rf: card<"resist_fire">
+	ri: card<"resist_ice">
+	rl: card<"resist_light">
+
+	draw_text|name, x + 5, y + 5, 8, BLACK|
+	draw_text|f"HP: {health}", x + 5, y + 20, 8, BLACK|
+	draw_text|f"ATK: {attack}", x + 5, y + 35, 8, BLACK|
+	draw_text|f"DEF: {defence}", x + 5, y + 50, 8, BLACK|
+
+	draw_text|"Resist:", x + 5, y + 70, 7, DARKGRAY|
+	draw_text|f"F:{rf}", x + 5, y + 82, 7, RED|
+	draw_text|f"I:{ri}", x + 5, y + 94, 7, BLUE|
+	draw_text|f"L:{rl}", x + 5, y + 106, 7, YELLOW|
+
+	center_x: x + width / 2
+	center_y: y + height / 2
+	draw_arrow|center_x, center_y, rotation, 15.0|
+$
+
+@ draw_placed_cards|placed_cards| void:
+	cell_size: get_cell_size||
+	grid_offset_x, grid_offset_y: get_grid_offset||
+
+	loop key, card in placed_cards do
+		grid_row: card<"grid_row">
+		grid_col: card<"grid_col">
+
+		x: grid_offset_x + grid_col * cell_size
+		y: grid_offset_y + grid_row * cell_size
+
+		draw_rectangle|x + 2, y + 2, cell_size - 4, cell_size - 4, LIGHTGRAY|
+		draw_rectangle_lines|x + 2, y + 2, cell_size - 4, cell_size - 4, BLACK|
+
+		name: card<"name">
+		health: card<"health">
+		attack: card<"attack">
+
+		draw_text|name, x + 5, y + 5, 8, BLACK|
+		draw_text|f"HP:{health}", x + 5, y + 18, 7, BLACK|
+		draw_text|f"ATK:{attack}", x + 5, y + 28, 7, BLACK|
+
+		center_x: x + cell_size / 2
+		center_y: y + cell_size / 2
+		rotation: card<"rotation">
+		draw_arrow|center_x, center_y, rotation, 20.0|
+	$
+$
+
+@ draw_arrow|center_x, center_y, rotation, size| void:
+	if rotation is 0 then
+		draw_triangle|vector2{x: center_x, y: center_y - size}, vector2{x: center_x - size/2, y: center_y + size/2}, vector2{x: center_x + size/2, y: center_y + size/2}, RED|
+	$
+	if rotation is 1 then
+		draw_triangle|vector2{x: center_x + size, y: center_y}, vector2{x: center_x - size/2, y: center_y - size/2}, vector2{x: center_x - size/2, y: center_y + size/2}, RED|
+	$
+	if rotation is 2 then
+		draw_triangle|vector2{x: center_x, y: center_y + size}, vector2{x: center_x - size/2, y: center_y - size/2}, vector2{x: center_x + size/2, y: center_y - size/2}, RED|
+	$
+	if rotation is 3 then
+		draw_triangle|vector2{x: center_x - size, y: center_y}, vector2{x: center_x + size/2, y: center_y - size/2}, vector2{x: center_x + size/2, y: center_y + size/2}, RED|
+	$
+$
+
+@ get_cell_size || int:
+	screen_w: get_screen_width||
+	screen_h: get_screen_height||
+
+	available_w: screen_w - 200
+	available_h: screen_h - 200
+
+	size_w: available_w / 10
+	size_h: available_h / 10
+
+	cell_size: size_w < size_h ?? size_w : size_h
+
+	return cell_size
+$
+
+@ get_grid_offset || int, int:
+	screen_w: get_screen_width||
+	screen_h: get_screen_height||
+	cell_size: get_cell_size||
+
+	grid_width: cell_size * 10
+	grid_height: cell_size * 10
+
+	offset_x: screen_w / 2 - grid_width / 2
+	offset_y: 50
+
+	return offset_x, offset_y
+$

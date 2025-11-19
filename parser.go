@@ -991,7 +991,25 @@ func (p *Parser) parseFunction() *ASTNode {
 func (p *Parser) parseIfStatement() *ASTNode {
 	startLine := p.current().Line
 	p.expect(TOKEN_IF)
-	condition := p.parseExpression()
+	
+	var condition *ASTNode
+
+	// Check for "is i not" error pattern (starts with IS)
+	if p.current().Type == TOKEN_IS {
+		p.recordError("expected is not got is i not")
+		// Consume tokens to recover
+		p.advance() // consume is
+		if p.current().Type == TOKEN_IDENTIFIER {
+			p.advance() // consume identifier
+		}
+		if p.current().Type == TOKEN_NOT {
+			p.advance() // consume not
+		}
+		// Create dummy condition to continue parsing
+		condition = &ASTNode{Type: NODE_BOOLEAN, Value: "false"}
+	} else {
+		condition = p.parseExpression()
+	}
 
 	// Accept 'then', 'do', or ':'
 	if p.current().Type == TOKEN_THEN {
@@ -1000,6 +1018,22 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		p.advance()
 	} else if p.current().Type == TOKEN_ASSIGN {
 		p.advance()
+	} else if p.current().Type == TOKEN_NOT {
+		// Check for "not is" error
+		if p.peek(1).Type == TOKEN_IS {
+			p.recordError("expected is not got not is")
+			p.advance() // consume not
+			p.advance() // consume is
+		} else {
+			current := p.current()
+			errMsg := fmt.Sprintf("Expected 'then', 'do', or ':', got %s at line %d:%d",
+				tokenTypeName(current.Type), current.Line, current.Column)
+			if p.LintMode {
+				p.recordError(errMsg)
+			} else {
+				panic(errMsg)
+			}
+		}
 	} else {
 		current := p.current()
 		errMsg := fmt.Sprintf("Expected 'then', 'do', or ':', got %s at line %d:%d",
@@ -1077,8 +1111,8 @@ func (p *Parser) parseIfStatement() *ASTNode {
 	if p.current().Type == TOKEN_ELSE {
 		p.advance()
 
-		// Optional ':' after else
-		if p.current().Type == TOKEN_ASSIGN {
+		// Optional ':' or 'then' after else
+		if p.current().Type == TOKEN_ASSIGN || p.current().Type == TOKEN_THEN {
 			p.advance()
 		}
 

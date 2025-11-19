@@ -29,8 +29,11 @@ func ParseCHeader(path string) (*CHeaderInfo, error) {
 		line = strings.TrimSpace(line)
 		lineNum := i + 1
 		
-		// Parse RLAPI function declarations
-		if strings.Contains(line, "RLAPI") {
+		// Parse RLAPI/RMAPI function declarations
+		if strings.Contains(line, "RLAPI") || strings.Contains(line, "RMAPI") {
+			parseRLAPIFunction(line, lineNum, info)
+		} else if strings.Contains(line, "(") && strings.Contains(line, ");") && !strings.HasPrefix(line, "typedef") && !strings.HasPrefix(line, "#") {
+			// Try to parse as generic function declaration
 			parseRLAPIFunction(line, lineNum, info)
 		}
 		
@@ -55,8 +58,9 @@ func ParseCHeader(path string) (*CHeaderInfo, error) {
 
 // parseRLAPIFunction parses a function declaration like: RLAPI void InitWindow(int width, int height, const char *title);
 func parseRLAPIFunction(line string, lineNum int, info *CHeaderInfo) {
-	// Remove RLAPI prefix and comments
+	// Remove RLAPI/RMAPI prefix and comments
 	line = strings.Replace(line, "RLAPI", "", 1)
+	line = strings.Replace(line, "RMAPI", "", 1)
 	if idx := strings.Index(line, "//"); idx != -1 {
 		line = line[:idx]
 	}

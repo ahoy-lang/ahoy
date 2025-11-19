@@ -66,6 +66,7 @@ type CodeGenerator struct {
 	funcDecls                     strings.Builder
 	structDecls                   strings.Builder
 	includes                      map[string]bool
+	orderedIncludes               []string                   // Keep track of include order
 	variables                     map[string]string          // variable name -> type (global scope)
 	functionVars                  map[string]string          // variable name -> type (function scope)
 	constants                     map[string]bool            // constant name -> declared
@@ -101,6 +102,7 @@ func GenerateC(ast *ahoy.ASTNode) string {
 func generateC(ast *ahoy.ASTNode) string {
 	gen := &CodeGenerator{
 		includes:            make(map[string]bool),
+		orderedIncludes:     make([]string, 0),
 		variables:           make(map[string]string),
 		constants:           make(map[string]bool),
 		enums:               make(map[string]map[string]bool),
@@ -123,10 +125,15 @@ func generateC(ast *ahoy.ASTNode) string {
 
 	// Add standard includes
 	gen.includes["stdio.h"] = true
+	gen.orderedIncludes = append(gen.orderedIncludes, "stdio.h")
 	gen.includes["stdlib.h"] = true
+	gen.orderedIncludes = append(gen.orderedIncludes, "stdlib.h")
 	gen.includes["string.h"] = true
+	gen.orderedIncludes = append(gen.orderedIncludes, "string.h")
 	gen.includes["stdbool.h"] = true
+	gen.orderedIncludes = append(gen.orderedIncludes, "stdbool.h")
 	gen.includes["stdint.h"] = true
+	gen.orderedIncludes = append(gen.orderedIncludes, "stdint.h")
 
 	// Generate hash map implementation
 	gen.writeHashMapImplementation()
@@ -170,7 +177,7 @@ func generateC(ast *ahoy.ASTNode) string {
 	var result strings.Builder
 
 	// Write includes
-	for include := range gen.includes {
+	for _, include := range gen.orderedIncludes {
 		// Use angle brackets for system includes, quotes for local .h files
 		if strings.HasSuffix(include, ".h") && (strings.HasPrefix(include, "/") || strings.HasPrefix(include, ".")) {
 			result.WriteString(fmt.Sprintf("#include \"%s\"\n", include))
@@ -1965,7 +1972,10 @@ func (gen *CodeGenerator) generateDeferStatement(node *ahoy.ASTNode) {
 func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
 	// Add include - check if it's a local or system include
 	headerName := node.Value
-	gen.includes[headerName] = true
+	if !gen.includes[headerName] {
+		gen.includes[headerName] = true
+		gen.orderedIncludes = append(gen.orderedIncludes, headerName)
+	}
 }
 
 func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
