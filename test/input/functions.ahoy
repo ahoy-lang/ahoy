@@ -81,5 +81,16 @@ expected.push|"hello"|
 expected.push|"world"|
 expected.push|42|
 
+@ example_function |x:int,y:int,z:int| void:
+	print|x,y,z|
+$
+expected.push|"10 20 30"|
+? multi line call of function should not give linting error
+example_function|
+x:10,
+y:20,
+z:30
+|
+
 ? Print expected values for test validation
 print|expected|

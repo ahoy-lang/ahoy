@@ -105,4 +105,37 @@ switch num: on 5: num += 10 _: num: 0 $
 print|num|
 expected.push|"15"|
 ? Print expected values for test validation
+
+i:10
+if i is not 11 then ? this is the preferred syntax of checking if some
+		print|"Not selected"|
+$
+expected.push|"Not selected"|
+
+if not i is 11 then ? this should be invalid
+		print|"Not selected"|
+$
+expected.push|"Not selected"|
+
+if not false then ? this should be valid
+		print|"true"|
+$
+expected.push|"true"|
+
+if i not is 11 then ? this should be a parsing and linting error expected is not got not is
+		print|"Not selected"|
+$
+expected.push|"Not selected"|
+
+if is i not 11 then ? ? this should be a parsing and linting error expected is not got is i not
+		print|"Not selected"|
+$
+expected.push|"Not selected"|
+
+if i is 10 then print|"Not selected"|
+else then print|"else_then"| ? the then should be allowed as optional not required and should not be a linting or lsp error.
+$
+expected.push|"else_then"|
+
+
 print|expected|

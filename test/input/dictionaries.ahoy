@@ -22,7 +22,7 @@ print|has_theme| ? should print: 1 (true)
 expected.push|"1"|
 
 ? new config variable to test has with different key
-config2: dict<string,string> = <"mode": "dark">
+config2: dict<string,string> = <"mode": "dark","tool":"shovel">
 has_mode: config2.has|"mode"|
 print|has_mode| ? should print: 1 (true)
 expected.push|"1"|
@@ -31,6 +31,15 @@ expected.push|"1"|
 has_font: config2.has|"font"|
 print|has_font| ? should print: 0 (false)
 expected.push|"0"|
+
+? check has key using variable
+tool:string="tool"
+has_tool: config2.has|tool| ? should not have linting error tool func not found did you mean ahoy
+config2<"mode"> : "light"
+print|config2|
+? we should also make sure all array/dict functions can take in variables as args if they take args
+print|has_tool| ? should print: 1
+expected.push|"1"|
 
 ? test adding new key-value pair:
 settings: dict<string, string> = <"mode": "dev">

@@ -1,5 +1,7 @@
 
+
 import "/home/lee/Documents/ahoy-lang/ahoy/repos/raylib/src/raylib.h"
+import "/home/lee/Documents/ahoy-lang/ahoy/repos/raylib/src/raymath.h"
 
 
 @ main || void:

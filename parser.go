@@ -2075,15 +2075,34 @@ func (p *Parser) parseAhoyStatement() *ASTNode {
 	// Increment depth to allow nested function calls
 	p.inFunctionCall++
 
-	// Parse arguments until closing pipe
-	for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_NEWLINE && p.current().Type != TOKEN_EOF {
+	// Parse arguments until closing pipe (allow newlines for multiline calls)
+	for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
+		// Skip newlines between arguments
+		for p.current().Type == TOKEN_NEWLINE {
+			p.advance()
+		}
+		
+		if p.current().Type == TOKEN_PIPE || p.current().Type == TOKEN_EOF {
+			break
+		}
+		
 		arg := p.parseCallArgument()
 		call.Children = append(call.Children, arg)
 
 		if p.current().Type == TOKEN_COMMA {
 			p.advance()
+			// Skip newlines after comma
+			for p.current().Type == TOKEN_NEWLINE {
+				p.advance()
+			}
 		} else {
-			break
+			// Skip trailing newlines before closing pipe
+			for p.current().Type == TOKEN_NEWLINE {
+				p.advance()
+			}
+			if p.current().Type != TOKEN_PIPE {
+				break
+			}
 		}
 	}
 
@@ -2111,15 +2130,34 @@ func (p *Parser) parsePrintStatement() *ASTNode {
 	// Increment depth to allow nested function calls
 	p.inFunctionCall++
 
-	// Parse arguments until closing pipe
-	for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_NEWLINE && p.current().Type != TOKEN_EOF {
+	// Parse arguments until closing pipe (allow newlines for multiline calls)
+	for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
+		// Skip newlines between arguments
+		for p.current().Type == TOKEN_NEWLINE {
+			p.advance()
+		}
+		
+		if p.current().Type == TOKEN_PIPE || p.current().Type == TOKEN_EOF {
+			break
+		}
+		
 		arg := p.parseCallArgument()
 		call.Children = append(call.Children, arg)
 
 		if p.current().Type == TOKEN_COMMA {
 			p.advance()
+			// Skip newlines after comma
+			for p.current().Type == TOKEN_NEWLINE {
+				p.advance()
+			}
 		} else {
-			break
+			// Skip trailing newlines before closing pipe
+			for p.current().Type == TOKEN_NEWLINE {
+				p.advance()
+			}
+			if p.current().Type != TOKEN_PIPE {
+				break
+			}
 		}
 	}
 
@@ -3279,11 +3317,31 @@ func (p *Parser) parseEqualityExpression() *ASTNode {
 	for p.current().Type == TOKEN_IS {
 		op := p.current()
 		p.advance()
+		
+		// Check for "is not" pattern
+		isNegated := false
+		if p.current().Type == TOKEN_NOT {
+			isNegated = true
+			p.advance()
+		}
+		
 		right := p.parseRelationalExpression()
-		left = &ASTNode{
+		
+		comparison := &ASTNode{
 			Type:     NODE_BINARY_OP,
 			Value:    op.Value,
 			Children: []*ASTNode{left, right},
+		}
+		
+		// If "is not", wrap in NOT node
+		if isNegated {
+			left = &ASTNode{
+				Type:     NODE_UNARY_OP,
+				Value:    "not",
+				Children: []*ASTNode{comparison},
+			}
+		} else {
+			left = comparison
 		}
 	}
 
@@ -3722,15 +3780,34 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 				// Increment depth to allow nested function calls
 				p.inFunctionCall++
 
-				// Parse arguments until closing pipe
-				for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_NEWLINE && p.current().Type != TOKEN_EOF {
+				// Parse arguments until closing pipe (allow newlines for multiline calls)
+				for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
+					// Skip newlines between arguments
+					for p.current().Type == TOKEN_NEWLINE {
+						p.advance()
+					}
+					
+					if p.current().Type == TOKEN_PIPE || p.current().Type == TOKEN_EOF {
+						break
+					}
+					
 					arg := p.parseCallArgument()
 					call.Children = append(call.Children, arg)
 
 					if p.current().Type == TOKEN_COMMA {
 						p.advance()
+						// Skip newlines after comma
+						for p.current().Type == TOKEN_NEWLINE {
+							p.advance()
+						}
 					} else {
-						break
+						// Skip trailing newlines before closing pipe
+						for p.current().Type == TOKEN_NEWLINE {
+							p.advance()
+						}
+						if p.current().Type != TOKEN_PIPE {
+							break
+						}
 					}
 				}
 
@@ -5717,6 +5794,9 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 			if isMethodCall {
 				p.advance() // consume opening pipe
 
+				// Increment depth for nested call handling
+				p.inFunctionCall++
+
 				// Parse arguments
 				args := &ASTNode{Type: NODE_BLOCK}
 				if p.current().Type != TOKEN_PIPE {
@@ -5744,6 +5824,9 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 					}
 				}
 				p.expect(TOKEN_PIPE)
+				
+				// Decrement depth
+				p.inFunctionCall--
 
 				object = &ASTNode{
 					Type:     NODE_METHOD_CALL,
