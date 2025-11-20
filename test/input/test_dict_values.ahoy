@@ -1,0 +1,31 @@
+expected: []
+pos: <"x": 10.5, "y": 20.3, "z": 5.8>
+
+x: pos<"x">
+y: pos<"y">
+z: pos<"z">
+
+result: x + y + z
+
+print|"X:", x|
+expected.push|"X: 10.5"|
+print|"Y:", y|
+expected.push|"Y: 20.3"|
+print|"Z:", z|
+expected.push|"Z: 5.8"|
+print|"Sum:", result|
+expected.push|"Sum: 36.6"|
+
+player: <"name": "Alice", "health": 100, "score": 42>
+name: player<"name">
+health: player<"health">
+score: player<"score">
+
+print|"Player:", name|
+expected.push|"Player: Alice"|
+print|"Health:", health|
+expected.push|"Health: 100"|
+print|"Score:", score|
+expected.push|"Score: 42"|
+
+print|expected|

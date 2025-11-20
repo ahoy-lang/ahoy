@@ -71,6 +71,8 @@ switch grade:
 $
 
 
+
+
 struct vector2:
   x: float,
   y: float
@@ -82,8 +84,8 @@ if KEY_RIGHT then ball_position.x += 2.0 $
 if KEY_RIGHT then ball_position.y -= 2.0 $
 print|ball_position.x|
 print|ball_position.y|
-expected.push|"2.000000"|
-expected.push|"-2.000000"|
+expected.push|"2"|
+expected.push|"-2"|
 
 ? test *= /= %= in conditionals
 value:10
@@ -135,7 +137,42 @@ expected.push|"Not selected"|
 if i is 99 then print|"Not selected"|
 else then print|"else_then"| ? the then should be allowed as optional not required and should not be a linting or lsp error.
 $
-expected.push|"else_then"|
+expected.push|"else_then"|;
+
+enum direction:
+	0 UP
+	1 RIGHT
+	2 DOWN
+	3 LEFT
+$
+
+enum enum_with_same_member:
+	0 FORWARD
+	1 EXIT
+	2 BELOW
+	3 KEY_RIGHT
+$
+
+rotation: 3
+switch rotation:
+		on UP: print|"UP"|
+		on RIGHT: print|"RIGHT"|
+		on DOWN: print|"DOWN"|
+		on direction.LEFT: print|"LEFT"| ? we should prefix with enum name because there is a clash with enum_with_same_member.LEFT
+		_:print|"NONE"
+$
+expected.push|"LEFT"|
+
+rotation: 2
+switch rotation:
+		on direction.UP: print|"UP"|
+		on direction.RIGHT: print|"RIGHT"|
+		on direction.DOWN: print|"DOWN"|
+		on direction.LEFT: print|"LEFT"|
+		_:print|"NONE"
+$
+expected.push|"DOWN"|
+
 
 
 print|expected|

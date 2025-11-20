@@ -1,6 +1,5 @@
 expected: []
 ? Enums test
-
 enum:int numbers ? enum should default to int type 0,1,2,... not nillable
 	one
 	two
@@ -60,7 +59,7 @@ enum mixed_enum:
 $
 
 print|mixed_enum.one,mixed_enum.name,mixed_enum.three|
-expected.push|"1 bob jones 3.000000"|
+expected.push|"1 bob jones 3"|
 ? NOTE: Array members temporarily disabled due to linter expecting object syntax
 ? [2,3,4] an_array:mutable,
 ? mixed_enum.an_array[0]:10

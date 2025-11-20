@@ -1,0 +1,427 @@
+
+import "/home/lee/Documents/ahoy-lang/ahoy/repos/raylib/src/raylib.h"
+import math "/home/lee/Documents/ahoy-lang/ahoy/repos/raylib/src/raymath.h"
+
+
+struct player_info:
+	5 MAX_HAND:int ? because created with screaming snake case should be immutable.
+	5 hand_size:int
+	15 deck_count:int
+	-1 selected_idx
+	0 dragging:bool
+	-1 hover_row:int
+	-1 hover_col:int
+	0 placed_count:int
+$
+
+
+@ main ||:
+	set_config_flags|FLAG_WINDOW_RESIZABLE|
+	init_window|1200,800,"Gridstone - Card Game"|
+	set_target_fps|60|
+
+	player: player_info{}
+
+	? MAX_HAND : 5
+	? hand_size: 5
+	? deck_count: 15
+	? selected_idx: -1
+	? dragging: 0
+	? hover_row: -1
+	? hover_col: -1
+	? placed_count: 0
+
+	? Camera controls
+	camera_zoom: 1.0
+	camera_x: 0.0
+	camera_y: 0.0
+
+  player_camera : camera2D{target: vector2{x:0, y:0}, offset: vector2{x:0, y:0}, rotation:0.0, zoom:1.0}
+
+	? Board selection
+	selected_placed_idx: -1
+
+	? Card positions (5 cards max)
+	c0x: 300.0
+	c0y: 680.0
+	c0rot: 0
+	c1x: 400.0
+	c1y: 680.0
+	c1rot: 0
+	c2x: 500.0
+	c2y: 680.0
+	c2rot: 0
+	c3x: 600.0
+	c3y: 680.0
+	c3rot: 0
+	c4x: 700.0
+	c4y: 680.0
+	c4rot: 0
+
+	? Arrays for placed cards on grid (unlimited)
+	MAX_PLACED: 100
+	placed_ids: [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]
+	placed_rows: [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]
+	placed_cols: [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]
+	placed_rots: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+	? Pre-declare loop variables
+	cell_size: 60
+	grid_offset_x: 100
+	grid_offset_y: 50
+	deck_x: 50
+	deck_y: 340
+
+	loop till not window_should_close|| do
+		screen_w: get_screen_width||
+		screen_h: get_screen_height||
+		mouse_x: get_mouse_x||
+		mouse_y: get_mouse_y||
+
+		? Camera zoom control with scroll wheel
+		wheel_move: get_mouse_wheel_move||
+		if wheel_move is not 0 then
+			camera_zoom += wheel_move * 0.1
+			if camera_zoom < 0.5 then camera_zoom: 0.5 $
+			if camera_zoom > 3.0 then camera_zoom: 3.0 $
+		$
+
+		? Camera pan with WASD
+		pan_speed: 5.0
+		if is_key_down|KEY_W| then camera_y += pan_speed $
+		if is_key_down|KEY_S| then camera_y -= pan_speed $
+		if is_key_down|KEY_A| then camera_x += pan_speed $
+		if is_key_down|KEY_D| then camera_x -= pan_speed $
+
+		? Update card target positions based on hand size
+		spacing: 100.0
+		total_w: player.hand_size * spacing
+		start_x: screen_w / 2.0 - total_w / 2.0
+		target_y: screen_h - 130.0
+
+		? Animate cards to target positions
+		if player.hand_size > 0 then
+			c0x: math.lerp|c0x, start_x, 0.2|
+			c0y: math.lerp|c0y, target_y, 0.2|
+		$
+		if player.hand_size > 1 then
+			c1x: math.lerp|c1x, start_x + spacing, 0.2|
+			c1y: math.lerp|c1y, target_y, 0.2|
+		$
+		if player.hand_size > 2 then
+			c2x: math.lerp|c2x, start_x + spacing * 2, 0.2|
+			c2y: math.lerp|c2y, target_y, 0.2|
+		$
+		if player.hand_size > 3 then
+			c3x: math.lerp|c3x, start_x + spacing * 3, 0.2|
+			c3y: math.lerp|c3y, target_y, 0.2|
+		$
+		if player.hand_size > 4 then
+			c4x: math.lerp|c4x, start_x + spacing * 4, 0.2|
+			c4y: math.lerp|c4y, target_y, 0.2|
+		$
+
+		? Handle rotation input for selected card only
+		if player.selected_idx > -1 then
+			if is_key_pressed|KEY_Q| then
+				if player.selected_idx is 0 then c0rot -= 1; if c0rot < 0 then c0rot: 3 $ $
+				if player.selected_idx is 1 then c1rot -= 1; if c1rot < 0 then c1rot: 3 $ $
+				if player.selected_idx is 2 then c2rot -= 1; if c2rot < 0 then c2rot: 3 $ $
+				if player.selected_idx is 3 then c3rot -= 1; if c3rot < 0 then c3rot: 3 $ $
+				if player.selected_idx is 4 then c4rot -= 1; if c4rot < 0 then c4rot: 3 $ $
+			$
+			if is_key_pressed|KEY_E| then
+				if player.selected_idx is 0 then c0rot += 1; if c0rot > 3 then c0rot: 0 $ $
+				if player.selected_idx is 1 then c1rot += 1; if c1rot > 3 then c1rot: 0 $ $
+				if player.selected_idx is 2 then c2rot += 1; if c2rot > 3 then c2rot: 0 $ $
+				if player.selected_idx is 3 then c3rot += 1; if c3rot > 3 then c3rot: 0 $ $
+				if player.selected_idx is 4 then c4rot += 1; if c4rot > 3 then c4rot: 0 $ $
+			$
+		$
+
+		? Mouse input
+		if is_mouse_button_pressed|MOUSE_BUTTON_LEFT| then
+			deck_x: 50
+			deck_y: screen_h / 2 - 60
+			if check_point_in_rect|mouse_x, mouse_y, deck_x, deck_y, 80, 120| then
+				if deck_count > 0 and hand_size < player_info.MAX_HAND then
+					deck_count -= 1
+					hand_size += 1
+				$
+			$
+
+			? Select card from hand
+			if player.hand_size > 0 and check_point_in_rect|mouse_x, mouse_y, c0x, c0y, 80, 120| then
+				selected_idx: 0
+				dragging: 1
+			$
+			if player.hand_size > 1 and check_point_in_rect|mouse_x, mouse_y, c1x, c1y, 80, 120| then
+				selected_idx: 1
+				dragging: 1
+			$
+			if player.hand_size > 2 and check_point_in_rect|mouse_x, mouse_y, c2x, c2y, 80, 120| then
+				selected_idx: 2
+				dragging: 1
+			$
+			if player.hand_size > 3 and check_point_in_rect|mouse_x, mouse_y, c3x, c3y, 80, 120| then
+				selected_idx: 3
+				dragging: 1
+			$
+			if player.hand_size > 4 and check_point_in_rect|mouse_x, mouse_y, c4x, c4y, 80, 120| then
+				selected_idx: 4
+				dragging: 1
+			$
+		$
+
+		? Place card on grid
+		if is_mouse_button_released|MOUSE_BUTTON_LEFT| then
+			if player.dragging is 1 and player.hover_row > -1 then
+				? Check if square is already occupied
+				square_occupied: 0
+				loop i:0 to player.placed_count do
+					if player.placed_rows[i] is player.hover_row and placed_cols[i] is player.hover_col then
+						square_occupied: 1
+					$
+				$
+
+				? Only place if square is empty
+				if square_occupied is 0 then
+					? Store placed card info
+					if player.placed_count < MAX_PLACED then
+						placed_ids[player.placed_count]: player.selected_idx
+						placed_rows[player.placed_count]: player.hover_row
+						placed_cols[player.placed_count]: player.hover_col
+						if selected_idx is 0 then placed_rots[player.placed_count]: c0rot $
+						if selected_idx is 1 then placed_rots[player.placed_count]: c1rot $
+						if selected_idx is 2 then placed_rots[player.placed_count]: c2rot $
+						if selected_idx is 3 then placed_rots[player.placed_count]: c3rot $
+						if selected_idx is 4 then placed_rots[player.placed_count]: c4rot $
+						player.placed_count += 1
+					$
+
+					? Remove card from hand by shifting
+					if selected_idx is 0 then
+						c0x: c1x; c0y: c1y; c0rot: c1rot
+						c1x: c2x; c1y: c2y; c1rot: c2rot
+						c2x: c3x; c2y: c3y; c2rot: c3rot
+						c3x: c4x; c3y: c4y; c3rot: c4rot
+					$
+					if selected_idx is 1 then
+						c1x: c2x; c1y: c2y; c1rot: c2rot
+						c2x: c3x; c2y: c3y; c2rot: c3rot
+						c3x: c4x; c3y: c4y; c3rot: c4rot
+					$
+					if selected_idx is 2 then
+						c2x: c3x; c2y: c3y; c2rot: c3rot
+						c3x: c4x; c3y: c4y; c3rot: c4rot
+					$
+					if selected_idx is 3 then
+						c3x: c4x; c3y: c4y; c3rot: c4rot
+					$
+
+					hand_size -= 1
+				$
+
+				dragging: 0
+				selected_idx: -1
+			else
+				? Just deselect if not placing
+				dragging: 0
+			$
+		$
+
+		? Calculate hover grid position
+		if dragging is 1 then
+			cell_size: (screen_w - 200) / 10
+			grid_offset_x: screen_w / 2 - (cell_size * 10) / 2
+			grid_offset_y: 50
+
+			rel_x: mouse_x - grid_offset_x
+			rel_y: mouse_y - grid_offset_y
+
+			if rel_x > 0 and rel_y > 0 then
+				col: rel_x / cell_size
+				row: rel_y / cell_size
+				if row < 10 and col < 10 then
+					hover_row: row
+					player.hover_col: col
+				else
+					hover_row: -1
+					player.hover_col: -1
+				$
+			else
+				hover_row: -1
+				player.hover_col: -1
+			$
+		$
+
+		? Click on placed card to select it
+		if is_mouse_button_pressed|MOUSE_BUTTON_LEFT| and player.dragging is 0 then
+			cell_size: (screen_w - 200) / 10
+			grid_offset_x: screen_w / 2 - (cell_size * 10) / 2
+			grid_offset_y: 50
+
+			? Apply camera transform to mouse position
+			test_mx: (mouse_x - camera_x - screen_w / 2) / camera_zoom + screen_w / 2
+			test_my: (mouse_y - camera_y - screen_h / 2) / camera_zoom + screen_h / 2
+
+			selected_placed_idx: -1
+			loop i:0 to player.placed_count do
+				cell_x: grid_offset_x + placed_cols[i] * cell_size
+				cell_y: grid_offset_y + placed_rows[i] * cell_size
+				if check_point_in_rect|test_mx, test_my, cell_x, cell_y, cell_size, cell_size| then
+					selected_placed_idx: i
+				$
+			$
+		$
+
+		? ==== DRAWING ====
+		begin_drawing||
+		clear_background|RAYWHITE|
+
+		? Apply camera transformation
+		? rlPushMatrix||
+		? rlTranslatef|screen_w / 2 + camera_x, screen_h / 2 + camera_y, 0|
+		? rlScalef|camera_zoom, camera_zoom, 1.0|
+		? rlTranslatef|-screen_w / 2, -screen_h / 2, 0|
+
+		? Draw grid
+		cell_size: (screen_w - 200) / 10
+		grid_offset_x: screen_w / 2 - (cell_size * 10) / 2
+		grid_offset_y: 50
+
+		loop r:0 to 6 do
+			loop c:0 to 6 do
+				x: grid_offset_x + c * cell_size
+				y: grid_offset_y + r * cell_size
+
+				? Highlight hovered cell when dragging
+				if dragging is 1 and hover_row is r and hover_col is c then
+					draw_rectangle|x, y, cell_size, cell_size, YELLOW|
+				$
+
+				draw_rectangle_lines|x, y, cell_size, cell_size, BLACK|
+			$
+		$
+
+		? Draw placed cards on grid
+		loop i:0 to player.placed_count do
+			cell_x: grid_offset_x + placed_cols[i] * cell_size
+			cell_y: grid_offset_y + placed_rows[i] * cell_size
+			center_x: cell_x + cell_size / 2
+			center_y: cell_y + cell_size / 2
+
+			draw_rectangle|cell_x + 5, cell_y + 5, cell_size - 10, cell_size - 10, LIGHTGRAY|
+
+			? Draw border if selected
+			if selected_placed_idx is i then
+				draw_rectangle_lines|cell_x + 5, cell_y + 5, cell_size - 10, cell_size - 10, GREEN|
+				draw_rectangle_lines|cell_x + 6, cell_y + 6, cell_size - 12, cell_size - 12, GREEN|
+				draw_rectangle_lines|cell_x + 7, cell_y + 7, cell_size - 14, cell_size - 14, GREEN|
+			$
+
+			draw_rotation_arrow|center_x, center_y, placed_rots[i], 15|
+		$
+
+
+		? Draw deck
+		deck_x: 50
+		deck_y: screen_h / 2 - 60
+		draw_rectangle|deck_x, deck_y, 80, 120, DARKBLUE|
+		draw_rectangle_lines|deck_x, deck_y, 80, 120, BLACK|
+		draw_text|"DECK", deck_x + 20, deck_y + 50, 12, WHITE|
+		draw_text|f"{deck_count}", deck_x + 32, deck_y + 70, 16, WHITE|
+
+		? Draw cards in hand
+		if hand_size > 0 and selected_idx is not 0 then
+			draw_game_card|c0x, c0y, 0, c0rot|
+		$
+		if hand_size > 1 and selected_idx is not 1 then
+			draw_game_card|c1x, c1y, 1, c1rot|
+		$
+		if hand_size > 2 and selected_idx is not 2 then
+			draw_game_card|c2x, c2y, 2, c2rot|
+		$
+		if hand_size > 3 and selected_idx is not 3 then
+			draw_game_card|c3x, c3y, 3, c3rot|
+		$
+		if hand_size > 4 and selected_idx is not 4 then
+			draw_game_card|c4x, c4y, 4, c4rot|
+		$
+
+		? Draw dragged card
+		if dragging is 1 then
+			drag_x: mouse_x - 40
+			drag_y: mouse_y - 60
+			if player.selected_idx is 0 then draw_game_card|drag_x, drag_y, 0, c0rot| $
+			if player.selected_idx is 1 then draw_game_card|drag_x, drag_y, 1, c1rot| $
+			if player.selected_idx is 2 then draw_game_card|drag_x, drag_y, 2, c2rot| $
+			if player.selected_idx is 3 then draw_game_card|drag_x, drag_y, 3, c3rot| $
+			if player.selected_idx is 4 then draw_game_card|drag_x, drag_y, 4, c4rot| $
+		$
+
+		? Draw instructions
+		draw_text|"Click DECK to draw | Q/E to rotate | WASD to pan | Scroll to zoom", 10, 10, 14, BLACK|
+		draw_text|f"Cards in hand: {hand_size} | Placed: {player.placed_count} | Zoom: {camera_zoom}", 10, 30, 12, DARKGRAY|
+
+		end_drawing||
+	$
+
+	close_window||
+$
+
+@ check_point_in_rect|px, py, rx, ry, rw, rh| bool:
+	? Check if point (px, py) is inside rectangle
+	in_x: px > rx and px < rx + rw
+	in_y: py > ry and py < ry + rh
+	result: in_x and in_y ?? 1 : 0
+	return result
+$
+
+@ draw_game_card|x, y, card_id, rotation| void:
+	? Draw card background
+	draw_rectangle|x, y, 80, 120, SKYBLUE|
+	draw_rectangle_lines|x, y, 80, 120, BLACK|
+
+	? Card stats
+	health: 10 + card_id
+	attack: 5 + card_id
+	defence: 3
+	resist_fire: 2
+	resist_ice: 1
+	resist_lightning: 0
+
+	? Draw card info
+	draw_text|f"Card {card_id}", x + 6, y + 5, 10, BLACK|
+	draw_text|f"HP: {health}", x + 6, y + 22, 8, DARKGREEN|
+	draw_text|f"ATK: {attack}", x + 6, y + 36, 8, RED|
+	draw_text|f"DEF: {defence}", x + 6, y + 50, 8, BLUE|
+
+	draw_text|"Resist:", x + 6, y + 70, 7, DARKGRAY|
+	draw_text|f"F:{resist_fire}", x + 6, y + 82, 7, RED|
+	draw_text|f"I:{resist_ice}", x + 6, y + 94, 7, SKYBLUE|
+	draw_text|f"L:{resist_lightning}", x + 6, y + 106, 7, GOLD|
+
+	? Draw direction arrow
+	arrow_x: x + 40
+	arrow_y: y + 60
+	draw_rotation_arrow|arrow_x, arrow_y, rotation, 12|
+$
+
+@ draw_rotation_arrow|center_x, center_y, rotation, size| void:
+	? Draw directional arrow based on rotation (0=up, 1=right, 2=down, 3=left)
+	half_size: size / 2;
+	switch rotation:
+		on 0: draw_triangle|vector2{x: center_x, y: center_y - size}, vector2{x: center_x - half_size, y: center_y + half_size}, vector2{x: center_x + half_size, y: center_y + half_size}, RED|
+		on 1: draw_triangle|vector2{x: center_x + size, y: center_y}, vector2{x: center_x - half_size, y: center_y - half_size}, vector2{x: center_x - half_size, y: center_y + half_size}, RED|
+		on 2: draw_triangle|vector2{x: center_x, y: center_y + size}, vector2{x: center_x - half_size, y: center_y - half_size}, vector2{x: center_x + half_size, y: center_y - half_size}, RED|
+		on 3: draw_triangle|vector2{x: center_x - size, y: center_y}, vector2{x: center_x + half_size, y: center_y - half_size}, vector2{x: center_x + half_size, y: center_y + half_size}, RED|
+	$
+$
+
+enum direction:
+	0 UP
+	1 RIGHT
+	2 DOWN
+	3 LEFT
+$

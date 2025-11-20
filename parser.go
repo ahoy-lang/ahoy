@@ -385,6 +385,11 @@ func (p *Parser) checkTypeCompatibility(expectedType, actualType string) bool {
 		return true // Can't check unknown types
 	}
 
+	// Generic types are compatible with anything
+	if expectedType == "generic" || actualType == "generic" {
+		return true
+	}
+
 	// Check if expectedType is a union type
 	if unionTypes, isUnion := p.unionTypes[expectedType]; isUnion {
 		// Check if actualType matches any of the union's types
@@ -1232,9 +1237,43 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 				} else if p.current().Type == TOKEN_IDENTIFIER {
 					tok := p.current()
 					p.advance()
-					caseValue = &ASTNode{
-						Type:  NODE_IDENTIFIER,
-						Value: tok.Value,
+					
+					// Check if this is enum.MEMBER syntax
+					if p.current().Type == TOKEN_DOT {
+						p.advance() // consume .
+						if p.current().Type == TOKEN_IDENTIFIER {
+							member := p.current()
+							p.advance()
+							// Create member access node
+							// Structure: Value = member name, Children[0] = object (enum name)
+							caseValue = &ASTNode{
+								Type:  NODE_MEMBER_ACCESS,
+								Value: member.Value, // member name
+								Children: []*ASTNode{
+									{
+										Type:  NODE_IDENTIFIER,
+										Value: tok.Value, // enum name
+									},
+								},
+							}
+						} else {
+							// Malformed - just use the enum name
+							caseValue = &ASTNode{
+								Type:  NODE_IDENTIFIER,
+								Value: tok.Value,
+							}
+						}
+					} else {
+						// Just an identifier (could be enum member without prefix)
+						caseValue = &ASTNode{
+							Type:  NODE_IDENTIFIER,
+							Value: tok.Value,
+						}
+						
+						// Validate if this identifier is an ambiguous enum member
+						if p.LintMode {
+							p.validateEnumMemberInSwitch(tok.Value, tok.Line)
+						}
 					}
 				} else {
 					// Unexpected token - break out to avoid infinite loop
@@ -2764,6 +2803,66 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 		// Assignment with possible type annotation
 		name := p.expect(TOKEN_IDENTIFIER)
 		line := name.Line
+		
+		// Check if the variable name is in SCREAMING_SNAKE_CASE - if so, treat as constant
+		if isScreamingSnakeCase(name.Value) {
+			// Convert to constant declaration (same as MY_CONST::"value")
+			p.expect(TOKEN_ASSIGN) // consume :
+			
+			// In lint mode, check if constant is being redeclared
+			if p.LintMode {
+				if existingLine, exists := p.constants[name.Value]; exists {
+					errMsg := fmt.Sprintf("Can't redeclare a constant declared on line %d",
+						existingLine)
+					p.recordError(errMsg)
+				} else {
+					// Register this constant
+					p.constants[name.Value] = line
+				}
+			}
+			
+			// Check for type annotation (type=)
+			var explicitType string
+			if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
+				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
+				p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
+				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
+				p.current().Type == TOKEN_IDENTIFIER {
+				
+				possibleType := p.current().Value
+				// Look ahead to see if there's an = after the type
+				if p.peek(1).Type == TOKEN_EQUALS {
+					explicitType = possibleType
+					p.advance() // consume type
+					p.advance() // consume =
+				}
+			}
+			
+			// Regular constant value
+			value := p.parseExpression()
+			
+			// In lint mode, track the constant's type
+			if p.LintMode {
+				if explicitType != "" {
+					resolvedType := p.resolveTypeAlias(explicitType)
+					p.variableTypes[name.Value] = resolvedType
+				} else {
+					inferredType := p.inferType(value)
+					if inferredType != "unknown" {
+						p.variableTypes[name.Value] = inferredType
+					}
+				}
+			}
+			
+			return &ASTNode{
+				Type:     NODE_CONSTANT_DECLARATION,
+				Value:    name.Value,
+				DataType: explicitType,
+				Line:     line,
+				Children: []*ASTNode{value},
+			}
+		}
+		
 		p.expect(TOKEN_ASSIGN)
 
 		// Check for type annotation (type=) or inferred type (:=)
@@ -4562,6 +4661,17 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 			p.recordErrorAtLine(errMsg, startLine)
 		} else {
 			panic(errMsg)
+		}
+	}
+
+	// Register enum definition in lint mode for validation
+	if p.LintMode {
+		members := make([]*ASTNode, len(enum.Children))
+		copy(members, enum.Children)
+		p.enums[name.Value] = &EnumDefinition{
+			Name:    name.Value,
+			Members: members,
+			Line:    startLine,
 		}
 	}
 
@@ -6623,4 +6733,77 @@ return fmt.Sprintf("dict[%s,%s]", keyType, valueType)
 }
 
 return baseType
+}
+
+// isScreamingSnakeCase checks if a string is in SCREAMING_SNAKE_CASE format
+// (all uppercase with underscores, at least one uppercase letter)
+func isScreamingSnakeCase(s string) bool {
+if len(s) == 0 {
+return false
+}
+
+hasUpper := false
+for _, ch := range s {
+if ch >= 'a' && ch <= 'z' {
+// Has lowercase letter - not screaming snake case
+return false
+}
+if ch >= 'A' && ch <= 'Z' {
+hasUpper = true
+}
+// Allow underscores, digits, and uppercase letters
+if !((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_') {
+return false
+}
+}
+
+// Must have at least one uppercase letter to be considered screaming snake case
+return hasUpper
+}
+
+// validateEnumMemberInSwitch checks if an enum member name is ambiguous (exists in multiple enums)
+// and returns true if the member needs to be prefixed with enum name
+func (p *Parser) validateEnumMemberInSwitch(memberName string, line int) bool {
+if !p.LintMode {
+return false
+}
+
+// Check C header enums first
+foundInEnums := []string{}
+
+// Check global C header enums
+for enumName, cEnum := range p.cHeaderGlobal.Enums {
+if _, exists := cEnum.Values[memberName]; exists {
+foundInEnums = append(foundInEnums, enumName)
+}
+}
+
+// Check namespaced C header enums
+for _, headerInfo := range p.cHeaders {
+for enumName, cEnum := range headerInfo.Enums {
+if _, exists := cEnum.Values[memberName]; exists {
+foundInEnums = append(foundInEnums, enumName)
+}
+}
+}
+
+// Check Ahoy enums
+for enumName, enumDef := range p.enums {
+for _, member := range enumDef.Members {
+if member.Value == memberName {
+foundInEnums = append(foundInEnums, enumName)
+break
+}
+}
+}
+
+// If found in multiple enums, it's ambiguous
+if len(foundInEnums) > 1 {
+errMsg := fmt.Sprintf("Ambiguous enum member '%s' - found in multiple enums: %s. Please prefix with enum name (e.g., %s.%s)", 
+memberName, strings.Join(foundInEnums, ", "), foundInEnums[0], memberName)
+p.recordErrorAtLine(errMsg, line)
+return true
+}
+
+return false
 }

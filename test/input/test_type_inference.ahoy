@@ -1,0 +1,48 @@
+@ main || void:
+	expected: []
+	my_array: [1, 2, 3, 4, 5]
+	my_dict: <"a": 1, "b": 2, "c": 3>
+
+	print_array_len|my_array|
+	print_dict_size|my_dict|
+	process_items|my_array, my_dict|
+	
+	expected.push|"Array length: 5"|
+	expected.push|"Dict size: 3"|
+	expected.push|"Processing 5 items with 3 lookups"|
+	expected.push|"Item: 1"|
+	expected.push|"Item: 2"|
+	expected.push|"Item: 3"|
+	expected.push|"Item: 4"|
+	expected.push|"Item: 5"|
+	expected.push|"Key: a Value: 1"|
+	expected.push|"Key: b Value: 2"|
+	expected.push|"Key: c Value: 3"|
+	
+	print|expected|
+$
+
+@ print_array_len|arr| void:
+	len: arr.length||
+	print|"Array length:", len|
+$
+
+@ print_dict_size|my_dict| void:
+	sz: my_dict.size||
+	print|"Dict size:", sz|
+$
+
+@ process_items|items, lookup| void:
+	count: items.length||
+	dict_sz: lookup.size||
+	print|"Processing", count, "items with", dict_sz, "lookups"|
+
+	loop i:0 to count do
+		item: items[i]
+		print|"Item:", item|
+	$
+
+	loop key, val in lookup do
+		print|"Key:", key, "Value:", val|
+	$
+$

@@ -69,6 +69,7 @@ type CodeGenerator struct {
 	orderedIncludes               []string                   // Keep track of include order
 	variables                     map[string]string          // variable name -> type (global scope)
 	functionVars                  map[string]string          // variable name -> type (function scope)
+	nestedScopeVars               map[string]bool            // variables declared in nested scopes (loops/ifs)
 	constants                     map[string]bool            // constant name -> declared
 	enums                         map[string]map[string]bool // enum name -> {member names}
 	enumMemberTypes               map[string]string          // "enumName.memberName" -> type
@@ -92,6 +93,8 @@ type CodeGenerator struct {
 	functionParamTypes            map[string][]string        // function name -> parameter types
 	functionParamNames            map[string][]string        // function name -> parameter names
 	functionParamDefaults         map[string][]*ahoy.ASTNode // function name -> parameter default values
+	dictSourcedVars               map[string]string          // variable name -> dict name (for dict-accessed vars)
+	dictSourcedKeys               map[string]string          // variable name -> key (for dict-accessed vars)
 }
 
 // GenerateC generates C code from an AST (exported for testing)
@@ -121,6 +124,9 @@ func generateC(ast *ahoy.ASTNode) string {
 		functionParamTypes:    make(map[string][]string),
 		functionParamNames:    make(map[string][]string),
 		functionParamDefaults: make(map[string][]*ahoy.ASTNode),
+		dictSourcedVars:       make(map[string]string),
+		dictSourcedKeys:       make(map[string]string),
+		nestedScopeVars:       make(map[string]bool),
 	}
 
 	// Add standard includes
@@ -413,6 +419,82 @@ void* hashMapGet(HashMap* map, const char* key) {
     return NULL;
 }
 
+// Get value with automatic type conversion - dereferences floats to actual double bits
+intptr_t hashMapGetTyped(HashMap* map, const char* key) {
+    unsigned int index = hash(key) % map->capacity;
+    HashMapEntry* entry = map->buckets[index];
+
+    while (entry != NULL) {
+        if (strcmp(entry->key, key) == 0) {
+            // For floats, dereference the pointer and return as bits in intptr_t
+            if (entry->valueType == AHOY_TYPE_FLOAT) {
+                union { double d; intptr_t i; } u;
+                u.d = *(double*)entry->value;
+                return u.i;
+            }
+            // For other types, return the value as-is
+            return (intptr_t)(entry->value);
+        }
+        entry = entry->next;
+    }
+    return 0;
+}
+
+// Get value as double (for arithmetic operations and generic access)
+double hashMapGetDouble(HashMap* map, const char* key) {
+    unsigned int index = hash(key) % map->capacity;
+    HashMapEntry* entry = map->buckets[index];
+
+    while (entry != NULL) {
+        if (strcmp(entry->key, key) == 0) {
+            switch (entry->valueType) {
+                case AHOY_TYPE_INT:
+                    return (double)(intptr_t)entry->value;
+                case AHOY_TYPE_FLOAT:
+                    return *(double*)entry->value;
+                case AHOY_TYPE_STRING:
+                    // For strings, return the pointer cast to double (for later casting back)
+                    return (double)(intptr_t)entry->value;
+                default:
+                    return (double)(intptr_t)entry->value;
+            }
+        }
+        entry = entry->next;
+    }
+    return 0.0;
+}
+
+// Helper to print dict values with proper type handling
+char* format_dict_value(HashMap* map, const char* key) {
+    unsigned int index = hash(key) % map->capacity;
+    HashMapEntry* entry = map->buckets[index];
+    static char buffer[256];
+    
+    while (entry != NULL) {
+        if (strcmp(entry->key, key) == 0) {
+            switch (entry->valueType) {
+                case AHOY_TYPE_INT:
+                    sprintf(buffer, "%ld", (long)(intptr_t)entry->value);
+                    break;
+                case AHOY_TYPE_FLOAT:
+                    sprintf(buffer, "%g", *(double*)entry->value);
+                    break;
+                case AHOY_TYPE_STRING:
+                    sprintf(buffer, "%s", (char*)entry->value);
+                    break;
+                case AHOY_TYPE_CHAR:
+                    sprintf(buffer, "%c", (char)(intptr_t)entry->value);
+                    break;
+                default:
+                    sprintf(buffer, "%ld", (long)(intptr_t)entry->value);
+            }
+            return buffer;
+        }
+        entry = entry->next;
+    }
+    return "";
+}
+
 void freeHashMap(HashMap* map) {
     for (int i = 0; i < map->capacity; i++) {
         HashMapEntry* entry = map->buckets[i];
@@ -438,6 +520,9 @@ func (gen *CodeGenerator) getHashMapDeclarations() string {
 	decls.WriteString("HashMap* createHashMap(int capacity);\n")
 	decls.WriteString("void hashMapPut(HashMap* map, const char* key, void* value);\n")
 	decls.WriteString("void* hashMapGet(HashMap* map, const char* key);\n")
+	decls.WriteString("intptr_t hashMapGetTyped(HashMap* map, const char* key);\n")
+	decls.WriteString("double hashMapGetDouble(HashMap* map, const char* key);\n")
+	decls.WriteString("char* format_dict_value(HashMap* map, const char* key);\n")
 	decls.WriteString("void freeHashMap(HashMap* map);\n")
 	
 	return decls.String()
@@ -591,10 +676,16 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 		if node.Value == "__loop_counter" && len(gen.loopCounters) > 0 {
 			gen.output.WriteString(gen.loopCounters[len(gen.loopCounters)-1])
 		} else {
-			// Check if it's a known constant/macro from raylib or other C libraries
-			// These will be passed through directly to C
-			// Don't convert variable names, only function names are converted
-			gen.output.WriteString(node.Value)
+			// Check if this identifier might be an enum member (for switch cases)
+			// Try to resolve it to a fully qualified enum member name
+			if resolvedName := gen.tryResolveEnumMember(node.Value); resolvedName != "" {
+				gen.output.WriteString(resolvedName)
+			} else {
+				// Check if it's a known constant/macro from raylib or other C libraries
+				// These will be passed through directly to C
+				// Don't convert variable names, only function names are converted
+				gen.output.WriteString(node.Value)
+			}
 		}
 
 	case ahoy.NODE_NUMBER:
@@ -802,6 +893,9 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 
 	// Initialize function-local variable scope and add parameters
 	gen.functionVars = make(map[string]string)
+	gen.dictSourcedVars = make(map[string]string)
+	gen.dictSourcedKeys = make(map[string]string)
+	gen.nestedScopeVars = make(map[string]bool)
 	for _, param := range params.Children {
 		if param.DataType != "" {
 			gen.functionVars[param.Value] = param.DataType
@@ -867,7 +961,39 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			return
 		}
 
-		// For object/array/pointer access, direct assignment works
+		// Special handling for object access assignment - use hashMapPut if it's a HashMap/dict/generic
+		if node.Children[0].Type == ahoy.NODE_OBJECT_ACCESS {
+			objectName := node.Children[0].Value
+			propertyName := ""
+			if len(node.Children[0].Children) > 0 && node.Children[0].Children[0].Type == ahoy.NODE_STRING {
+				propertyName = node.Children[0].Children[0].Value
+			}
+			
+			// Check if this is a HashMap/dict or generic parameter
+			objectType := ""
+			if varType, exists := gen.variables[objectName]; exists {
+				objectType = varType
+			} else if varType, exists := gen.functionVars[objectName]; exists {
+				objectType = varType
+			}
+			
+			// If object is dict, HashMap*, generic, or intptr_t, use hashMapPut
+			if objectType == "dict" || objectType == "HashMap*" || objectType == "generic" || objectType == "intptr_t" ||
+			   strings.HasPrefix(objectType, "dict[") || strings.HasPrefix(objectType, "dict<") {
+				gen.output.WriteString("hashMapPut(")
+				// Cast generic/intptr_t to HashMap*
+				if objectType == "generic" || objectType == "intptr_t" {
+					gen.output.WriteString("(HashMap*)")
+				}
+				gen.output.WriteString(objectName)
+				gen.output.WriteString(fmt.Sprintf(", \"%s\", (void*)(intptr_t)", propertyName))
+				gen.generateNode(node.Children[1])
+				gen.output.WriteString(");\n")
+				return
+			}
+		}
+
+		// For struct field/array/pointer access, direct assignment works
 		gen.generateNode(node.Children[0])
 		gen.output.WriteString(" = ")
 		gen.generateNode(node.Children[1])
@@ -878,10 +1004,16 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 	// Check if variable already exists (function scope first, then global)
 	_, existsInFunc := gen.functionVars[node.Value]
 	_, existsGlobal := gen.variables[node.Value]
+	isNestedScope := gen.nestedScopeVars[node.Value]
 
-	if existsInFunc || existsGlobal {
+	valueNode := node.Children[0]
+	
+	// Special case: Variables from nested scopes or array/dict access can be redeclared
+	isLoopLocalPattern := valueNode.Type == ahoy.NODE_ARRAY_ACCESS || valueNode.Type == ahoy.NODE_DICT_ACCESS
+	canRedeclare := isLoopLocalPattern || (isNestedScope && gen.indent > 1)
+	
+	if (existsInFunc || existsGlobal) && !canRedeclare {
 		// Just assignment
-		valueNode := node.Children[0]
 		if valueNode.Type == ahoy.NODE_SWITCH_STATEMENT {
 			// Generate switch as expression (assign in each case)
 			gen.generateSwitchExpression(valueNode, node.Value)
@@ -965,6 +1097,10 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			if gen.currentFunction != "" && gen.functionVars != nil {
 				// Inside a function - use function scope
 				gen.functionVars[node.Value] = varType
+				// Mark as nested scope if indent > 1 (inside loops/ifs)
+				if gen.indent > 1 {
+					gen.nestedScopeVars[node.Value] = true
+				}
 			} else {
 				// Global scope
 				gen.variables[node.Value] = varType
@@ -995,6 +1131,14 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				gen.output.WriteString(fmt.Sprintf("%s %s = ", cType, node.Value))
 				gen.generateNode(valueNode)
 				gen.output.WriteString(";\n")
+			}
+			
+			// Track if this variable came from dict access
+			if valueNode.Type == ahoy.NODE_DICT_ACCESS {
+				gen.dictSourcedVars[node.Value] = valueNode.Value // dict name
+				if len(valueNode.Children) > 0 && valueNode.Children[0].Type == ahoy.NODE_STRING {
+					gen.dictSourcedKeys[node.Value] = valueNode.Children[0].Value // key
+				}
 			}
 			
 			// Clear type context after generation
@@ -1794,15 +1938,22 @@ func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
 	gen.varCounter++
 
 	dictName := gen.nodeToString(dictExpr)
+	
+	// Check if we need to cast (for generic parameters)
+	dictType := gen.inferType(dictExpr)
+	dictRef := dictName
+	if dictType == "generic" {
+		dictRef = "((HashMap*)" + dictName + ")"
+	}
 
 	// Iterate through hash map buckets
 	gen.output.WriteString(fmt.Sprintf("for (int %s = 0; %s < %s->capacity; %s++) {\n",
-		bucketVar, bucketVar, dictName, bucketVar))
+		bucketVar, bucketVar, dictRef, bucketVar))
 
 	gen.indent++
 	gen.writeIndent()
 	gen.output.WriteString(fmt.Sprintf("HashMapEntry* %s = %s->buckets[%s];\n",
-		entryVar, dictName, bucketVar))
+		entryVar, dictRef, bucketVar))
 
 	gen.writeIndent()
 	gen.output.WriteString(fmt.Sprintf("while (%s != NULL) {\n", entryVar))
@@ -2061,6 +2212,50 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 					// Check if argument is an enum itself (needs special handling)
 					if !isHashMapAccess && arg.Type == ahoy.NODE_IDENTIFIER && gen.isEnumType(arg.Value) {
 						formatSpec = "%s" // enum print function returns string
+					} else if !isHashMapAccess && arg.Type == ahoy.NODE_IDENTIFIER {
+						// Check if this variable came from dict access
+						if _, isDictSourced := gen.dictSourcedVars[arg.Value]; isDictSourced {
+							formatSpec = "%s" // Will use format_dict_value
+						} else {
+							switch argType {
+							case "string", "char*", "const char*":
+								formatSpec = "%s"
+							case "int":
+								formatSpec = "%d"
+							case "intptr_t":
+								formatSpec = "%ld"
+							case "float", "double":
+								formatSpec = "%g"
+							case "bool":
+								formatSpec = "%d"
+							case "char":
+								formatSpec = "%c"
+							case "color", "Color":
+								formatSpec = "%s" // Will use color_to_string helper
+							case "vector2", "Vector2":
+								formatSpec = "%s" // Will use vector2_to_string helper
+							case "array":
+								formatSpec = "%s" // Will use print_array_helper
+							case "dict":
+								formatSpec = "%s" // Will use print_dict_helper
+							case "struct":
+								formatSpec = "%s" // Will use print_struct_helper
+							default:
+								// Check for typed collections
+								if strings.HasPrefix(argType, "array[") {
+									formatSpec = "%s" // Will use print_array_helper
+								} else if strings.HasPrefix(argType, "dict[") {
+									formatSpec = "%s" // Will use print_dict_helper
+								} else if _, isStruct := gen.structs[argType]; isStruct {
+									formatSpec = "%s" // Will use print_struct_helper
+								} else if _, isStruct := gen.structs[strings.ToLower(argType)]; isStruct {
+									// Check lowercase version for built-in types
+									formatSpec = "%s" // Will use print_struct_helper
+								} else {
+									formatSpec = "%d"
+								}
+							}
+						}
 					} else if !isHashMapAccess {
 						switch argType {
 						case "string", "char*", "const char*":
@@ -2070,7 +2265,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 						case "intptr_t":
 							formatSpec = "%ld"
 						case "float", "double":
-							formatSpec = "%f"
+							formatSpec = "%g"
 						case "bool":
 							formatSpec = "%d"
 						case "char":
@@ -2177,13 +2372,53 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 						gen.generateNode(arg)
 						gen.output.WriteString(")")
 					} else {
-						// Check if this is HashMap member access
-						if arg.Type == ahoy.NODE_MEMBER_ACCESS && len(arg.Children) > 0 {
+						// Check if this is dict access (returns double but may be string)
+						if arg.Type == ahoy.NODE_DICT_ACCESS {
+							// Dict access returns double, but could be string - use format_dict_value
+							gen.output.WriteString("format_dict_value(")
+							// Cast dict to HashMap* if needed
+							dictType := gen.inferType(arg)
+							if dictType == "float" {
+								// Check if the dict itself is generic
+								dictName := arg.Value
+								varType := ""
+								if vt, exists := gen.variables[dictName]; exists {
+									varType = vt
+								} else if vt, exists := gen.functionVars[dictName]; exists {
+									varType = vt
+								}
+								if varType == "generic" {
+									gen.output.WriteString("(HashMap*)")
+								}
+							}
+							gen.output.WriteString(arg.Value)
+							gen.output.WriteString(", ")
+							gen.generateNode(arg.Children[0])
+							gen.output.WriteString(")")
+						} else if arg.Type == ahoy.NODE_IDENTIFIER {
+							// Check if this variable came from dict access
+							if dictName, isDictSourced := gen.dictSourcedVars[arg.Value]; isDictSourced {
+								if key, hasKey := gen.dictSourcedKeys[arg.Value]; hasKey {
+									gen.output.WriteString(fmt.Sprintf("format_dict_value(%s, \"%s\")", dictName, key))
+								} else {
+									gen.generateNode(arg)
+								}
+							} else {
+								// Check if it's a double variable (from dict) that might be a string
+								argType := gen.inferType(arg)
+								if argType == "float" {
+									// Could be a string from dict - cast via format helper if available
+									// For now just generate normally, DrawText will handle casting
+									gen.generateNode(arg)
+								} else {
+									gen.generateNode(arg)
+								}
+							}
+						} else if arg.Type == ahoy.NODE_MEMBER_ACCESS && len(arg.Children) > 0 {
 							objType := gen.inferType(arg.Children[0])
 							if objType == "HashMap*" || objType == "dict" {
-								// Use format_hashmap_value helper
-								gen.dictMethods["print_dict"] = true
-								gen.output.WriteString("format_hashmap_value(")
+								// Use format_dict_value helper
+								gen.output.WriteString("format_dict_value(")
 								gen.generateNode(arg.Children[0])
 								gen.output.WriteString(fmt.Sprintf(", \"%s\")", arg.Value))
 							} else {
@@ -2326,7 +2561,11 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 					if argNode, exists := namedArgs[paramName]; exists {
 						if hasParamInfo && i < len(paramTypes) && paramTypes[i] == "generic" {
 							argType := gen.inferType(argNode)
-							if argType == "string" || argType == "char*" || argType == "const char*" {
+							// Cast all pointer types to intptr_t for generic parameters
+							if argType == "string" || argType == "char*" || argType == "const char*" ||
+							   argType == "array" || strings.HasPrefix(argType, "array[") ||
+							   argType == "dict" || strings.HasPrefix(argType, "dict[") || strings.HasPrefix(argType, "dict<") ||
+							   argType == "HashMap*" || strings.HasSuffix(argType, "*") {
 								gen.output.WriteString("(intptr_t)")
 							}
 						}
@@ -2337,7 +2576,11 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 						positionalIndex++
 						if hasParamInfo && i < len(paramTypes) && paramTypes[i] == "generic" {
 							argType := gen.inferType(argNode)
-							if argType == "string" || argType == "char*" || argType == "const char*" {
+							// Cast all pointer types to intptr_t for generic parameters
+							if argType == "string" || argType == "char*" || argType == "const char*" ||
+							   argType == "array" || strings.HasPrefix(argType, "array[") ||
+							   argType == "dict" || strings.HasPrefix(argType, "dict[") || strings.HasPrefix(argType, "dict<") ||
+							   argType == "HashMap*" || strings.HasSuffix(argType, "*") {
 								gen.output.WriteString("(intptr_t)")
 							}
 						}
@@ -2375,10 +2618,23 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 					gen.output.WriteString(", ")
 				}
 				
-				// If this parameter is generic and the argument is a string, cast to intptr_t
+				// Special case: DrawText first parameter expects char*, cast doubles from dict
+				if funcName == "DrawText" && i == 0 {
+					argType := gen.inferType(arg)
+					if argType == "float" {
+						// Dict access returns double, cast to char* for string values
+						gen.output.WriteString("(char*)(intptr_t)")
+					}
+				}
+				
+				// If this parameter is generic, cast pointer types to intptr_t
 				if hasParamInfo && i < len(paramTypes) && paramTypes[i] == "generic" {
 					argType := gen.inferType(arg)
-					if argType == "string" || argType == "char*" || argType == "const char*" {
+					// Cast all pointer types (strings, arrays, dicts, structs) to intptr_t
+					if argType == "string" || argType == "char*" || argType == "const char*" ||
+					   argType == "array" || strings.HasPrefix(argType, "array[") ||
+					   argType == "dict" || strings.HasPrefix(argType, "dict[") || strings.HasPrefix(argType, "dict<") ||
+					   argType == "HashMap*" || strings.HasSuffix(argType, "*") {
 						gen.output.WriteString("(intptr_t)")
 					}
 				}
@@ -2601,6 +2857,13 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 
 		// Generate dict method function call
 		gen.output.WriteString(fmt.Sprintf("ahoy_dict_%s(", methodName))
+		// Cast generic parameters to HashMap*
+		if object.Type == ahoy.NODE_IDENTIFIER {
+			objType := gen.inferType(object)
+			if objType == "generic" {
+				gen.output.WriteString("(HashMap*)")
+			}
+		}
 		gen.generateNodeInternal(object, false)
 
 		if len(args.Children) > 0 {
@@ -2635,6 +2898,13 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 
 		// Generate array method function call
 		gen.output.WriteString(fmt.Sprintf("ahoy_array_%s(", methodName))
+		// Cast generic parameters to AhoyArray*
+		if object.Type == ahoy.NODE_IDENTIFIER {
+			objType := gen.inferType(object)
+			if objType == "generic" {
+				gen.output.WriteString("(AhoyArray*)")
+			}
+		}
 		gen.generateNodeInternal(object, false)
 
 		if len(args.Children) > 0 {
@@ -2746,15 +3016,15 @@ func (gen *CodeGenerator) generateArrayLiteral(node *ahoy.ASTNode) {
 func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 	arrayName := node.Value
 	
-	// Check if the variable type is intptr_t or void* (might need casting to AhoyArray*)
+	// Check if the variable type is intptr_t, void*, or generic (might need casting to AhoyArray*)
 	needsArrayCast := false
 	if varType, exists := gen.variables[arrayName]; exists {
-		if varType == "intptr_t" || varType == "void*" {
+		if varType == "intptr_t" || varType == "void*" || varType == "generic" {
 			needsArrayCast = true
 		}
 	}
 	if varType, exists := gen.functionVars[arrayName]; exists {
-		if varType == "intptr_t" || varType == "void*" {
+		if varType == "intptr_t" || varType == "void*" || varType == "generic" {
 			needsArrayCast = true
 		}
 	}
@@ -2786,11 +3056,29 @@ func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 }
 
 func (gen *CodeGenerator) generateDictAccess(node *ahoy.ASTNode) {
-	// Cast to char* for string values (common case)
-	// TODO: Track dict value types like we do for arrays
-	gen.output.WriteString(fmt.Sprintf("((char*)hashMapGet(%s, ", node.Value))
+	// Check if the dict variable is generic (intptr_t) and needs casting
+	dictName := node.Value
+	dictType := ""
+	
+	// Check variable type
+	if varType, exists := gen.variables[dictName]; exists {
+		dictType = varType
+	} else if varType, exists := gen.functionVars[dictName]; exists {
+		dictType = varType
+	}
+	
+	// Use hashMapGetDouble which converts values to double
+	// If generic, cast to HashMap*
+	if dictType == "generic" {
+		gen.output.WriteString("hashMapGetDouble((HashMap*)")
+		gen.output.WriteString(dictName)
+		gen.output.WriteString(", ")
+	} else {
+		gen.output.WriteString(fmt.Sprintf("hashMapGetDouble(%s, ", dictName))
+	}
+	
 	gen.generateNode(node.Children[0])
-	gen.output.WriteString("))")
+	gen.output.WriteString(")")
 }
 
 func (gen *CodeGenerator) generateDictLiteral(node *ahoy.ASTNode) {
@@ -2827,9 +3115,18 @@ func (gen *CodeGenerator) generateDictLiteral(node *ahoy.ASTNode) {
 			gen.generateNode(key)
 		}
 
-		gen.output.WriteString(", (void*)(intptr_t)")
-		gen.generateNode(value)
-		gen.output.WriteString(fmt.Sprintf(", %s); ", ahoyTypeEnum))
+		// For floats, allocate heap memory to store the value properly
+		if valueType == "float" {
+			floatVar := fmt.Sprintf("__float_ptr_%d", gen.varCounter)
+			gen.varCounter++
+			gen.output.WriteString(fmt.Sprintf(", (void*)({ double* %s = malloc(sizeof(double)); *%s = ", floatVar, floatVar))
+			gen.generateNode(value)
+			gen.output.WriteString(fmt.Sprintf("; %s; }), %s); ", floatVar, ahoyTypeEnum))
+		} else {
+			gen.output.WriteString(", (void*)(intptr_t)")
+			gen.generateNode(value)
+			gen.output.WriteString(fmt.Sprintf(", %s); ", ahoyTypeEnum))
+		}
 	}
 
 	gen.output.WriteString(fmt.Sprintf("%s; })", dictName))
@@ -2844,15 +3141,10 @@ func (gen *CodeGenerator) mapType(langType string) string {
 		return "HashMap*"
 	}
 	
-	// Check for pointer types (e.g., "int*", "char*")
-	if strings.HasSuffix(langType, "*") {
-		baseType := strings.TrimSuffix(langType, "*")
-		// Recursively map the base type
-		mappedBase := gen.mapType(baseType)
-		return mappedBase + "*"
-	}
-	
+	// Handle known types first before pointer logic
 	switch langType {
+	case "generic":
+		return "intptr_t"
 	case "int":
 		return "int"
 	case "float":
@@ -2871,13 +3163,21 @@ func (gen *CodeGenerator) mapType(langType string) string {
 		return "Vector2"
 	case "color":
 		return "Color"
-	default:
-		// Check if it's a struct type (capitalize first letter)
-		if _, exists := gen.structs[langType]; exists {
-			return capitalizeFirst(langType)
-		}
-		return "int"
 	}
+	
+	// Check for pointer types (e.g., "int*") but not already mapped types like "char*"
+	if strings.HasSuffix(langType, "*") {
+		baseType := strings.TrimSuffix(langType, "*")
+		// Recursively map the base type
+		mappedBase := gen.mapType(baseType)
+		return mappedBase + "*"
+	}
+	
+	// Check if it's a struct type (capitalize first letter)
+	if _, exists := gen.structs[langType]; exists {
+		return capitalizeFirst(langType)
+	}
+	return "int"
 }
 
 func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
@@ -3065,12 +3365,22 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		if elemType, exists := gen.arrayElementTypes[arrayName]; exists {
 			return elemType
 		}
+		// Check if the array itself is a generic parameter
+		arrayType := ""
+		if varType, exists := gen.variables[arrayName]; exists {
+			arrayType = varType
+		} else if varType, exists := gen.functionVars[arrayName]; exists {
+			arrayType = varType
+		}
+		// If array is generic, elements are also generic (intptr_t)
+		if arrayType == "generic" {
+			return "generic"
+		}
 		// Default to int if we don't know the element type
 		return "int"
 	case ahoy.NODE_DICT_ACCESS:
-		// Dictionary values are typically strings for now
-		// TODO: Track dict value types
-		return "char*"
+		// Dictionary values - use hashMapGetDouble which handles type conversion
+		return "float"
 	case ahoy.NODE_OBJECT_ACCESS:
 		// Object property access with angle brackets - look up struct field type
 		if len(node.Children) > 0 {
@@ -3143,6 +3453,9 @@ func (gen *CodeGenerator) inferReturnTypes(funcNode *ahoy.ASTNode) []string {
 	// Temporarily set up functionVars with parameter types for inference
 	savedFunctionVars := gen.functionVars
 	gen.functionVars = make(map[string]string)
+	gen.dictSourcedVars = make(map[string]string)
+	gen.dictSourcedKeys = make(map[string]string)
+	gen.nestedScopeVars = make(map[string]bool)
 	for _, param := range params.Children {
 		if param.DataType != "" {
 			gen.functionVars[param.Value] = param.DataType
@@ -4448,8 +4761,20 @@ func (gen *CodeGenerator) generateMemberAccess(node *ahoy.ASTNode) {
 	if object.Type == ahoy.NODE_IDENTIFIER {
 		// Check if the identifier is an enum name
 		if gen.isEnumType(object.Value) {
-			// New: Generate as struct member access: enum_name.member
-			gen.output.WriteString(object.Value)
+			enumName := object.Value
+			enumType := gen.enumTypes[enumName]
+			
+			// For int enums, use the C enum format: enum_name_MEMBER
+			// This is needed for switch cases and constant expressions
+			if enumType == "int" {
+				gen.output.WriteString(enumName)
+				gen.output.WriteString("_")
+				gen.output.WriteString(memberName)
+				return
+			}
+			
+			// For other enum types (string, etc.), use struct member access: enum_name.member
+			gen.output.WriteString(enumName)
 			gen.output.WriteString(".")
 			gen.output.WriteString(memberName)
 			return
@@ -5861,15 +6186,39 @@ func capitalizeFirst(s string) string {
 }
 
 func (gen *CodeGenerator) generateObjectAccess(node *ahoy.ASTNode) {
-	// Object property access: person<'name'> becomes person.name
-	// The property name is in node.Children[0] as a string
-	// Note: The tokenizer already strips quotes from strings
-	gen.output.WriteString(node.Value)
-	gen.output.WriteString(".")
-
+	// Object property access: person<'name'> 
+	// If the object is a HashMap (dict or generic), use hashMapGet
+	// Otherwise use struct field access (person.name)
+	
+	objectName := node.Value
+	propertyName := ""
 	if len(node.Children) > 0 && node.Children[0].Type == ahoy.NODE_STRING {
-		// Use the property name directly - quotes are already stripped by tokenizer
-		gen.output.WriteString(node.Children[0].Value)
+		propertyName = node.Children[0].Value
+	}
+	
+	// Check if this is a HashMap/dict or generic parameter
+	objectType := ""
+	if varType, exists := gen.variables[objectName]; exists {
+		objectType = varType
+	} else if varType, exists := gen.functionVars[objectName]; exists {
+		objectType = varType
+	}
+	
+	// If object is dict, HashMap*, generic, or intptr_t, use hashMapGet
+	if objectType == "dict" || objectType == "HashMap*" || objectType == "generic" || objectType == "intptr_t" ||
+	   strings.HasPrefix(objectType, "dict[") || strings.HasPrefix(objectType, "dict<") {
+		gen.output.WriteString(fmt.Sprintf("((char*)hashMapGet("))
+		// Cast generic/intptr_t to HashMap*
+		if objectType == "generic" || objectType == "intptr_t" {
+			gen.output.WriteString("(HashMap*)")
+		}
+		gen.output.WriteString(objectName)
+		gen.output.WriteString(fmt.Sprintf(", \"%s\"))", propertyName))
+	} else {
+		// Struct field access
+		gen.output.WriteString(objectName)
+		gen.output.WriteString(".")
+		gen.output.WriteString(propertyName)
 	}
 }
 
@@ -5912,4 +6261,29 @@ types = append(types, strings.TrimSpace(current.String()))
 }
 
 return types
+}
+
+// tryResolveEnumMember attempts to resolve a simple identifier to an enum member
+// Returns the fully qualified name (enumName_MEMBER) if found, empty string otherwise
+func (gen *CodeGenerator) tryResolveEnumMember(memberName string) string {
+// Check all registered enums
+var foundEnum string
+foundCount := 0
+
+for enumName, members := range gen.enums {
+if members[memberName] {
+foundEnum = enumName
+foundCount++
+}
+}
+
+// Only resolve if found in exactly one enum (unambiguous)
+if foundCount == 1 {
+// Check if this is an int enum
+if gen.enumTypes[foundEnum] == "int" {
+return foundEnum + "_" + memberName
+}
+}
+
+return ""
 }

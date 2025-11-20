@@ -261,7 +261,7 @@ $
 	hand_len: hand.length||
 
 	loop i:0 to hand_len do
-		should_draw: i not selected_index or not dragging
+		should_draw: i is not selected_index or not dragging
 		if should_draw then
 			card: hand[i]
 			card_x: card<"x">
