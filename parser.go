@@ -5298,7 +5298,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 
 	// Parse struct fields
 	for p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_TYPE ||
-		p.current().Type == TOKEN_NUMBER || p.current().Type == TOKEN_LANGLE {
+		p.current().Type == TOKEN_NUMBER || p.current().Type == TOKEN_MINUS || p.current().Type == TOKEN_LANGLE {
 		if p.current().Type == TOKEN_TYPE {
 			// Nested type (e.g., "type smoke_particle:")
 			p.advance() // consume 'type'
@@ -5347,7 +5347,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 					}
 
 					if p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_NUMBER ||
-						p.current().Type == TOKEN_LANGLE || p.current().Type == TOKEN_STRING ||
+						p.current().Type == TOKEN_MINUS || p.current().Type == TOKEN_LANGLE || p.current().Type == TOKEN_STRING ||
 						p.current().Type == TOKEN_TRUE || p.current().Type == TOKEN_FALSE ||
 						p.current().Type == TOKEN_LBRACKET || p.current().Type == TOKEN_LBRACE ||
 						p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
@@ -5364,6 +5364,16 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 								Type:  NODE_NUMBER,
 								Value: p.current().Value,
 								Line:  p.current().Line,
+							}
+							p.advance()
+						} else if p.current().Type == TOKEN_MINUS && p.peek(1).Type == TOKEN_NUMBER {
+							// Handle negative numbers
+							line := p.current().Line
+							p.advance() // consume minus
+							defaultValue = &ASTNode{
+								Type:  NODE_NUMBER,
+								Value: "-" + p.current().Value,
+								Line:  line,
 							}
 							p.advance()
 						} else if (p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_VECTOR2_TYPE || p.current().Type == TOKEN_COLOR_TYPE) && 
@@ -5418,11 +5428,14 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 						} else {
 							fieldName = p.expect(TOKEN_IDENTIFIER)
 						}
-						p.expect(TOKEN_ASSIGN)
-
-						// Get type - handle array[type] and dict<key,val> syntax
+						
+						// Check if type is provided (field: type) or inferred from default value
 						fieldType := ""
-						if p.current().Type == TOKEN_ARRAY_TYPE {
+						if p.current().Type == TOKEN_ASSIGN {
+							p.advance() // consume :
+
+							// Get type - handle array[type] and dict<key,val> syntax
+							if p.current().Type == TOKEN_ARRAY_TYPE {
 							fieldType = "array"
 							p.advance()
 							if p.current().Type == TOKEN_LBRACKET {
@@ -5447,22 +5460,46 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 								p.expect(TOKEN_RANGLE)
 								fieldType += ">"
 							}
-						} else {
-							fieldType = p.current().Value
-							if p.current().Type == TOKEN_IDENTIFIER ||
-								p.current().Type == TOKEN_INT_TYPE ||
-								p.current().Type == TOKEN_FLOAT_TYPE ||
-								p.current().Type == TOKEN_STRING_TYPE ||
-								p.current().Type == TOKEN_BOOL_TYPE ||
-								p.current().Type == TOKEN_VECTOR2_TYPE ||
-								p.current().Type == TOKEN_COLOR_TYPE {
-								p.advance()
+							} else {
+								fieldType = p.current().Value
+								if p.current().Type == TOKEN_IDENTIFIER ||
+									p.current().Type == TOKEN_INT_TYPE ||
+									p.current().Type == TOKEN_FLOAT_TYPE ||
+									p.current().Type == TOKEN_STRING_TYPE ||
+									p.current().Type == TOKEN_BOOL_TYPE ||
+									p.current().Type == TOKEN_VECTOR2_TYPE ||
+									p.current().Type == TOKEN_COLOR_TYPE {
+									p.advance()
+								}
 							}
-						}
 
-						// If defaultValue is an object literal without a type, set it from fieldType
-						if defaultValue != nil && defaultValue.Type == NODE_OBJECT_LITERAL && defaultValue.Value == "" {
-							defaultValue.Value = fieldType
+							// If defaultValue is an object literal without a type, set it from fieldType
+							if defaultValue != nil && defaultValue.Type == NODE_OBJECT_LITERAL && defaultValue.Value == "" {
+								defaultValue.Value = fieldType
+							}
+						} else {
+							// No explicit type - infer from default value
+							if defaultValue != nil {
+								switch defaultValue.Type {
+								case NODE_NUMBER:
+									// Check if it's a float or int
+									if strings.Contains(defaultValue.Value, ".") {
+										fieldType = "float"
+									} else {
+										fieldType = "int"
+									}
+								case NODE_STRING:
+									fieldType = "string"
+								case NODE_BOOLEAN:
+									fieldType = "bool"
+								case NODE_OBJECT_LITERAL:
+									fieldType = defaultValue.Value
+								default:
+									fieldType = "int" // default fallback
+								}
+							} else {
+								fieldType = "int" // default when no default value and no type
+							}
 						}
 						
 						field := &ASTNode{
@@ -5496,6 +5533,16 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 					Type:  NODE_NUMBER,
 					Value: p.current().Value,
 					Line:  p.current().Line,
+				}
+				p.advance()
+			} else if p.current().Type == TOKEN_MINUS && p.peek(1).Type == TOKEN_NUMBER {
+				// Handle negative numbers
+				line := p.current().Line
+				p.advance() // consume minus
+				defaultValue = &ASTNode{
+					Type:  NODE_NUMBER,
+					Value: "-" + p.current().Value,
+					Line:  line,
 				}
 				p.advance()
 			} else if (p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_VECTOR2_TYPE || p.current().Type == TOKEN_COLOR_TYPE) && 
@@ -5550,11 +5597,14 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 			} else {
 				fieldName = p.expect(TOKEN_IDENTIFIER)
 			}
-			p.expect(TOKEN_ASSIGN)
-
-			// Get type - handle array[type] and dict<key,val> syntax
+			
+			// Check if type is provided (field: type) or inferred from default value
 			fieldType := ""
-			if p.current().Type == TOKEN_ARRAY_TYPE {
+			if p.current().Type == TOKEN_ASSIGN {
+				p.advance() // consume :
+
+				// Get type - handle array[type] and dict<key,val> syntax
+				if p.current().Type == TOKEN_ARRAY_TYPE {
 				fieldType = "array"
 				p.advance()
 				if p.current().Type == TOKEN_LBRACKET {
@@ -5579,22 +5629,46 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 					p.expect(TOKEN_RANGLE)
 					fieldType += ">"
 				}
-			} else {
-				fieldType = p.current().Value
-				if p.current().Type == TOKEN_IDENTIFIER ||
-					p.current().Type == TOKEN_INT_TYPE ||
-					p.current().Type == TOKEN_FLOAT_TYPE ||
-					p.current().Type == TOKEN_STRING_TYPE ||
-					p.current().Type == TOKEN_BOOL_TYPE ||
-					p.current().Type == TOKEN_VECTOR2_TYPE ||
-					p.current().Type == TOKEN_COLOR_TYPE {
-					p.advance()
+				} else {
+					fieldType = p.current().Value
+					if p.current().Type == TOKEN_IDENTIFIER ||
+						p.current().Type == TOKEN_INT_TYPE ||
+						p.current().Type == TOKEN_FLOAT_TYPE ||
+						p.current().Type == TOKEN_STRING_TYPE ||
+						p.current().Type == TOKEN_BOOL_TYPE ||
+						p.current().Type == TOKEN_VECTOR2_TYPE ||
+						p.current().Type == TOKEN_COLOR_TYPE {
+						p.advance()
+					}
 				}
-			}
 
-			// If defaultValue is an object literal without a type, set it from fieldType
-			if defaultValue != nil && defaultValue.Type == NODE_OBJECT_LITERAL && defaultValue.Value == "" {
-				defaultValue.Value = fieldType
+				// If defaultValue is an object literal without a type, set it from fieldType
+				if defaultValue != nil && defaultValue.Type == NODE_OBJECT_LITERAL && defaultValue.Value == "" {
+					defaultValue.Value = fieldType
+				}
+			} else {
+				// No explicit type - infer from default value
+				if defaultValue != nil {
+					switch defaultValue.Type {
+					case NODE_NUMBER:
+						// Check if it's a float or int
+						if strings.Contains(defaultValue.Value, ".") {
+							fieldType = "float"
+						} else {
+							fieldType = "int"
+						}
+					case NODE_STRING:
+						fieldType = "string"
+					case NODE_BOOLEAN:
+						fieldType = "bool"
+					case NODE_OBJECT_LITERAL:
+						fieldType = defaultValue.Value
+					default:
+						fieldType = "int" // default fallback
+					}
+				} else {
+					fieldType = "int" // default when no default value and no type
+				}
 			}
 			
 			field := &ASTNode{

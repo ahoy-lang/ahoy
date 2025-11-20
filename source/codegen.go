@@ -4495,9 +4495,11 @@ func (gen *CodeGenerator) generateStruct(node *ahoy.ASTNode) {
 		for _, field := range node.Children {
 			if field.Type != ahoy.NODE_TYPE {
 				fieldType := gen.mapType(field.DataType)
+				defaultValue := gen.generateDefaultValue(field.DefaultValue)
 				structInfo.Fields = append(structInfo.Fields, StructField{
-					Name: field.Value,
-					Type: fieldType,
+					Name:         field.Value,
+					Type:         fieldType,
+					DefaultValue: defaultValue,
 				})
 			}
 		}
@@ -4537,10 +4539,12 @@ func (gen *CodeGenerator) generateStruct(node *ahoy.ASTNode) {
 		fieldType := gen.mapType(field.DataType)
 		gen.structDecls.WriteString(fmt.Sprintf("    %s %s;\n", fieldType, field.Value))
 
-		// Track field info
+		// Track field info with default value
+		defaultValue := gen.generateDefaultValue(field.DefaultValue)
 		structInfo.Fields = append(structInfo.Fields, StructField{
-			Name: field.Value,
-			Type: fieldType,
+			Name:         field.Value,
+			Type:         fieldType,
+			DefaultValue: defaultValue,
 		})
 	}
 
@@ -6108,9 +6112,14 @@ func (gen *CodeGenerator) generateObjectLiteral(node *ahoy.ASTNode) {
 				}
 			}
 			
-			// If not explicitly set, use default value
-			if !fieldSet && field.DefaultValue != "" {
-				gen.output.WriteString(field.DefaultValue)
+			// If not explicitly set, use default value or type default
+			if !fieldSet {
+				if field.DefaultValue != "" {
+					gen.output.WriteString(field.DefaultValue)
+				} else {
+					// Use type-specific zero value
+					gen.output.WriteString(gen.getTypeDefault(field.Type))
+				}
 			}
 			first = false
 		}
