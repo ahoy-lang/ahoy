@@ -96,6 +96,7 @@ type CodeGenerator struct {
 	dictSourcedVars               map[string]string          // variable name -> dict name (for dict-accessed vars)
 	dictSourcedKeys               map[string]string          // variable name -> key (for dict-accessed vars)
 	cFunctionNames                map[string]string          // snake_case name -> actual C name
+	cNamespaces                   map[string]map[string]string // namespace -> (snake_case name -> actual C name)
 }
 
 // GenerateC generates C code from an AST (exported for testing)
@@ -129,6 +130,7 @@ func generateC(ast *ahoy.ASTNode) string {
 		dictSourcedKeys:       make(map[string]string),
 		nestedScopeVars:       make(map[string]bool),
 		cFunctionNames:        make(map[string]string),
+		cNamespaces:           make(map[string]map[string]string),
 	}
 
 	// Add standard includes
@@ -2162,6 +2164,8 @@ func (gen *CodeGenerator) generateDeferStatement(node *ahoy.ASTNode) {
 func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
 	// Add include - check if it's a local or system include
 	headerName := node.Value
+	namespace := node.DataType // Namespace is stored in DataType field
+	
 	if !gen.includes[headerName] {
 		gen.includes[headerName] = true
 		gen.orderedIncludes = append(gen.orderedIncludes, headerName)
@@ -2190,10 +2194,21 @@ func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
 			
 			if headerPath != "" {
 				if headerInfo, err := ahoy.ParseCHeader(headerPath); err == nil {
-					// Map snake_case names to actual C function names
-					for cFuncName := range headerInfo.Functions {
-						snakeName := ahoy.PascalToSnake(cFuncName)
-						gen.cFunctionNames[snakeName] = cFuncName
+					// If there's a namespace, store functions under that namespace
+					if namespace != "" {
+						if gen.cNamespaces[namespace] == nil {
+							gen.cNamespaces[namespace] = make(map[string]string)
+						}
+						for cFuncName := range headerInfo.Functions {
+							snakeName := ahoy.PascalToSnake(cFuncName)
+							gen.cNamespaces[namespace][snakeName] = cFuncName
+						}
+					} else {
+						// No namespace - add to global scope
+						for cFuncName := range headerInfo.Functions {
+							snakeName := ahoy.PascalToSnake(cFuncName)
+							gen.cFunctionNames[snakeName] = cFuncName
+						}
 					}
 				}
 			}
@@ -2841,6 +2856,27 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 	object := node.Children[0]
 	args := node.Children[1]
 	methodName := node.Value
+
+	// Check if this is a namespaced C function call (e.g., math.lerp)
+	if object.Type == ahoy.NODE_IDENTIFIER {
+		namespace := object.Value
+		if funcMap, exists := gen.cNamespaces[namespace]; exists {
+			// This is a namespaced C function call
+			if cFuncName, found := funcMap[methodName]; found {
+				// Generate the C function call
+				gen.output.WriteString(cFuncName)
+				gen.output.WriteString("(")
+				for i, arg := range args.Children {
+					if i > 0 {
+						gen.output.WriteString(", ")
+					}
+					gen.generateNode(arg)
+				}
+				gen.output.WriteString(")")
+				return
+			}
+		}
+	}
 
 	// Handle map and filter with inline code generation
 	if methodName == "map" || methodName == "filter" {

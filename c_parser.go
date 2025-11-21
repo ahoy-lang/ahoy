@@ -32,6 +32,8 @@ func ParseCHeader(path string) (*CHeaderInfo, error) {
 		// Parse RLAPI/RMAPI function declarations
 		if strings.Contains(line, "RLAPI") || strings.Contains(line, "RMAPI") {
 			parseRLAPIFunction(line, lineNum, info)
+		} else if parseMacroFunction(line, lineNum, info) {
+			// Successfully parsed as macro function (like CJSON_PUBLIC)
 		} else if strings.Contains(line, "(") && strings.Contains(line, ");") && !strings.HasPrefix(line, "typedef") && !strings.HasPrefix(line, "#") {
 			// Try to parse as generic function declaration
 			parseRLAPIFunction(line, lineNum, info)
@@ -96,6 +98,120 @@ func parseRLAPIFunction(line string, lineNum int, info *CHeaderInfo) {
 		Parameters: params,
 		Line:       lineNum,
 	}
+}
+
+// parseMacroFunction parses function declarations with macro prefixes
+// Examples: CJSON_PUBLIC(cJSON *) cJSON_Parse(const char *value);
+//           SOME_MACRO(void) MyFunction(int x);
+func parseMacroFunction(line string, lineNum int, info *CHeaderInfo) bool {
+	// Skip #define lines
+	if strings.HasPrefix(line, "#define") || strings.HasPrefix(line, "typedef") {
+		return false
+	}
+	
+	// Remove comments
+	if idx := strings.Index(line, "//"); idx != -1 {
+		line = line[:idx]
+	}
+	line = strings.TrimSpace(line)
+	
+	// Must end with ");
+	if !strings.HasSuffix(line, ");") {
+		return false
+	}
+	
+	// Look for pattern: MACRO_NAME(return_type) function_name(params);
+	// Find first parenthesis (for macro)
+	firstParen := strings.Index(line, "(")
+	if firstParen == -1 {
+		return false
+	}
+	
+	// Check if what's before the first paren looks like a macro name
+	// (all uppercase or contains underscore, no spaces)
+	macroPart := line[:firstParen]
+	if !isMacroName(macroPart) {
+		return false
+	}
+	
+	// Find the matching closing paren for the macro
+	depth := 1
+	macroEnd := firstParen + 1
+	for macroEnd < len(line) && depth > 0 {
+		if line[macroEnd] == '(' {
+			depth++
+		} else if line[macroEnd] == ')' {
+			depth--
+		}
+		macroEnd++
+	}
+	
+	if depth != 0 {
+		return false
+	}
+	
+	// Extract return type from inside macro parentheses
+	returnType := strings.TrimSpace(line[firstParen+1 : macroEnd-1])
+	if returnType == "" {
+		return false
+	}
+	
+	// Now parse the rest as: function_name(params);
+	rest := strings.TrimSpace(line[macroEnd:])
+	
+	// Find function name and parameters
+	funcParen := strings.Index(rest, "(")
+	if funcParen == -1 {
+		return false
+	}
+	
+	funcName := strings.TrimSpace(rest[:funcParen])
+	if funcName == "" {
+		return false
+	}
+	
+	// Extract parameters
+	endParen := strings.LastIndex(rest, ")")
+	if endParen == -1 {
+		return false
+	}
+	
+	paramStr := rest[funcParen+1 : endParen]
+	params := parseParameters(paramStr)
+	
+	info.Functions[funcName] = &CFunction{
+		Name:       funcName,
+		ReturnType: returnType,
+		Parameters: params,
+		Line:       lineNum,
+	}
+	
+	return true
+}
+
+// isMacroName checks if a string looks like a C macro name
+// (typically all uppercase or contains underscores, no spaces)
+func isMacroName(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	
+	// Check for spaces (macros shouldn't have spaces)
+	if strings.Contains(s, " ") {
+		return false
+	}
+	
+	// Must contain at least one uppercase letter or underscore
+	hasUpperOrUnderscore := false
+	for _, ch := range s {
+		if ch == '_' || (ch >= 'A' && ch <= 'Z') {
+			hasUpperOrUnderscore = true
+			break
+		}
+	}
+	
+	return hasUpperOrUnderscore
 }
 
 // parseParameters parses function parameters
