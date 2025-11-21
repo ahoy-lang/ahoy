@@ -95,6 +95,7 @@ type CodeGenerator struct {
 	functionParamDefaults         map[string][]*ahoy.ASTNode // function name -> parameter default values
 	dictSourcedVars               map[string]string          // variable name -> dict name (for dict-accessed vars)
 	dictSourcedKeys               map[string]string          // variable name -> key (for dict-accessed vars)
+	cFunctionNames                map[string]string          // snake_case name -> actual C name
 }
 
 // GenerateC generates C code from an AST (exported for testing)
@@ -127,6 +128,7 @@ func generateC(ast *ahoy.ASTNode) string {
 		dictSourcedVars:       make(map[string]string),
 		dictSourcedKeys:       make(map[string]string),
 		nestedScopeVars:       make(map[string]bool),
+		cFunctionNames:        make(map[string]string),
 	}
 
 	// Add standard includes
@@ -149,6 +151,9 @@ func generateC(ast *ahoy.ASTNode) string {
 	
 	// Second pass: infer return types for all functions with infer keyword
 	gen.inferAllFunctionReturnTypes(ast)
+	
+	// Third pass: scan for method calls to determine which helper functions we need
+	gen.scanForMethodCalls(ast)
 
 	// Generate main code
 	gen.generateNode(ast)
@@ -233,6 +238,9 @@ func generateC(ast *ahoy.ASTNode) string {
 		}
 		if gen.arrayMethods["length"] {
 			result.WriteString("int ahoy_array_length(AhoyArray* arr);\n")
+		}
+		if gen.arrayMethods["fill"] {
+			result.WriteString("AhoyArray* ahoy_array_fill(AhoyArray* arr, intptr_t value, AhoyValueType type, int count);\n")
 		}
 		result.WriteString("char* print_array_helper(AhoyArray* arr);\n")
 		
@@ -547,6 +555,37 @@ func (gen *CodeGenerator) checkForMainFunction(node *ahoy.ASTNode) {
 
 	for _, child := range node.Children {
 		gen.checkForMainFunction(child)
+	}
+}
+
+// scanForMethodCalls scans the AST to find all method calls and mark which helper functions we need
+func (gen *CodeGenerator) scanForMethodCalls(node *ahoy.ASTNode) {
+	if node == nil {
+		return
+	}
+
+	if node.Type == ahoy.NODE_METHOD_CALL && len(node.Children) > 0 {
+		// Extract method name
+		methodName := node.Value
+		
+		// Check the object type to determine if it's array, dict, or string method
+		objectType := ""
+		if len(node.Children) > 0 {
+			objectType = gen.inferType(node.Children[0])
+		}
+		
+		// Mark the method as used
+		if objectType == "array" || strings.HasPrefix(objectType, "array[") {
+			gen.arrayMethods[methodName] = true
+		} else if objectType == "dict" || strings.HasPrefix(objectType, "dict[") {
+			gen.dictMethods[methodName] = true
+		} else if objectType == "string" {
+			gen.stringMethods[methodName] = true
+		}
+	}
+
+	for _, child := range node.Children {
+		gen.scanForMethodCalls(child)
 	}
 }
 
@@ -2126,12 +2165,45 @@ func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
 	if !gen.includes[headerName] {
 		gen.includes[headerName] = true
 		gen.orderedIncludes = append(gen.orderedIncludes, headerName)
+		
+		// If it's a C header file, parse it to get function name mappings
+		if strings.HasSuffix(headerName, ".h") {
+			// Try to find and parse the header file
+			headerPath := ""
+			if strings.HasPrefix(headerName, "/") {
+				headerPath = headerName
+			} else {
+				// Try common locations
+				locations := []string{
+					headerName,
+					"/usr/include/" + headerName,
+					"/usr/local/include/" + headerName,
+					"repos/raylib/src/" + headerName,
+				}
+				for _, loc := range locations {
+					if _, err := ahoy.ParseCHeader(loc); err == nil {
+						headerPath = loc
+						break
+					}
+				}
+			}
+			
+			if headerPath != "" {
+				if headerInfo, err := ahoy.ParseCHeader(headerPath); err == nil {
+					// Map snake_case names to actual C function names
+					for cFuncName := range headerInfo.Functions {
+						snakeName := ahoy.PascalToSnake(cFuncName)
+						gen.cFunctionNames[snakeName] = cFuncName
+					}
+				}
+			}
+		}
 	}
 }
 
 func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 	// Keep user-defined functions as snake_case
-	// Convert C library functions to PascalCase
+	// Convert C library functions to their original names
 	funcName := node.Value
 
 	// Special case: rename main to ahoy_main
@@ -2140,8 +2212,11 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 	} else if gen.userFunctions[funcName] {
 		// Keep user-defined function names as-is (snake_case)
 		funcName = node.Value
+	} else if cFuncName, exists := gen.cFunctionNames[funcName]; exists {
+		// Use the actual C function name from the header
+		funcName = cFuncName
 	} else if strings.Contains(funcName, "_") {
-		// External C library function - convert to PascalCase
+		// External C library function not in headers - convert to PascalCase as fallback
 		funcName = snakeToPascal(funcName)
 	}
 
@@ -2914,12 +2989,16 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 					gen.output.WriteString(", ")
 				}
 				// For array methods like push, cast to intptr_t
-				if methodName == "push" || methodName == "has" {
+				if methodName == "push" || methodName == "has" || methodName == "fill" {
 					gen.output.WriteString("(intptr_t)")
 				}
 				gen.generateNodeInternal(arg, false)
-				// For push, also pass the type
+				// For push and fill, also pass the type
 				if methodName == "push" && i == 0 {
+					valueType := gen.getValueType(arg)
+					gen.output.WriteString(fmt.Sprintf(", %s", gen.getAhoyTypeEnum(valueType)))
+				}
+				if methodName == "fill" && i == 0 {
 					valueType := gen.getValueType(arg)
 					gen.output.WriteString(fmt.Sprintf(", %s", gen.getAhoyTypeEnum(valueType)))
 				}
@@ -3280,7 +3359,8 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		// Array methods that return arrays
 		if node.Value == "map" || node.Value == "filter" ||
 			node.Value == "sort" || node.Value == "reverse" ||
-			node.Value == "shuffle" || node.Value == "push" {
+			node.Value == "shuffle" || node.Value == "push" ||
+			node.Value == "fill" {
 			return "array"
 		}
 		// Array methods that return int
@@ -5015,6 +5095,24 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 		gen.funcDecls.WriteString("    if (arr->length == 0) return 0;\n")
 		gen.funcDecls.WriteString("    srand(time(NULL));\n")
 		gen.funcDecls.WriteString("    return arr->data[rand() % arr->length];\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// fill method
+	if gen.arrayMethods["fill"] {
+		gen.funcDecls.WriteString("AhoyArray* ahoy_array_fill(AhoyArray* arr, intptr_t value, AhoyValueType type, int count) {\n")
+		gen.funcDecls.WriteString("    if (count <= 0) return arr;\n")
+		gen.funcDecls.WriteString("    if (arr->capacity < count) {\n")
+		gen.funcDecls.WriteString("        arr->capacity = count;\n")
+		gen.funcDecls.WriteString("        arr->data = realloc(arr->data, arr->capacity * sizeof(intptr_t));\n")
+		gen.funcDecls.WriteString("        arr->types = realloc(arr->types, arr->capacity * sizeof(AhoyValueType));\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    for (int i = 0; i < count; i++) {\n")
+		gen.funcDecls.WriteString("        arr->data[i] = value;\n")
+		gen.funcDecls.WriteString("        arr->types[i] = type;\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    arr->length = count;\n")
+		gen.funcDecls.WriteString("    return arr;\n")
 		gen.funcDecls.WriteString("}\n\n")
 	}
 

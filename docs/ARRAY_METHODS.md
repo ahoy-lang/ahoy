@@ -61,10 +61,18 @@ new_array  : [4,5,5,2].reverse||
 print(new_array)  ? Outputs: [2, 5, 5, 4]
 ```
 
+
 # has: checks if the array contains a specific element
 ```ahoy
 has_five  : [4,5,5,2].has|5||
 print(contains_five)  ? Outputs: true
 has_bob  : ["ciril", "alice", "bob"].has|"bob"||
 print(has_bob)  ? Outputs: true
+```
+
+
+# fill array with a specific value
+```ahoy
+new_array  : [].fill|-1, 4|
+print(new_array)  ? Outputs: [-1, -1, -1, -1]
 ```
