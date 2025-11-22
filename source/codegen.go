@@ -80,6 +80,9 @@ type CodeGenerator struct {
 	arrayMethods                  map[string]bool            // Track which array methods are used
 	stringMethods                 map[string]bool            // Track which string methods are used
 	dictMethods                   map[string]bool            // Track which dict methods are used
+	useJSON                       bool                       // Track if JSON functions are used
+	jsonVariables                 map[string]bool            // Track which variables hold JSON data
+	jsonStructs                   map[string]bool            // Track which structs are JSON schemas (not real C structs)
 	loopCounters                  []string                   // Stack of loop counter variable names
 	currentFunction               string                     // Current function being generated
 	currentFunctionReturnType     string                     // Return type of current function
@@ -131,6 +134,8 @@ func generateC(ast *ahoy.ASTNode) string {
 		nestedScopeVars:       make(map[string]bool),
 		cFunctionNames:        make(map[string]string),
 		cNamespaces:           make(map[string]map[string]string),
+		jsonVariables:         make(map[string]bool),
+		jsonStructs:           make(map[string]bool),
 	}
 
 	// Add standard includes
@@ -185,6 +190,9 @@ func generateC(ast *ahoy.ASTNode) string {
 	
 	// Generate vector2 and color constructors
 	gen.writeTypeConstructors()
+	
+	// Generate JSON helper functions if JSON is used
+	gen.writeJSONHelperFunctions()
 
 	// Build final output
 	var result strings.Builder
@@ -200,8 +208,8 @@ func generateC(ast *ahoy.ASTNode) string {
 	}
 	result.WriteString("\n")
 
-	// Write array implementation if needed
-	if gen.arrayImpls {
+	// Write array implementation if needed (or if JSON needs it)
+	if gen.arrayImpls || gen.useJSON {
 		result.WriteString(gen.getArrayImplementation())
 		result.WriteString("\n")
 	}
@@ -564,6 +572,14 @@ func (gen *CodeGenerator) checkForMainFunction(node *ahoy.ASTNode) {
 func (gen *CodeGenerator) scanForMethodCalls(node *ahoy.ASTNode) {
 	if node == nil {
 		return
+	}
+
+	// Check for read_json or write_json calls
+	if node.Type == ahoy.NODE_CALL && (node.Value == "read_json" || node.Value == "write_json") {
+		if !gen.useJSON {
+			gen.useJSON = true
+			gen.registerJSONFunctionTypes()
+		}
 	}
 
 	if node.Type == ahoy.NODE_METHOD_CALL && len(node.Children) > 0 {
@@ -2230,6 +2246,9 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 	} else if cFuncName, exists := gen.cFunctionNames[funcName]; exists {
 		// Use the actual C function name from the header
 		funcName = cFuncName
+	} else if strings.HasPrefix(funcName, "ahoy_json_") {
+		// Keep JSON helper functions as-is (they're built-in)
+		funcName = node.Value
 	} else if strings.Contains(funcName, "_") {
 		// External C library function not in headers - convert to PascalCase as fallback
 		funcName = snakeToPascal(funcName)
@@ -2330,6 +2349,8 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 								formatSpec = "%s" // Will use print_dict_helper
 							case "struct":
 								formatSpec = "%s" // Will use print_struct_helper
+							case "AhoyJSON*", "json":
+								formatSpec = "%s" // Will use ahoy_json_stringify
 							default:
 								// Check for typed collections
 								if strings.HasPrefix(argType, "array[") {
@@ -2370,6 +2391,8 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 							formatSpec = "%s" // Will use print_dict_helper
 						case "struct":
 							formatSpec = "%s" // Will use print_struct_helper
+						case "AhoyJSON*", "json":
+							formatSpec = "%s" // Will use ahoy_json_stringify
 						default:
 							// Check for typed collections
 							if strings.HasPrefix(argType, "array[") {
@@ -2449,6 +2472,11 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 					} else if argType == "vector2" || argType == "Vector2" {
 						// Vector2 type - use helper
 						gen.output.WriteString("vector2_to_string(")
+						gen.generateNode(arg)
+						gen.output.WriteString(")")
+					} else if argType == "AhoyJSON*" || argType == "json" {
+						// JSON type - use stringify helper
+						gen.output.WriteString("ahoy_json_stringify(")
 						gen.generateNode(arg)
 						gen.output.WriteString(")")
 					} else if argType == "struct" || gen.structs[argType] != nil || gen.structs[strings.ToLower(argType)] != nil {
@@ -2605,6 +2633,38 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 				gen.generateNode(node.Children[0])
 			}
 		}
+	
+	case "read_json":
+		// Mark that JSON is used
+		if !gen.useJSON {
+			gen.useJSON = true
+			// Register JSON function return types immediately
+			gen.registerJSONFunctionTypes()
+		}
+		// read_json returns (AhoyJSON*, char* error)
+		gen.output.WriteString("ahoy_json_read(")
+		if len(node.Children) > 0 {
+			gen.generateNode(node.Children[0])
+		}
+		gen.output.WriteString(")")
+		
+	case "write_json":
+		// Mark that JSON is used
+		if !gen.useJSON {
+			gen.useJSON = true
+			// Register JSON function return types immediately
+			gen.registerJSONFunctionTypes()
+		}
+		// write_json(filename, json) returns char* error
+		gen.output.WriteString("ahoy_json_write(")
+		if len(node.Children) > 0 {
+			gen.generateNode(node.Children[0])
+		}
+		if len(node.Children) > 1 {
+			gen.output.WriteString(", ")
+			gen.generateNode(node.Children[1])
+		}
+		gen.output.WriteString(")")
 
 	default:
 		gen.output.WriteString(fmt.Sprintf("%s(", funcName))
@@ -2856,6 +2916,29 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 	object := node.Children[0]
 	args := node.Children[1]
 	methodName := node.Value
+
+	// Handle dump_struct - returns type information as a string constant
+	if methodName == "dump_struct" {
+		objectType := gen.inferType(object)
+		varName := ""
+		if object.Type == ahoy.NODE_IDENTIFIER {
+			varName = object.Value
+		}
+		
+		// Generate a string literal describing the type
+		structDesc := fmt.Sprintf("\"Type: %s", objectType)
+		if structInfo, exists := gen.structs[objectType]; exists {
+			structDesc += "\\nFields:"
+			for _, field := range structInfo.Fields {
+				structDesc += fmt.Sprintf("\\n  %s: %s", field.Name, field.Type)
+			}
+		} else if varName != "" {
+			structDesc += fmt.Sprintf(" (variable: %s)", varName)
+		}
+		structDesc += "\""
+		gen.output.WriteString(structDesc)
+		return
+	}
 
 	// Check if this is a namespaced C function call (e.g., math.lerp)
 	if object.Type == ahoy.NODE_IDENTIFIER {
@@ -3272,6 +3355,8 @@ func (gen *CodeGenerator) mapType(langType string) string {
 		return "HashMap*"
 	case "array":
 		return "AhoyArray*"
+	case "AhoyJSON*", "json":
+		return "AhoyJSON*"
 	case "void":
 		return "void"
 	case "vector2":
@@ -3354,6 +3439,11 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			objectType = gen.inferType(node.Children[0])
 		}
 
+		// dump_struct returns string
+		if node.Value == "dump_struct" {
+			return "string"
+		}
+		
 		// String methods that return string
 		if node.Value == "upper" || node.Value == "lower" ||
 			node.Value == "replace" || node.Value == "camel_case" ||
@@ -3454,6 +3544,10 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		}
 		return "int"
 	case ahoy.NODE_IDENTIFIER:
+		// Check if this is a JSON variable
+		if gen.jsonVariables[node.Value] {
+			return "AhoyJSON*"
+		}
 		if varType, exists := gen.variables[node.Value]; exists {
 			// Normalize dict types
 			if strings.HasPrefix(varType, "dict<") || strings.HasPrefix(varType, "dict[") {
@@ -3538,6 +3632,11 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 
 			// Get the type of the object
 			objectType := gen.inferType(objectNode)
+			
+			// If object is JSON, member access returns AhoyJSON*
+			if objectType == "AhoyJSON*" {
+				return "AhoyJSON*"
+			}
 
 			// Look up the struct definition
 			if structInfo, exists := gen.structs[objectType]; exists {
@@ -4482,9 +4581,20 @@ func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 		gen.varCounter++
 
 		gen.writeIndent()
-		gen.output.WriteString(fmt.Sprintf("%s_return %s = ", funcName, tempVar))
+		// Special case: read_json uses json_read_return struct
+		structName := funcName
+		if funcName == "read_json" {
+			structName = "json_read"
+		}
+		gen.output.WriteString(fmt.Sprintf("%s_return %s = ", structName, tempVar))
 		gen.generateNode(callNode)
 		gen.output.WriteString(";\n")
+
+		// Special handling for read_json - track that first return value is AhoyJSON*
+		if funcName == "read_json" && len(leftSide.Children) >= 1 {
+			jsonVarName := leftSide.Children[0].Value
+			gen.jsonVariables[jsonVarName] = true // Track this as a JSON variable
+		}
 
 		// Assign struct fields to left side variables
 		for i, target := range leftSide.Children {
@@ -4503,7 +4613,18 @@ func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 				inferredType := "int"
 				needsCast := false
 				
-				if retTypes, ok := gen.functionReturnTypes[funcName]; ok && i < len(retTypes) {
+				// Special case for read_json return values
+				if funcName == "read_json" {
+					if i == 0 {
+						cType = "AhoyJSON*"
+						inferredType = "AhoyJSON*"
+						// Track as JSON variable
+						gen.jsonVariables[target.Value] = true
+					} else if i == 1 {
+						cType = "char*"
+						inferredType = "char*"
+					}
+				} else if retTypes, ok := gen.functionReturnTypes[funcName]; ok && i < len(retTypes) {
 					// If return type is "generic", infer from actual call arguments
 					if retTypes[i] == "generic" && i < len(callNode.Children) {
 						inferredType = gen.inferType(callNode.Children[i])
@@ -4517,6 +4638,10 @@ func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 						gen.functionVars[target.Value] = inferredType
 					} else {
 						gen.variables[target.Value] = inferredType
+					}
+					// Track JSON variables
+					if inferredType == "AhoyJSON*" {
+						gen.jsonVariables[target.Value] = true
 					}
 				} else {
 					if gen.functionVars != nil {
@@ -4597,6 +4722,35 @@ func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 // Generate struct declaration
 func (gen *CodeGenerator) generateStruct(node *ahoy.ASTNode) {
 	structName := node.Value
+	
+	// Handle JSON structs - just store schema, don't generate C code
+	if node.DataType == "json" {
+		structInfo := &StructInfo{
+			Name:   structName,
+			Fields: make([]StructField, 0),
+		}
+		
+		for _, field := range node.Children {
+			if field.Type != ahoy.NODE_TYPE {
+				fieldType := field.DataType
+				if fieldType == "" {
+					fieldType = "string" // Default to string for JSON
+				}
+				structInfo.Fields = append(structInfo.Fields, StructField{
+					Name: field.Value,
+					Type: fieldType,
+				})
+			}
+		}
+		
+		// Store in structs map for type validation
+		gen.structs[structName] = structInfo
+		gen.structs["json_"+structName] = structInfo // Also store with json_ prefix
+		// Mark as JSON struct so we don't generate C code for it
+		gen.jsonStructs[structName] = true
+		gen.jsonStructs["json_"+structName] = true
+		return
+	}
 	
 	// Skip vector2 and color - they're predefined
 	if structName == "vector2" || structName == "color" {
@@ -4903,6 +5057,16 @@ func (gen *CodeGenerator) generateMemberAccess(node *ahoy.ASTNode) {
 
 	// Check if object is a HashMap (anonymous object) - need special handling
 	objectType := gen.inferType(object)
+	
+	// Check if this is JSON object access
+	if objectType == "AhoyJSON*" || objectType == "json" {
+		// JSON object - use ahoy_json_get
+		gen.output.WriteString("ahoy_json_get(")
+		gen.generateNodeInternal(object, false)
+		gen.output.WriteString(fmt.Sprintf(", \"%s\")", memberName))
+		return
+	}
+	
 	if objectType == "HashMap*" || objectType == "dict" {
 		// Anonymous object stored in HashMap - use hashMapGet
 		// Note: returns void*, caller needs to cast appropriately
@@ -5456,6 +5620,287 @@ func (gen *CodeGenerator) writeDictHelperFunctions() {
 	}
 }
 
+// registerJSONFunctionTypes registers return types for JSON functions
+func (gen *CodeGenerator) registerJSONFunctionTypes() {
+	// Mark all JSON functions as user functions so they don't get converted to PascalCase
+	gen.userFunctions["ahoy_json_read"] = true
+	gen.userFunctions["ahoy_json_write"] = true
+	gen.userFunctions["ahoy_json_get"] = true
+	gen.userFunctions["ahoy_json_get_index"] = true
+	gen.userFunctions["ahoy_json_string"] = true
+	gen.userFunctions["ahoy_json_number"] = true
+	gen.userFunctions["ahoy_json_int"] = true
+	gen.userFunctions["ahoy_json_bool"] = true
+	
+	// Register return types for JSON helper functions
+	gen.functionReturnTypes["ahoy_json_string"] = []string{"string"}
+	gen.functionReturnTypes["ahoy_json_number"] = []string{"float"}
+	gen.functionReturnTypes["ahoy_json_int"] = []string{"int"}
+	gen.functionReturnTypes["ahoy_json_bool"] = []string{"bool"}
+	gen.functionReturnTypes["ahoy_json_get"] = []string{"AhoyJSON*"}
+	gen.functionReturnTypes["ahoy_json_get_index"] = []string{"AhoyJSON*"}
+}
+
+// writeJSONHelperFunctions generates JSON parsing and writing functions
+func (gen *CodeGenerator) writeJSONHelperFunctions() {
+	if !gen.useJSON {
+		return
+	}
+	
+	// Add JSON type definition and functions
+	gen.funcDecls.WriteString("\n// JSON Support\n")
+	gen.funcDecls.WriteString("struct AhoyJSON {\n")
+	gen.funcDecls.WriteString("    HashMap* data;  // For objects\n")
+	gen.funcDecls.WriteString("    DynamicArray* array_data;  // For arrays\n")
+	gen.funcDecls.WriteString("    char* string_value;  // For strings\n")
+	gen.funcDecls.WriteString("    double number_value;  // For numbers\n")
+	gen.funcDecls.WriteString("    int bool_value;  // For booleans\n")
+	gen.funcDecls.WriteString("    int is_null;\n")
+	gen.funcDecls.WriteString("    enum { JSON_OBJECT, JSON_ARRAY, JSON_STRING, JSON_NUMBER, JSON_BOOL, JSON_NULL } type;\n")
+	gen.funcDecls.WriteString("};\n\n")
+	
+	// Forward declarations
+	gen.funcDecls.WriteString("AhoyJSON* ahoy_json_parse_value(const char** p);\n")
+	gen.funcDecls.WriteString("void ahoy_json_skip_whitespace(const char** p);\n\n")
+	
+	// Skip whitespace
+	gen.funcDecls.WriteString("void ahoy_json_skip_whitespace(const char** p) {\n")
+	gen.funcDecls.WriteString("    while (**p == ' ' || **p == '\\t' || **p == '\\n' || **p == '\\r') (*p)++;\n")
+	gen.funcDecls.WriteString("}\n\n")
+	
+	// Parse string
+	gen.funcDecls.WriteString("char* ahoy_json_parse_string(const char** p) {\n")
+	gen.funcDecls.WriteString("    (*p)++;  // Skip opening quote\n")
+	gen.funcDecls.WriteString("    const char* start = *p;\n")
+	gen.funcDecls.WriteString("    while (**p && **p != '\"') {\n")
+	gen.funcDecls.WriteString("        if (**p == '\\\\') (*p)++;  // Skip escaped char\n")
+	gen.funcDecls.WriteString("        (*p)++;\n")
+	gen.funcDecls.WriteString("    }\n")
+	gen.funcDecls.WriteString("    int len = *p - start;\n")
+	gen.funcDecls.WriteString("    char* result = malloc(len + 1);\n")
+	gen.funcDecls.WriteString("    strncpy(result, start, len);\n")
+	gen.funcDecls.WriteString("    result[len] = 0;\n")
+	gen.funcDecls.WriteString("    (*p)++;  // Skip closing quote\n")
+	gen.funcDecls.WriteString("    return result;\n")
+	gen.funcDecls.WriteString("}\n\n")
+	
+	// Parse number
+	gen.funcDecls.WriteString("double ahoy_json_parse_number(const char** p) {\n")
+	gen.funcDecls.WriteString("    return strtod(*p, (char**)p);\n")
+	gen.funcDecls.WriteString("}\n\n")
+	
+	// Parse object
+	gen.funcDecls.WriteString("AhoyJSON* ahoy_json_parse_object(const char** p) {\n")
+	gen.funcDecls.WriteString("    AhoyJSON* json = malloc(sizeof(AhoyJSON));\n")
+	gen.funcDecls.WriteString("    json->type = JSON_OBJECT;\n")
+	gen.funcDecls.WriteString("    json->data = createHashMap(16);\n")
+	gen.funcDecls.WriteString("    (*p)++;  // Skip '{'\n")
+	gen.funcDecls.WriteString("    ahoy_json_skip_whitespace(p);\n")
+	gen.funcDecls.WriteString("    if (**p == '}') { (*p)++; return json; }\n")
+	gen.funcDecls.WriteString("    while (1) {\n")
+	gen.funcDecls.WriteString("        ahoy_json_skip_whitespace(p);\n")
+	gen.funcDecls.WriteString("        if (**p != '\"') break;\n")
+	gen.funcDecls.WriteString("        char* key = ahoy_json_parse_string(p);\n")
+	gen.funcDecls.WriteString("        ahoy_json_skip_whitespace(p);\n")
+	gen.funcDecls.WriteString("        if (**p == ':') (*p)++;\n")
+	gen.funcDecls.WriteString("        ahoy_json_skip_whitespace(p);\n")
+	gen.funcDecls.WriteString("        AhoyJSON* value = ahoy_json_parse_value(p);\n")
+	gen.funcDecls.WriteString("        hashMapPut(json->data, key, value);\n")
+	gen.funcDecls.WriteString("        ahoy_json_skip_whitespace(p);\n")
+	gen.funcDecls.WriteString("        if (**p == ',') { (*p)++; continue; }\n")
+	gen.funcDecls.WriteString("        if (**p == '}') break;\n")
+	gen.funcDecls.WriteString("    }\n")
+	gen.funcDecls.WriteString("    if (**p == '}') (*p)++;\n")
+	gen.funcDecls.WriteString("    return json;\n")
+	gen.funcDecls.WriteString("}\n\n")
+	
+	// Parse array
+	gen.funcDecls.WriteString("AhoyJSON* ahoy_json_parse_array(const char** p) {\n")
+	gen.funcDecls.WriteString("    AhoyJSON* json = malloc(sizeof(AhoyJSON));\n")
+	gen.funcDecls.WriteString("    json->type = JSON_ARRAY;\n")
+	gen.funcDecls.WriteString("    json->array_data = createArray(16);\n")
+	gen.funcDecls.WriteString("    (*p)++;  // Skip '['\n")
+	gen.funcDecls.WriteString("    ahoy_json_skip_whitespace(p);\n")
+	gen.funcDecls.WriteString("    if (**p == ']') { (*p)++; return json; }\n")
+	gen.funcDecls.WriteString("    while (1) {\n")
+	gen.funcDecls.WriteString("        ahoy_json_skip_whitespace(p);\n")
+	gen.funcDecls.WriteString("        AhoyJSON* value = ahoy_json_parse_value(p);\n")
+	gen.funcDecls.WriteString("        arrayPush(json->array_data, value);\n")
+	gen.funcDecls.WriteString("        ahoy_json_skip_whitespace(p);\n")
+	gen.funcDecls.WriteString("        if (**p == ',') { (*p)++; continue; }\n")
+	gen.funcDecls.WriteString("        if (**p == ']') break;\n")
+	gen.funcDecls.WriteString("    }\n")
+	gen.funcDecls.WriteString("    if (**p == ']') (*p)++;\n")
+	gen.funcDecls.WriteString("    return json;\n")
+	gen.funcDecls.WriteString("}\n\n")
+	
+	// Parse value (main parser)
+	gen.funcDecls.WriteString("AhoyJSON* ahoy_json_parse_value(const char** p) {\n")
+	gen.funcDecls.WriteString("    ahoy_json_skip_whitespace(p);\n")
+	gen.funcDecls.WriteString("    AhoyJSON* json = malloc(sizeof(AhoyJSON));\n")
+	gen.funcDecls.WriteString("    if (**p == '{') return ahoy_json_parse_object(p);\n")
+	gen.funcDecls.WriteString("    if (**p == '[') return ahoy_json_parse_array(p);\n")
+	gen.funcDecls.WriteString("    if (**p == '\"') {\n")
+	gen.funcDecls.WriteString("        json->type = JSON_STRING;\n")
+	gen.funcDecls.WriteString("        json->string_value = ahoy_json_parse_string(p);\n")
+	gen.funcDecls.WriteString("        return json;\n")
+	gen.funcDecls.WriteString("    }\n")
+	gen.funcDecls.WriteString("    if (strncmp(*p, \"true\", 4) == 0) {\n")
+	gen.funcDecls.WriteString("        json->type = JSON_BOOL; json->bool_value = 1; *p += 4; return json;\n")
+	gen.funcDecls.WriteString("    }\n")
+	gen.funcDecls.WriteString("    if (strncmp(*p, \"false\", 5) == 0) {\n")
+	gen.funcDecls.WriteString("        json->type = JSON_BOOL; json->bool_value = 0; *p += 5; return json;\n")
+	gen.funcDecls.WriteString("    }\n")
+	gen.funcDecls.WriteString("    if (strncmp(*p, \"null\", 4) == 0) {\n")
+	gen.funcDecls.WriteString("        json->type = JSON_NULL; json->is_null = 1; *p += 4; return json;\n")
+	gen.funcDecls.WriteString("    }\n")
+	gen.funcDecls.WriteString("    // Number\n")
+	gen.funcDecls.WriteString("    json->type = JSON_NUMBER;\n")
+	gen.funcDecls.WriteString("    json->number_value = ahoy_json_parse_number(p);\n")
+	gen.funcDecls.WriteString("    return json;\n")
+	gen.funcDecls.WriteString("}\n\n")
+	
+	// JSON type must be forward declared first, then define return struct
+	gen.funcReturnStructs.WriteString("// Forward declare JSON type\n")
+	gen.funcReturnStructs.WriteString("typedef struct AhoyJSON AhoyJSON;\n\n")
+	
+	// json_read function - use multi-return struct naming convention
+	gen.funcReturnStructs.WriteString("// JSON read return type\n")
+	gen.funcReturnStructs.WriteString("typedef struct {\n")
+	gen.funcReturnStructs.WriteString("    AhoyJSON* ret0;\n")
+	gen.funcReturnStructs.WriteString("    char* ret1;\n")
+	gen.funcReturnStructs.WriteString("} json_read_return;\n\n")
+	
+	// Forward declare the read_json function and helpers
+	gen.funcReturnStructs.WriteString("json_read_return ahoy_json_read(const char* filename);\n")
+	gen.funcReturnStructs.WriteString("char* ahoy_json_write(const char* filename, AhoyJSON* json);\n")
+	gen.funcReturnStructs.WriteString("AhoyJSON* ahoy_json_get(AhoyJSON* json, const char* key);\n")
+	gen.funcReturnStructs.WriteString("AhoyJSON* ahoy_json_get_index(AhoyJSON* json, int index);\n")
+	gen.funcReturnStructs.WriteString("char* ahoy_json_string(AhoyJSON* json);\n")
+	gen.funcReturnStructs.WriteString("double ahoy_json_number(AhoyJSON* json);\n")
+	gen.funcReturnStructs.WriteString("int ahoy_json_int(AhoyJSON* json);\n")
+	gen.funcReturnStructs.WriteString("int ahoy_json_bool(AhoyJSON* json);\n")
+	gen.funcReturnStructs.WriteString("char* ahoy_json_stringify(AhoyJSON* json);\n\n")
+	
+	gen.funcDecls.WriteString("json_read_return ahoy_json_read(const char* filename) {\n")
+	gen.funcDecls.WriteString("    json_read_return result = {NULL, NULL};\n")
+	gen.funcDecls.WriteString("    FILE* f = fopen(filename, \"r\");\n")
+	gen.funcDecls.WriteString("    if (!f) {\n")
+	gen.funcDecls.WriteString("        result.ret1 = \"Failed to open file\";\n")
+	gen.funcDecls.WriteString("        return result;\n")
+	gen.funcDecls.WriteString("    }\n")
+	gen.funcDecls.WriteString("    fseek(f, 0, SEEK_END);\n")
+	gen.funcDecls.WriteString("    long size = ftell(f);\n")
+	gen.funcDecls.WriteString("    fseek(f, 0, SEEK_SET);\n")
+	gen.funcDecls.WriteString("    char* content = malloc(size + 1);\n")
+	gen.funcDecls.WriteString("    fread(content, 1, size, f);\n")
+	gen.funcDecls.WriteString("    content[size] = 0;\n")
+	gen.funcDecls.WriteString("    fclose(f);\n")
+	gen.funcDecls.WriteString("    const char* p = content;\n")
+	gen.funcDecls.WriteString("    result.ret0 = ahoy_json_parse_value(&p);\n")
+	gen.funcDecls.WriteString("    return result;\n")
+	gen.funcDecls.WriteString("}\n\n")
+	
+	// json_write function (simplified - just converts to string)
+	gen.funcDecls.WriteString("char* ahoy_json_write(const char* filename, AhoyJSON* json) {\n")
+	gen.funcDecls.WriteString("    // TODO: Implement JSON serialization\n")
+	gen.funcDecls.WriteString("    return \"Not implemented yet\";\n")
+	gen.funcDecls.WriteString("}\n\n")
+	
+	// Helper to access JSON properties
+	gen.funcDecls.WriteString("AhoyJSON* ahoy_json_get(AhoyJSON* json, const char* key) {\n")
+	gen.funcDecls.WriteString("    if (!json || json->type != JSON_OBJECT) return NULL;\n")
+	gen.funcDecls.WriteString("    return (AhoyJSON*)hashMapGet(json->data, key);\n")
+	gen.funcDecls.WriteString("}\n\n")
+	
+	gen.funcDecls.WriteString("AhoyJSON* ahoy_json_get_index(AhoyJSON* json, int index) {\n")
+	gen.funcDecls.WriteString("    if (!json || json->type != JSON_ARRAY) return NULL;\n")
+	gen.funcDecls.WriteString("    if (index < 0 || index >= json->array_data->size) return NULL;\n")
+	gen.funcDecls.WriteString("    return (AhoyJSON*)json->array_data->data[index];\n")
+	gen.funcDecls.WriteString("}\n\n")
+	
+	// Add value extraction helpers
+	gen.funcDecls.WriteString("// Extract string value from JSON\n")
+	gen.funcDecls.WriteString("char* ahoy_json_string(AhoyJSON* json) {\n")
+	gen.funcDecls.WriteString("    if (!json) return \"\";\n")
+	gen.funcDecls.WriteString("    if (json->type == JSON_STRING) return json->string_value;\n")
+	gen.funcDecls.WriteString("    return \"\";\n")
+	gen.funcDecls.WriteString("}\n\n")
+	
+	gen.funcDecls.WriteString("// Extract number value from JSON\n")
+	gen.funcDecls.WriteString("double ahoy_json_number(AhoyJSON* json) {\n")
+	gen.funcDecls.WriteString("    if (!json) return 0.0;\n")
+	gen.funcDecls.WriteString("    if (json->type == JSON_NUMBER) return json->number_value;\n")
+	gen.funcDecls.WriteString("    return 0.0;\n")
+	gen.funcDecls.WriteString("}\n\n")
+	
+	gen.funcDecls.WriteString("// Extract int value from JSON\n")
+	gen.funcDecls.WriteString("int ahoy_json_int(AhoyJSON* json) {\n")
+	gen.funcDecls.WriteString("    if (!json) return 0;\n")
+	gen.funcDecls.WriteString("    if (json->type == JSON_NUMBER) return (int)json->number_value;\n")
+	gen.funcDecls.WriteString("    return 0;\n")
+	gen.funcDecls.WriteString("}\n\n")
+	
+	gen.funcDecls.WriteString("// Extract bool value from JSON\n")
+	gen.funcDecls.WriteString("int ahoy_json_bool(AhoyJSON* json) {\n")
+	gen.funcDecls.WriteString("    if (!json) return 0;\n")
+	gen.funcDecls.WriteString("    if (json->type == JSON_BOOL) return json->bool_value;\n")
+	gen.funcDecls.WriteString("    return 0;\n")
+	gen.funcDecls.WriteString("}\n\n")
+	
+	// JSON stringify function (forward declare helper)
+	gen.funcDecls.WriteString("// Forward declare recursive helper\n")
+	gen.funcDecls.WriteString("void ahoy_json_stringify_helper(AhoyJSON* json, char* buffer, int* pos, int max_size);\n\n")
+	
+	gen.funcDecls.WriteString("// Recursive helper for stringify\n")
+	gen.funcDecls.WriteString("void ahoy_json_stringify_helper(AhoyJSON* json, char* buffer, int* pos, int max_size) {\n")
+	gen.funcDecls.WriteString("    if (!json || *pos >= max_size - 1) return;\n")
+	gen.funcDecls.WriteString("    \n")
+	gen.funcDecls.WriteString("    switch(json->type) {\n")
+	gen.funcDecls.WriteString("        case JSON_STRING:\n")
+	gen.funcDecls.WriteString("            *pos += snprintf(buffer + *pos, max_size - *pos, \"\\\"%s\\\"\", json->string_value ? json->string_value : \"\");\n")
+	gen.funcDecls.WriteString("            break;\n")
+	gen.funcDecls.WriteString("        case JSON_NUMBER:\n")
+	gen.funcDecls.WriteString("            if (json->number_value == (int)json->number_value) {\n")
+	gen.funcDecls.WriteString("                *pos += snprintf(buffer + *pos, max_size - *pos, \"%d\", (int)json->number_value);\n")
+	gen.funcDecls.WriteString("            } else {\n")
+	gen.funcDecls.WriteString("                *pos += snprintf(buffer + *pos, max_size - *pos, \"%g\", json->number_value);\n")
+	gen.funcDecls.WriteString("            }\n")
+	gen.funcDecls.WriteString("            break;\n")
+	gen.funcDecls.WriteString("        case JSON_BOOL:\n")
+	gen.funcDecls.WriteString("            *pos += snprintf(buffer + *pos, max_size - *pos, \"%s\", json->bool_value ? \"true\" : \"false\");\n")
+	gen.funcDecls.WriteString("            break;\n")
+	gen.funcDecls.WriteString("        case JSON_NULL:\n")
+	gen.funcDecls.WriteString("            *pos += snprintf(buffer + *pos, max_size - *pos, \"null\");\n")
+	gen.funcDecls.WriteString("            break;\n")
+	gen.funcDecls.WriteString("        case JSON_OBJECT:\n")
+	gen.funcDecls.WriteString("            // For objects, we'd need to iterate the internal HashMap\n")
+	gen.funcDecls.WriteString("            // For now, just show it's an object\n")
+	gen.funcDecls.WriteString("            *pos += snprintf(buffer + *pos, max_size - *pos, \"{...}\");\n")
+	gen.funcDecls.WriteString("            break;\n")
+	gen.funcDecls.WriteString("        case JSON_ARRAY: {\n")
+	gen.funcDecls.WriteString("            *pos += snprintf(buffer + *pos, max_size - *pos, \"[\");\n")
+	gen.funcDecls.WriteString("            for (int i = 0; i < json->array_data->size && *pos < max_size - 1; i++) {\n")
+	gen.funcDecls.WriteString("                if (i > 0) *pos += snprintf(buffer + *pos, max_size - *pos, \",\");\n")
+	gen.funcDecls.WriteString("                ahoy_json_stringify_helper((AhoyJSON*)json->array_data->data[i], buffer, pos, max_size);\n")
+	gen.funcDecls.WriteString("            }\n")
+	gen.funcDecls.WriteString("            *pos += snprintf(buffer + *pos, max_size - *pos, \"]\");\n")
+	gen.funcDecls.WriteString("            break;\n")
+	gen.funcDecls.WriteString("        }\n")
+	gen.funcDecls.WriteString("    }\n")
+	gen.funcDecls.WriteString("}\n\n")
+	
+	gen.funcDecls.WriteString("// Stringify JSON object for printing\n")
+	gen.funcDecls.WriteString("char* ahoy_json_stringify(AhoyJSON* json) {\n")
+	gen.funcDecls.WriteString("    static char buffer[8192];\n")
+	gen.funcDecls.WriteString("    int pos = 0;\n")
+	gen.funcDecls.WriteString("    if (!json) return \"null\";\n")
+	gen.funcDecls.WriteString("    ahoy_json_stringify_helper(json, buffer, &pos, 8192);\n")
+	gen.funcDecls.WriteString("    buffer[pos] = '\\0';\n")
+	gen.funcDecls.WriteString("    return buffer;\n")
+	gen.funcDecls.WriteString("}\n\n")
+}
+
 // Process format string to replace %v and %t with appropriate C format specifiers
 func (gen *CodeGenerator) processFormatString(formatStr string, args []*ahoy.ASTNode) (string, []*ahoy.ASTNode) {
 	result := ""
@@ -5784,9 +6229,29 @@ func (gen *CodeGenerator) writeStructHelperFunctions() {
 	// Track which structs we've processed to avoid duplicates (since we store both lowercase and capitalized)
 	processed := make(map[string]bool)
 	
+	// First pass: Add forward declarations
+	for _, structInfo := range gen.structs {
+		if processed[structInfo.Name] {
+			continue
+		}
+		// Skip JSON structs - they don't have C representations
+		if gen.jsonStructs[structInfo.Name] {
+			continue
+		}
+		processed[structInfo.Name] = true
+		cStructName := capitalizeFirst(structInfo.Name)
+		gen.funcForwardDecls.WriteString(fmt.Sprintf("char* print_struct_helper_%s(%s obj);\n", structInfo.Name, cStructName))
+	}
+	
+	// Second pass: Add implementations
+	processed = make(map[string]bool)
 	for _, structInfo := range gen.structs {
 		// Skip if already processed (avoid duplicates from lowercase/capitalized pairs)
 		if processed[structInfo.Name] {
+			continue
+		}
+		// Skip JSON structs - they don't have C representations
+		if gen.jsonStructs[structInfo.Name] {
 			continue
 		}
 		processed[structInfo.Name] = true

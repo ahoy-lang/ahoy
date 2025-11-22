@@ -819,6 +819,10 @@ func (p *Parser) parseStatement() *ASTNode {
 	case TOKEN_AT:
 		return p.parseFunctionDeclaration()
 	case TOKEN_IDENTIFIER:
+		// Check for json:struct syntax
+		if p.current().Value == "json" && p.peek(1).Type == TOKEN_ASSIGN && p.peek(2).Type == TOKEN_STRUCT {
+			return p.parseJsonStructDeclaration()
+		}
 		// Check for constant declaration (name ::)
 		nextType := p.peek(1).Type
 		if nextType == TOKEN_DOUBLE_COLON {
@@ -5266,6 +5270,19 @@ func (p *Parser) parseUnionDeclaration() *ASTNode {
 }
 
 // Parse struct declaration
+func (p *Parser) parseJsonStructDeclaration() *ASTNode {
+	// Parse json:struct name:
+	p.expect(TOKEN_IDENTIFIER) // "json"
+	p.expect(TOKEN_ASSIGN)      // ":"
+	
+	// Now just delegate to struct parsing, but mark it as JSON
+	struc := p.parseStructDeclaration()
+	if struc != nil {
+		struc.DataType = "json" // Mark this as a JSON struct
+	}
+	return struc
+}
+
 func (p *Parser) parseStructDeclaration() *ASTNode {
 	startLine := p.current().Line
 	p.expect(TOKEN_STRUCT)
