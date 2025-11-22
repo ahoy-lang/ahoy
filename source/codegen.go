@@ -100,6 +100,9 @@ type CodeGenerator struct {
 	dictSourcedKeys               map[string]string          // variable name -> key (for dict-accessed vars)
 	cFunctionNames                map[string]string          // snake_case name -> actual C name
 	cNamespaces                   map[string]map[string]string // namespace -> (snake_case name -> actual C name)
+	cFunctionReturnTypes          map[string]string          // C function name (snake_case) -> return type
+	cNamespaceReturnTypes         map[string]map[string]string // namespace -> (snake_case name -> return type)
+	cTypeDefinitions              map[string]bool            // Track known C types from headers
 }
 
 // GenerateC generates C code from an AST (exported for testing)
@@ -134,6 +137,9 @@ func generateC(ast *ahoy.ASTNode) string {
 		nestedScopeVars:       make(map[string]bool),
 		cFunctionNames:        make(map[string]string),
 		cNamespaces:           make(map[string]map[string]string),
+		cFunctionReturnTypes:  make(map[string]string),
+		cNamespaceReturnTypes: make(map[string]map[string]string),
+		cTypeDefinitions:      make(map[string]bool),
 		jsonVariables:         make(map[string]bool),
 		jsonStructs:           make(map[string]bool),
 	}
@@ -2210,20 +2216,30 @@ func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
 			
 			if headerPath != "" {
 				if headerInfo, err := ahoy.ParseCHeader(headerPath); err == nil {
+					// Track struct/typedef names as known C types
+					for typeName := range headerInfo.Structs {
+						gen.cTypeDefinitions[typeName] = true
+					}
+					
 					// If there's a namespace, store functions under that namespace
 					if namespace != "" {
 						if gen.cNamespaces[namespace] == nil {
 							gen.cNamespaces[namespace] = make(map[string]string)
 						}
-						for cFuncName := range headerInfo.Functions {
+						if gen.cNamespaceReturnTypes[namespace] == nil {
+							gen.cNamespaceReturnTypes[namespace] = make(map[string]string)
+						}
+						for cFuncName, funcInfo := range headerInfo.Functions {
 							snakeName := ahoy.PascalToSnake(cFuncName)
 							gen.cNamespaces[namespace][snakeName] = cFuncName
+							gen.cNamespaceReturnTypes[namespace][snakeName] = funcInfo.ReturnType
 						}
 					} else {
 						// No namespace - add to global scope
-						for cFuncName := range headerInfo.Functions {
+						for cFuncName, funcInfo := range headerInfo.Functions {
 							snakeName := ahoy.PascalToSnake(cFuncName)
 							gen.cFunctionNames[snakeName] = cFuncName
+							gen.cFunctionReturnTypes[snakeName] = funcInfo.ReturnType
 						}
 					}
 				}
@@ -3377,6 +3393,12 @@ func (gen *CodeGenerator) mapType(langType string) string {
 	if _, exists := gen.structs[langType]; exists {
 		return capitalizeFirst(langType)
 	}
+	
+	// Check if it's a known C type from imported headers
+	if gen.cTypeDefinitions[langType] {
+		return langType // Use the C type name as-is
+	}
+	
 	return "int"
 }
 
@@ -3425,7 +3447,11 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		if node.Value == "string" {
 			return "string"
 		}
-		// Check if we know the function's return type
+		// Check if it's a C function and we know its return type
+		if returnType, exists := gen.cFunctionReturnTypes[node.Value]; exists {
+			return returnType
+		}
+		// Check if we know the function's return type (user-defined functions)
 		if returnTypes, exists := gen.functionReturnTypes[node.Value]; exists && len(returnTypes) > 0 {
 			// For single return, return that type
 			// For multiple returns, this will be used in tuple assignment context
@@ -3433,6 +3459,17 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		}
 		return "int"
 	case ahoy.NODE_METHOD_CALL:
+		// Check if this is a namespaced C function call
+		if len(node.Children) > 0 && node.Children[0].Type == ahoy.NODE_IDENTIFIER {
+			namespace := node.Children[0].Value
+			methodName := node.Value
+			if returnTypeMap, exists := gen.cNamespaceReturnTypes[namespace]; exists {
+				if returnType, found := returnTypeMap[methodName]; found {
+					return returnType
+				}
+			}
+		}
+		
 		// Check the object type to determine if it's a dict or array method
 		objectType := ""
 		if len(node.Children) > 0 {

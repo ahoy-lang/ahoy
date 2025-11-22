@@ -2,6 +2,8 @@ package ahoy
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -141,7 +143,7 @@ type CEnum struct {
 	Name       string
 	Values     map[string]int
 	ValueLines map[string]int // Line number for each enum value
-	Line       int             // Line number in header file
+	Line       int            // Line number in header file
 }
 
 type CDefine struct {
@@ -171,7 +173,7 @@ type CHeaderInfo struct {
 type Parser struct {
 	tokens             []Token
 	pos                int
-	inFunctionCall     int  // Depth counter for nested function calls
+	inFunctionCall     int // Depth counter for nested function calls
 	inArrayLiteral     bool
 	inObjectLiteral    bool
 	inDictLiteral      bool
@@ -196,6 +198,7 @@ type Parser struct {
 	functionDepth      int                           // Track nesting depth of function definitions
 	hasProgramDecl     bool                          // Track if program declaration exists
 	inFunctionBody     bool                          // Track if we're inside a function body
+	sourceFilePath     string                        // Source file path for resolving relative imports
 }
 
 func Parse(tokens []Token) *ASTNode {
@@ -222,6 +225,36 @@ func Parse(tokens []Token) *ASTNode {
 		functionDepth:      0,
 		hasProgramDecl:     false,
 		inFunctionBody:     false,
+		sourceFilePath:     "",
+	}
+	return parser.parseProgram()
+}
+
+func ParseWithPath(tokens []Token, sourceFilePath string) *ASTNode {
+	parser := &Parser{
+		tokens:             tokens,
+		pos:                0,
+		LintMode:           false,
+		Errors:             []ParseError{},
+		variableTypes:      make(map[string]string),
+		constants:          make(map[string]int),
+		structs:            make(map[string]*StructDefinition),
+		enums:              make(map[string]*EnumDefinition),
+		typeAliases:        make(map[string]string),
+		unionTypes:         make(map[string][]string),
+		objectLiterals:     make(map[string]map[string]bool),
+		currentFunctionRet: "",
+		functionScope:      make(map[string]string),
+		functions:          make(map[string]*FunctionSignature),
+		arrayLengths:       make(map[string]ArrayInfo),
+		cHeaders:           make(map[string]*CHeaderInfo),
+		cHeaderGlobal:      &CHeaderInfo{Functions: make(map[string]*CFunction), Enums: make(map[string]*CEnum), Defines: make(map[string]*CDefine), Structs: make(map[string]*CStruct)},
+		blockDepth:         0,
+		loopVarScopes:      make([]map[string]string, 0),
+		functionDepth:      0,
+		hasProgramDecl:     false,
+		inFunctionBody:     false,
+		sourceFilePath:     sourceFilePath,
 	}
 	return parser.parseProgram()
 }
@@ -250,6 +283,37 @@ func ParseLint(tokens []Token) (*ASTNode, []ParseError) {
 		functionDepth:      0,
 		hasProgramDecl:     false,
 		inFunctionBody:     false,
+		sourceFilePath:     "",
+	}
+	ast := parser.parseProgram()
+	return ast, parser.Errors
+}
+
+func ParseLintWithPath(tokens []Token, sourceFilePath string) (*ASTNode, []ParseError) {
+	parser := &Parser{
+		tokens:             tokens,
+		pos:                0,
+		LintMode:           true,
+		Errors:             []ParseError{},
+		variableTypes:      make(map[string]string),
+		constants:          make(map[string]int),
+		structs:            make(map[string]*StructDefinition),
+		enums:              make(map[string]*EnumDefinition),
+		typeAliases:        make(map[string]string),
+		unionTypes:         make(map[string][]string),
+		objectLiterals:     make(map[string]map[string]bool),
+		currentFunctionRet: "",
+		functionScope:      make(map[string]string),
+		functions:          make(map[string]*FunctionSignature),
+		arrayLengths:       make(map[string]ArrayInfo),
+		cHeaders:           make(map[string]*CHeaderInfo),
+		cHeaderGlobal:      &CHeaderInfo{Functions: make(map[string]*CFunction), Enums: make(map[string]*CEnum), Defines: make(map[string]*CDefine), Structs: make(map[string]*CStruct)},
+		blockDepth:         0,
+		loopVarScopes:      make([]map[string]string, 0),
+		functionDepth:      0,
+		hasProgramDecl:     false,
+		inFunctionBody:     false,
+		sourceFilePath:     sourceFilePath,
 	}
 	ast := parser.parseProgram()
 	return ast, parser.Errors
@@ -299,7 +363,7 @@ func (p *Parser) validateNoGlobalFunctionCalls(node *ASTNode) {
 	if node == nil {
 		return
 	}
-	
+
 	// Check if this node is a function call
 	if node.Type == NODE_CALL {
 		funcName := node.Value
@@ -316,12 +380,12 @@ func (p *Parser) validateNoGlobalFunctionCalls(node *ASTNode) {
 				break
 			}
 		}
-		
+
 		if !isCFunction {
 			p.recordErrorAtLine(fmt.Sprintf("Function call '%s' not allowed at global scope when program is declared. Functions can only be called from within other functions.", funcName), node.Line)
 		}
 	}
-	
+
 	// Recursively check children
 	for _, child := range node.Children {
 		p.validateNoGlobalFunctionCalls(child)
@@ -604,11 +668,11 @@ func (p *Parser) advance() {
 
 // isCompoundAssignOp checks if a token type is a compound assignment operator
 func (p *Parser) isCompoundAssignOp(tokenType TokenType) bool {
-	return tokenType == TOKEN_PLUS_ASSIGN || 
-		   tokenType == TOKEN_MINUS_ASSIGN ||
-		   tokenType == TOKEN_MULTIPLY_ASSIGN ||
-		   tokenType == TOKEN_DIVIDE_ASSIGN ||
-		   tokenType == TOKEN_MODULO_ASSIGN
+	return tokenType == TOKEN_PLUS_ASSIGN ||
+		tokenType == TOKEN_MINUS_ASSIGN ||
+		tokenType == TOKEN_MULTIPLY_ASSIGN ||
+		tokenType == TOKEN_DIVIDE_ASSIGN ||
+		tokenType == TOKEN_MODULO_ASSIGN
 }
 
 // getCompoundAssignOp returns the binary operator for a compound assignment operator
@@ -634,19 +698,19 @@ func (p *Parser) copyASTNode(node *ASTNode) *ASTNode {
 	if node == nil {
 		return nil
 	}
-	
+
 	// Copy children recursively
 	children := make([]*ASTNode, len(node.Children))
 	for i, child := range node.Children {
 		children[i] = p.copyASTNode(child)
 	}
-	
+
 	// Copy default value if present
 	var defaultValue *ASTNode
 	if node.DefaultValue != nil {
 		defaultValue = p.copyASTNode(node.DefaultValue)
 	}
-	
+
 	return &ASTNode{
 		Type:         node.Type,
 		Value:        node.Value,
@@ -704,7 +768,7 @@ func (p *Parser) parseProgram() *ASTNode {
 		stmt := p.parseStatement()
 		if stmt != nil {
 			program.Children = append(program.Children, stmt)
-			
+
 			// Track if we've seen non-import statements
 			if stmt.Type != NODE_IMPORT_STATEMENT && stmt.Type != NODE_PROGRAM_DECLARATION {
 				p.seenNonImport = true
@@ -766,7 +830,7 @@ func (p *Parser) parseStatement() *ASTNode {
 		// Handle $ block terminator
 		token := p.current()
 		p.advance() // Consume the TOKEN_END
-		
+
 		// Check for $#N syntax
 		if strings.HasPrefix(token.Value, "$#") {
 			countStr := strings.TrimPrefix(token.Value, "$#")
@@ -1000,7 +1064,7 @@ func (p *Parser) parseFunction() *ASTNode {
 func (p *Parser) parseIfStatement() *ASTNode {
 	startLine := p.current().Line
 	p.expect(TOKEN_IF)
-	
+
 	var condition *ASTNode
 
 	// Check for "is i not" error pattern (starts with IS)
@@ -1059,7 +1123,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 	for p.current().Type == TOKEN_NEWLINE {
 		p.advance()
 	}
-	
+
 	p.skipWhitespace()
 	p.blockDepth++ // Opening a block (inline or multiline)
 	ifBody := p.parseBlockUntilEnd("if", startLine)
@@ -1102,7 +1166,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		for p.current().Type == TOKEN_NEWLINE {
 			p.advance()
 		}
-		
+
 		p.skipWhitespace()
 		p.blockDepth++ // Opening a block (inline or multiline)
 		elseifBody := p.parseBlockUntilEnd("anif", startLine)
@@ -1130,7 +1194,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		for p.current().Type == TOKEN_NEWLINE {
 			p.advance()
 		}
-		
+
 		p.skipWhitespace()
 		p.blockDepth++ // Opening a block (inline or multiline)
 		elseBody := p.parseBlockUntilEnd("else", startLine)
@@ -1241,7 +1305,7 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 				} else if p.current().Type == TOKEN_IDENTIFIER {
 					tok := p.current()
 					p.advance()
-					
+
 					// Check if this is enum.MEMBER syntax
 					if p.current().Type == TOKEN_DOT {
 						p.advance() // consume .
@@ -1273,7 +1337,7 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 							Type:  NODE_IDENTIFIER,
 							Value: tok.Value,
 						}
-						
+
 						// Validate if this identifier is an ambiguous enum member
 						if p.LintMode {
 							p.validateEnumMemberInSwitch(tok.Value, tok.Line)
@@ -1351,7 +1415,7 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 		}
 
 		caseLine := p.current().Line // Track line number for error reporting
-		p.expect(TOKEN_ASSIGN) // Expect :
+		p.expect(TOKEN_ASSIGN)       // Expect :
 
 		// Skip optional whitespace/indent after colon
 		p.skipWhitespace()
@@ -1363,7 +1427,7 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 
 		// Parse case body - could be multiple statements or single expression
 		var caseBody *ASTNode
-		
+
 		// Check if we're starting a new case immediately (empty case)
 		if p.current().Type == TOKEN_ON || (p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "_") ||
 			p.current().Type == TOKEN_END || p.current().Type == TOKEN_DEDENT {
@@ -1372,20 +1436,20 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 		} else {
 			// Parse statements/expressions until we hit next case or end
 			statements := []*ASTNode{}
-			
+
 			for {
 				// Skip cosmetic tokens
 				for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT ||
 					p.current().Type == TOKEN_DEDENT {
 					p.advance()
 				}
-				
+
 				// Check for end of case
 				if p.current().Type == TOKEN_ON || (p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "_") ||
 					p.current().Type == TOKEN_END || p.current().Type == TOKEN_EOF {
 					break
 				}
-				
+
 				// Parse one statement/expression
 				var stmt *ASTNode
 				switch p.current().Type {
@@ -1408,16 +1472,16 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 					// Try to parse as expression (potentially tuple)
 					stmt = p.parseSwitchCaseExpression()
 				}
-				
+
 				// Append statement and check for end of case
 				if stmt != nil {
 					statements = append(statements, stmt)
-					
+
 					// Skip trailing cosmetic tokens
 					for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_DEDENT {
 						p.advance()
 					}
-					
+
 					// Check if we're at the end of this case
 					if p.current().Type == TOKEN_ON || (p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "_") ||
 						p.current().Type == TOKEN_END || p.current().Type == TOKEN_EOF {
@@ -1427,7 +1491,7 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 					break
 				}
 			}
-			
+
 			// If multiple statements, wrap in block; otherwise return single statement
 			if len(statements) > 1 {
 				caseBody = &ASTNode{
@@ -1507,7 +1571,7 @@ func (p *Parser) validateSwitchReturnTypesWithExpected(switchStmt *ASTNode, expe
 		line     int
 	}
 	var cases []caseInfo
-	
+
 	for i := 1; i < len(switchStmt.Children); i++ {
 		caseNode := switchStmt.Children[i]
 		if caseNode.Type != NODE_SWITCH_CASE || len(caseNode.Children) < 2 {
@@ -1562,7 +1626,7 @@ func (p *Parser) validateSwitchReturnTypesWithExpected(switchStmt *ASTNode, expe
 func (p *Parser) parseSwitchCaseExpression() *ASTNode {
 	// Parse first expression
 	firstExpr := p.parseExpression()
-	
+
 	// Check if there's a comma (tuple expression)
 	if p.current().Type == TOKEN_COMMA {
 		// This is a tuple expression
@@ -1570,31 +1634,31 @@ func (p *Parser) parseSwitchCaseExpression() *ASTNode {
 			Type:     NODE_BLOCK, // Use BLOCK to hold multiple expressions
 			Children: []*ASTNode{firstExpr},
 		}
-		
+
 		for p.current().Type == TOKEN_COMMA {
 			p.advance() // consume comma
-			
+
 			// Check for newline (end of case) or other terminators
 			if p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_DEDENT ||
 				p.current().Type == TOKEN_ON || p.current().Type == TOKEN_END ||
 				(p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "_") {
 				break
 			}
-			
+
 			expr := p.parseExpression()
 			tupleNode.Children = append(tupleNode.Children, expr)
 		}
-		
+
 		return tupleNode
 	}
-	
+
 	return firstExpr
 }
 
 // parseSwitchCaseBlock parses a multi-line switch case body
 func (p *Parser) parseSwitchCaseBlock(startLine int) *ASTNode {
 	block := &ASTNode{Type: NODE_BLOCK, Line: startLine}
-	
+
 	maxIterations := 10000
 	iterations := 0
 
@@ -1751,17 +1815,17 @@ func (p *Parser) parseLoop() *ASTNode {
 				loopScope[loopVar.Value] = "int"
 				p.loopVarScopes = append(p.loopVarScopes, loopScope)
 			}
-			
+
 			// Both inline and multiline now require $ to close
 			// Skip optional newlines after do/colon
 			for p.current().Type == TOKEN_NEWLINE {
 				p.advance()
 			}
-			
+
 			p.skipWhitespace()
 			p.blockDepth++ // Opening a block (inline or multiline)
 			body := p.parseBlockUntilEnd("loop", startLine)
-			
+
 			// Pop loop variable scope
 			if loopVar != nil && len(p.loopVarScopes) > 0 {
 				p.loopVarScopes = p.loopVarScopes[:len(p.loopVarScopes)-1]
@@ -1801,17 +1865,17 @@ func (p *Parser) parseLoop() *ASTNode {
 				loopScope[loopVar.Value] = "int"
 				p.loopVarScopes = append(p.loopVarScopes, loopScope)
 			}
-			
+
 			// Both inline and multiline now require $ to close
 			// Skip optional newlines after do/colon
 			for p.current().Type == TOKEN_NEWLINE {
 				p.advance()
 			}
-			
+
 			p.skipWhitespace()
 			p.blockDepth++ // Opening a block (inline or multiline)
 			body := p.parseBlockUntilEnd("loop", startLine)
-			
+
 			// Pop loop variable scope
 			if loopVar != nil && len(p.loopVarScopes) > 0 {
 				p.loopVarScopes = p.loopVarScopes[:len(p.loopVarScopes)-1]
@@ -1831,13 +1895,13 @@ func (p *Parser) parseLoop() *ASTNode {
 		} else if p.current().Type == TOKEN_ASSIGN {
 			// loop i:start: (forever loop with counter starting at start)
 			p.advance() // consume second ':'
-			
+
 			// Both inline and multiline now require $ to close
 			// Skip optional newlines after second colon
 			for p.current().Type == TOKEN_NEWLINE {
 				p.advance()
 			}
-			
+
 			p.skipWhitespace()
 			p.blockDepth++ // Opening a block (inline or multiline)
 			body := p.parseBlockUntilEnd("loop", startLine)
@@ -2059,7 +2123,7 @@ func (p *Parser) parseLoop() *ASTNode {
 	} else if p.current().Type == TOKEN_DO || p.current().Type == TOKEN_ASSIGN {
 		// loop [i] do or loop [i] : - infinite loop, optionally with counter
 		p.advance() // consume 'do' or ':'
-		
+
 		// Both inline and multiline now require $ to close
 		for p.current().Type == TOKEN_NEWLINE {
 			p.advance()
@@ -2158,11 +2222,11 @@ func (p *Parser) parseAhoyStatement() *ASTNode {
 		for p.current().Type == TOKEN_NEWLINE {
 			p.advance()
 		}
-		
+
 		if p.current().Type == TOKEN_PIPE || p.current().Type == TOKEN_EOF {
 			break
 		}
-		
+
 		arg := p.parseCallArgument()
 		call.Children = append(call.Children, arg)
 
@@ -2213,11 +2277,11 @@ func (p *Parser) parsePrintStatement() *ASTNode {
 		for p.current().Type == TOKEN_NEWLINE {
 			p.advance()
 		}
-		
+
 		if p.current().Type == TOKEN_PIPE || p.current().Type == TOKEN_EOF {
 			break
 		}
-		
+
 		arg := p.parseCallArgument()
 		call.Children = append(call.Children, arg)
 
@@ -2399,10 +2463,39 @@ func (p *Parser) parseImportStatement() *ASTNode {
 		panic(fmt.Sprintf("Expected identifier or string path after import at line %d", p.current().Line))
 	}
 
+	// Resolve relative paths
+	resolvedPath := path
+	if !filepath.IsAbs(path) && p.sourceFilePath != "" {
+		// Path is relative, resolve it relative to the source file
+		sourceDir := filepath.Dir(p.sourceFilePath)
+		resolvedPath = filepath.Join(sourceDir, path)
+		resolvedPath = filepath.Clean(resolvedPath)
+	}
+
+	// Check if file exists (for linting)
+	if p.LintMode {
+		if _, err := os.Stat(resolvedPath); os.IsNotExist(err) {
+			errMsg := fmt.Sprintf("Import path does not exist: %s", path)
+			p.recordErrorAtLine(errMsg, importToken.Line)
+			// Continue parsing, but don't try to load the header
+			return &ASTNode{
+				Type:     NODE_IMPORT_STATEMENT,
+				Value:    path,
+				DataType: namespace,
+			}
+		}
+	}
+
 	// Parse the C header file if it ends with .h
 	if strings.HasSuffix(path, ".h") {
-		headerInfo, err := ParseCHeader(path)
-		if err == nil {
+		headerInfo, err := ParseCHeader(resolvedPath)
+		if err != nil {
+			// Record error in lint mode
+			if p.LintMode {
+				errMsg := fmt.Sprintf("Failed to parse C header '%s': %v", path, err)
+				p.recordErrorAtLine(errMsg, importToken.Line)
+			}
+		} else {
 			if namespace != "" {
 				// Store with namespace
 				p.cHeaders[namespace] = headerInfo
@@ -2462,6 +2555,7 @@ func (p *Parser) parseImportStatement() *ASTNode {
 		Type:     NODE_IMPORT_STATEMENT,
 		Value:    path,
 		DataType: namespace, // Use DataType field to store namespace
+		Line:     importToken.Line,
 	}
 }
 
@@ -2486,7 +2580,7 @@ func (p *Parser) parseWalrusAssignment() *ASTNode {
 	name := p.expect(TOKEN_IDENTIFIER)
 	line := name.Line
 	p.expect(TOKEN_WALRUS)
-	
+
 	// Check if value is a switch expression - not allowed without explicit type
 	if p.current().Type == TOKEN_SWITCH {
 		errMsg := fmt.Sprintf("Expected type/s between : and = for switch expression (e.g., :string= or :(string,int)=)")
@@ -2508,10 +2602,10 @@ func (p *Parser) parseWalrusAssignment() *ASTNode {
 			panic(errMsg)
 		}
 	}
-	
+
 	// Parse the value
 	value := p.parseExpression()
-	
+
 	return &ASTNode{
 		Type:     NODE_VARIABLE_DECLARATION,
 		Value:    name.Value,
@@ -2525,14 +2619,14 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 	// Check for unary expression assignment: ^ptr: value or &var: value
 	if p.current().Type == TOKEN_CARET || p.current().Type == TOKEN_AMPERSAND {
 		// Look ahead to see if this is an assignment pattern
-		if p.pos+2 < len(p.tokens) && 
-		   p.tokens[p.pos+1].Type == TOKEN_IDENTIFIER && 
-		   p.tokens[p.pos+2].Type == TOKEN_ASSIGN {
+		if p.pos+2 < len(p.tokens) &&
+			p.tokens[p.pos+1].Type == TOKEN_IDENTIFIER &&
+			p.tokens[p.pos+2].Type == TOKEN_ASSIGN {
 			// Parse the unary expression
 			target := p.parseUnaryExpression()
 			p.expect(TOKEN_ASSIGN)
 			value := p.parseExpression()
-			
+
 			return &ASTNode{
 				Type:     NODE_ASSIGNMENT,
 				Children: []*ASTNode{target, value},
@@ -2540,7 +2634,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			}
 		}
 	}
-	
+
 	// Check for object property assignment: obj{'prop'}: value
 	if p.pos+2 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_LBRACE {
 		// Check if this is obj{'prop'}: pattern
@@ -2574,7 +2668,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			}
 		}
 	}
-	
+
 	// Check for dict property assignment: dict<key>: value
 	if p.pos+2 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_LANGLE {
 		// Check if this is dict<key>: pattern
@@ -2630,26 +2724,26 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 
 		if isAssignment || isCompoundAssignment {
 			target := p.parsePrimaryExpression() // This will parse arr[index]
-			
+
 			if isCompoundAssignment {
 				// Handle +=, -=, *=, /=, %=
 				opToken := p.current()
 				p.advance() // consume compound operator
 				value := p.parseExpression()
-				
+
 				// Convert to: target: target op value
 				op := p.getCompoundAssignOp(opToken.Type)
-				
+
 				// Create a copy of target for the right side of the binary op
 				targetCopy := p.copyASTNode(target)
-				
+
 				binaryOp := &ASTNode{
 					Type:     NODE_BINARY_OP,
 					Value:    op,
 					Children: []*ASTNode{targetCopy, value},
 					Line:     target.Line,
 				}
-				
+
 				return &ASTNode{
 					Type:     NODE_ASSIGNMENT,
 					Children: []*ASTNode{target, binaryOp},
@@ -2688,31 +2782,31 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 
 		if isAssignment || isCompoundAssignment {
 			target := p.parsePrimaryExpression() // This will parse obj.property
-			
+
 			if isCompoundAssignment {
 				// Handle +=, -=, *=, /=, %=
 				opToken := p.current()
 				p.advance() // consume compound operator
 				value := p.parseExpression()
-				
+
 				// Convert to: target: target op value
 				op := p.getCompoundAssignOp(opToken.Type)
-				
+
 				// Create a copy of target for the right side of the binary op
 				targetCopy := p.copyASTNode(target)
-				
+
 				binaryOp := &ASTNode{
 					Type:     NODE_BINARY_OP,
 					Value:    op,
 					Children: []*ASTNode{targetCopy, value},
 					Line:     target.Line,
 				}
-				
+
 				// Validate property assignment in lint mode
 				if p.LintMode && target.Type == NODE_MEMBER_ACCESS {
 					p.validatePropertyAssignment(target, binaryOp, target.Line)
 				}
-				
+
 				return &ASTNode{
 					Type:     NODE_ASSIGNMENT,
 					Children: []*ASTNode{target, binaryOp},
@@ -2775,17 +2869,17 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 		opToken := p.current()
 		p.advance() // consume compound operator
 		value := p.parseExpression()
-		
+
 		// Convert to: identifier: identifier op value
 		op := p.getCompoundAssignOp(opToken.Type)
-		
+
 		// Create identifier node for the right side of binary op
 		identNode := &ASTNode{
 			Type:  NODE_IDENTIFIER,
 			Value: name.Value,
 			Line:  line,
 		}
-		
+
 		// Create binary operation: identifier + value
 		binaryOp := &ASTNode{
 			Type:     NODE_BINARY_OP,
@@ -2793,12 +2887,12 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			Children: []*ASTNode{identNode, value},
 			Line:     line,
 		}
-		
+
 		// Create assignment: identifier: (identifier + value)
 		return &ASTNode{
 			Type:     NODE_ASSIGNMENT,
-			Value:    name.Value,  // Variable name goes in Value field
-			Children: []*ASTNode{binaryOp},  // Binary op is the value being assigned
+			Value:    name.Value,           // Variable name goes in Value field
+			Children: []*ASTNode{binaryOp}, // Binary op is the value being assigned
 			Line:     line,
 		}
 	}
@@ -2807,12 +2901,12 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 		// Assignment with possible type annotation
 		name := p.expect(TOKEN_IDENTIFIER)
 		line := name.Line
-		
+
 		// Check if the variable name is in SCREAMING_SNAKE_CASE - if so, treat as constant
 		if isScreamingSnakeCase(name.Value) {
 			// Convert to constant declaration (same as MY_CONST::"value")
 			p.expect(TOKEN_ASSIGN) // consume :
-			
+
 			// In lint mode, check if constant is being redeclared
 			if p.LintMode {
 				if existingLine, exists := p.constants[name.Value]; exists {
@@ -2824,7 +2918,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					p.constants[name.Value] = line
 				}
 			}
-			
+
 			// Check for type annotation (type=)
 			var explicitType string
 			if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
@@ -2832,7 +2926,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
 				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 				p.current().Type == TOKEN_IDENTIFIER {
-				
+
 				possibleType := p.current().Value
 				// Look ahead to see if there's an = after the type
 				if p.peek(1).Type == TOKEN_EQUALS {
@@ -2841,10 +2935,10 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					p.advance() // consume =
 				}
 			}
-			
+
 			// Regular constant value
 			value := p.parseExpression()
-			
+
 			// In lint mode, track the constant's type
 			if p.LintMode {
 				if explicitType != "" {
@@ -2857,7 +2951,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					}
 				}
 			}
-			
+
 			return &ASTNode{
 				Type:     NODE_CONSTANT_DECLARATION,
 				Value:    name.Value,
@@ -2866,7 +2960,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				Children: []*ASTNode{value},
 			}
 		}
-		
+
 		p.expect(TOKEN_ASSIGN)
 
 		// Check for type annotation (type=) or inferred type (:=)
@@ -2874,7 +2968,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 		if p.current().Type == TOKEN_EQUALS {
 			// := syntax (or : = with space) - check if valid
 			p.advance() // consume =
-			
+
 			// Check if this is a switch expression - requires explicit type
 			if p.current().Type == TOKEN_SWITCH {
 				errMsg := fmt.Sprintf("Expected type/s between : and = for switch expression (e.g., :string= or :(string,int)=)")
@@ -2914,14 +3008,14 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				// Exception: 'dict' is a type keyword even though lowercase
 				identValue := p.current().Value
 				isType := (len(identValue) > 0 && identValue[0] >= 'A' && identValue[0] <= 'Z') || identValue == "dict" || identValue == "array"
-				
+
 				if !isType {
 					// This is a variable followed by <, not a type annotation
 					// Fall through to parse as expression (dict access)
 				} else {
 					// This is a type annotation, continue with type parsing
 					possibleType := p.current().Value
-					
+
 					// Handle type<...> syntax
 					if p.peek(1).Type == TOKEN_EQUALS || p.peek(1).Type == TOKEN_LANGLE {
 						// Non-collection types with = or <
@@ -2936,9 +3030,9 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			} else {
 				// This might be a type annotation
 				possibleType := p.current().Value
-				
+
 				// Check for typed collections: array[type]= or dict[key,value]= or dict<key,value>=
-				if (p.current().Type == TOKEN_ARRAY_TYPE || p.current().Type == TOKEN_DICT_TYPE || 
+				if (p.current().Type == TOKEN_ARRAY_TYPE || p.current().Type == TOKEN_DICT_TYPE ||
 					(p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "dict")) &&
 					(p.peek(1).Type == TOKEN_LBRACKET || p.peek(1).Type == TOKEN_LANGLE) {
 					baseType := possibleType
@@ -2946,7 +3040,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					bracketType := p.peek(1).Type
 					p.advance() // consume array/dict
 					p.advance() // consume [ or <
-					
+
 					if isDict {
 						// dict[key_type, value_type]= or dict<key_type, value_type>=
 						keyType := p.current().Value
@@ -3094,10 +3188,10 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					if value.Type == NODE_SWITCH_STATEMENT {
 						p.validateSwitchReturnTypesWithExpected(value, explicitType, line)
 					}
-					
+
 					// Validate typed collections match
-					if strings.HasPrefix(explicitType, "array[") || strings.HasPrefix(explicitType, "dict[") || 
-					   strings.HasPrefix(explicitType, "dict<") {
+					if strings.HasPrefix(explicitType, "array[") || strings.HasPrefix(explicitType, "dict[") ||
+						strings.HasPrefix(explicitType, "dict<") {
 						inferredType := p.inferType(value)
 						// For explicitly typed collections, we validate the base type matches
 						// array[string] should have inferredType "array", dict[string,int] or dict<string,int> should have inferredType "dict"
@@ -3120,7 +3214,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 						errMsg := fmt.Sprintf("Switch expression variable '%s' requires explicit type", varName)
 						p.recordErrorAtLine(errMsg, line)
 					}
-					
+
 					// Infer type from value
 					inferredType := p.inferType(value)
 					if inferredType != "unknown" {
@@ -3198,21 +3292,21 @@ func (p *Parser) parseCallArgument() *ASTNode {
 		paramName := p.current().Value
 		p.advance() // consume identifier
 		p.advance() // consume :
-		
+
 		// Parse the value
 		value := p.parseAdditiveExpression()
-		
+
 		// Create a special node to represent named argument
 		return &ASTNode{
-			Type:     NODE_BINARY_OP,
-			Value:    "named_arg",
+			Type:  NODE_BINARY_OP,
+			Value: "named_arg",
 			Children: []*ASTNode{
 				{Type: NODE_IDENTIFIER, Value: paramName},
 				value,
 			},
 		}
 	}
-	
+
 	// Parse an expression but stop at comma, pipe, or comparison operators
 	// Use parseAdditiveExpression to avoid treating <> as comparisons
 	return p.parseAdditiveExpression()
@@ -3242,7 +3336,7 @@ func (p *Parser) parseBlock() *ASTNode {
 // parseBlockUntilEnd parses statements until encountering '$' keyword
 func (p *Parser) parseBlockUntilEnd(constructName string, startLine int) *ASTNode {
 	block := &ASTNode{Type: NODE_BLOCK}
-	
+
 	// Remember the depth when entering - if it decreases, a nested $#N closed us
 	entryDepth := p.blockDepth
 
@@ -3255,7 +3349,7 @@ func (p *Parser) parseBlockUntilEnd(constructName string, startLine int) *ASTNod
 			// This block was closed by a nested $#N
 			return block
 		}
-		
+
 		// Stop if we encounter else/anif/elseif (for if statements)
 		if constructName == "if" || constructName == "anif" {
 			if p.current().Type == TOKEN_ELSE || p.current().Type == TOKEN_ANIF || p.current().Type == TOKEN_ELSEIF {
@@ -3265,7 +3359,7 @@ func (p *Parser) parseBlockUntilEnd(constructName string, startLine int) *ASTNod
 				return block
 			}
 		}
-		
+
 		iterations++
 		if iterations > maxIterations {
 			errMsg := fmt.Sprintf("Parser safety limit reached while parsing %s at line %d - possible infinite loop", constructName, startLine)
@@ -3298,15 +3392,15 @@ func (p *Parser) parseBlockUntilEnd(constructName string, startLine int) *ASTNod
 	if p.current().Type == TOKEN_END {
 		token := p.current()
 		p.advance() // consume 'end'
-		
+
 		// Decrement blockDepth for this block closure
 		p.blockDepth--
-		
+
 		// Handle $#N syntax - this TOKEN_END closes this block, but may close additional parent blocks
 		if strings.HasPrefix(token.Value, "$#") {
 			countStr := strings.TrimPrefix(token.Value, "$#")
 			count, err := strconv.Atoi(countStr)
-			
+
 			// Validate $#N syntax
 			if err != nil || count <= 0 {
 				if p.LintMode {
@@ -3316,21 +3410,21 @@ func (p *Parser) parseBlockUntilEnd(constructName string, startLine int) *ASTNod
 						Column:  token.Column,
 					})
 				}
-			} else if count > p.blockDepth + 1 { // +1 because we already decremented once
+			} else if count > p.blockDepth+1 { // +1 because we already decremented once
 				if p.LintMode {
 					p.Errors = append(p.Errors, ParseError{
-						Message: fmt.Sprintf("Cannot close %d blocks, only %d block(s) open", count, p.blockDepth + 1),
+						Message: fmt.Sprintf("Cannot close %d blocks, only %d block(s) open", count, p.blockDepth+1),
 						Line:    token.Line,
 						Column:  token.Column,
 					})
 				}
 			}
-			
+
 			if err == nil && count > 1 {
 				// This $ closed the current block (already decremented above)
 				// Need to close count-1 more blocks
 				p.blockDepth -= (count - 1)
-				
+
 				// Pop additional loop var scopes
 				for i := 1; i < count && len(p.loopVarScopes) > 0; i++ {
 					if p.blockDepth >= 0 && len(p.loopVarScopes) > p.blockDepth {
@@ -3454,22 +3548,22 @@ func (p *Parser) parseEqualityExpression() *ASTNode {
 	for p.current().Type == TOKEN_IS {
 		op := p.current()
 		p.advance()
-		
+
 		// Check for "is not" pattern
 		isNegated := false
 		if p.current().Type == TOKEN_NOT {
 			isNegated = true
 			p.advance()
 		}
-		
+
 		right := p.parseRelationalExpression()
-		
+
 		comparison := &ASTNode{
 			Type:     NODE_BINARY_OP,
 			Value:    op.Value,
 			Children: []*ASTNode{left, right},
 		}
-		
+
 		// If "is not", wrap in NOT node
 		if isNegated {
 			left = &ASTNode{
@@ -3488,16 +3582,16 @@ func (p *Parser) parseEqualityExpression() *ASTNode {
 func (p *Parser) parseRelationalExpression() *ASTNode {
 	left := p.parseAdditiveExpression()
 
-	for (p.current().Type == TOKEN_LANGLE || p.current().Type == TOKEN_RANGLE ||
+	for p.current().Type == TOKEN_LANGLE || p.current().Type == TOKEN_RANGLE ||
 		p.current().Type == TOKEN_LESS_EQUAL || p.current().Type == TOKEN_GREATER_EQUAL ||
-		p.current().Type == TOKEN_LESSER_WORD || p.current().Type == TOKEN_GREATER_WORD) {
-		
+		p.current().Type == TOKEN_LESSER_WORD || p.current().Type == TOKEN_GREATER_WORD {
+
 		// Check if this is dict access (identifier<"key">) instead of comparison
 		if p.current().Type == TOKEN_LANGLE && left.Type == NODE_IDENTIFIER {
 			// Lookahead to determine if this is dict access or comparison
 			nextToken := p.peek(1)
 			peek2 := p.peek(2)
-			
+
 			isDictAccess := false
 			if nextToken.Type == TOKEN_STRING && peek2.Type == TOKEN_RANGLE {
 				// dict<"key"> pattern
@@ -3509,28 +3603,27 @@ func (p *Parser) parseRelationalExpression() *ASTNode {
 				// Special type or dict literal: <key: value>
 				isDictAccess = true
 			}
-			
-			
+
 			if isDictAccess {
 				// Parse as dict access, not comparison
 				p.advance() // consume <
-				
+
 				// Parse dict access: dict<key>
 				key := p.parseCallArgument()
 				p.expect(TOKEN_RANGLE)
-				
+
 				left = &ASTNode{
 					Type:     NODE_DICT_ACCESS,
 					Value:    left.Value,
 					Children: []*ASTNode{key},
 					Line:     left.Line,
 				}
-				
+
 				// Continue to check for more operations
 				continue
 			}
 		}
-		
+
 		// Don't treat > as comparison operator if we're inside angle brackets for object/array access
 		// Check if the next token suggests we're closing an access expression
 		if p.current().Type == TOKEN_RANGLE && p.inFunctionCall > 0 {
@@ -3538,7 +3631,7 @@ func (p *Parser) parseRelationalExpression() *ASTNode {
 			// The > is likely closing an object/array access, not a comparison
 			break
 		}
-		
+
 		op := p.current()
 		p.advance()
 		right := p.parseAdditiveExpression()
@@ -3796,7 +3889,7 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			nextToken := p.peek(1)
 			peek2 := p.peek(2)
 			isLikelyComparison := false
-			
+
 			{
 				// Check for patterns that suggest comparison:
 				// 1. Next token is a number: i < 10
@@ -3833,7 +3926,7 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 					}
 				}
 			}
-			
+
 			// If this looks like a comparison, don't parse as dict access
 			// Return the identifier and let the relational expression parser handle <
 			if isLikelyComparison {
@@ -3848,7 +3941,7 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 				}
 				return node
 			}
-			
+
 			// Otherwise, proceed with dict access
 			p.advance()
 
@@ -3923,11 +4016,11 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 					for p.current().Type == TOKEN_NEWLINE {
 						p.advance()
 					}
-					
+
 					if p.current().Type == TOKEN_PIPE || p.current().Type == TOKEN_EOF {
 						break
 					}
-					
+
 					arg := p.parseCallArgument()
 					call.Children = append(call.Children, arg)
 
@@ -4095,7 +4188,7 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			// Otherwise error - unexpected syntax
 			panic(fmt.Sprintf("Unexpected token in object literal at line %d", p.current().Line))
 		}
-		
+
 		// Check if this is old dict literal syntax with <>
 		if p.current().Type == TOKEN_LANGLE {
 			p.advance()
@@ -4155,7 +4248,7 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 				Line:     token.Line,
 			}
 		}
-		
+
 		if p.current().Type != TOKEN_LPAREN {
 			// Not a cast or instantiation - treat as unexpected
 			errMsg := fmt.Sprintf("Unexpected type keyword '%s' at line %d:%d",
@@ -4381,7 +4474,7 @@ func (p *Parser) parseDictLiteral() *ASTNode {
 	// Dict literals now use <> syntax
 	startToken := p.current().Type
 	var endToken TokenType
-	
+
 	if startToken == TOKEN_LANGLE {
 		p.advance()
 		endToken = TOKEN_RANGLE
@@ -4522,12 +4615,12 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 	for p.current().Type != TOKEN_END && p.current().Type != TOKEN_DEDENT && p.current().Type != TOKEN_EOF {
 		// Skip any leading newlines
 		p.skipNewlines()
-		
+
 		// Check if we've reached the end
 		if p.current().Type == TOKEN_END || p.current().Type == TOKEN_DEDENT || p.current().Type == TOKEN_EOF {
 			break
 		}
-		
+
 		var valueNode *ASTNode
 		var memberName string
 		var isMutable bool
@@ -4566,11 +4659,11 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 			typeName := p.current().Value
 			typeToken := p.current()
 			p.advance() // consume type name
-			
+
 			if p.current().Type == TOKEN_LANGLE {
 				p.advance() // consume '<'
 				values := []*ASTNode{}
-				
+
 				// Parse comma-separated values
 				for p.current().Type != TOKEN_RANGLE && p.current().Type != TOKEN_EOF && p.current().Type != TOKEN_END {
 					if p.current().Type == TOKEN_NUMBER {
@@ -4587,11 +4680,11 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 						p.advance()
 					}
 				}
-				
+
 				if p.current().Type == TOKEN_RANGLE {
 					p.advance() // consume '>'
 				}
-				
+
 				valueNode = &ASTNode{
 					Type:     NODE_OBJECT_LITERAL,
 					Value:    typeName,
@@ -4764,23 +4857,23 @@ func (p *Parser) parseConstantDeclaration() *ASTNode {
 func (p *Parser) parseFunctionDeclaration() *ASTNode {
 	startLine := p.current().Line
 	p.expect(TOKEN_AT) // consume @
-	
+
 	// Check for nested function definition
 	if p.LintMode && p.functionDepth > 0 {
 		errMsg := fmt.Sprintf("Function definitions cannot be nested inside other functions (line %d)", startLine)
 		p.recordErrorAtLine(errMsg, startLine)
 	}
-	
+
 	name := p.expect(TOKEN_IDENTIFIER)
-	
+
 	// Double colon is now optional
 	if p.current().Type == TOKEN_DOUBLE_COLON {
 		p.advance()
 	}
-	
-	p.functionDepth++ // Entering function definition
+
+	p.functionDepth++                    // Entering function definition
 	defer func() { p.functionDepth-- }() // Exiting function definition
-	
+
 	result := p.parseFunctionWithDoubleColon(name)
 	return result
 }
@@ -4991,7 +5084,7 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 			errMsg := fmt.Sprintf("Redeclaration of '%s' as function (previously declared as constant at line %d)", name.Value, existingLine)
 			p.recordErrorAtLine(errMsg, name.Line)
 		}
-		
+
 		p.functions[name.Value] = &FunctionSignature{
 			Name:         name.Value,
 			Parameters:   paramInfos,
@@ -5000,7 +5093,7 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 			FunctionNode: fn,
 			Line:         name.Line,
 		}
-		
+
 		// Validate main function signature if program is declared
 		if p.hasProgramDecl && name.Value == "main" {
 			if len(paramInfos) > 0 {
@@ -5045,10 +5138,10 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 				nextToken.Type == TOKEN_STRING_TYPE || nextToken.Type == TOKEN_BOOL_TYPE ||
 				nextToken.Type == TOKEN_COLOR_TYPE || nextToken.Type == TOKEN_VECTOR2_TYPE ||
 				nextToken.Type == TOKEN_DICT_TYPE || nextToken.Type == TOKEN_ARRAY_TYPE
-			
+
 			// Check if this is inline type annotation (has comma after type)
 			isInlineTypeAnnotation := isTypeToken && p.peek(2).Type == TOKEN_COMMA
-			
+
 			if isInlineTypeAnnotation {
 				p.advance() // consume :
 				idNode.DataType = p.current().Value
@@ -5084,14 +5177,14 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 				p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
 				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 				p.current().Type == TOKEN_IDENTIFIER {
-				
+
 				// Apply type to corresponding left-side variable
 				if typeIndex < len(leftSide.Children) {
 					leftSide.Children[typeIndex].DataType = p.current().Value
 				}
 				p.advance()
 				typeIndex++
-				
+
 				if p.current().Type == TOKEN_COMMA {
 					p.advance()
 				}
@@ -5144,7 +5237,7 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 				p.recordError(errMsg)
 			}
 		}
-		
+
 		p.validateTupleAssignment(leftSide, rightSide, line)
 	}
 
@@ -5159,10 +5252,10 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 func (p *Parser) parseAliasDeclaration() *ASTNode {
 	startLine := p.current().Line
 	p.expect(TOKEN_ALIAS)
-	
+
 	name := p.expect(TOKEN_IDENTIFIER)
 	p.expect(TOKEN_ASSIGN) // :
-	
+
 	// Parse the type being aliased
 	var aliasedType string
 	if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
@@ -5172,7 +5265,7 @@ func (p *Parser) parseAliasDeclaration() *ASTNode {
 		p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_IDENTIFIER {
 		aliasedType = p.current().Value
 		p.advance()
-		
+
 		// Handle array[type] syntax
 		if p.current().Type == TOKEN_LBRACKET {
 			p.advance()
@@ -5193,13 +5286,13 @@ func (p *Parser) parseAliasDeclaration() *ASTNode {
 			panic(errMsg)
 		}
 	}
-	
+
 	// Register the alias in the type system
 	if p.typeAliases == nil {
 		p.typeAliases = make(map[string]string)
 	}
 	p.typeAliases[name.Value] = aliasedType
-	
+
 	return &ASTNode{
 		Type:     NODE_ALIAS_DECLARATION,
 		Value:    name.Value,
@@ -5212,10 +5305,10 @@ func (p *Parser) parseAliasDeclaration() *ASTNode {
 func (p *Parser) parseUnionDeclaration() *ASTNode {
 	startLine := p.current().Line
 	p.expect(TOKEN_UNION)
-	
+
 	name := p.expect(TOKEN_IDENTIFIER)
 	p.expect(TOKEN_ASSIGN) // :
-	
+
 	// Parse the types in the union
 	types := []string{}
 	for {
@@ -5226,7 +5319,7 @@ func (p *Parser) parseUnionDeclaration() *ASTNode {
 			p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_IDENTIFIER {
 			types = append(types, p.current().Value)
 			p.advance()
-			
+
 			if p.current().Type == TOKEN_COMMA {
 				p.advance()
 			} else {
@@ -5236,7 +5329,7 @@ func (p *Parser) parseUnionDeclaration() *ASTNode {
 			break
 		}
 	}
-	
+
 	if len(types) < 2 {
 		errMsg := fmt.Sprintf("Union type '%s' must have at least 2 types at line %d", name.Value, startLine)
 		if p.LintMode {
@@ -5245,19 +5338,19 @@ func (p *Parser) parseUnionDeclaration() *ASTNode {
 			panic(errMsg)
 		}
 	}
-	
+
 	// Register the union in the type system
 	if p.unionTypes == nil {
 		p.unionTypes = make(map[string][]string)
 	}
 	p.unionTypes[name.Value] = types
-	
+
 	unionNode := &ASTNode{
 		Type:  NODE_UNION_DECLARATION,
 		Value: name.Value,
 		Line:  startLine,
 	}
-	
+
 	// Add type nodes as children
 	for _, typeName := range types {
 		unionNode.Children = append(unionNode.Children, &ASTNode{
@@ -5265,7 +5358,7 @@ func (p *Parser) parseUnionDeclaration() *ASTNode {
 			Value: typeName,
 		})
 	}
-	
+
 	return unionNode
 }
 
@@ -5273,8 +5366,8 @@ func (p *Parser) parseUnionDeclaration() *ASTNode {
 func (p *Parser) parseJsonStructDeclaration() *ASTNode {
 	// Parse json:struct name:
 	p.expect(TOKEN_IDENTIFIER) // "json"
-	p.expect(TOKEN_ASSIGN)      // ":"
-	
+	p.expect(TOKEN_ASSIGN)     // ":"
+
 	// Now just delegate to struct parsing, but mark it as JSON
 	struc := p.parseStructDeclaration()
 	if struc != nil {
@@ -5286,7 +5379,7 @@ func (p *Parser) parseJsonStructDeclaration() *ASTNode {
 func (p *Parser) parseStructDeclaration() *ASTNode {
 	startLine := p.current().Line
 	p.expect(TOKEN_STRUCT)
-	
+
 	// Allow vector2 and color as struct names even though they're keywords
 	var name Token
 	if p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_VECTOR2_TYPE || p.current().Type == TOKEN_COLOR_TYPE {
@@ -5393,8 +5486,8 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 								Line:  line,
 							}
 							p.advance()
-						} else if (p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_VECTOR2_TYPE || p.current().Type == TOKEN_COLOR_TYPE) && 
-									p.peek(1).Type == TOKEN_LBRACE {
+						} else if (p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_VECTOR2_TYPE || p.current().Type == TOKEN_COLOR_TYPE) &&
+							p.peek(1).Type == TOKEN_LBRACE {
 							// Parse object literal default value: Type{...}
 							typeName := p.current().Value
 							p.advance() // consume type name
@@ -5445,7 +5538,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 						} else {
 							fieldName = p.expect(TOKEN_IDENTIFIER)
 						}
-						
+
 						// Check if type is provided (field: type) or inferred from default value
 						fieldType := ""
 						if p.current().Type == TOKEN_ASSIGN {
@@ -5453,30 +5546,30 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 
 							// Get type - handle array[type] and dict<key,val> syntax
 							if p.current().Type == TOKEN_ARRAY_TYPE {
-							fieldType = "array"
-							p.advance()
-							if p.current().Type == TOKEN_LBRACKET {
-								p.advance() // consume [
-								fieldType += "[" + p.current().Value
-								p.advance() // consume type
-								p.expect(TOKEN_RBRACKET)
-								fieldType += "]"
-							}
-						} else if p.current().Type == TOKEN_DICT_TYPE {
-							fieldType = "dict"
-							p.advance()
-							if p.current().Type == TOKEN_LANGLE {
-								p.advance() // consume <
-								fieldType += "<" + p.current().Value
-								p.advance() // consume key type
-								if p.current().Type == TOKEN_COMMA {
-									p.advance()
-									fieldType += "," + p.current().Value
-									p.advance() // consume value type
+								fieldType = "array"
+								p.advance()
+								if p.current().Type == TOKEN_LBRACKET {
+									p.advance() // consume [
+									fieldType += "[" + p.current().Value
+									p.advance() // consume type
+									p.expect(TOKEN_RBRACKET)
+									fieldType += "]"
 								}
-								p.expect(TOKEN_RANGLE)
-								fieldType += ">"
-							}
+							} else if p.current().Type == TOKEN_DICT_TYPE {
+								fieldType = "dict"
+								p.advance()
+								if p.current().Type == TOKEN_LANGLE {
+									p.advance() // consume <
+									fieldType += "<" + p.current().Value
+									p.advance() // consume key type
+									if p.current().Type == TOKEN_COMMA {
+										p.advance()
+										fieldType += "," + p.current().Value
+										p.advance() // consume value type
+									}
+									p.expect(TOKEN_RANGLE)
+									fieldType += ">"
+								}
 							} else {
 								fieldType = p.current().Value
 								if p.current().Type == TOKEN_IDENTIFIER ||
@@ -5518,7 +5611,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 								fieldType = "int" // default when no default value and no type
 							}
 						}
-						
+
 						field := &ASTNode{
 							Type:         NODE_IDENTIFIER,
 							Value:        fieldName.Value,
@@ -5562,8 +5655,8 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 					Line:  line,
 				}
 				p.advance()
-			} else if (p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_VECTOR2_TYPE || p.current().Type == TOKEN_COLOR_TYPE) && 
-						p.peek(1).Type == TOKEN_LBRACE {
+			} else if (p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_VECTOR2_TYPE || p.current().Type == TOKEN_COLOR_TYPE) &&
+				p.peek(1).Type == TOKEN_LBRACE {
 				// Parse object literal default value: Type{...}
 				typeName := p.current().Value
 				p.advance() // consume type name
@@ -5614,7 +5707,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 			} else {
 				fieldName = p.expect(TOKEN_IDENTIFIER)
 			}
-			
+
 			// Check if type is provided (field: type) or inferred from default value
 			fieldType := ""
 			if p.current().Type == TOKEN_ASSIGN {
@@ -5622,30 +5715,30 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 
 				// Get type - handle array[type] and dict<key,val> syntax
 				if p.current().Type == TOKEN_ARRAY_TYPE {
-				fieldType = "array"
-				p.advance()
-				if p.current().Type == TOKEN_LBRACKET {
-					p.advance() // consume [
-					fieldType += "[" + p.current().Value
-					p.advance() // consume type
-					p.expect(TOKEN_RBRACKET)
-					fieldType += "]"
-				}
-			} else if p.current().Type == TOKEN_DICT_TYPE {
-				fieldType = "dict"
-				p.advance()
-				if p.current().Type == TOKEN_LANGLE {
-					p.advance() // consume <
-					fieldType += "<" + p.current().Value
-					p.advance() // consume key type
-					if p.current().Type == TOKEN_COMMA {
-						p.advance()
-						fieldType += "," + p.current().Value
-						p.advance() // consume value type
+					fieldType = "array"
+					p.advance()
+					if p.current().Type == TOKEN_LBRACKET {
+						p.advance() // consume [
+						fieldType += "[" + p.current().Value
+						p.advance() // consume type
+						p.expect(TOKEN_RBRACKET)
+						fieldType += "]"
 					}
-					p.expect(TOKEN_RANGLE)
-					fieldType += ">"
-				}
+				} else if p.current().Type == TOKEN_DICT_TYPE {
+					fieldType = "dict"
+					p.advance()
+					if p.current().Type == TOKEN_LANGLE {
+						p.advance() // consume <
+						fieldType += "<" + p.current().Value
+						p.advance() // consume key type
+						if p.current().Type == TOKEN_COMMA {
+							p.advance()
+							fieldType += "," + p.current().Value
+							p.advance() // consume value type
+						}
+						p.expect(TOKEN_RANGLE)
+						fieldType += ">"
+					}
 				} else {
 					fieldType = p.current().Value
 					if p.current().Type == TOKEN_IDENTIFIER ||
@@ -5687,7 +5780,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 					fieldType = "int" // default when no default value and no type
 				}
 			}
-			
+
 			field := &ASTNode{
 				Type:         NODE_IDENTIFIER,
 				Value:        fieldName.Value,
@@ -5748,7 +5841,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 // Store struct definition for later validation
 func (p *Parser) storeStructDefinition(struc *ASTNode, startLine int) {
 	structName := struc.Value
-	
+
 	// Check for duplicate struct declaration
 	if existing, exists := p.structs[structName]; exists {
 		errMsg := fmt.Sprintf("Redeclaration of struct '%s' (previously declared at line %d)", structName, existing.Line)
@@ -5866,7 +5959,7 @@ func (p *Parser) validatePropertyAssignment(target *ASTNode, value *ASTNode, lin
 	// and validate each level
 	current := target
 	var accessChain []string
-	
+
 	// Build the access chain from right to left
 	for current.Type == NODE_MEMBER_ACCESS {
 		accessChain = append([]string{current.Value}, accessChain...)
@@ -5876,7 +5969,7 @@ func (p *Parser) validatePropertyAssignment(target *ASTNode, value *ASTNode, lin
 			break
 		}
 	}
-	
+
 	// Get the root variable
 	varName := ""
 	objectType := ""
@@ -5897,7 +5990,7 @@ func (p *Parser) validatePropertyAssignment(target *ASTNode, value *ASTNode, lin
 	// Walk through each property in the chain
 	for i, propName := range accessChain {
 		isLastProp := i == len(accessChain)-1
-		
+
 		// Check if it's an object literal
 		if objectType == "object" || objectType == "object_literal" {
 			if props, ok := p.objectLiterals[varName]; ok {
@@ -5921,10 +6014,10 @@ func (p *Parser) validatePropertyAssignment(target *ASTNode, value *ASTNode, lin
 				p.recordError(errMsg)
 				return
 			}
-			
+
 			// Get the type of this property for next iteration
 			propType := p.getStructFieldType(objectType, propName)
-			
+
 			if isLastProp {
 				// Validate type compatibility for the final assignment
 				valueType := p.inferType(value)
@@ -5978,7 +6071,7 @@ func (p *Parser) getStructFieldType(typeName, fieldName string) string {
 func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 	for p.current().Type == TOKEN_DOT {
 		p.advance()
-		
+
 		// Allow 'type' keyword as a member name (special case for .type property)
 		var member Token
 		if p.current().Type == TOKEN_TYPE {
@@ -6013,7 +6106,7 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 			// or if this pipe is the closing pipe of the outer call
 			savedPos := p.pos
 			p.advance() // consume opening pipe
-			
+
 			// If immediately followed by another pipe, it's an empty method call
 			isMethodCall := false
 			if p.current().Type == TOKEN_PIPE {
@@ -6022,10 +6115,10 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 				// There's content between pipes, so it's a method call
 				isMethodCall = true
 			}
-			
+
 			// Reset position
 			p.pos = savedPos
-			
+
 			if isMethodCall {
 				p.advance() // consume opening pipe
 
@@ -6059,7 +6152,7 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 					}
 				}
 				p.expect(TOKEN_PIPE)
-				
+
 				// Decrement depth
 				p.inFunctionCall--
 
@@ -6118,17 +6211,17 @@ func (p *Parser) inferMemberAccessType(node *ASTNode) string {
 		}
 		return ""
 	}
-	
+
 	if node.Type == NODE_MEMBER_ACCESS && len(node.Children) > 0 {
 		// Get the type of the object being accessed
 		objType := p.inferMemberAccessType(node.Children[0])
 		if objType == "" {
 			return ""
 		}
-		
+
 		// Normalize struct type
 		objType = strings.TrimPrefix(objType, "struct:")
-		
+
 		// Look up the field type in the struct
 		if structDef, ok := p.structs[objType]; ok {
 			memberName := node.Value
@@ -6138,7 +6231,7 @@ func (p *Parser) inferMemberAccessType(node *ASTNode) string {
 				}
 			}
 		}
-		
+
 		// Check for built-in types with fields (vector2, color)
 		if objType == "vector2" {
 			if node.Value == "x" || node.Value == "y" {
@@ -6150,7 +6243,7 @@ func (p *Parser) inferMemberAccessType(node *ASTNode) string {
 			}
 		}
 	}
-	
+
 	return ""
 }
 
@@ -6215,7 +6308,7 @@ func (p *Parser) validateMemberAccess(object *ASTNode, memberName string, line i
 		}
 		return
 	}
-	
+
 	// Check if it's a struct type
 	if structDef, ok := p.structs[objectType]; ok {
 		if !p.structHasField(objectType, memberName) {
@@ -6272,7 +6365,7 @@ func (p *Parser) parseArrayLiteralBracket() *ASTNode {
 func (p *Parser) isLambda() bool {
 	// Look ahead for pattern: IDENTIFIER ASSIGN expression or (params): expression
 	saved := p.pos
-	
+
 	// Check for multi-param lambda: (param1, param2): expression
 	if p.current().Type == TOKEN_LPAREN {
 		p.advance()
@@ -6294,7 +6387,7 @@ func (p *Parser) isLambda() bool {
 		p.pos = saved
 		return false
 	}
-	
+
 	// Check for single-param lambda: param: expression
 	if p.pos+1 < len(p.tokens) {
 		p.advance()
@@ -6302,7 +6395,7 @@ func (p *Parser) isLambda() bool {
 		p.pos = saved
 		return isLambdaSyntax
 	}
-	
+
 	p.pos = saved
 	return false
 }
@@ -6311,11 +6404,11 @@ func (p *Parser) isLambda() bool {
 func (p *Parser) parseLambda() *ASTNode {
 	startLine := p.current().Line
 	params := []*ASTNode{}
-	
+
 	// Check for multi-parameter lambda with parentheses
 	if p.current().Type == TOKEN_LPAREN {
 		p.advance() // consume (
-		
+
 		// Parse parameters
 		for p.current().Type != TOKEN_RPAREN && p.current().Type != TOKEN_EOF {
 			param := p.expect(TOKEN_IDENTIFIER)
@@ -6324,14 +6417,14 @@ func (p *Parser) parseLambda() *ASTNode {
 				Value: param.Value,
 				Line:  param.Line,
 			})
-			
+
 			if p.current().Type == TOKEN_COMMA {
 				p.advance()
 			} else if p.current().Type != TOKEN_RPAREN {
 				break
 			}
 		}
-		
+
 		p.expect(TOKEN_RPAREN)
 	} else {
 		// Single parameter (no parentheses)
@@ -6355,7 +6448,7 @@ func (p *Parser) parseLambda() *ASTNode {
 		Value: fmt.Sprintf("%d", len(params)), // Store param count in Value
 		Line:  startLine,
 	}
-	
+
 	// Add parameters and body as children
 	lambda.Children = append(lambda.Children, params...)
 	lambda.Children = append(lambda.Children, expr)
@@ -6464,7 +6557,7 @@ func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int)
 	if len(rightSide.Children) == 1 && rightSide.Children[0].Type == NODE_SWITCH_STATEMENT {
 		switchNode := rightSide.Children[0]
 		expectedCount := len(leftSide.Children)
-		
+
 		// Validate all cases return the expected number of values
 		for i := 1; i < len(switchNode.Children); i++ {
 			caseNode := switchNode.Children[i]
@@ -6473,22 +6566,22 @@ func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int)
 				if caseLine == 0 {
 					caseLine = line
 				}
-				
+
 				caseBody := caseNode.Children[1]
-				
+
 				// Determine actual count: BLOCK means tuple, anything else is single value
 				actualCount := 1
 				if caseBody.Type == NODE_BLOCK {
 					actualCount = len(caseBody.Children)
 				}
-				
+
 				if actualCount != expectedCount {
 					errMsg := fmt.Sprintf("Expected %d return values but got %d",
 						expectedCount, actualCount)
 					p.recordErrorAtLine(errMsg, caseLine)
 					continue // Skip type validation if count mismatch
 				}
-				
+
 				// Validate types if explicit types are provided
 				if caseBody.Type == NODE_BLOCK {
 					for j, expr := range caseBody.Children {
@@ -6516,7 +6609,7 @@ func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int)
 				}
 			}
 		}
-		
+
 		// Register variables with their declared types
 		for _, leftVar := range leftSide.Children {
 			if leftVar.DataType != "" {
@@ -6746,11 +6839,11 @@ func splitReturnTypes(typeStr string) []string {
 	if typeStr == "" {
 		return []string{}
 	}
-	
+
 	var types []string
 	var current strings.Builder
 	depth := 0 // Track nesting level in <> or []
-	
+
 	for i := 0; i < len(typeStr); i++ {
 		ch := typeStr[i]
 		switch ch {
@@ -6773,128 +6866,128 @@ func splitReturnTypes(typeStr string) []string {
 			current.WriteByte(ch)
 		}
 	}
-	
+
 	// Add the last type
 	if current.Len() > 0 {
 		types = append(types, strings.TrimSpace(current.String()))
 	}
-	
+
 	return types
 }
 
 // isTypeToken checks if the given token type represents a type
 func (p *Parser) isTypeToken(tokenType TokenType) bool {
-return tokenType == TOKEN_INT_TYPE || tokenType == TOKEN_FLOAT_TYPE ||
-tokenType == TOKEN_STRING_TYPE || tokenType == TOKEN_BOOL_TYPE ||
-tokenType == TOKEN_COLOR_TYPE || tokenType == TOKEN_VECTOR2_TYPE ||
-tokenType == TOKEN_DICT_TYPE || tokenType == TOKEN_ARRAY_TYPE ||
-tokenType == TOKEN_IDENTIFIER
+	return tokenType == TOKEN_INT_TYPE || tokenType == TOKEN_FLOAT_TYPE ||
+		tokenType == TOKEN_STRING_TYPE || tokenType == TOKEN_BOOL_TYPE ||
+		tokenType == TOKEN_COLOR_TYPE || tokenType == TOKEN_VECTOR2_TYPE ||
+		tokenType == TOKEN_DICT_TYPE || tokenType == TOKEN_ARRAY_TYPE ||
+		tokenType == TOKEN_IDENTIFIER
 }
 
 // parseComplexReturnType parses a return type that may include complex types like array[int] or dict<string,int>
 func (p *Parser) parseComplexReturnType() string {
-baseType := p.current().Value
-p.advance()
+	baseType := p.current().Value
+	p.advance()
 
-// Check for array[type] syntax
-if baseType == "array" && p.current().Type == TOKEN_LBRACKET {
-p.advance() // consume [
-elementType := p.current().Value
-p.advance() // consume type
-p.expect(TOKEN_RBRACKET)
-return fmt.Sprintf("array[%s]", elementType)
-}
+	// Check for array[type] syntax
+	if baseType == "array" && p.current().Type == TOKEN_LBRACKET {
+		p.advance() // consume [
+		elementType := p.current().Value
+		p.advance() // consume type
+		p.expect(TOKEN_RBRACKET)
+		return fmt.Sprintf("array[%s]", elementType)
+	}
 
-// Check for dict<key,value> or dict[key,value] syntax
-if baseType == "dict" && (p.current().Type == TOKEN_LANGLE || p.current().Type == TOKEN_LBRACKET) {
-bracketType := p.current().Type
-p.advance() // consume < or [
-keyType := p.current().Value
-p.advance() // consume key type
-p.expect(TOKEN_COMMA)
-valueType := p.current().Value
-p.advance() // consume value type
-if bracketType == TOKEN_LANGLE {
-p.expect(TOKEN_RANGLE)
-return fmt.Sprintf("dict<%s,%s>", keyType, valueType)
-} else {
-p.expect(TOKEN_RBRACKET)
-return fmt.Sprintf("dict[%s,%s]", keyType, valueType)
-}
-}
+	// Check for dict<key,value> or dict[key,value] syntax
+	if baseType == "dict" && (p.current().Type == TOKEN_LANGLE || p.current().Type == TOKEN_LBRACKET) {
+		bracketType := p.current().Type
+		p.advance() // consume < or [
+		keyType := p.current().Value
+		p.advance() // consume key type
+		p.expect(TOKEN_COMMA)
+		valueType := p.current().Value
+		p.advance() // consume value type
+		if bracketType == TOKEN_LANGLE {
+			p.expect(TOKEN_RANGLE)
+			return fmt.Sprintf("dict<%s,%s>", keyType, valueType)
+		} else {
+			p.expect(TOKEN_RBRACKET)
+			return fmt.Sprintf("dict[%s,%s]", keyType, valueType)
+		}
+	}
 
-return baseType
+	return baseType
 }
 
 // isScreamingSnakeCase checks if a string is in SCREAMING_SNAKE_CASE format
 // (all uppercase with underscores, at least one uppercase letter)
 func isScreamingSnakeCase(s string) bool {
-if len(s) == 0 {
-return false
-}
+	if len(s) == 0 {
+		return false
+	}
 
-hasUpper := false
-for _, ch := range s {
-if ch >= 'a' && ch <= 'z' {
-// Has lowercase letter - not screaming snake case
-return false
-}
-if ch >= 'A' && ch <= 'Z' {
-hasUpper = true
-}
-// Allow underscores, digits, and uppercase letters
-if !((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_') {
-return false
-}
-}
+	hasUpper := false
+	for _, ch := range s {
+		if ch >= 'a' && ch <= 'z' {
+			// Has lowercase letter - not screaming snake case
+			return false
+		}
+		if ch >= 'A' && ch <= 'Z' {
+			hasUpper = true
+		}
+		// Allow underscores, digits, and uppercase letters
+		if !((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_') {
+			return false
+		}
+	}
 
-// Must have at least one uppercase letter to be considered screaming snake case
-return hasUpper
+	// Must have at least one uppercase letter to be considered screaming snake case
+	return hasUpper
 }
 
 // validateEnumMemberInSwitch checks if an enum member name is ambiguous (exists in multiple enums)
 // and returns true if the member needs to be prefixed with enum name
 func (p *Parser) validateEnumMemberInSwitch(memberName string, line int) bool {
-if !p.LintMode {
-return false
-}
+	if !p.LintMode {
+		return false
+	}
 
-// Check C header enums first
-foundInEnums := []string{}
+	// Check C header enums first
+	foundInEnums := []string{}
 
-// Check global C header enums
-for enumName, cEnum := range p.cHeaderGlobal.Enums {
-if _, exists := cEnum.Values[memberName]; exists {
-foundInEnums = append(foundInEnums, enumName)
-}
-}
+	// Check global C header enums
+	for enumName, cEnum := range p.cHeaderGlobal.Enums {
+		if _, exists := cEnum.Values[memberName]; exists {
+			foundInEnums = append(foundInEnums, enumName)
+		}
+	}
 
-// Check namespaced C header enums
-for _, headerInfo := range p.cHeaders {
-for enumName, cEnum := range headerInfo.Enums {
-if _, exists := cEnum.Values[memberName]; exists {
-foundInEnums = append(foundInEnums, enumName)
-}
-}
-}
+	// Check namespaced C header enums
+	for _, headerInfo := range p.cHeaders {
+		for enumName, cEnum := range headerInfo.Enums {
+			if _, exists := cEnum.Values[memberName]; exists {
+				foundInEnums = append(foundInEnums, enumName)
+			}
+		}
+	}
 
-// Check Ahoy enums
-for enumName, enumDef := range p.enums {
-for _, member := range enumDef.Members {
-if member.Value == memberName {
-foundInEnums = append(foundInEnums, enumName)
-break
-}
-}
-}
+	// Check Ahoy enums
+	for enumName, enumDef := range p.enums {
+		for _, member := range enumDef.Members {
+			if member.Value == memberName {
+				foundInEnums = append(foundInEnums, enumName)
+				break
+			}
+		}
+	}
 
-// If found in multiple enums, it's ambiguous
-if len(foundInEnums) > 1 {
-errMsg := fmt.Sprintf("Ambiguous enum member '%s' - found in multiple enums: %s. Please prefix with enum name (e.g., %s.%s)", 
-memberName, strings.Join(foundInEnums, ", "), foundInEnums[0], memberName)
-p.recordErrorAtLine(errMsg, line)
-return true
-}
+	// If found in multiple enums, it's ambiguous
+	if len(foundInEnums) > 1 {
+		errMsg := fmt.Sprintf("Ambiguous enum member '%s' - found in multiple enums: %s. Please prefix with enum name (e.g., %s.%s)",
+			memberName, strings.Join(foundInEnums, ", "), foundInEnums[0], memberName)
+		p.recordErrorAtLine(errMsg, line)
+		return true
+	}
 
-return false
+	return false
 }

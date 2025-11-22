@@ -62,8 +62,8 @@ func main() {
 	// Lint mode
 	if *lintFlag {
 		// Parse the code to check for C imports
-		ast, errors := ahoy.ParseLint(tokens)
-		
+		ast, errors := ahoy.ParseLintWithPath(tokens, sourceFile)
+
 		// Check syntax errors
 		if len(errors) > 0 {
 			fmt.Printf("Found %d syntax error(s) in %s:\n", len(errors), sourceFile)
@@ -72,7 +72,7 @@ func main() {
 			}
 			os.Exit(1)
 		}
-		
+
 		// Check if file has C header imports
 		hasCImports := false
 		if ast != nil {
@@ -111,7 +111,7 @@ func main() {
 
 	// Initialize package manager
 	pm := NewPackageManager(filepath.Dir(absPath))
-	
+
 	// Load the package
 	pkg, err := pm.LoadPackageFromFile(absPath)
 	if err != nil {
@@ -131,7 +131,7 @@ func main() {
 
 	// Generate C code
 	cCode := generateC(ast)
-	
+
 	// Check if code generation failed
 	if cCode == "" {
 		fmt.Println("✗ Code generation failed due to errors")
@@ -172,10 +172,10 @@ func main() {
 	// Compile C code if run flag is set
 	if *runFlag {
 		fmt.Println("Compiling C code...")
-		
+
 		// Build compilation arguments
 		compileArgs := []string{"-o", executable, outputFile}
-		
+
 		// Check if raylib is imported
 		hasRaylib := false
 		raylibPath := ""
@@ -193,7 +193,7 @@ func main() {
 				break
 			}
 		}
-		
+
 		// Add raylib linking flags if needed
 		if hasRaylib {
 			if raylibPath != "" {
@@ -203,7 +203,7 @@ func main() {
 		} else {
 			compileArgs = append(compileArgs, "-lm")
 		}
-		
+
 		cmd := exec.Command("gcc", compileArgs...)
 		output, err := cmd.CombinedOutput()
 		if err != nil {
@@ -232,7 +232,7 @@ func main() {
 // and merges them into a unified set of imports
 func resolveImports(pkg *Package, pm *PackageManager, fromFile string) (map[string]*Package, error) {
 	allImports := make(map[string]*Package)
-	
+
 	for _, file := range pkg.Files {
 		if file.AST != nil {
 			for _, child := range file.AST.Children {
@@ -242,20 +242,20 @@ func resolveImports(pkg *Package, pm *PackageManager, fromFile string) (map[stri
 					if err != nil {
 						return nil, fmt.Errorf("failed to resolve import '%s': %v", importPath, err)
 					}
-					
+
 					// Store with namespace key
 					namespace := child.DataType
 					if namespace == "" {
 						namespace = importedPkg.Name
 					}
 					allImports[namespace] = importedPkg
-					
+
 					// Recursively resolve imports in the imported package
 					nestedImports, err := resolveImports(importedPkg, pm, file.Path)
 					if err != nil {
 						return nil, err
 					}
-					
+
 					// Merge nested imports
 					for ns, nestedPkg := range nestedImports {
 						if _, exists := allImports[ns]; !exists {
@@ -275,7 +275,7 @@ func MergeWithImports(pkg *Package, imports map[string]*Package) *ahoy.ASTNode {
 	processedFunctions := make(map[string]bool) // Deduplicate functions
 	processedStructs := make(map[string]bool)   // Deduplicate structs
 	processedEnums := make(map[string]bool)     // Deduplicate enums
-	
+
 	// First, add all declarations from imported packages
 	for _, importedPkg := range imports {
 		for _, file := range importedPkg.Files {
@@ -285,7 +285,7 @@ func MergeWithImports(pkg *Package, imports map[string]*Package) *ahoy.ASTNode {
 					if child.Type == ahoy.NODE_PROGRAM_DECLARATION {
 						continue
 					}
-					
+
 					// Keep C header imports (.h files), skip .ahoy imports
 					if child.Type == ahoy.NODE_IMPORT_STATEMENT {
 						if strings.HasSuffix(child.Value, ".h") {
@@ -294,11 +294,11 @@ func MergeWithImports(pkg *Package, imports map[string]*Package) *ahoy.ASTNode {
 						}
 						continue
 					}
-					
+
 					// Deduplicate by name
 					name := child.Value
 					shouldAdd := false
-					
+
 					switch child.Type {
 					case ahoy.NODE_FUNCTION:
 						if !processedFunctions[name] {
@@ -318,7 +318,7 @@ func MergeWithImports(pkg *Package, imports map[string]*Package) *ahoy.ASTNode {
 					default:
 						shouldAdd = true
 					}
-					
+
 					if shouldAdd {
 						merged.Children = append(merged.Children, child)
 					}
@@ -326,7 +326,7 @@ func MergeWithImports(pkg *Package, imports map[string]*Package) *ahoy.ASTNode {
 			}
 		}
 	}
-	
+
 	// Then add declarations from the main package
 	for _, file := range pkg.Files {
 		if file.AST != nil {
@@ -335,7 +335,7 @@ func MergeWithImports(pkg *Package, imports map[string]*Package) *ahoy.ASTNode {
 				if child.Type == ahoy.NODE_PROGRAM_DECLARATION {
 					continue
 				}
-				
+
 				// Keep C header imports (.h files), skip .ahoy imports
 				if child.Type == ahoy.NODE_IMPORT_STATEMENT {
 					if strings.HasSuffix(child.Value, ".h") {
@@ -344,11 +344,11 @@ func MergeWithImports(pkg *Package, imports map[string]*Package) *ahoy.ASTNode {
 					}
 					continue
 				}
-				
+
 				// Deduplicate by name
 				name := child.Value
 				shouldAdd := false
-				
+
 				switch child.Type {
 				case ahoy.NODE_FUNCTION:
 					if !processedFunctions[name] {
@@ -368,14 +368,14 @@ func MergeWithImports(pkg *Package, imports map[string]*Package) *ahoy.ASTNode {
 				default:
 					shouldAdd = true
 				}
-				
+
 				if shouldAdd {
 					merged.Children = append(merged.Children, child)
 				}
 			}
 		}
 	}
-	
+
 	return merged
 }
 

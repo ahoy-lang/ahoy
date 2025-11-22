@@ -53,6 +53,11 @@ func ParseCHeader(path string) (*CHeaderInfo, error) {
 		if strings.HasPrefix(line, "typedef enum") {
 			parseEnum(lines, i, info)
 		}
+		
+		// Parse simple typedef aliases (e.g., typedef Texture Texture2D;)
+		if strings.HasPrefix(line, "typedef ") && !strings.Contains(line, "{") && strings.HasSuffix(line, ";") {
+			parseTypedefAlias(line, info)
+		}
 	}
 	
 	return info, nil
@@ -441,4 +446,36 @@ func PascalToSnake(s string) string {
 	}
 	
 	return string(result)
+}
+
+// parseTypedefAlias parses simple typedef aliases like: typedef Texture Texture2D;
+func parseTypedefAlias(line string, info *CHeaderInfo) {
+	// Remove typedef and semicolon
+	line = strings.TrimPrefix(line, "typedef")
+	line = strings.TrimSuffix(line, ";")
+	line = strings.TrimSpace(line)
+	
+	// Split into base type and alias name
+	parts := strings.Fields(line)
+	if len(parts) == 2 {
+		baseType := parts[0]
+		aliasName := parts[1]
+		
+		// Store as a struct entry so it's treated as a known C type
+		// We don't need the full struct definition, just the name
+		info.Structs[aliasName] = &CStruct{
+			Name:   aliasName,
+			Fields: []CStructField{},
+			Line:   0,
+		}
+		
+		// If the base type is also a struct/typedef, copy it
+		if baseStruct, exists := info.Structs[baseType]; exists {
+			info.Structs[aliasName] = &CStruct{
+				Name:   aliasName,
+				Fields: baseStruct.Fields,
+				Line:   0,
+			}
+		}
+	}
 }
