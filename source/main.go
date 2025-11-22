@@ -129,8 +129,8 @@ func main() {
 	// Merge package with all imports into one AST
 	ast := MergeWithImports(pkg, imports)
 
-	// Generate C code
-	cCode := generateC(ast)
+	// Generate C code with source filename for better error messages
+	cCode := generateC(ast, sourceFile)
 
 	// Check if code generation failed
 	if cCode == "" {

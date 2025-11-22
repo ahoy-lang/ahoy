@@ -629,7 +629,7 @@ func tokenTypeName(t TokenType) string {
 		TOKEN_LOOP: "'loop'", TOKEN_IN: "'in'", TOKEN_TO: "'to'",
 		TOKEN_TILL: "'till'", TOKEN_FUNC: "'func'",
 		TOKEN_RETURN: "'return'", TOKEN_IMPORT: "'import'", TOKEN_PROGRAM: "'program'", TOKEN_WHEN: "'when'",
-		TOKEN_AHOY: "'ahoy'", TOKEN_PRINT: "'print'", TOKEN_PLUS: "'+'",
+		TOKEN_AHOY: "'ahoy'", TOKEN_PRINT: "'print'", TOKEN_LOG: "'log'", TOKEN_PANIC: "'panic'", TOKEN_PLUS: "'+'",
 		TOKEN_MINUS: "'-'", TOKEN_MULTIPLY: "'*'", TOKEN_DIVIDE: "'/'",
 		TOKEN_MODULO: "'%'", TOKEN_PLUS_WORD: "'plus'", TOKEN_MINUS_WORD: "'minus'",
 		TOKEN_TIMES_WORD: "'times'", TOKEN_DIV_WORD: "'div'", TOKEN_MOD_WORD: "'mod'",
@@ -643,7 +643,6 @@ func tokenTypeName(t TokenType) string {
 		TOKEN_DEDENT: "dedent", TOKEN_INT_TYPE: "type 'int'", TOKEN_FLOAT_TYPE: "type 'float'",
 		TOKEN_STRING_TYPE: "type 'string'", TOKEN_BOOL_TYPE: "type 'bool'",
 		TOKEN_DICT_TYPE: "type 'dict'", TOKEN_ARRAY_TYPE: "type 'array'",
-		TOKEN_VECTOR2_TYPE: "type 'vector2'", TOKEN_COLOR_TYPE: "type 'color'",
 		TOKEN_TRUE: "'true'", TOKEN_FALSE: "'false'",
 		TOKEN_ENUM: "'enum'", TOKEN_STRUCT: "'struct'", TOKEN_TYPE: "'type'",
 		TOKEN_DO: "'do'", TOKEN_HALT: "'halt'", TOKEN_NEXT: "'next'",
@@ -818,6 +817,10 @@ func (p *Parser) parseStatement() *ASTNode {
 
 	case TOKEN_PRINT:
 		return p.parsePrintStatement()
+	case TOKEN_LOG:
+		return p.parseLogStatement()
+	case TOKEN_PANIC:
+		return p.parsePanicStatement()
 	case TOKEN_RETURN:
 		return p.parseReturnStatement()
 	case TOKEN_HALT:
@@ -906,8 +909,6 @@ func (p *Parser) parseStatement() *ASTNode {
 			p.validateNoGlobalFunctionCalls(stmt)
 		}
 		return stmt
-	case TOKEN_COLOR_TYPE, TOKEN_VECTOR2_TYPE:
-		return p.parseExpression()
 	case TOKEN_CARET, TOKEN_AMPERSAND:
 		// Could be unary expression assignment like ^ptr: value
 		return p.parseAssignmentOrExpression()
@@ -942,8 +943,7 @@ func (p *Parser) parseFunction() *ASTNode {
 
 			// Check for type annotation
 			if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
-				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
-				p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE {
+				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE {
 				paramType = p.current().Value
 				p.advance()
 			}
@@ -970,7 +970,6 @@ func (p *Parser) parseFunction() *ASTNode {
 			// Check for type annotation
 			if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
-				p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
 				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 				p.current().Type == TOKEN_IDENTIFIER {
@@ -996,7 +995,6 @@ func (p *Parser) parseFunction() *ASTNode {
 			p.advance() // skip >
 			if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
-				p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
 				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 				p.current().Type == TOKEN_IDENTIFIER {
@@ -1457,6 +1455,10 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 					stmt = p.parseAhoyStatement()
 				case TOKEN_PRINT:
 					stmt = p.parsePrintStatement()
+				case TOKEN_LOG:
+					stmt = p.parseLogStatement()
+				case TOKEN_PANIC:
+					stmt = p.parsePanicStatement()
 				case TOKEN_RETURN:
 					stmt = p.parseReturnStatement()
 				case TOKEN_IF:
@@ -2311,6 +2313,116 @@ func (p *Parser) parsePrintStatement() *ASTNode {
 	return call
 }
 
+func (p *Parser) parseLogStatement() *ASTNode {
+	p.expect(TOKEN_LOG)
+
+	// log takes two arguments: message and file_path
+	p.expect(TOKEN_PIPE)
+
+	call := &ASTNode{
+		Type:  NODE_CALL,
+		Value: "log",
+		Line:  p.current().Line,
+	}
+
+	// Increment depth to allow nested function calls
+	p.inFunctionCall++
+
+	// Parse arguments until closing pipe (allow newlines for multiline calls)
+	for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
+		// Skip newlines between arguments
+		for p.current().Type == TOKEN_NEWLINE {
+			p.advance()
+		}
+
+		if p.current().Type == TOKEN_PIPE || p.current().Type == TOKEN_EOF {
+			break
+		}
+
+		arg := p.parseCallArgument()
+		call.Children = append(call.Children, arg)
+
+		if p.current().Type == TOKEN_COMMA {
+			p.advance()
+			// Skip newlines after comma
+			for p.current().Type == TOKEN_NEWLINE {
+				p.advance()
+			}
+		} else {
+			// Skip trailing newlines before closing pipe
+			for p.current().Type == TOKEN_NEWLINE {
+				p.advance()
+			}
+			if p.current().Type != TOKEN_PIPE {
+				break
+			}
+		}
+	}
+
+	// Consume closing pipe
+	if p.current().Type == TOKEN_PIPE {
+		p.advance()
+	}
+
+	p.inFunctionCall--
+	return call
+}
+
+func (p *Parser) parsePanicStatement() *ASTNode {
+	p.expect(TOKEN_PANIC)
+
+	// panic is similar to print - takes any number of arguments
+	p.expect(TOKEN_PIPE)
+
+	call := &ASTNode{
+		Type:  NODE_CALL,
+		Value: "panic",
+		Line:  p.current().Line,
+	}
+
+	// Increment depth to allow nested function calls
+	p.inFunctionCall++
+
+	// Parse arguments until closing pipe (allow newlines for multiline calls)
+	for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
+		// Skip newlines between arguments
+		for p.current().Type == TOKEN_NEWLINE {
+			p.advance()
+		}
+
+		if p.current().Type == TOKEN_PIPE || p.current().Type == TOKEN_EOF {
+			break
+		}
+
+		arg := p.parseCallArgument()
+		call.Children = append(call.Children, arg)
+
+		if p.current().Type == TOKEN_COMMA {
+			p.advance()
+			// Skip newlines after comma
+			for p.current().Type == TOKEN_NEWLINE {
+				p.advance()
+			}
+		} else {
+			// Skip trailing newlines before closing pipe
+			for p.current().Type == TOKEN_NEWLINE {
+				p.advance()
+			}
+			if p.current().Type != TOKEN_PIPE {
+				break
+			}
+		}
+	}
+
+	// Consume closing pipe
+	if p.current().Type == TOKEN_PIPE {
+		p.advance()
+	}
+
+	p.inFunctionCall--
+	return call
+}
+
 func (p *Parser) parseReturnStatement() *ASTNode {
 	returnToken := p.expect(TOKEN_RETURN)
 	line := returnToken.Line
@@ -2417,6 +2529,10 @@ func (p *Parser) parseDeferStatement() *ASTNode {
 	var statement *ASTNode
 	if p.current().Type == TOKEN_PRINT {
 		statement = p.parsePrintStatement()
+	} else if p.current().Type == TOKEN_LOG {
+		statement = p.parseLogStatement()
+	} else if p.current().Type == TOKEN_PANIC {
+		statement = p.parsePanicStatement()
 	} else if p.current().Type == TOKEN_AHOY {
 		statement = p.parseAhoyStatement()
 	} else {
@@ -2923,7 +3039,6 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			var explicitType string
 			if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
-				p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
 				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 				p.current().Type == TOKEN_IDENTIFIER {
 
@@ -2990,7 +3105,6 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			explicitType = "" // Empty means inferred
 		} else if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 			p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
-			p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
 			p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 			p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 			p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
@@ -4155,8 +4269,7 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 		return p.parseSwitchStatement()
 
 	// Type casts: int(value), float(value), char(value), string(value)
-	// Or type instantiation: vector2<x,y>, color<r,g,b,a>
-	case TOKEN_INT_TYPE, TOKEN_FLOAT_TYPE, TOKEN_CHAR_TYPE, TOKEN_STRING_TYPE, TOKEN_VECTOR2_TYPE, TOKEN_COLOR_TYPE:
+	case TOKEN_INT_TYPE, TOKEN_FLOAT_TYPE, TOKEN_CHAR_TYPE, TOKEN_STRING_TYPE:
 		token := p.current()
 		p.advance()
 
@@ -4543,12 +4656,6 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 		} else if p.current().Type == TOKEN_BOOL_TYPE {
 			enumType = "bool"
 			p.advance()
-		} else if p.current().Type == TOKEN_COLOR_TYPE {
-			enumType = "color"
-			p.advance()
-		} else if p.current().Type == TOKEN_VECTOR2_TYPE {
-			enumType = "vector2"
-			p.advance()
 		} else if p.current().Type == TOKEN_ARRAY_TYPE {
 			enumType = "array"
 			p.advance()
@@ -4810,7 +4917,6 @@ func (p *Parser) parseConstantDeclaration() *ASTNode {
 	var explicitType string
 	if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 		p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
-		p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
 		p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 		p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 		p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
@@ -5136,7 +5242,6 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 			nextToken := p.peek(1)
 			isTypeToken := nextToken.Type == TOKEN_INT_TYPE || nextToken.Type == TOKEN_FLOAT_TYPE ||
 				nextToken.Type == TOKEN_STRING_TYPE || nextToken.Type == TOKEN_BOOL_TYPE ||
-				nextToken.Type == TOKEN_COLOR_TYPE || nextToken.Type == TOKEN_VECTOR2_TYPE ||
 				nextToken.Type == TOKEN_DICT_TYPE || nextToken.Type == TOKEN_ARRAY_TYPE
 
 			// Check if this is inline type annotation (has comma after type)
@@ -5174,7 +5279,6 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 			// Parse type
 			if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
-				p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
 				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 				p.current().Type == TOKEN_IDENTIFIER {
 
@@ -5261,8 +5365,7 @@ func (p *Parser) parseAliasDeclaration() *ASTNode {
 	if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 		p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
 		p.current().Type == TOKEN_CHAR_TYPE || p.current().Type == TOKEN_DICT_TYPE ||
-		p.current().Type == TOKEN_ARRAY_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
-		p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_IDENTIFIER {
+		p.current().Type == TOKEN_ARRAY_TYPE || p.current().Type == TOKEN_IDENTIFIER {
 		aliasedType = p.current().Value
 		p.advance()
 
@@ -5315,8 +5418,7 @@ func (p *Parser) parseUnionDeclaration() *ASTNode {
 		if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 			p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
 			p.current().Type == TOKEN_CHAR_TYPE || p.current().Type == TOKEN_DICT_TYPE ||
-			p.current().Type == TOKEN_ARRAY_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
-			p.current().Type == TOKEN_COLOR_TYPE || p.current().Type == TOKEN_IDENTIFIER {
+			p.current().Type == TOKEN_ARRAY_TYPE || p.current().Type == TOKEN_IDENTIFIER {
 			types = append(types, p.current().Value)
 			p.advance()
 
@@ -5380,9 +5482,8 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 	startLine := p.current().Line
 	p.expect(TOKEN_STRUCT)
 
-	// Allow vector2 and color as struct names even though they're keywords
 	var name Token
-	if p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_VECTOR2_TYPE || p.current().Type == TOKEN_COLOR_TYPE {
+	if p.current().Type == TOKEN_IDENTIFIER {
 		name = p.current()
 		p.advance()
 	} else {
@@ -5444,8 +5545,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 							p.current().Type != TOKEN_INT_TYPE && p.current().Type != TOKEN_FLOAT_TYPE &&
 							p.current().Type != TOKEN_STRING_TYPE && p.current().Type != TOKEN_CHAR_TYPE &&
 							p.current().Type != TOKEN_BOOL_TYPE && p.current().Type != TOKEN_DICT_TYPE &&
-							p.current().Type != TOKEN_ARRAY_TYPE && p.current().Type != TOKEN_VECTOR2_TYPE &&
-							p.current().Type != TOKEN_COLOR_TYPE {
+							p.current().Type != TOKEN_ARRAY_TYPE {
 							break
 						}
 						continue
@@ -5463,8 +5563,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 						p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 						p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_CHAR_TYPE ||
 						p.current().Type == TOKEN_BOOL_TYPE || p.current().Type == TOKEN_DICT_TYPE ||
-						p.current().Type == TOKEN_ARRAY_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
-						p.current().Type == TOKEN_COLOR_TYPE {
+						p.current().Type == TOKEN_ARRAY_TYPE {
 						// Check for default value syntax: "value field: type"
 						var defaultValue *ASTNode
 
@@ -5486,7 +5585,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 								Line:  line,
 							}
 							p.advance()
-						} else if (p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_VECTOR2_TYPE || p.current().Type == TOKEN_COLOR_TYPE) &&
+						} else if p.current().Type == TOKEN_IDENTIFIER &&
 							p.peek(1).Type == TOKEN_LBRACE {
 							// Parse object literal default value: Type{...}
 							typeName := p.current().Value
@@ -5531,8 +5630,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 							p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 							p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_CHAR_TYPE ||
 							p.current().Type == TOKEN_BOOL_TYPE || p.current().Type == TOKEN_DICT_TYPE ||
-							p.current().Type == TOKEN_ARRAY_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
-							p.current().Type == TOKEN_COLOR_TYPE {
+							p.current().Type == TOKEN_ARRAY_TYPE {
 							fieldName = p.current()
 							p.advance()
 						} else {
@@ -5576,9 +5674,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 									p.current().Type == TOKEN_INT_TYPE ||
 									p.current().Type == TOKEN_FLOAT_TYPE ||
 									p.current().Type == TOKEN_STRING_TYPE ||
-									p.current().Type == TOKEN_BOOL_TYPE ||
-									p.current().Type == TOKEN_VECTOR2_TYPE ||
-									p.current().Type == TOKEN_COLOR_TYPE {
+									p.current().Type == TOKEN_BOOL_TYPE {
 									p.advance()
 								}
 							}
@@ -5655,7 +5751,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 					Line:  line,
 				}
 				p.advance()
-			} else if (p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_VECTOR2_TYPE || p.current().Type == TOKEN_COLOR_TYPE) &&
+			} else if p.current().Type == TOKEN_IDENTIFIER &&
 				p.peek(1).Type == TOKEN_LBRACE {
 				// Parse object literal default value: Type{...}
 				typeName := p.current().Value
@@ -5700,8 +5796,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 				p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_CHAR_TYPE ||
 				p.current().Type == TOKEN_BOOL_TYPE || p.current().Type == TOKEN_DICT_TYPE ||
-				p.current().Type == TOKEN_ARRAY_TYPE || p.current().Type == TOKEN_VECTOR2_TYPE ||
-				p.current().Type == TOKEN_COLOR_TYPE {
+				p.current().Type == TOKEN_ARRAY_TYPE {
 				fieldName = p.current()
 				p.advance()
 			} else {
@@ -5745,9 +5840,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 						p.current().Type == TOKEN_INT_TYPE ||
 						p.current().Type == TOKEN_FLOAT_TYPE ||
 						p.current().Type == TOKEN_STRING_TYPE ||
-						p.current().Type == TOKEN_BOOL_TYPE ||
-						p.current().Type == TOKEN_VECTOR2_TYPE ||
-						p.current().Type == TOKEN_COLOR_TYPE {
+						p.current().Type == TOKEN_BOOL_TYPE {
 						p.advance()
 					}
 				}
@@ -6879,7 +6972,6 @@ func splitReturnTypes(typeStr string) []string {
 func (p *Parser) isTypeToken(tokenType TokenType) bool {
 	return tokenType == TOKEN_INT_TYPE || tokenType == TOKEN_FLOAT_TYPE ||
 		tokenType == TOKEN_STRING_TYPE || tokenType == TOKEN_BOOL_TYPE ||
-		tokenType == TOKEN_COLOR_TYPE || tokenType == TOKEN_VECTOR2_TYPE ||
 		tokenType == TOKEN_DICT_TYPE || tokenType == TOKEN_ARRAY_TYPE ||
 		tokenType == TOKEN_IDENTIFIER
 }

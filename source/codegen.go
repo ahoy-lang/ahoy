@@ -105,14 +105,23 @@ type CodeGenerator struct {
 	cTypeDefinitions              map[string]bool              // Track known C types from headers
 	declaredGlobalVars            map[string]bool              // Track global variables that have been declared in C code
 	declaredFunctionVars          map[string]bool              // Track function-local variables that have been declared in C code
+	enableBoundsChecking          bool                         // Enable runtime array bounds checking
+	enableSignalHandler           bool                         // Enable signal handler for crash reporting
+	skipBoundsCheck               bool                         // Temporarily skip bounds check (for lvalue contexts)
+	sourceFilename                string                       // Source filename for error messages
 }
 
 // GenerateC generates C code from an AST (exported for testing)
 func GenerateC(ast *ahoy.ASTNode) string {
-	return generateC(ast)
+	return generateC(ast, "<source>")
 }
 
-func generateC(ast *ahoy.ASTNode) string {
+// GenerateCWithFilename generates C code from an AST with a source filename
+func GenerateCWithFilename(ast *ahoy.ASTNode, filename string) string {
+	return generateC(ast, filename)
+}
+
+func generateC(ast *ahoy.ASTNode, filename string) string {
 	gen := &CodeGenerator{
 		includes:              make(map[string]bool),
 		orderedIncludes:       make([]string, 0),
@@ -146,6 +155,10 @@ func generateC(ast *ahoy.ASTNode) string {
 		declaredFunctionVars:  make(map[string]bool),
 		jsonVariables:         make(map[string]bool),
 		jsonStructs:           make(map[string]bool),
+		enableBoundsChecking:  true, // Re-enabled with lvalue context handling
+		enableSignalHandler:   true, // Enable by default for better error messages
+		skipBoundsCheck:       false,
+		sourceFilename:        filename, // Source file for error messages
 	}
 
 	// Add standard includes
@@ -227,6 +240,12 @@ func generateC(ast *ahoy.ASTNode) string {
 	}
 	result.WriteString("\n")
 
+	// Write signal handler if enabled
+	if gen.enableSignalHandler {
+		result.WriteString(gen.getSignalHandler())
+		result.WriteString("\n")
+	}
+
 	// Write array implementation if needed (or if JSON needs it)
 	if gen.arrayImpls || gen.useJSON {
 		result.WriteString(gen.getArrayImplementation())
@@ -272,23 +291,6 @@ func generateC(ast *ahoy.ASTNode) string {
 			result.WriteString("AhoyArray* ahoy_array_fill(AhoyArray* arr, intptr_t value, AhoyValueType type, int count);\n")
 		}
 		result.WriteString("char* print_array_helper(AhoyArray* arr);\n")
-
-		// Define Color and Vector2 types for helpers only if raylib is not imported
-		// raylib already defines these types
-		hasRaylib := false
-		for include := range gen.includes {
-			if strings.Contains(include, "raylib") {
-				hasRaylib = true
-				break
-			}
-		}
-
-		if !hasRaylib {
-			result.WriteString("typedef struct Color { unsigned char r; unsigned char g; unsigned char b; unsigned char a; } Color;\n")
-			result.WriteString("typedef struct Vector2 { float x; float y; } Vector2;\n")
-		}
-		result.WriteString("char* color_to_string(Color c);\n")
-		result.WriteString("char* vector2_to_string(Vector2 v);\n")
 		result.WriteString("\n")
 	}
 
@@ -324,12 +326,18 @@ func generateC(ast *ahoy.ASTNode) string {
 	if gen.hasMainFunc {
 		// If there's an Ahoy main function, just call it
 		result.WriteString("int main() {\n")
+		if gen.enableSignalHandler {
+			result.WriteString("    ahoy_setup_signal_handlers();\n")
+		}
 		result.WriteString("    ahoy_main();\n")
 		result.WriteString("    return 0;\n")
 		result.WriteString("}\n")
 	} else {
 		// Legacy: no main function, use global scope code
 		result.WriteString("int main() {\n")
+		if gen.enableSignalHandler {
+			result.WriteString("    ahoy_setup_signal_handlers();\n")
+		}
 		result.WriteString(gen.output.String())
 		result.WriteString("    return 0;\n")
 		result.WriteString("}\n")
@@ -1245,6 +1253,57 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			node.Children[0].Type == ahoy.NODE_ARRAY_ACCESS ||
 			node.Children[0].Type == ahoy.NODE_MEMBER_ACCESS ||
 			node.Children[0].Type == ahoy.NODE_UNARY_OP) {
+
+		// Special handling for array assignment with bounds checking
+		if node.Children[0].Type == ahoy.NODE_ARRAY_ACCESS && gen.enableBoundsChecking {
+			arrayName := node.Children[0].Value
+			indexNode := node.Children[0].Children[0]
+			valueNode := node.Children[1]
+
+			// Check if the variable type is intptr_t, void*, or generic (might need casting to AhoyArray*)
+			needsArrayCast := false
+			if varType, exists := gen.variables[arrayName]; exists {
+				if varType == "intptr_t" || varType == "void*" || varType == "generic" {
+					needsArrayCast = true
+				}
+			}
+			if varType, exists := gen.functionVars[arrayName]; exists {
+				if varType == "intptr_t" || varType == "void*" || varType == "generic" {
+					needsArrayCast = true
+				}
+			}
+
+			// Generate bounds check before assignment
+			gen.output.WriteString("{ int __idx = ")
+			gen.generateNode(indexNode)
+			gen.output.WriteString("; ")
+
+			if needsArrayCast {
+				gen.output.WriteString(fmt.Sprintf("AhoyArray* __arr = (AhoyArray*)%s; ", arrayName))
+			} else {
+				gen.output.WriteString(fmt.Sprintf("AhoyArray* __arr = %s; ", arrayName))
+			}
+
+			gen.output.WriteString("if (__idx < 0 || __idx >= __arr->length) { ")
+			gen.output.WriteString("fprintf(stderr, \"RUNTIME ERROR: Array bounds violation\\n\"); ")
+			gen.output.WriteString(fmt.Sprintf("fprintf(stderr, \"  File: %s\\n\"); ", gen.sourceFilename))
+			gen.output.WriteString(fmt.Sprintf("fprintf(stderr, \"  Line: %d\\n\"); ", node.Children[0].Line))
+			gen.output.WriteString(fmt.Sprintf("fprintf(stderr, \"  Array: %s\\n\"); ", arrayName))
+			gen.output.WriteString("fprintf(stderr, \"  Index: %d\\n\", __idx); ")
+			gen.output.WriteString("fprintf(stderr, \"  Valid range: 0 to %d\\n\", __arr->length - 1); ")
+			gen.output.WriteString("exit(1); ")
+			gen.output.WriteString("} ")
+
+			// Now do the actual assignment with skipBoundsCheck enabled
+			gen.skipBoundsCheck = true
+			gen.generateNode(node.Children[0])
+			gen.skipBoundsCheck = false
+
+			gen.output.WriteString(" = ")
+			gen.generateNode(valueNode)
+			gen.output.WriteString("; }\n")
+			return
+		}
 
 		// Special handling for dict assignment - use hashMapPut
 		if node.Children[0].Type == ahoy.NODE_DICT_ACCESS {
@@ -2628,10 +2687,6 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 								formatSpec = "%d"
 							case "char":
 								formatSpec = "%c"
-							case "color", "Color":
-								formatSpec = "%s" // Will use color_to_string helper
-							case "vector2", "Vector2":
-								formatSpec = "%s" // Will use vector2_to_string helper
 							case "array":
 								formatSpec = "%s" // Will use print_array_helper
 							case "dict":
@@ -2670,10 +2725,6 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 							formatSpec = "%d"
 						case "char":
 							formatSpec = "%c"
-						case "color", "Color":
-							formatSpec = "%s" // Will use color_to_string helper
-						case "vector2", "Vector2":
-							formatSpec = "%s" // Will use vector2_to_string helper
 						case "array":
 							formatSpec = "%s" // Will use print_array_helper
 						case "dict":
@@ -2753,16 +2804,6 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 						gen.output.WriteString("print_dict_helper(")
 						gen.generateNode(arg)
 						gen.output.WriteString(")")
-					} else if argType == "color" {
-						// Color type - use helper
-						gen.output.WriteString("color_to_string(")
-						gen.generateNode(arg)
-						gen.output.WriteString(")")
-					} else if argType == "vector2" || argType == "Vector2" {
-						// Vector2 type - use helper
-						gen.output.WriteString("vector2_to_string(")
-						gen.generateNode(arg)
-						gen.output.WriteString(")")
 					} else if argType == "AhoyJSON*" || argType == "json" {
 						// JSON type - use stringify helper
 						gen.output.WriteString("ahoy_json_stringify(")
@@ -2840,6 +2881,132 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 			gen.output.WriteString(")")
 			return
 		}
+
+	case "log":
+		// log|message, file_path| - logs to file with timestamp
+		gen.includes["time.h"] = true
+		if !contains(gen.orderedIncludes, "time.h") {
+			gen.orderedIncludes = append(gen.orderedIncludes, "time.h")
+		}
+
+		gen.output.WriteString("({ ")
+		gen.output.WriteString("FILE* __log_file = fopen(")
+		if len(node.Children) >= 2 {
+			gen.generateNode(node.Children[1]) // file_path
+		} else {
+			gen.output.WriteString("\"ahoy.log\"")
+		}
+		gen.output.WriteString(", \"a\"); ")
+		gen.output.WriteString("if (__log_file) { ")
+		gen.output.WriteString("time_t __now = time(NULL); ")
+		gen.output.WriteString("char __time_buf[26]; ")
+		gen.output.WriteString("struct tm* __tm_info = localtime(&__now); ")
+		gen.output.WriteString("strftime(__time_buf, 26, \"%Y-%m-%d %H:%M:%S\", __tm_info); ")
+		gen.output.WriteString("fprintf(__log_file, \"[%s] \", __time_buf); ")
+
+		// Handle message formatting similar to print
+		if len(node.Children) > 0 {
+			firstArg := node.Children[0]
+			if firstArg.Type == ahoy.NODE_STRING {
+				formatStr := firstArg.Value
+				gen.output.WriteString(fmt.Sprintf("fprintf(__log_file, \"%s\\n\"", formatStr))
+				// Add additional arguments if any (before file_path)
+				for i := 1; i < len(node.Children)-1; i++ {
+					gen.output.WriteString(", ")
+					gen.generateNode(node.Children[i])
+				}
+				gen.output.WriteString("); ")
+			} else {
+				// Non-string message, convert to string representation
+				gen.output.WriteString("fprintf(__log_file, \"%s\\n\", ")
+				gen.generateNode(firstArg)
+				gen.output.WriteString("); ")
+			}
+		}
+
+		gen.output.WriteString("fclose(__log_file); } ")
+		gen.output.WriteString("})")
+		return
+
+	case "panic":
+		// panic|error| - prints error and exits
+		gen.output.WriteString("({ printf(\"PANIC: \"); ")
+
+		// Handle panic arguments similar to print
+		if len(node.Children) > 0 {
+			hasMultipleArgs := len(node.Children) > 1
+			firstIsString := node.Children[0].Type == ahoy.NODE_STRING
+
+			if firstIsString && !hasMultipleArgs {
+				// Single string argument
+				formatStr := node.Children[0].Value
+				if !strings.HasSuffix(formatStr, "\\n") {
+					formatStr += "\\n"
+				}
+				gen.output.WriteString(fmt.Sprintf("printf(\"%s\")", formatStr))
+			} else if firstIsString && (strings.Contains(node.Children[0].Value, "{}") || strings.Contains(node.Children[0].Value, "%")) {
+				// Format string with placeholders
+				gen.output.WriteString("printf(")
+				formatStr := node.Children[0].Value
+				args := node.Children[1:]
+
+				processedFormat, processedArgs := gen.processFormatString(formatStr, args)
+
+				if !strings.HasSuffix(processedFormat, "\\n") {
+					processedFormat += "\\n"
+				}
+
+				gen.output.WriteString(fmt.Sprintf("\"%s\"", processedFormat))
+
+				for _, arg := range processedArgs {
+					gen.output.WriteString(", ")
+					gen.generateNode(arg)
+				}
+				gen.output.WriteString(")")
+			} else {
+				// Multiple arguments or single non-string
+				gen.output.WriteString("printf(")
+				if len(node.Children) > 0 {
+					formatParts := []string{}
+
+					for _, arg := range node.Children {
+						argType := gen.inferType(arg)
+						formatSpec := ""
+
+						switch argType {
+						case "string", "char*", "const char*":
+							formatSpec = "%s"
+						case "int":
+							formatSpec = "%d"
+						case "intptr_t":
+							formatSpec = "%ld"
+						case "float", "double":
+							formatSpec = "%g"
+						case "bool":
+							formatSpec = "%d"
+						case "char":
+							formatSpec = "%c"
+						default:
+							formatSpec = "%d"
+						}
+
+						formatParts = append(formatParts, formatSpec)
+					}
+
+					format := strings.Join(formatParts, " ") + "\\n"
+					gen.output.WriteString(fmt.Sprintf("\"%s\"", format))
+
+					for _, arg := range node.Children {
+						gen.output.WriteString(", ")
+						gen.generateNode(arg)
+					}
+				}
+				gen.output.WriteString(")")
+			}
+		}
+
+		gen.output.WriteString("; exit(1); })")
+		return
 
 	case "sprintf":
 		// sprintf returns a string - need to allocate buffer
@@ -3514,6 +3681,46 @@ func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 		if varType == "intptr_t" || varType == "void*" || varType == "generic" {
 			needsArrayCast = true
 		}
+	}
+
+	// If bounds checking is enabled and not skipped (lvalue context handled separately)
+	if gen.enableBoundsChecking && !gen.skipBoundsCheck {
+		// For rvalue contexts, wrap in compound expression with bounds check
+		gen.output.WriteString("({ ")
+		gen.output.WriteString("int __idx = ")
+		gen.generateNode(node.Children[0])
+		gen.output.WriteString("; ")
+
+		if needsArrayCast {
+			gen.output.WriteString(fmt.Sprintf("AhoyArray* __arr = (AhoyArray*)%s; ", arrayName))
+		} else {
+			gen.output.WriteString(fmt.Sprintf("AhoyArray* __arr = %s; ", arrayName))
+		}
+
+		gen.output.WriteString("if (__idx < 0 || __idx >= __arr->length) { ")
+		gen.output.WriteString("fprintf(stderr, \"RUNTIME ERROR: Array bounds violation\\n\"); ")
+		gen.output.WriteString(fmt.Sprintf("fprintf(stderr, \"  File: %s\\n\"); ", gen.sourceFilename))
+		gen.output.WriteString(fmt.Sprintf("fprintf(stderr, \"  Line: %d\\n\"); ", node.Line))
+		gen.output.WriteString(fmt.Sprintf("fprintf(stderr, \"  Array: %s\\n\"); ", arrayName))
+		gen.output.WriteString("fprintf(stderr, \"  Index: %d\\n\", __idx); ")
+		gen.output.WriteString("fprintf(stderr, \"  Valid range: 0 to %d\\n\", __arr->length - 1); ")
+		gen.output.WriteString("exit(1); ")
+		gen.output.WriteString("} ")
+
+		// Check if we know the element type
+		if elemType, exists := gen.arrayElementTypes[arrayName]; exists {
+			cType := gen.mapType(elemType)
+			if cType != "int" {
+				gen.output.WriteString(fmt.Sprintf("((%s)(intptr_t)__arr->data[__idx])", cType))
+			} else {
+				gen.output.WriteString("__arr->data[__idx]")
+			}
+		} else {
+			gen.output.WriteString("__arr->data[__idx]")
+		}
+
+		gen.output.WriteString("; })")
+		return
 	}
 
 	// Check if we know the element type
@@ -5520,6 +5727,69 @@ func (gen *CodeGenerator) writeTypeEnumToStringHelper() {
 	gen.funcDecls.WriteString("}\n\n")
 }
 
+// Generate signal handler for better crash reporting
+func (gen *CodeGenerator) getSignalHandler() string {
+	return `// Signal handler for crash reporting
+#include <signal.h>
+
+void ahoy_signal_handler(int sig) {
+    fprintf(stderr, "\n");
+    fprintf(stderr, "========================================\n");
+    fprintf(stderr, "  Ahoy Program Crashed\n");
+    fprintf(stderr, "========================================\n");
+    fprintf(stderr, "\n");
+
+    switch(sig) {
+        case SIGSEGV:
+            fprintf(stderr, "Error: Memory access violation (segmentation fault)\n");
+            fprintf(stderr, "This usually happens when:\n");
+            fprintf(stderr, "  - Accessing memory that doesn't belong to your program\n");
+            fprintf(stderr, "  - Using a null pointer\n");
+            fprintf(stderr, "  - Accessing freed memory\n");
+            break;
+        case SIGABRT:
+            fprintf(stderr, "Error: Program aborted\n");
+            fprintf(stderr, "This usually happens when:\n");
+            fprintf(stderr, "  - An assertion failed\n");
+            fprintf(stderr, "  - A serious error was detected\n");
+            break;
+        case SIGFPE:
+            fprintf(stderr, "Error: Arithmetic error (floating point exception)\n");
+            fprintf(stderr, "This usually happens when:\n");
+            fprintf(stderr, "  - Dividing by zero\n");
+            fprintf(stderr, "  - Integer overflow\n");
+            break;
+        case SIGILL:
+            fprintf(stderr, "Error: Illegal instruction\n");
+            fprintf(stderr, "This usually happens when:\n");
+            fprintf(stderr, "  - Corrupted memory\n");
+            fprintf(stderr, "  - Invalid code execution\n");
+            break;
+        default:
+            fprintf(stderr, "Error: Program received signal %d\n", sig);
+            break;
+    }
+
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Tips for debugging:\n");
+    fprintf(stderr, "  - Check array accesses are within bounds\n");
+    fprintf(stderr, "  - Ensure variables are initialized before use\n");
+    fprintf(stderr, "  - Verify pointers are not null\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "========================================\n");
+
+    exit(1);
+}
+
+void ahoy_setup_signal_handlers() {
+    signal(SIGSEGV, ahoy_signal_handler);
+    signal(SIGABRT, ahoy_signal_handler);
+    signal(SIGFPE, ahoy_signal_handler);
+    signal(SIGILL, ahoy_signal_handler);
+}
+`
+}
+
 // Generate array helper functions
 func (gen *CodeGenerator) writeArrayHelperFunctions() {
 	// Note: AhoyArray structure is now defined in the header section
@@ -5694,19 +5964,9 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 
 // Generate built-in type helpers (always available)
 func (gen *CodeGenerator) writeBuiltinTypeHelpers() {
-	// Add color_to_string helper
-	gen.funcDecls.WriteString("char* color_to_string(Color c) {\n")
-	gen.funcDecls.WriteString("    char* buffer = malloc(64);\n")
-	gen.funcDecls.WriteString("    sprintf(buffer, \"color(%d, %d, %d, %d)\", c.r, c.g, c.b, c.a);\n")
-	gen.funcDecls.WriteString("    return buffer;\n")
-	gen.funcDecls.WriteString("}\n\n")
-
-	// Add vector2_to_string helper
-	gen.funcDecls.WriteString("char* vector2_to_string(Vector2 v) {\n")
-	gen.funcDecls.WriteString("    char* buffer = malloc(64);\n")
-	gen.funcDecls.WriteString("    sprintf(buffer, \"vector2(%g, %g)\", v.x, v.y);\n")
-	gen.funcDecls.WriteString("    return buffer;\n")
-	gen.funcDecls.WriteString("}\n\n")
+	// Note: color_to_string and vector2_to_string helpers removed
+	// These types should be provided by imported libraries (e.g., raylib)
+	// If needed, users can define their own helper functions
 }
 
 // Generate dictionary helper functions
@@ -6538,19 +6798,9 @@ func (gen *CodeGenerator) generateFilterInline(arrayNode *ahoy.ASTNode, lambda *
 }
 
 func (gen *CodeGenerator) writeTypeConstructors() {
-	// Generate Vector2 constructor
-	gen.funcDecls.WriteString("\n// Vector2 constructor\n")
-	gen.funcDecls.WriteString("Vector2 vector2(float x, float y) {\n")
-	gen.funcDecls.WriteString("    Vector2 v = {x, y};\n")
-	gen.funcDecls.WriteString("    return v;\n")
-	gen.funcDecls.WriteString("}\n\n")
-
-	// Generate Color constructor
-	gen.funcDecls.WriteString("// Color constructor\n")
-	gen.funcDecls.WriteString("Color color(unsigned char r, unsigned char g, unsigned char b, unsigned char a) {\n")
-	gen.funcDecls.WriteString("    Color c = {r, g, b, a};\n")
-	gen.funcDecls.WriteString("    return c;\n")
-	gen.funcDecls.WriteString("}\n\n")
+	// Note: Vector2 and Color constructors removed
+	// These types should be provided by imported libraries (e.g., raylib)
+	// If needed, users can define their own constructor functions
 }
 
 func (gen *CodeGenerator) writeStructHelperFunctions() {
@@ -6621,10 +6871,6 @@ func (gen *CodeGenerator) writeStructHelperFunctions() {
 				gen.funcDecls.WriteString("%c")
 			case "bool":
 				gen.funcDecls.WriteString("%s")
-			case "Vector2":
-				gen.funcDecls.WriteString("%s") // Will use vector2_to_string
-			case "Color":
-				gen.funcDecls.WriteString("%s") // Will use color_to_string
 			case "AhoyArray*":
 				gen.funcDecls.WriteString("[]") // Show as empty array
 			case "HashMap*":
@@ -6652,10 +6898,6 @@ func (gen *CodeGenerator) writeStructHelperFunctions() {
 
 			if field.Type == "bool" {
 				gen.funcDecls.WriteString(fmt.Sprintf("obj.%s ? \"true\" : \"false\"", field.Name))
-			} else if field.Type == "Vector2" {
-				gen.funcDecls.WriteString(fmt.Sprintf("vector2_to_string(obj.%s)", field.Name))
-			} else if field.Type == "Color" {
-				gen.funcDecls.WriteString(fmt.Sprintf("color_to_string(obj.%s)", field.Name))
 			} else if field.Type == "char*" || field.Type == "const char*" {
 				gen.funcDecls.WriteString(fmt.Sprintf("(obj.%s ? obj.%s : \"\")", field.Name, field.Name))
 			} else {
@@ -7223,4 +7465,14 @@ func (gen *CodeGenerator) tryResolveEnumMember(memberName string) string {
 	}
 
 	return ""
+}
+
+// Helper function to check if a string slice contains a string
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }

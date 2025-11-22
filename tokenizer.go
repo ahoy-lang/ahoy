@@ -38,6 +38,8 @@ const (
 	TOKEN_WHEN          // when (compile time)
 	TOKEN_AHOY          // ahoy (print shorthand)
 	TOKEN_PRINT         // print
+	TOKEN_LOG           // log (logging to file)
+	TOKEN_PANIC         // panic (print and exit)
 	TOKEN_PLUS          // +
 	TOKEN_MINUS         // -
 	TOKEN_MULTIPLY      // *
@@ -76,31 +78,29 @@ const (
 	TOKEN_BOOL_TYPE
 	TOKEN_DICT_TYPE
 	TOKEN_ARRAY_TYPE
-	TOKEN_VECTOR2_TYPE
-	TOKEN_COLOR_TYPE
 	TOKEN_TRUE
 	TOKEN_FALSE
 	TOKEN_ENUM
 	TOKEN_STRUCT
 	TOKEN_TYPE
-	TOKEN_ALIAS        // alias (type alias)
-	TOKEN_UNION        // union (union types)
+	TOKEN_ALIAS // alias (type alias)
+	TOKEN_UNION // union (union types)
 	TOKEN_DO
-	TOKEN_HALT         // halt (break from loop)
-	TOKEN_NEXT         // next (continue to next iteration)
-	TOKEN_ASSERT       // assert (runtime assertion)
-	TOKEN_DEFER        // defer (deferred execution)
-	TOKEN_DOUBLE_COLON // ::
-	TOKEN_WALRUS       // := (for tuple assignment)
-	TOKEN_QUESTION     // ? (loop counter variable)
-	TOKEN_TERNARY      // ?? (ternary operator)
-	TOKEN_EQUALS       // = (for default arguments)
-	TOKEN_INFER        // infer (inferred return type)
-	TOKEN_VOID         // void (no return value)
-	TOKEN_END            // $ or ⚓ (block terminator)
-	TOKEN_AT             // @ (function declaration prefix)
-	TOKEN_PLUS_ASSIGN    // +=
-	TOKEN_MINUS_ASSIGN   // -=
+	TOKEN_HALT            // halt (break from loop)
+	TOKEN_NEXT            // next (continue to next iteration)
+	TOKEN_ASSERT          // assert (runtime assertion)
+	TOKEN_DEFER           // defer (deferred execution)
+	TOKEN_DOUBLE_COLON    // ::
+	TOKEN_WALRUS          // := (for tuple assignment)
+	TOKEN_QUESTION        // ? (loop counter variable)
+	TOKEN_TERNARY         // ?? (ternary operator)
+	TOKEN_EQUALS          // = (for default arguments)
+	TOKEN_INFER           // infer (inferred return type)
+	TOKEN_VOID            // void (no return value)
+	TOKEN_END             // $ or ⚓ (block terminator)
+	TOKEN_AT              // @ (function declaration prefix)
+	TOKEN_PLUS_ASSIGN     // +=
+	TOKEN_MINUS_ASSIGN    // -=
 	TOKEN_MULTIPLY_ASSIGN // *=
 	TOKEN_DIVIDE_ASSIGN   // /=
 	TOKEN_MODULO_ASSIGN   // %=
@@ -137,6 +137,8 @@ func Tokenize(input string) []Token {
 		"when":         TOKEN_WHEN,
 		"ahoy":         TOKEN_AHOY,
 		"print":        TOKEN_PRINT,
+		"log":          TOKEN_LOG,
+		"panic":        TOKEN_PANIC,
 		"is":           TOKEN_IS,
 		"not":          TOKEN_NOT,
 		"or":           TOKEN_OR,
@@ -158,8 +160,6 @@ func Tokenize(input string) []Token {
 		"bool":         TOKEN_BOOL_TYPE,
 		"dict":         TOKEN_DICT_TYPE,
 		"array":        TOKEN_ARRAY_TYPE,
-		"vector2":      TOKEN_VECTOR2_TYPE,
-		"color":        TOKEN_COLOR_TYPE,
 		"true":         TOKEN_TRUE,
 		"false":        TOKEN_FALSE,
 		"enum":         TOKEN_ENUM,
