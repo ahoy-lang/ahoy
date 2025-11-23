@@ -1,6 +1,6 @@
 program test_c_imports
 
-import "./raylib.h"
+import "./example_header.h"
 
 @ main ||:
 	expected: []
