@@ -2442,6 +2442,8 @@ func (gen *CodeGenerator) generateReturnStatement(node *ahoy.ASTNode) {
 		for i := len(gen.deferredStatements) - 1; i >= 0; i-- {
 			gen.output.WriteString(gen.deferredStatements[i])
 		}
+		// Clear deferred statements so they don't execute again at function end
+		gen.deferredStatements = nil
 	}
 
 	gen.writeIndent()
@@ -5163,15 +5165,21 @@ func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 		// Assign struct fields to left side variables
 		for i, target := range leftSide.Children {
 			gen.writeIndent()
-			// Check if variable needs to be declared
-			existsInFunc := false
-			existsGlobal := false
+			// Check if variable needs to be declared in CURRENT scope
+			// Variables can shadow between scopes (global vs function)
+			existsInCurrentScope := false
 			if gen.functionVars != nil {
-				_, existsInFunc = gen.functionVars[target.Value]
+				// In a function - only check function scope
+				_, existsInCurrentScope = gen.functionVars[target.Value]
+			} else {
+				// In global scope - check if it's been declared in C code already
+				// Don't check gen.variables as it may contain function-local variables
+				if gen.currentFunction == "" {
+					_, existsInCurrentScope = gen.declaredGlobalVars[target.Value]
+				}
 			}
-			_, existsGlobal = gen.variables[target.Value]
 
-			if !existsInFunc && !existsGlobal {
+			if !existsInCurrentScope {
 				// Need to declare variable - look up function return types
 				cType := "int" // default
 				inferredType := "int"
@@ -5200,8 +5208,10 @@ func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 					cType = gen.mapType(inferredType)
 					if gen.functionVars != nil {
 						gen.functionVars[target.Value] = inferredType
+						gen.declaredFunctionVars[target.Value] = true
 					} else {
 						gen.variables[target.Value] = inferredType
+						gen.declaredGlobalVars[target.Value] = true
 					}
 					// Track JSON variables
 					if inferredType == "AhoyJSON*" {
@@ -5210,8 +5220,10 @@ func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 				} else {
 					if gen.functionVars != nil {
 						gen.functionVars[target.Value] = "int"
+						gen.declaredFunctionVars[target.Value] = true
 					} else {
 						gen.variables[target.Value] = "int"
+						gen.declaredGlobalVars[target.Value] = true
 					}
 				}
 				gen.output.WriteString(fmt.Sprintf("%s ", cType))
@@ -5316,10 +5328,11 @@ func (gen *CodeGenerator) generateStruct(node *ahoy.ASTNode) {
 		return
 	}
 
-	// Skip vector2 and color - they're predefined
-	if structName == "vector2" || structName == "color" {
-		// Still register struct info for type checking
-		cStructName := capitalizeFirst(structName)
+	// Check if vector2 or color are already defined from C imports
+	// Only skip if they're actually registered as C types
+	cStructName := capitalizeFirst(structName)
+	if (structName == "vector2" || structName == "color") && gen.cTypeDefinitions[cStructName] {
+		// Already defined from C header - just register struct info for type checking
 		structInfo := &StructInfo{
 			Name:   structName,
 			Fields: make([]StructField, 0),
@@ -5361,7 +5374,7 @@ func (gen *CodeGenerator) generateStruct(node *ahoy.ASTNode) {
 	}
 
 	// Generate base struct - write to structDecls instead of output
-	cStructName := capitalizeFirst(structName)
+	// cStructName already declared above
 	structInfo := &StructInfo{
 		Name:   structName,
 		Fields: make([]StructField, 0),
@@ -6866,7 +6879,9 @@ func (gen *CodeGenerator) writeStructHelperFunctions() {
 		cStructName := capitalizeFirst(structInfo.Name)
 		gen.funcDecls.WriteString(fmt.Sprintf("\n// Print helper for %s\n", structInfo.Name))
 		gen.funcDecls.WriteString(fmt.Sprintf("char* print_struct_helper_%s(%s obj) {\n", structInfo.Name, cStructName))
-		gen.funcDecls.WriteString("    static char buffer[512];\n")
+		// Use malloc instead of static buffer to avoid overwrites in nested calls
+		gen.funcDecls.WriteString("    char* buffer = malloc(1024);\n")
+		gen.funcDecls.WriteString("    if (!buffer) return \"<out of memory>\";\n")
 
 		// Anonymous structs use {} format, named structs use name{} format
 		if strings.HasPrefix(structInfo.Name, "__anon_struct_") {
@@ -6904,7 +6919,12 @@ func (gen *CodeGenerator) writeStructHelperFunctions() {
 			case "HashMap*":
 				gen.funcDecls.WriteString("<>") // Show as empty dict
 			default:
-				gen.funcDecls.WriteString("%p")
+				// Check if it's a struct type that has a print helper
+				if _, isStruct := gen.structs[strings.ToLower(field.Type)]; isStruct {
+					gen.funcDecls.WriteString("%s")
+				} else {
+					gen.funcDecls.WriteString("%p")
+				}
 			}
 		}
 
@@ -6928,6 +6948,9 @@ func (gen *CodeGenerator) writeStructHelperFunctions() {
 				gen.funcDecls.WriteString(fmt.Sprintf("obj.%s ? \"true\" : \"false\"", field.Name))
 			} else if field.Type == "char*" || field.Type == "const char*" {
 				gen.funcDecls.WriteString(fmt.Sprintf("(obj.%s ? obj.%s : \"\")", field.Name, field.Name))
+			} else if _, isStruct := gen.structs[strings.ToLower(field.Type)]; isStruct {
+				// For struct fields, call their print helper
+				gen.funcDecls.WriteString(fmt.Sprintf("print_struct_helper_%s(obj.%s)", strings.ToLower(field.Type), field.Name))
 			} else {
 				gen.funcDecls.WriteString(fmt.Sprintf("obj.%s", field.Name))
 			}
