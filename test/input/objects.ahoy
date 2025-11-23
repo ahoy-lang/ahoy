@@ -36,13 +36,13 @@ $
 
 smoke_particle_instance: smoke_particle{position:vector2{x:120,y:390}, size: 10, alpha: 1, life:1}
 print|smoke_particle_instance|
-expected.push|"smoke_particle{position:vector2(120, 390), velocity:vector2(0, 0), rotation:0, size:10, alpha:1, life:1, max_life:0, name:\"\", color:color(0, 0, 0, 0)}"|
+expected.push|"smoke_particle{position:vector2{x:120, y:390}, velocity:vector2{x:0, y:0}, rotation:0, size:10, alpha:1, life:1, max_life:0, name:\"\", color:color{r:0, g:0, b:0, a:0}}"|
 particle_instance: particle{position:vector2{x:0,y:0}, velocity:vector2{x:1,y:1}, rotation:0}
 print|particle_instance|
-expected.push|"particle{position:vector2(0, 0), velocity:vector2(1, 1), rotation:0}"|
+expected.push|"particle{position:vector2{x:0, y:0}, velocity:vector2{x:1, y:1}, rotation:0}"|
 wind_particle_instance : wind_particle{speed:5, size:vector2{x:10,y:10}}
 print|wind_particle_instance|
-expected.push|"wind_particle{position:vector2(0, 0), velocity:vector2(0, 0), rotation:0, direction:vector2(10, 20), speed:5, size:vector2(10, 10), test_array:[], test_dict1:<>, test_array2:[], test_dict2:<>}"|
+expected.push|"wind_particle{position:vector2{x:0, y:0}, velocity:vector2{x:0, y:0}, rotation:0, direction:vector2{x:10, y:20}, speed:5, size:vector2{x:10, y:10}, test_array:[], test_dict1:<>, test_array2:[], test_dict2:<>}"|
 print|wind_particle_instance.position|
 expected.push|"vector2{x:0, y:0}"|
 print|wind_particle_instance.type|
@@ -58,7 +58,7 @@ smoke_particle1.position.x: 1
 smoke_particle1.position.y: 0
 smoke_particle1{'position.x'}: 100
 print|smoke_particle1|
-expected.push|"smoke_particle{position:vector2(100, 0), velocity:vector2(0, 0), rotation:0, size:10, alpha:1, life:0, max_life:100, name:\"\", color:color(0, 0, 0, 0)}"|
+expected.push|"smoke_particle{position:vector2{x:100, y:0}, velocity:vector2{x:0, y:0}, rotation:0, size:10, alpha:1, life:0, max_life:100, name:\"\", color:color{r:0, g:0, b:0, a:0}}"|
 
 
 ? Objects literals test

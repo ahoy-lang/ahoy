@@ -55,15 +55,15 @@ expected.push|"defer1"|
 
 
 @ return_typed_dict_and_array || array[int],dict<string,int>:
-  nums:array[int] = [1, 2, 3]
-  dictionary:dict<string,int> = <"a": 1, "b": 2>
+  my_nums:array[int] = [1, 2, 3]
+  my_dictionary:dict<string,int> = <"a": 1, "b": 2>
   print|"Data processed"|
-  print|nums|
-  return nums, dictionary
+  print|my_nums|
+  return my_nums, my_dictionary
 $
 
-nums, dictionary : return_typed_dict_and_array||
-print|nums,dictionary|
+my_nums, my_dictionary : return_typed_dict_and_array||
+print|my_nums,my_dictionary|
 expected.push|"Data processed"|
 expected.push|"[1, 2, 3]"|
 expected.push|"[1, 2, 3] {\"a\": 1, \"b\": 2}"|

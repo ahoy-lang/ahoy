@@ -302,8 +302,24 @@ func compileAndRun(t *testing.T, ahoyFile string, compilerPath string) (string, 
 		return "", fmt.Errorf("ahoy compilation failed: %v\n%s", err, compileErr.String())
 	}
 
+	// Check if C file includes raylib
+	cFileContent, err := os.ReadFile(cFile)
+	if err != nil {
+		return "", fmt.Errorf("failed to read C file: %v", err)
+	}
+
+	// Build compile command with appropriate flags
+	compileArgs := []string{"-o", executable, cFile}
+	
+	// If raylib is included, add raylib linking
+	if strings.Contains(string(cFileContent), "raylib.h") {
+		compileArgs = append(compileArgs, "-I../repos/raylib/src", "-L../repos/raylib/src", "-lraylib", "-lGL", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
+	} else {
+		compileArgs = append(compileArgs, "-lm")
+	}
+
 	// Compile C code
-	cmd = exec.Command("gcc", "-o", executable, cFile, "-lm")
+	cmd = exec.Command("gcc", compileArgs...)
 	compileErr.Reset()
 	cmd.Stderr = &compileErr
 	err = cmd.Run()
