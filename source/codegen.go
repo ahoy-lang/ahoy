@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -745,17 +747,29 @@ func (gen *CodeGenerator) scanImports(node *ahoy.ASTNode) {
 
 		// Only process .h files
 		if strings.HasSuffix(headerName, ".h") {
+			// Resolve relative paths to absolute paths
+			resolvedHeaderName := headerName
+			if strings.HasPrefix(headerName, "./") || strings.HasPrefix(headerName, "../") {
+				sourceDir := filepath.Dir(gen.sourceFilename)
+				absPath, err := filepath.Abs(filepath.Join(sourceDir, headerName))
+				if err == nil {
+					if _, statErr := os.Stat(absPath); statErr == nil {
+						resolvedHeaderName = absPath
+					}
+				}
+			}
+
 			// Try to find and parse the header file
 			headerPath := ""
-			if strings.HasPrefix(headerName, "/") {
-				headerPath = headerName
+			if strings.HasPrefix(resolvedHeaderName, "/") {
+				headerPath = resolvedHeaderName
 			} else {
 				// Try common locations
 				locations := []string{
-					headerName,
-					"/usr/include/" + headerName,
-					"/usr/local/include/" + headerName,
-					"repos/raylib/src/" + headerName,
+					resolvedHeaderName,
+					"/usr/include/" + resolvedHeaderName,
+					"/usr/local/include/" + resolvedHeaderName,
+					"repos/raylib/src/" + resolvedHeaderName,
 				}
 				for _, loc := range locations {
 					if _, err := ahoy.ParseCHeader(loc); err == nil {
@@ -2504,23 +2518,37 @@ func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
 	headerName := node.Value
 	namespace := node.DataType // Namespace is stored in DataType field
 
-	if !gen.includes[headerName] {
-		gen.includes[headerName] = true
-		gen.orderedIncludes = append(gen.orderedIncludes, headerName)
+	// Resolve relative paths to absolute paths
+	resolvedHeaderName := headerName
+	if strings.HasSuffix(headerName, ".h") && (strings.HasPrefix(headerName, "./") || strings.HasPrefix(headerName, "../")) {
+		// It's a relative path - resolve it based on the source file location
+		sourceDir := filepath.Dir(gen.sourceFilename)
+		absPath, err := filepath.Abs(filepath.Join(sourceDir, headerName))
+		if err == nil {
+			// Verify the file exists
+			if _, statErr := os.Stat(absPath); statErr == nil {
+				resolvedHeaderName = absPath
+			}
+		}
+	}
+
+	if !gen.includes[resolvedHeaderName] {
+		gen.includes[resolvedHeaderName] = true
+		gen.orderedIncludes = append(gen.orderedIncludes, resolvedHeaderName)
 
 		// If it's a C header file, parse it to get function name mappings
-		if strings.HasSuffix(headerName, ".h") {
+		if strings.HasSuffix(resolvedHeaderName, ".h") {
 			// Try to find and parse the header file
 			headerPath := ""
-			if strings.HasPrefix(headerName, "/") {
-				headerPath = headerName
+			if strings.HasPrefix(resolvedHeaderName, "/") {
+				headerPath = resolvedHeaderName
 			} else {
 				// Try common locations
 				locations := []string{
-					headerName,
-					"/usr/include/" + headerName,
-					"/usr/local/include/" + headerName,
-					"repos/raylib/src/" + headerName,
+					resolvedHeaderName,
+					"/usr/include/" + resolvedHeaderName,
+					"/usr/local/include/" + resolvedHeaderName,
+					"repos/raylib/src/" + resolvedHeaderName,
 				}
 				for _, loc := range locations {
 					if _, err := ahoy.ParseCHeader(loc); err == nil {
