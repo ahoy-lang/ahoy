@@ -1,0 +1,15 @@
+program test_c_imports
+
+import "../../repos/raylib/src/raylib.h"
+
+@ main ||:
+	position :vector2= vector2{x: 10.0, y: 20.0}
+	my_color :color= color{r: 255, g: 0, b: 0, a: 255}
+	x_val :float= position.x
+	y_val :float= position.y
+	r_val :int= my_color.r
+	print|x_val|
+	print|y_val|
+	print|r_val|
+	print|["10", "20", "255"]|
+$
