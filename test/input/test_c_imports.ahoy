@@ -4,8 +4,8 @@ import "./example_header.h"
 
 @ main ||:
 	expected: []
-	position :vector2= vector2{x: 10.0, y: 20.0}
-	my_color :color= color{r: 255, g: 0, b: 0, a: 255}
+	position :Vector2= Vector2{x: 10.0, y: 20.0}
+	my_color :Color= Color{r: 255, g: 0, b: 0, a: 255}
 	x_val :float= position.x
 	y_val :float= position.y
 	r_val :int= my_color.r

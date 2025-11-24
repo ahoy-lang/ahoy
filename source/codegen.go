@@ -100,6 +100,7 @@ type CodeGenerator struct {
 	functionParamDefaults         map[string][]*ahoy.ASTNode   // function name -> parameter default values
 	dictSourcedVars               map[string]string            // variable name -> dict name (for dict-accessed vars)
 	dictSourcedKeys               map[string]string            // variable name -> key (for dict-accessed vars)
+	generatedTypes                map[string]bool              // Track which types have been generated
 	cFunctionNames                map[string]string            // snake_case name -> actual C name
 	cNamespaces                   map[string]map[string]string // namespace -> (snake_case name -> actual C name)
 	cFunctionReturnTypes          map[string]string            // C function name (snake_case) -> return type
@@ -155,6 +156,7 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		cTypeDefinitions:      make(map[string]bool),
 		declaredGlobalVars:    make(map[string]bool),
 		declaredFunctionVars:  make(map[string]bool),
+		generatedTypes:        make(map[string]bool),
 		jsonVariables:         make(map[string]bool),
 		jsonStructs:           make(map[string]bool),
 		enableBoundsChecking:  true, // Re-enabled with lvalue context handling
@@ -181,10 +183,13 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 	// First pass: scan imports to populate C type definitions BEFORE code generation
 	gen.scanImports(ast)
 
-	// Second pass: check if there's a main function and collect function signatures
+	// Second pass: scan all enums, structs, and constants for forward declaration
+	gen.scanTypeDeclarations(ast)
+
+	// Third pass: check if there's a main function and collect function signatures
 	gen.checkForMainFunction(ast)
 
-	// Third pass: scan variable declarations to populate type information
+	// Fourth pass: scan variable declarations to populate type information
 	gen.scanVariableTypes(ast)
 
 	// Fourth pass: infer parameter types from function call sites
@@ -196,7 +201,10 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 	// Sixth pass: scan for method calls to determine which helper functions we need
 	gen.scanForMethodCalls(ast)
 
-	// Generate main code
+	// Seventh pass: Generate all type declarations (enums, structs) first
+	gen.generateTypeDeclarations(ast)
+
+	// Generate main code (skipping type declarations since they're already generated)
 	gen.generateNode(ast)
 
 	// Check if there were any errors
@@ -828,6 +836,77 @@ func (gen *CodeGenerator) scanImports(node *ahoy.ASTNode) {
 	}
 }
 
+func (gen *CodeGenerator) scanTypeDeclarations(node *ahoy.ASTNode) {
+	if node == nil {
+		return
+	}
+
+	// Scan for enum declarations
+	if node.Type == ahoy.NODE_ENUM_DECLARATION {
+		enumName := node.Value
+		enumType := node.EnumType
+		
+		// Store enum type
+		if enumType != "" {
+			gen.enumTypes[enumName] = enumType
+			gen.enumTypes[capitalizeFirst(enumName)] = enumType
+		} else {
+			gen.enumTypes[enumName] = "int"
+			gen.enumTypes[capitalizeFirst(enumName)] = "int"
+		}
+		
+		// Store enum members
+		gen.enums[enumName] = make(map[string]bool)
+		gen.enums[capitalizeFirst(enumName)] = gen.enums[enumName]
+		
+		for _, member := range node.Children {
+			memberName := member.Value
+			gen.enums[enumName][memberName] = true
+			gen.enumMemberTypes[enumName+"."+memberName] = enumName
+			gen.enumMemberTypes[capitalizeFirst(enumName)+"."+memberName] = enumName
+		}
+	}
+
+	// Scan for struct declarations
+	if node.Type == ahoy.NODE_STRUCT_DECLARATION {
+		structName := node.Value
+		// Just register that this struct exists - actual generation happens later
+		if gen.structs[structName] == nil {
+			gen.structs[structName] = &StructInfo{Name: structName, Fields: make([]StructField, 0)}
+			gen.structs[capitalizeFirst(structName)] = gen.structs[structName]
+		}
+	}
+
+	// Note: We don't scan constants here because they're generated inline
+	// and don't need forward declaration
+
+	// Recursively scan children
+	for _, child := range node.Children {
+		gen.scanTypeDeclarations(child)
+	}
+}
+
+func (gen *CodeGenerator) generateTypeDeclarations(node *ahoy.ASTNode) {
+	if node == nil {
+		return
+	}
+
+	// Generate enum declarations first
+	if node.Type == ahoy.NODE_ENUM_DECLARATION {
+		gen.generateEnum(node)
+	}
+
+	// Generate struct declarations
+	if node.Type == ahoy.NODE_STRUCT_DECLARATION {
+		gen.generateStruct(node)
+	}
+
+	// Recursively process children
+	for _, child := range node.Children {
+		gen.generateTypeDeclarations(child)
+	}
+}
+
 func (gen *CodeGenerator) scanForMethodCalls(node *ahoy.ASTNode) {
 	if node == nil {
 		return
@@ -1308,14 +1387,30 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			gen.output.WriteString("exit(1); ")
 			gen.output.WriteString("} ")
 
-			// Now do the actual assignment with skipBoundsCheck enabled
-			gen.skipBoundsCheck = true
-			gen.generateNode(node.Children[0])
-			gen.skipBoundsCheck = false
+			// Check if we're assigning a C struct type
+			var elemType string
+			if et, exists := gen.arrayElementTypes[arrayName]; exists {
+				elemType = et
+			}
+			cType := gen.mapType(elemType)
+			isCStruct := elemType != "" && gen.cTypeDefinitions[cType] && !strings.HasSuffix(cType, "*") && 
+				cType != "int" && cType != "double" && cType != "char*" && cType != "bool"
+			
+			if isCStruct {
+				// For C structs, assign to the dereferenced pointer
+				gen.output.WriteString(fmt.Sprintf("*(%s*)__arr->data[__idx] = ", cType))
+				gen.generateNode(valueNode)
+				gen.output.WriteString("; }\n")
+			} else {
+				// Now do the actual assignment with skipBoundsCheck enabled
+				gen.skipBoundsCheck = true
+				gen.generateNode(node.Children[0])
+				gen.skipBoundsCheck = false
 
-			gen.output.WriteString(" = ")
-			gen.generateNode(valueNode)
-			gen.output.WriteString("; }\n")
+				gen.output.WriteString(" = ")
+				gen.generateNode(valueNode)
+				gen.output.WriteString("; }\n")
+			}
 			return
 		}
 
@@ -1406,10 +1501,10 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 
 		// Special handling for object literals - they define their own type inline
 		if valueNode.Type == ahoy.NODE_OBJECT_LITERAL {
-			// Check if this is a typed struct literal (e.g., rectangle<...>)
+			// Check if this is a typed struct literal (e.g., Color{...})
 			if valueNode.Value != "" {
-				// Use the C struct type name (capitalize first letter)
-				structName := capitalizeFirst(valueNode.Value)
+				// Use mapType to get the correct C type name
+				structName := gen.mapType(valueNode.Value)
 				gen.output.WriteString(fmt.Sprintf("%s %s = ", structName, node.Value))
 				gen.generateNode(valueNode)
 				gen.output.WriteString(";\n")
@@ -3676,6 +3771,15 @@ func (gen *CodeGenerator) generateArrayLiteral(node *ahoy.ASTNode) {
 		gen.output.WriteString(fmt.Sprintf("%s->is_typed = 0; ", arrName))
 	}
 
+	// Check if array element type is a C struct (for typed arrays)
+	var elemCType string
+	var isElemCStruct bool
+	if isTyped && elementType != "" {
+		elemCType = gen.mapType(elementType)
+		isElemCStruct = gen.cTypeDefinitions[elemCType] && !strings.HasSuffix(elemCType, "*") && 
+			elemCType != "int" && elemCType != "double" && elemCType != "char*" && elemCType != "bool"
+	}
+
 	// Add elements - cast to intptr_t for pointer safety and track types
 	for i, child := range node.Children {
 		valueType := gen.getValueType(child)
@@ -3687,6 +3791,24 @@ func (gen *CodeGenerator) generateArrayLiteral(node *ahoy.ASTNode) {
 			gen.varCounter++
 			gen.generateNode(child)
 			gen.output.WriteString(fmt.Sprintf("; __float_ptr_%d; }); ", gen.varCounter-1))
+		} else if isElemCStruct {
+			// For C structs, determine actual C type from element
+			actualCType := elemCType
+			if child.Type == ahoy.NODE_IDENTIFIER {
+				// Look up the variable's actual declared type
+				if varType, exists := gen.variables[child.Value]; exists {
+					actualCType = gen.mapType(varType)
+				} else if varType, exists := gen.functionVars[child.Value]; exists {
+					actualCType = gen.mapType(varType)
+				}
+			}
+			
+			// For C structs, allocate heap memory and copy the struct
+			gen.output.WriteString(fmt.Sprintf("%s->data[%d] = (intptr_t)({ %s* __struct_ptr_%d = malloc(sizeof(%s)); *__struct_ptr_%d = ", 
+				arrName, i, actualCType, gen.varCounter, actualCType, gen.varCounter))
+			gen.varCounter++
+			gen.generateNode(child)
+			gen.output.WriteString(fmt.Sprintf("; __struct_ptr_%d; }); ", gen.varCounter-1))
 		} else {
 			gen.output.WriteString(fmt.Sprintf("%s->data[%d] = (intptr_t)", arrName, i))
 			gen.generateNode(child)
@@ -3741,7 +3863,15 @@ func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 		if elemType, exists := gen.arrayElementTypes[arrayName]; exists {
 			cType := gen.mapType(elemType)
 			if cType != "int" {
-				gen.output.WriteString(fmt.Sprintf("((%s)(intptr_t)__arr->data[__idx])", cType))
+				// Check if this is a C struct type stored as pointer
+				isCStruct := gen.cTypeDefinitions[cType] && !strings.HasSuffix(cType, "*") && 
+					cType != "int" && cType != "double" && cType != "char*" && cType != "bool"
+				if isCStruct {
+					// Dereference the pointer to get the struct value
+					gen.output.WriteString(fmt.Sprintf("(*(%s*)__arr->data[__idx])", cType))
+				} else {
+					gen.output.WriteString(fmt.Sprintf("((%s)(intptr_t)__arr->data[__idx])", cType))
+				}
 			} else {
 				gen.output.WriteString("__arr->data[__idx]")
 			}
@@ -3758,13 +3888,27 @@ func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 		cType := gen.mapType(elemType)
 		// Cast to the appropriate type for non-int types (need intptr_t intermediate for pointer safety)
 		if cType != "int" {
-			if needsArrayCast {
-				gen.output.WriteString(fmt.Sprintf("((%s)(intptr_t)((AhoyArray*)%s)->data[", cType, arrayName))
+			// Check if this is a C struct type stored as pointer
+			isCStruct := gen.cTypeDefinitions[cType] && !strings.HasSuffix(cType, "*") && 
+				cType != "int" && cType != "double" && cType != "char*" && cType != "bool"
+			if isCStruct {
+				// Dereference the pointer to get the struct value
+				if needsArrayCast {
+					gen.output.WriteString(fmt.Sprintf("(*(%s*)((AhoyArray*)%s)->data[", cType, arrayName))
+				} else {
+					gen.output.WriteString(fmt.Sprintf("(*(%s*)%s->data[", cType, arrayName))
+				}
+				gen.generateNode(node.Children[0])
+				gen.output.WriteString("])")
 			} else {
-				gen.output.WriteString(fmt.Sprintf("((%s)(intptr_t)%s->data[", cType, arrayName))
+				if needsArrayCast {
+					gen.output.WriteString(fmt.Sprintf("((%s)(intptr_t)((AhoyArray*)%s)->data[", cType, arrayName))
+				} else {
+					gen.output.WriteString(fmt.Sprintf("((%s)(intptr_t)%s->data[", cType, arrayName))
+				}
+				gen.generateNode(node.Children[0])
+				gen.output.WriteString("])")
 			}
-			gen.generateNode(node.Children[0])
-			gen.output.WriteString("])")
 			return
 		}
 	}
@@ -3899,33 +4043,23 @@ func (gen *CodeGenerator) mapType(langType string) string {
 		return mappedBase + "*"
 	}
 
-	// Check if it's a struct type (capitalize first letter)
+	// Check if it's an Ahoy struct type (user-defined)
 	if _, exists := gen.structs[langType]; exists {
 		return capitalizeFirst(langType)
 	}
 
-	// Check if any C type matches case-insensitively
-	// We need to find the properly-cased C type, not just accept any case
+	// Check if exact match exists in C types (case-sensitive)
+	if gen.cTypeDefinitions[langType] {
+		return langType
+	}
+
+	// Check if any C type matches case-insensitively for backward compatibility
 	lowerLangType := strings.ToLower(langType)
 	for cType := range gen.cTypeDefinitions {
 		if strings.ToLower(cType) == lowerLangType {
 			// Return the properly-cased version from the type definitions
-			// Prefer PascalCase versions (e.g., Texture2D over texture2d)
-			if len(cType) > 0 && cType[0] >= 'A' && cType[0] <= 'Z' {
-				return cType
-			}
+			return cType
 		}
-	}
-
-	// If we only found a lowercase version, try capitalizing it
-	capitalizedType := capitalizeFirst(langType)
-	if gen.cTypeDefinitions[capitalizedType] {
-		return capitalizedType
-	}
-
-	// Last resort: if exact match exists and it's already properly cased, use it
-	if gen.cTypeDefinitions[langType] && len(langType) > 0 && langType[0] >= 'A' && langType[0] <= 'Z' {
-		return langType
 	}
 
 	return "int"
@@ -4439,6 +4573,13 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 // Generate enum declaration
 func (gen *CodeGenerator) generateEnum(node *ahoy.ASTNode) {
 	enumName := node.Value
+	
+	// Skip if already generated
+	if gen.generatedTypes[enumName] {
+		return
+	}
+	gen.generatedTypes[enumName] = true
+	
 	enumType := node.EnumType
 
 	// Track enum members for validation
@@ -5299,6 +5440,12 @@ func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 func (gen *CodeGenerator) generateStruct(node *ahoy.ASTNode) {
 	structName := node.Value
 
+	// Skip if already generated
+	if gen.generatedTypes[structName] {
+		return
+	}
+	gen.generatedTypes[structName] = true
+
 	// Handle JSON structs - just store schema, don't generate C code
 	if node.DataType == "json" {
 		structInfo := &StructInfo{
@@ -5433,10 +5580,10 @@ func (gen *CodeGenerator) generateDefaultValue(node *ahoy.ASTNode) string {
 			return fmt.Sprintf("(Color){.r = %s, .g = %s, .b = %s, .a = %s}", r, g, b, a)
 		}
 	case ahoy.NODE_OBJECT_LITERAL:
-		// Handle object literal default values like vector2{x:10, y:20}
+		// Handle object literal default values like Color{r:10, g:20, b:30, a:255}
 		if node.Value != "" {
-			// Typed object literal
-			typeName := capitalizeFirst(node.Value)
+			// Typed object literal - use mapType to get correct C type
+			typeName := gen.mapType(node.Value)
 			var builder strings.Builder
 			builder.WriteString(fmt.Sprintf("(%s){", typeName))
 
@@ -7277,8 +7424,8 @@ func (gen *CodeGenerator) generateObjectLiteral(node *ahoy.ASTNode) {
 
 	structName := ""
 	if node.Value != "" {
-		// Typed object literal - capitalize first letter for C struct name
-		structName = capitalizeFirst(node.Value)
+		// Typed object literal - use mapType to get correct C struct name
+		structName = gen.mapType(node.Value)
 
 		// Check if this is a known Ahoy struct type
 		_, hasStructInfo := gen.structs[node.Value]
@@ -7287,7 +7434,7 @@ func (gen *CodeGenerator) generateObjectLiteral(node *ahoy.ASTNode) {
 		}
 
 		// For typed object literals, generate C struct initialization even if we don't have
-		// the full struct definition (e.g., C structs from imported headers like Vector2)
+		// the full struct definition (e.g., C structs from imported headers like Color, Texture2D)
 		// Trust that if node.Value is set, the parser validated it's a valid type
 		gen.output.WriteString(fmt.Sprintf("(%s)", structName))
 	} else {
@@ -7497,22 +7644,28 @@ func splitReturnTypes(typeStr string) []string {
 // Returns the fully qualified name (enumName_MEMBER) if found, empty string otherwise
 func (gen *CodeGenerator) tryResolveEnumMember(memberName string) string {
 	// Check all registered enums
-	var foundEnum string
-	foundCount := 0
+	var foundEnums []string
 
 	for enumName, members := range gen.enums {
-		if members[memberName] {
-			foundEnum = enumName
-			foundCount++
+		if members != nil && members[memberName] {
+			// Skip if this is a capitalized version and lowercase exists
+			lowerName := strings.ToLower(string(enumName[0])) + enumName[1:]
+			if enumName != lowerName && gen.enums[lowerName] != nil {
+				continue
+			}
+			foundEnums = append(foundEnums, enumName)
 		}
 	}
 
-	// Only resolve if found in exactly one enum (unambiguous)
-	if foundCount == 1 {
+	// Only resolve if found (prefer first/only match)
+	if len(foundEnums) > 0 {
+		foundEnum := foundEnums[0]
 		// Check if this is an int enum
-		if gen.enumTypes[foundEnum] == "int" {
+		if gen.enumTypes[foundEnum] == "int" || gen.enumTypes[foundEnum] == "" {
 			return foundEnum + "_" + memberName
 		}
+		// For struct-based enums, use the struct accessor
+		return foundEnum + "." + memberName
 	}
 
 	return ""

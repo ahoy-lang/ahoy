@@ -1,6 +1,14 @@
 
 
+import "/home/lee/Documents/ahoy-lang/ahoy/repos/raylib/src/raylib.h"
+
 expected:[]
+
+? struct vector2:
+? 	x: float
+? 	y: float
+? $
+
 struct player_info:
 	5 MAX_HAND:int ? because created with screaming snake case should be immutable.
 	5 hand_size:int
@@ -17,8 +25,15 @@ json:struct json_example:
     fruits fruits:array[string]
 $
 
-player_information : player_info{}
-print|player_information|
+player_information : player_info{deck_count:15, hand_size:5}
 
+camera_zoom:float = 1.5
+
+? camera2D{offset:vector2{x:0,y:0}, target:vector2{x:0,y:0}, rotation:0.0, zoom:camera_zoom}
+? test:"jkjkl"
+? print|test|
+? expected.push|"jkjkl"|
+
+print|player_information|
 expected.push|"player_info{MAX_HAND:5, hand_size:5, deck_count:15, selected_idx:-1, dragging:false, hover_row:-1, hover_col:-1, placed_count:0}"|
 print|expected|

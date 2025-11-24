@@ -139,19 +139,7 @@ else then print|"else_then"| ? the then should be allowed as optional not requir
 $
 expected.push|"else_then"|;
 
-enum direction:
-	0 UP
-	1 RIGHT
-	2 DOWN
-	3 LEFT
-$
 
-enum enum_with_same_member:
-	0 FORWARD
-	1 EXIT
-	2 BELOW
-	3 KEY_RIGHT
-$
 
 rotation: 3
 switch rotation:
@@ -171,7 +159,28 @@ switch rotation:
 		on direction.LEFT: print|"LEFT"|
 		_:print|"NONE"
 $
-expected.push|"DOWN"|
+expected.push|"DOWN"|;
+
+print|BIG|
+BIG:"big"
+expected.push|"big"|
+
+
+
+enum direction:
+	0 UP
+	1 RIGHT
+	2 DOWN
+	3 LEFT
+$
+
+enum enum_with_same_member:
+	0 FORWARD
+	1 EXIT
+	2 BELOW
+	3 KEY_RIGHT
+$
+
 
 
 

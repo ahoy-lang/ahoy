@@ -10,6 +10,7 @@ expected:[]
   print|test_dict|
   print|nums|
   print|test_object|
+
 $
 
 expected.push|"{\"key2\": \"value2\", \"key1\": \"value1\"}"|
