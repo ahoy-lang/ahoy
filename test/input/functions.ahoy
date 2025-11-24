@@ -70,24 +70,31 @@ expected.push|"[1, 2, 3] {\"a\": 1, \"b\": 2}"|
 
 @ test_dictionary||dict<string,int>,dict<string,int>:
 	test_dict :dict<string,int> = <"a": 1, "b": 2>;
-	return test_dict,test_dict
+	test_dict2:dict<string,int> = <"c": 3, "d": 4>;
+	return test_dict,test_dict2
 $
 ? Test typed parameters
-@ test_typed_params |arr:array[string], count:int| void:
+@ test_typed_params |arr:array[string], count:int|infer:
 	new_dict,new_dict2: test_dictionary||;
-$
+	? defer free|new_dict|
+	? defer free|new_dict2|
 	? print|new_dict,new_dict2|
-?   print|arr[0]|
-?   print|arr[1]|
-?   print|count|
-? $
+	? defer free|new_dict2|
+	? test_dict: dict<string,int> = <"x": 10, "y": 20>
+	? defer free|test_dict|
+  print|arr[0]|
+  print|arr[1]|
+  print|count|
+  return new_dict,new_dict2
+$
 
 array_test:array[string]= ["hello", "world"]
-test_typed_params|array_test, 42|
-? print|array_test|
 expected.push|"hello"|
 expected.push|"world"|
 expected.push|42|
+testi, testi2: test_typed_params|array_test, 42|
+print|testi,testi2|
+expected.push|"{\"a\": 1, \"b\": 2} {\"c\": 3, \"d\": 4}"|
 
 @ example_function |x:int,y:int,z:int| void:
 	print|x,y,z|

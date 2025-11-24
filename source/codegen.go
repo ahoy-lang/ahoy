@@ -4599,6 +4599,30 @@ func (gen *CodeGenerator) scanVariableDeclarations(node *ahoy.ASTNode) {
 		}
 	}
 
+	// Handle tuple assignments - e.g., new_dict,new_dict2: test_dictionary||
+	if node.Type == ahoy.NODE_TUPLE_ASSIGNMENT && len(node.Children) >= 2 {
+		leftSide := node.Children[0]
+		rightSide := node.Children[1]
+
+		// Check if right side is a function call
+		if len(rightSide.Children) == 1 && rightSide.Children[0].Type == ahoy.NODE_CALL {
+			callNode := rightSide.Children[0]
+			funcName := callNode.Value
+
+			// Look up function return types
+			if returnTypes, exists := gen.functionReturnTypes[funcName]; exists {
+				// Assign each variable its corresponding return type
+				for i, leftChild := range leftSide.Children {
+					if leftChild.Type == ahoy.NODE_IDENTIFIER && i < len(returnTypes) {
+						varName := leftChild.Value
+						varType := returnTypes[i]
+						gen.functionVars[varName] = varType
+					}
+				}
+			}
+		}
+	}
+
 	// Recursively scan children
 	for _, child := range node.Children {
 		gen.scanVariableDeclarations(child)
