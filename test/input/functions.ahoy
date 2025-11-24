@@ -68,18 +68,19 @@ expected.push|"Data processed"|
 expected.push|"[1, 2, 3]"|
 expected.push|"[1, 2, 3] {\"a\": 1, \"b\": 2}"|
 
-@ test_dictionary||dict<string,int>:
+@ test_dictionary||dict<string,int>,dict<string,int>:
 	test_dict :dict<string,int> = <"a": 1, "b": 2>;
-	return test_dict
+	return test_dict,test_dict
 $
 ? Test typed parameters
 @ test_typed_params |arr:array[string], count:int| void:
-	new_dict : test_dictionary||
-	print|new_dict|
-  print|arr[0]|
-  print|arr[1]|
-  print|count|
+	new_dict,new_dict2: test_dictionary||;
 $
+	? print|new_dict,new_dict2|
+?   print|arr[0]|
+?   print|arr[1]|
+?   print|count|
+? $
 
 array_test:array[string]= ["hello", "world"]
 test_typed_params|array_test, 42|

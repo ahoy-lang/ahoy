@@ -7,7 +7,6 @@ expected:[]
 ? struct vector2:
 ? 	x: float
 ? 	y: float
-? $
 
 struct player_info:
 	5 MAX_HAND:int ? because created with screaming snake case should be immutable.

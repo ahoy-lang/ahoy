@@ -72,7 +72,8 @@ type CodeGenerator struct {
 	variables                     map[string]string            // variable name -> type (global scope)
 	functionVars                  map[string]string            // variable name -> type (function scope)
 	nestedScopeVars               map[string]bool              // variables declared in nested scopes (loops/ifs)
-	constants                     map[string]bool              // constant name -> declared
+	constants                     map[string]string            // constant name -> type
+	declaredConstants             map[string]bool              // constant name -> declared (for duplicate check)
 	enums                         map[string]map[string]bool   // enum name -> {member names}
 	enumMemberTypes               map[string]string            // "enumName.memberName" -> type
 	enumTypes                     map[string]string            // enum name -> enum type (int, string, etc.)
@@ -133,7 +134,8 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		includes:              make(map[string]bool),
 		orderedIncludes:       make([]string, 0),
 		variables:             make(map[string]string),
-		constants:             make(map[string]bool),
+		constants:             make(map[string]string),
+		declaredConstants:     make(map[string]bool),
 		enums:                 make(map[string]map[string]bool),
 		enumMemberTypes:       make(map[string]string),
 		enumTypes:             make(map[string]string),
@@ -885,8 +887,22 @@ func (gen *CodeGenerator) scanTypeDeclarations(node *ahoy.ASTNode) {
 		}
 	}
 
-	// Note: We don't scan constants here because they're generated inline
-	// and don't need forward declaration
+	// Scan for constant declarations to track their types
+	if node.Type == ahoy.NODE_CONSTANT_DECLARATION {
+		constName := node.Value
+		// Determine the constant type
+		var constType string
+		if node.DataType != "" {
+			constType = node.DataType
+		} else if len(node.Children) > 0 {
+			// Infer type from the value
+			constType = gen.inferType(node.Children[0])
+		} else {
+			constType = "int" // default
+		}
+		// Store constant type
+		gen.constants[constName] = constType
+	}
 
 	// Recursively scan children
 	for _, child := range node.Children {
@@ -1235,22 +1251,24 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 				// No return statement found, default to void
 				returnType = "void"
 			}
-		} else if strings.Contains(node.DataType, ",") {
-			// Multiple return types - create a struct
+		} else {
 			// Use smart split that handles nested commas in dict<k,v>
 			returnTypes = splitReturnTypes(node.DataType)
 
-			// Generate struct definition for multi-return
-			structName := fmt.Sprintf("%s_return", funcName)
-			gen.funcReturnStructs.WriteString(fmt.Sprintf("typedef struct {\n"))
-			for i, rType := range returnTypes {
-				mappedType := gen.mapType(rType)
-				gen.funcReturnStructs.WriteString(fmt.Sprintf("    %s ret%d;\n", mappedType, i))
+			if len(returnTypes) > 1 {
+				// Multiple return types - create a struct
+				structName := fmt.Sprintf("%s_return", funcName)
+				gen.funcReturnStructs.WriteString(fmt.Sprintf("typedef struct {\n"))
+				for i, rType := range returnTypes {
+					mappedType := gen.mapType(rType)
+					gen.funcReturnStructs.WriteString(fmt.Sprintf("    %s ret%d;\n", mappedType, i))
+				}
+				gen.funcReturnStructs.WriteString(fmt.Sprintf("} %s;\n\n", structName))
+				returnType = structName
+			} else {
+				// Single return type (even if it contains commas like dict<k,v>)
+				returnType = gen.mapType(node.DataType)
 			}
-			gen.funcReturnStructs.WriteString(fmt.Sprintf("} %s;\n\n", structName))
-			returnType = structName
-		} else {
-			returnType = gen.mapType(node.DataType)
 		}
 	}
 
@@ -3598,7 +3616,7 @@ func (gen *CodeGenerator) generateConstant(node *ahoy.ASTNode) {
 	constName := node.Value
 
 	// Check if constant already declared
-	if gen.constants[constName] {
+	if gen.declaredConstants[constName] {
 		fmt.Printf("\n❌ Error at line %d: Cannot redeclare constant '%s'\n", node.Line, constName)
 		fmt.Printf("   Constants cannot be reassigned or redeclared.\n")
 		fmt.Printf("   '%s' was already declared earlier in the code.\n\n", constName)
@@ -3607,17 +3625,22 @@ func (gen *CodeGenerator) generateConstant(node *ahoy.ASTNode) {
 	}
 
 	// Mark constant as declared
-	gen.constants[constName] = true
+	gen.declaredConstants[constName] = true
 
 	// Determine the constant type - use explicit type if provided, otherwise infer
 	var constType string
+	var ahoyType string
 	if node.DataType != "" {
+		ahoyType = node.DataType
 		constType = gen.mapType(node.DataType)
 	} else {
 		// Infer type from the value
-		inferredType := gen.inferType(node.Children[0])
-		constType = gen.mapType(inferredType)
+		ahoyType = gen.inferType(node.Children[0])
+		constType = gen.mapType(ahoyType)
 	}
+
+	// Update constant type for inference (may have been set in scan pass)
+	gen.constants[constName] = ahoyType
 
 	// Constants at global scope (not in a function) should go into funcDecls
 	if gen.currentFunction == "" {
@@ -4393,6 +4416,10 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		// Check if this is a JSON variable
 		if gen.jsonVariables[node.Value] {
 			return "AhoyJSON*"
+		}
+		// Check if this is a constant
+		if constType, exists := gen.constants[node.Value]; exists {
+			return constType
 		}
 		if varType, exists := gen.variables[node.Value]; exists {
 			// Normalize dict types
