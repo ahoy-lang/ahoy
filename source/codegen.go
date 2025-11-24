@@ -112,6 +112,10 @@ type CodeGenerator struct {
 	enableSignalHandler           bool                         // Enable signal handler for crash reporting
 	skipBoundsCheck               bool                         // Temporarily skip bounds check (for lvalue contexts)
 	sourceFilename                string                       // Source filename for error messages
+	heapAllocatedVars             map[string]bool              // Track heap-allocated variables in current function
+	escapingVars                  map[string]bool              // Track variables that escape the function (returned or stored)
+	manuallyFreedVars             map[string]bool              // Track variables with manual defer free
+	autoFreedVars                 map[string]bool              // Track variables with automatic defer free
 }
 
 // GenerateC generates C code from an AST (exported for testing)
@@ -163,6 +167,10 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		enableSignalHandler:   true, // Enable by default for better error messages
 		skipBoundsCheck:       false,
 		sourceFilename:        filename, // Source file for error messages
+		heapAllocatedVars:     make(map[string]bool),
+		escapingVars:          make(map[string]bool),
+		manuallyFreedVars:     make(map[string]bool),
+		autoFreedVars:         make(map[string]bool),
 	}
 
 	// Add standard includes
@@ -980,6 +988,22 @@ func (gen *CodeGenerator) writeIndent() {
 	}
 }
 
+func (gen *CodeGenerator) isHeapAllocatedType(varType string) bool {
+	// Check if a type requires heap allocation
+	if strings.HasPrefix(varType, "array") || varType == "AhoyArray*" {
+		return true
+	}
+	if strings.HasPrefix(varType, "dict") || varType == "HashMap*" {
+		return true
+	}
+	// String methods that return new strings are heap-allocated
+	// JSON objects are heap-allocated
+	if varType == "AhoyJSON*" {
+		return true
+	}
+	return false
+}
+
 func (gen *CodeGenerator) generate(node *ahoy.ASTNode) {
 	gen.generateNodeInternal(node, false)
 }
@@ -1312,8 +1336,15 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 
 	// Initialize deferred statements stack for this function
 	gen.deferredStatements = []string{}
+	gen.heapAllocatedVars = make(map[string]bool)
+	gen.escapingVars = make(map[string]bool)
+	gen.manuallyFreedVars = make(map[string]bool)
+	gen.autoFreedVars = make(map[string]bool)
 
 	gen.generateNodeInternal(body, false)
+
+	// Add automatic defer free for heap-allocated variables that don't escape
+	gen.addAutomaticDeferFrees()
 
 	// Execute deferred statements in LIFO order before function end
 	if len(gen.deferredStatements) > 0 {
@@ -1461,6 +1492,9 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 		}
 
 		// For struct field/array/pointer access, direct assignment works
+		// Mark any variables in the value as escaping (being stored)
+		gen.markEscapingVariables(node.Children[1])
+		
 		gen.generateNode(node.Children[0])
 		gen.output.WriteString(" = ")
 		gen.generateNode(node.Children[1])
@@ -1483,7 +1517,9 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 	canRedeclare := isLoopLocalPattern || (isNestedScope && gen.indent > 1)
 
 	if isDeclared && !canRedeclare {
-		// Just assignment
+		// Just assignment - mark RHS variables as escaping if being assigned to existing var
+		gen.markEscapingVariables(node.Children[0])
+		
 		if valueNode.Type == ahoy.NODE_SWITCH_STATEMENT {
 			// Generate switch as expression (assign in each case)
 			gen.generateSwitchExpression(valueNode, node.Value)
@@ -1626,6 +1662,16 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				gen.dictSourcedVars[node.Value] = valueNode.Value // dict name
 				if len(valueNode.Children) > 0 && valueNode.Children[0].Type == ahoy.NODE_STRING {
 					gen.dictSourcedKeys[node.Value] = valueNode.Children[0].Value // key
+				}
+			}
+
+			// Track heap-allocated variables in function scope
+			// Only track if the value is actually allocating new memory, not just aliasing
+			// And only at function level (not in nested scopes like if/loop)
+			if gen.currentFunction != "" && gen.indent == 1 && gen.isHeapAllocatedType(varType) {
+				// Check if valueNode is creating new memory (literal) vs just aliasing (identifier)
+				if valueNode.Type != ahoy.NODE_IDENTIFIER {
+					gen.heapAllocatedVars[node.Value] = true
 				}
 			}
 
@@ -2532,6 +2578,13 @@ func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
 }
 
 func (gen *CodeGenerator) generateReturnStatement(node *ahoy.ASTNode) {
+	// Mark returned variables as escaping
+	if len(node.Children) > 0 {
+		for _, child := range node.Children {
+			gen.markEscapingVariables(child)
+		}
+	}
+
 	// Execute deferred statements in LIFO order before return
 	if len(gen.deferredStatements) > 0 {
 		for i := len(gen.deferredStatements) - 1; i >= 0; i-- {
@@ -2593,6 +2646,16 @@ func (gen *CodeGenerator) generateAssertStatement(node *ahoy.ASTNode) {
 func (gen *CodeGenerator) generateDeferStatement(node *ahoy.ASTNode) {
 	// Collect deferred statements to execute in LIFO order at function end
 	if len(node.Children) > 0 {
+		// Check if this is a manual defer free
+		child := node.Children[0]
+		if child.Type == ahoy.NODE_CALL && child.Value == "free" && len(child.Children) > 0 {
+			// Track manual defer free
+			if child.Children[0].Type == ahoy.NODE_IDENTIFIER {
+				varName := child.Children[0].Value
+				gen.manuallyFreedVars[varName] = true
+			}
+		}
+
 		// Generate the deferred statement into a temporary buffer
 		savedOutput := gen.output
 		gen.output = strings.Builder{}
@@ -2607,6 +2670,89 @@ func (gen *CodeGenerator) generateDeferStatement(node *ahoy.ASTNode) {
 
 		// Add to deferred statements stack
 		gen.deferredStatements = append(gen.deferredStatements, deferredCode)
+	}
+}
+
+func (gen *CodeGenerator) markEscapingVariables(node *ahoy.ASTNode) {
+	if node == nil {
+		return
+	}
+
+	if node.Type == ahoy.NODE_IDENTIFIER {
+		varName := node.Value
+		// Check if this is a function-local variable that's heap-allocated
+		if gen.heapAllocatedVars[varName] {
+			gen.escapingVars[varName] = true
+		}
+	}
+
+	// Recursively check children
+	for _, child := range node.Children {
+		gen.markEscapingVariables(child)
+	}
+}
+
+func (gen *CodeGenerator) addAutomaticDeferFrees() {
+	// Add automatic defer free for heap-allocated variables that:
+	// 1. Are heap-allocated
+	// 2. Don't escape the function (not returned or stored globally)
+	// 3. Aren't manually freed
+	// 4. Aren't function parameters
+	
+	for varName := range gen.heapAllocatedVars {
+		// Skip if variable escapes
+		if gen.escapingVars[varName] {
+			continue
+		}
+		
+		// Skip if manually freed
+		if gen.manuallyFreedVars[varName] {
+			continue
+		}
+		
+		// Skip if it's a function parameter
+		if gen.functionVars[varName] != "" {
+			// Check if it's a parameter by checking if it was declared in the function vars
+			// Parameters are added to functionVars before processing the function body
+			// We need to distinguish between parameters and locally declared variables
+			// For now, we'll be conservative and only auto-free variables we explicitly track
+		}
+		
+		// Get the variable type to determine the free function
+		varType := ""
+		if t, exists := gen.functionVars[varName]; exists {
+			varType = t
+		} else if t, exists := gen.variables[varName]; exists {
+			varType = t
+		}
+		
+		if varType == "" {
+			continue
+		}
+		
+		// Generate the appropriate free call based on type
+		freeCode := ""
+		if strings.HasPrefix(varType, "array") || varType == "AhoyArray*" {
+			// For arrays, need to free the array structure
+			freeCode = fmt.Sprintf("    if (%s) { free(%s->data); free(%s->types); free(%s); }\n", 
+				varName, varName, varName, varName)
+		} else if strings.HasPrefix(varType, "dict") || varType == "HashMap*" {
+			// For dicts/HashMaps, use the dict cleanup function
+			freeCode = fmt.Sprintf("    if (%s) { /* TODO: proper HashMap cleanup */ free(%s); }\n", 
+				varName, varName)
+		} else if varType == "AhoyJSON*" {
+			// For JSON objects
+			freeCode = fmt.Sprintf("    if (%s) { /* TODO: proper JSON cleanup */ free(%s); }\n", 
+				varName, varName)
+		} else if varType == "char*" || varType == "string" {
+			// For heap-allocated strings
+			freeCode = fmt.Sprintf("    if (%s) { free(%s); }\n", varName, varName)
+		}
+		
+		if freeCode != "" {
+			gen.deferredStatements = append(gen.deferredStatements, freeCode)
+			gen.autoFreedVars[varName] = true
+		}
 	}
 }
 

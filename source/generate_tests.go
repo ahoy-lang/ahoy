@@ -33,7 +33,7 @@ func captureOutput(ahoyFile string) (string, error) {
 	ast := ahoy.Parse(tokens)
 
 	// Generate C code
-	cCode := generateC(ast)
+	cCode := generateC(ast, ahoyFile)
 
 	// Determine output paths
 	baseName := strings.TrimSuffix(filepath.Base(ahoyFile), ".ahoy")
