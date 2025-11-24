@@ -1687,8 +1687,12 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			// Only track if the value is actually allocating new memory, not just aliasing
 			// And only at function level (not in nested scopes like if/loop)
 			if gen.currentFunction != "" && gen.indent == 1 && gen.isHeapAllocatedType(varType) {
-				// Check if valueNode is creating new memory (literal) vs just aliasing (identifier)
-				if valueNode.Type != ahoy.NODE_IDENTIFIER {
+				// Check if valueNode is creating new memory (literal or function call) vs just aliasing (identifier)
+				if valueNode.Type == ahoy.NODE_CALL {
+					// Function call that returns heap-allocated type - track it
+					gen.heapAllocatedVars[node.Value] = true
+				} else if valueNode.Type != ahoy.NODE_IDENTIFIER {
+					// Literal (array, dict, object) - track it
 					gen.heapAllocatedVars[node.Value] = true
 				}
 			}
@@ -5523,6 +5527,10 @@ func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 					if gen.functionVars != nil {
 						gen.functionVars[target.Value] = inferredType
 						gen.declaredFunctionVars[target.Value] = true
+						// Track heap-allocated return values at function level
+						if gen.indent == 1 && gen.isHeapAllocatedType(inferredType) {
+							gen.heapAllocatedVars[target.Value] = true
+						}
 					} else {
 						gen.variables[target.Value] = inferredType
 						gen.declaredGlobalVars[target.Value] = true
