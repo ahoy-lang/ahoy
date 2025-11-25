@@ -311,7 +311,13 @@ struct color:
   b: int,
   a: int
 $
-
+? color with initial values
+struct color_with_init_values:
+  255 r: int,
+  200 g: int,
+  200 b: int,
+  0   a: int
+$
 position: vector2{x: 100.0, y: 200.0}
 red: color{r: 255, g: 0, b: 0, a: 255}
 ```
@@ -355,9 +361,9 @@ enum Color:
 $
 
 enum Status:
-    PENDING: 0
-    ACTIVE: 1
-    DONE: 2
+    0 PENDING
+    1 ACTIVE
+    2 DONE
 $
 
 ? Usage
