@@ -501,7 +501,6 @@ All Ahoy source files use the `.ahoy` extension.
 ### Comments
 ```ahoy
 ? This is a comment (using ?)
-# This is also a comment (using #)
 ```
 
 ### Syntax Summary
@@ -510,13 +509,13 @@ All Ahoy source files use the `.ahoy` extension.
 |---------|--------|---------|
 | Variable | `name: value` | `x: 42` |
 | Variable (typed) | `name:type= value` | `age:int= 29` |
-| Constant | `name:: value` | `MAX:: 100` |
+| Constant | `NAME: value` | `MAX:: 100` |
 | Constant (typed) | `name::type= value` | `MAX::int= 100` |
 | Function | `name :: \|params\| type:` | `add :: \|a:int, b:int\| int:` |
 | Default arg | `param:type=default` | `timeout:float=30.0` |
 | Array | `[item1, item2, ...]` | `[1, 2, 3]` |
-| Object | `<key: value, ...>` | `<name: "Alice", age: 30>` |
-| Dict | `{"key": value, ...}` | `{"x": 10, "y": 20}` |
+| Dict | `<key: value, ...>` | `<name: "Alice", age: 30>` |
+| Object | `{"key": value, ...}` | `{"x": 10, "y": 20}` |
 | F-String | `f"text {expr} text"` | `f"Sum is {x + y}"` |
 | Ternary | `cond ?? true : false` | `max: a > b ?? a : b` |
 | Assert | `assert condition` | `assert x > 0` |
@@ -592,11 +591,12 @@ ahoy-lang/
 ### Function Design
 ```ahoy
 ? Good: Type-safe with defaults
-process :: |data:dict, timeout:float=30.0| bool:
+@ process :: |data:dict, timeout:float=30.0| bool:
     assert data not is null
     defer cleanup||
     ? ... implementation ...
     return true
+$
 ```
 
 ### Type Annotations
@@ -703,12 +703,14 @@ Ahoy includes a comprehensive test suite with automated CI/CD.
 
 ### Run All Tests
 ```bash
-./run_tests.sh
+cd into folder: ahoy/test
+$ go test -v
 ```
 
 ### Run Single Test
 ```bash
-./source/ahoy-compiler -f test/input/arrays_test.ahoy -r
+cd into folder: ahoy/source
+go run -f test/input/arrays_test.ahoy -r
 ```
 
 ### Test Categories
@@ -736,7 +738,7 @@ See [TESTING.md](TESTING.md) for detailed testing documentation.
 2. Create a feature branch
 3. Make your changes
 4. Add/update tests
-5. Ensure tests pass: `./run_tests.sh`
+5. Ensure tests pass: ahoy/test go run test -v
 6. Submit a pull request
 
 Tests run automatically on PRs via GitHub Actions.
