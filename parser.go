@@ -797,6 +797,10 @@ func (p *Parser) parseStatement() *ASTNode {
 	case TOKEN_ENUM:
 		return p.parseEnumDeclaration()
 	case TOKEN_STRUCT:
+		// Check for struct:json syntax
+		if p.peek(1).Type == TOKEN_ASSIGN && p.peek(2).Value == "json" {
+			return p.parseJsonStructDeclaration()
+		}
 		return p.parseStructDeclaration()
 	case TOKEN_ALIAS:
 		return p.parseAliasDeclaration()
@@ -5504,16 +5508,90 @@ func (p *Parser) parseUnionDeclaration() *ASTNode {
 
 // Parse struct declaration
 func (p *Parser) parseJsonStructDeclaration() *ASTNode {
-	// Parse json:struct name:
-	p.expect(TOKEN_IDENTIFIER) // "json"
-	p.expect(TOKEN_ASSIGN)     // ":"
+	// Parse json:struct name: OR struct:json name:
+	firstToken := p.current()
+	
+	if firstToken.Type == TOKEN_IDENTIFIER && firstToken.Value == "json" {
+		// json:struct syntax
+		p.expect(TOKEN_IDENTIFIER) // "json"
+		p.expect(TOKEN_ASSIGN)     // ":"
+		struc := p.parseStructDeclaration()
+		if struc != nil {
+			struc.DataType = "json" // Mark this as a JSON struct
+		}
+		return struc
+	} else if firstToken.Type == TOKEN_STRUCT {
+		// struct:json syntax
+		p.expect(TOKEN_STRUCT)     // "struct"
+		p.expect(TOKEN_ASSIGN)     // ":"
+		p.expect(TOKEN_IDENTIFIER) // "json"
+		
+		// Now parse the struct name and body
+		var name Token
+		if p.current().Type == TOKEN_IDENTIFIER {
+			name = p.current()
+			p.advance()
+		} else {
+			name = p.expect(TOKEN_IDENTIFIER)
+		}
+		p.expect(TOKEN_ASSIGN)
 
-	// Now just delegate to struct parsing, but mark it as JSON
-	struc := p.parseStructDeclaration()
-	if struc != nil {
-		struc.DataType = "json" // Mark this as a JSON struct
+		struc := &ASTNode{
+			Type:     NODE_STRUCT_DECLARATION,
+			Value:    name.Value,
+			Line:     name.Line,
+			DataType: "json", // Mark this as a JSON struct
+		}
+		
+		// Parse struct fields (same as regular struct)
+		p.skipNewlines()
+		if p.current().Type == TOKEN_INDENT {
+			p.advance()
+		}
+		
+		// Parse fields with field field:type syntax
+		for p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_NUMBER {
+			fieldName := p.current()
+			p.advance()
+			
+			// Expect the field name again (JSON mapping)
+			if p.current().Type == TOKEN_IDENTIFIER && p.current().Value == fieldName.Value {
+				p.advance() // Consume duplicate name
+			}
+			
+			// Expect : and type
+			p.expect(TOKEN_ASSIGN)
+			fieldType := p.current().Value
+			p.advance()
+			
+			field := &ASTNode{
+				Type:     NODE_IDENTIFIER,
+				Value:    fieldName.Value,
+				DataType: fieldType,
+				Line:     fieldName.Line,
+			}
+			struc.Children = append(struc.Children, field)
+			
+			// Skip optional delimiters
+			for p.current().Type == TOKEN_COMMA || p.current().Type == TOKEN_SEMICOLON || p.current().Type == TOKEN_NEWLINE {
+				p.advance()
+			}
+			
+			if p.current().Type == TOKEN_DEDENT {
+				p.advance()
+				break
+			}
+		}
+		
+		// Consume $ if present
+		if p.current().Type == TOKEN_END {
+			p.advance()
+		}
+		
+		return struc
 	}
-	return struc
+	
+	return nil
 }
 
 func (p *Parser) parseStructDeclaration() *ASTNode {
