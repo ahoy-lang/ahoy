@@ -61,8 +61,8 @@ active: true
 ? Explicit type annotations (NEW!)
 age:int= 29
 price:float= 19.99
-items:array= [1, 2, 3]
-config:dict= {"host": "localhost"}
+items:array[int]= [1, 2, 3]
+config:dict<string,string>= {"host": "localhost"}
 
 ? Constants with types
 MAX_SIZE::int= 100
@@ -126,6 +126,7 @@ if condition then
     action||
 else then
     other_action||
+$
 
 ? Switch statements
 switch value on
@@ -135,6 +136,7 @@ switch value on
         ahoy |"Two"|
     default:
         ahoy |"Other"|
+$
 
 ? Loops (halt = break, next = continue)
 loop i:0 to 10
@@ -143,24 +145,28 @@ loop i:0 to 10
     if i is 8
         halt  ? Stop at 8
     ahoy |f"i = {i}"|
+$
 
 ? Loop over array
 numbers: [1, 2, 3, 4, 5]
 loop num in numbers
     ahoy |f"Number: {num}"|
+$
 
 ? Loop over dict
 data: {"x": 10, "y": 20}
 loop key, value in data
     ahoy |f"{key} = {value}"|
+$
 ```
 
 ### Functions with Default Arguments (NEW!)
 
 ```ahoy
 ? Function with default parameters
-greet :: |name:string, greeting:string="Hello", punctuation:string="!"| string:
+@ greet :: |name:string, greeting:string="Hello", punctuation:string="!"| string:
     return f"{greeting} {name}{punctuation}"
+$
 
 ? Call with different argument counts
 msg1: greet|"Alice"|                    ? Uses defaults
@@ -168,14 +174,17 @@ msg2: greet|"Bob", "Hi"|                ? Partial override
 msg3: greet|"Charlie", "Hey", "!!!"|   ? All explicit
 
 ? Return type keywords
-calculate :: |x:int, y:int| infer:     ? Infer return type
+@ calculate :: |x:int, y:int| infer:     ? Infer return type
     return x * y, x + y
+$
 
-log :: |message:string| void:          ? No return value
+@ log :: |message:string| void:          ? No return value
     ahoy |message|
+$
 
-log2 :: |message:string|:              ? Implicit void
+@ log2 :: |message:string|:              ? Implicit void
     ahoy |message|
+$
 ```
 
 ### Assert Statements (NEW!)
@@ -187,48 +196,54 @@ assert count is 10
 assert name not is ""
 
 ? Precondition checking
-divide :: |a:int, b:int| float:
+@ divide :: |a:int, b:int| float:
     assert b not is 0           ? Prevent division by zero
     return a / b
+$
 
 ? Validation pipeline
-validate_user :: |user:dict|:
+@ validate_user :: |user:dict|:
     assert "name" in user
     assert "email" in user
     assert len|user["name"]| > 0
     assert "@" in user["email"]
     ahoy |"User valid!"|
+$
 ```
 
 ### Defer Statements (NEW!)
 
 ```ahoy
 ? Basic defer (executes at function exit)
-greet :: |name:string|:
+@ greet :: |name:string|:
     defer ahoy |"Goodbye!"|
     ahoy |f"Hello, {name}!"|
     ahoy |"Nice to meet you"|
 ? Output: Hello, Alice! / Nice to meet you / Goodbye!
+$
 
 ? Resource cleanup
-process_file :: |filename:string|:
+@ process_file :: |filename:string|:
     ahoy |f"Opening {filename}"|
     defer ahoy |f"Closing {filename}"|
     ? ... file operations ...
     ? File automatically "closed" when function exits
+$
 
 ? Multiple defers (LIFO - Last In First Out)
-demo :: ||:
+@ demo :: ||:
     defer ahoy |"Third (executes first)"|
     defer ahoy |"Second"|
     defer ahoy |"First (executes last)"|
     ahoy |"Main function"|
+$
 
 ? Defer with return values
-calculate :: |x:int, y:int| int:
+@ calculate :: |x:int, y:int| int:
     defer ahoy |"Calculation completed"|
     result: x * y
     return result
+$
 ```
 
 ### Arrays
@@ -248,6 +263,7 @@ items:array= [1, 2, 3, 4, 5]
 ? Iteration
 loop num in numbers
     ahoy |f"Number: {num}"|
+$
 ```
 
 ### Objects/Structs
@@ -270,6 +286,8 @@ value: person{key}
 struct Point:
   x: float,
   y: float
+  type star:
+  3 sides:int
 $
 
 ? Typed object instantiation
@@ -320,6 +338,7 @@ config:dict = <"host": "localhost", "port": 8080>
 ? Iteration
 loop key, value in settings
     print|f"{key}: {value}"|
+$
 
 ? Methods
 has_theme: settings.has|"theme"|  ? Returns 1 or 0
@@ -354,7 +373,7 @@ API_URL::string= "https://api.example.com"
 TIMEOUT::float= 30.0
 
 ? Function with default arguments, types, assert, and defer
-process_data :: |data:dict, timeout:float=TIMEOUT, retries:int=MAX_RETRIES| bool:
+@ process_data :: |data:dict, timeout:float=TIMEOUT, retries:int=MAX_RETRIES| bool:
     ? Precondition validation
     assert data not is null
     assert timeout > 0
@@ -386,11 +405,11 @@ process_data :: |data:dict, timeout:float=TIMEOUT, retries:int=MAX_RETRIES| bool
     return success
 
 ? Main execution
-config:dict= {
+config:dict= <
     "id": 12345,
     "name": "test_data",
     "priority": "high"
-}
+>
 
 ? Call with defaults
 result: process_data|config|
@@ -405,6 +424,7 @@ numbers:array= [1, 2, 3, 4, 5]
 loop num in numbers
     square: num * num
     ahoy |f"{num}² = {square}"|
+$
 
 ? Ternary operator
 max_retries: 5
@@ -588,15 +608,18 @@ process :: |data:dict, timeout:float=30.0| bool:
 ### Assert & Defer
 ```ahoy
 ? Assert for validation
-safe_divide :: |a:int, b:int| float:
+@ safe_divide :: |a:int, b:int| float:
     assert b not is 0
     return a / b
+$
 
 ? Defer for cleanup
-process_file :: |filename:string|:
+
+@ process_file :: |filename:string|:
     file: open|filename|
     defer close|file|
     ? ... safe file operations ...
+$
 ```
 
 ## Editor Support
@@ -638,10 +661,10 @@ For more examples and documentation, see:
 
 ## Notes
 
-- Arrays now use `[]` not `<>` (updated syntax!)
-- Objects/structs use `<>` for named fields
-- Dictionaries use `{}` for key-value pairs
-- Comments use `?` or `#` 
+- Array use `[]`
+- Objects/structs use `{}` for named fields
+- Dictionaries use `<>` for key-value pairs
+- Comments use `?`
 - Keywords: `halt` (break), `next` (continue)
 - Function syntax: `name :: |params| returnType:`
 - Default args must come after required params
