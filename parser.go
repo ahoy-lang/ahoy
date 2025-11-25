@@ -3936,6 +3936,11 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 		// Check for object instantiation identifier{...} or object property access identifier{'key'}
 		if p.current().Type == TOKEN_LBRACE {
 			p.advance()
+			
+			// Skip any newlines after opening brace
+			for p.current().Type == TOKEN_NEWLINE {
+				p.advance()
+			}
 
 			// Check for empty object instantiation identifier{}
 			if p.current().Type == TOKEN_RBRACE {
@@ -4448,6 +4453,11 @@ func (p *Parser) parseArrayLiteral() *ASTNode {
 
 func (p *Parser) parseObjectLiteral() *ASTNode {
 	// TOKEN_LBRACE already consumed by caller
+	
+	// Skip any newlines and indents after opening brace
+	for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT {
+		p.advance()
+	}
 
 	object := &ASTNode{
 		Type:     NODE_OBJECT_LITERAL,
@@ -4458,6 +4468,16 @@ func (p *Parser) parseObjectLiteral() *ASTNode {
 	p.inObjectLiteral = true
 
 	for p.current().Type != TOKEN_RBRACE && p.current().Type != TOKEN_EOF {
+		// Skip any indents/dedents before property name
+		for p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
+			p.advance()
+		}
+		
+		// Check if we reached the closing brace
+		if p.current().Type == TOKEN_RBRACE {
+			break
+		}
+		
 		// Parse property name (can be identifier or string)
 		if p.current().Type != TOKEN_IDENTIFIER && p.current().Type != TOKEN_STRING {
 			if p.LintMode {
@@ -4495,20 +4515,38 @@ func (p *Parser) parseObjectLiteral() *ASTNode {
 		}
 		object.Children = append(object.Children, prop)
 
-		// Check for comma or end
+		// Check for comma or end (comma is optional, newlines are allowed)
+		// Skip any whitespace tokens (newlines, indents, dedents)
+		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
+			p.advance()
+		}
+		
+		// Now check if we need a comma
 		if p.current().Type == TOKEN_COMMA {
 			p.advance()
+			// Skip any whitespace after comma
+			for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
+				p.advance()
+			}
 		} else if p.current().Type != TOKEN_RBRACE {
+			// No comma and not at closing brace - this might be OK if we just consumed dedents
+			// In strict mode we could error here, but for flexibility allow it
 			if p.LintMode {
-				p.recordError(fmt.Sprintf("Expected ',' or '}' in object literal at line %d", p.current().Line))
-				break
-			} else {
-				break
+				// Only error if we're clearly missing something
+				if p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_STRING {
+					p.recordError(fmt.Sprintf("Missing comma between properties in object literal at line %d", p.current().Line))
+				}
 			}
 		}
 	}
 
 	p.inObjectLiteral = false
+	
+	// Skip any remaining dedents before closing brace
+	for p.current().Type == TOKEN_DEDENT {
+		p.advance()
+	}
+	
 	p.expect(TOKEN_RBRACE)
 
 	// Check for member access after object literal

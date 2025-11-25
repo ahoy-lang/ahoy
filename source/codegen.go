@@ -734,8 +734,8 @@ func (gen *CodeGenerator) inferParameterTypesFromCalls(node *ahoy.ASTNode) {
 							// Only apply inferred type if parameter doesn't already have an explicit type
 							if param.DataType == "" || param.DataType == "generic" {
 								if inferredType, hasInference := inferences[i]; hasInference {
-									// Don't override with generic/int if we have something better
-									if inferredType != "generic" && inferredType != "int" {
+									// Don't override with generic/int/char* (char* is a fallback when type is unknown)
+									if inferredType != "generic" && inferredType != "int" && inferredType != "char*" {
 										param.DataType = inferredType
 									}
 								}
@@ -2452,13 +2452,45 @@ func (gen *CodeGenerator) generateForInArrayLoop(node *ahoy.ASTNode) {
 		gen.indent++
 		gen.writeIndent()
 
-		// Cast from void* through intptr_t to int (handles stored integers correctly)
-		gen.output.WriteString(fmt.Sprintf("int %s = (intptr_t)%s->data[%s];\n",
-			elementVar, arrayName, loopVar))
+		// Determine element type
+		elementType := "int"
+		cElementType := "int"
+		
+		// Check if we know the element type for this array
+		if iterableExpr.Type == ahoy.NODE_IDENTIFIER {
+			arrayVarName := iterableExpr.Value
+			if elemType, exists := gen.arrayElementTypes[arrayVarName]; exists {
+				elementType = elemType
+				cElementType = gen.mapType(elemType)
+				
+				// For struct types, ensure we use pointers
+				if _, isStruct := gen.structs[elemType]; isStruct {
+					if !strings.HasSuffix(cElementType, "*") {
+						cElementType += "*"
+					}
+				}
+			}
+		}
+		
+		// Generate appropriate cast based on element type
+		if gen.isHeapAllocatedType(elementType) || strings.Contains(cElementType, "*") {
+			// For pointers (structs, strings, etc.), cast through intptr_t to pointer
+			gen.output.WriteString(fmt.Sprintf("%s %s = (%s)(intptr_t)%s->data[%s];\n",
+				cElementType, elementVar, cElementType, arrayName, loopVar))
+		} else {
+			// For primitives, cast through intptr_t to the appropriate type
+			gen.output.WriteString(fmt.Sprintf("%s %s = (%s)(intptr_t)%s->data[%s];\n",
+				cElementType, elementVar, cElementType, arrayName, loopVar))
+		}
 
 		// Register loop variable for type inference
+		// For struct types, store the pointer type
 		oldType := gen.variables[elementVar]
-		gen.variables[elementVar] = "int"
+		if _, isStruct := gen.structs[elementType]; isStruct {
+			gen.variables[elementVar] = cElementType
+		} else {
+			gen.variables[elementVar] = elementType
+		}
 
 		gen.generateNodeInternal(node.Children[2], false)
 
@@ -3837,7 +3869,30 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 				gen.output.WriteString("ahoy_array_push(")
 				gen.generateNodeInternal(object, false)
 				gen.output.WriteString(", (intptr_t)")
-				gen.generateNodeInternal(arg, false)
+				
+				// Check if we're pushing a struct value (needs heap allocation)
+				argType := gen.inferType(arg)
+				needsHeapAlloc := false
+				structType := ""
+				
+				// For struct literals
+				if arg.Type == ahoy.NODE_OBJECT_LITERAL && arg.Value != "" {
+					needsHeapAlloc = true
+					structType = gen.mapType(arg.Value)
+				} else if _, isStruct := gen.structs[argType]; isStruct {
+					// For struct variables
+					needsHeapAlloc = true
+					structType = gen.mapType(argType)
+				}
+				
+				if needsHeapAlloc {
+					gen.output.WriteString(fmt.Sprintf("({ %s* __tmp = malloc(sizeof(%s)); *__tmp = ", structType, structType))
+					gen.generateNodeInternal(arg, false)
+					gen.output.WriteString("; __tmp; })")
+				} else {
+					gen.generateNodeInternal(arg, false)
+				}
+				
 				valueType := gen.getValueType(arg)
 				gen.output.WriteString(fmt.Sprintf(", %s)", gen.getAhoyTypeEnum(valueType)))
 			}
@@ -3864,8 +3919,36 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 				// For array methods like push, cast to intptr_t
 				if methodName == "push" || methodName == "has" || methodName == "fill" {
 					gen.output.WriteString("(intptr_t)")
+					
+					// Check if we're pushing a struct value (needs heap allocation)
+					if methodName == "push" {
+						argType := gen.inferType(arg)
+						needsHeapAlloc := false
+						structType := ""
+						
+						// For struct literals
+						if arg.Type == ahoy.NODE_OBJECT_LITERAL && arg.Value != "" {
+							needsHeapAlloc = true
+							structType = gen.mapType(arg.Value)
+						} else if _, isStruct := gen.structs[argType]; isStruct {
+							// For struct variables
+							needsHeapAlloc = true
+							structType = gen.mapType(argType)
+						}
+						
+						if needsHeapAlloc {
+							gen.output.WriteString(fmt.Sprintf("({ %s* __tmp = malloc(sizeof(%s)); *__tmp = ", structType, structType))
+							gen.generateNodeInternal(arg, false)
+							gen.output.WriteString("; __tmp; })")
+						} else {
+							gen.generateNodeInternal(arg, false)
+						}
+					} else {
+						gen.generateNodeInternal(arg, false)
+					}
+				} else {
+					gen.generateNodeInternal(arg, false)
 				}
-				gen.generateNodeInternal(arg, false)
 				// For push and fill, also pass the type
 				if methodName == "push" && i == 0 {
 					valueType := gen.getValueType(arg)
@@ -4515,8 +4598,11 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 				return "AhoyJSON*"
 			}
 
+			// Strip pointer suffix for struct lookup
+			lookupType := strings.TrimSuffix(objectType, "*")
+
 			// Look up the struct definition
-			if structInfo, exists := gen.structs[objectType]; exists {
+			if structInfo, exists := gen.structs[lookupType]; exists {
 				// Find the field type
 				for _, field := range structInfo.Fields {
 					if field.Name == memberName {
@@ -4751,15 +4837,41 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 
 		for _, v := range vars {
 			gen.output.WriteString(", ")
-			// Cast intptr_t to char* for string formatting
-			varType := "int"
-			if knownType, exists := gen.variables[v]; exists {
-				varType = knownType
-			}
-			if varType == "intptr_t" {
-				gen.output.WriteString(fmt.Sprintf("(char*)%s", v))
+			
+			// Check if this is a member access expression (contains a dot)
+			if strings.Contains(v, ".") {
+				// Parse member access: object.member
+				parts := strings.Split(v, ".")
+				if len(parts) == 2 {
+					objectName := parts[0]
+					memberName := parts[1]
+					
+					// Determine if we need -> or .
+					objectType := ""
+					if knownType, exists := gen.variables[objectName]; exists {
+						objectType = knownType
+					}
+					
+					// Use -> for pointer types
+					if strings.HasSuffix(objectType, "*") {
+						gen.output.WriteString(fmt.Sprintf("%s->%s", objectName, memberName))
+					} else {
+						gen.output.WriteString(v)
+					}
+				} else {
+					gen.output.WriteString(v)
+				}
 			} else {
-				gen.output.WriteString(v)
+				// Simple variable
+				varType := "int"
+				if knownType, exists := gen.variables[v]; exists {
+					varType = knownType
+				}
+				if varType == "intptr_t" {
+					gen.output.WriteString(fmt.Sprintf("(char*)%s", v))
+				} else {
+					gen.output.WriteString(v)
+				}
 			}
 		}
 
