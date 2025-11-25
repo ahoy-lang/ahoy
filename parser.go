@@ -3936,7 +3936,7 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 		// Check for object instantiation identifier{...} or object property access identifier{'key'}
 		if p.current().Type == TOKEN_LBRACE {
 			p.advance()
-			
+
 			// Skip any newlines after opening brace
 			for p.current().Type == TOKEN_NEWLINE {
 				p.advance()
@@ -4453,7 +4453,7 @@ func (p *Parser) parseArrayLiteral() *ASTNode {
 
 func (p *Parser) parseObjectLiteral() *ASTNode {
 	// TOKEN_LBRACE already consumed by caller
-	
+
 	// Skip any newlines and indents after opening brace
 	for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT {
 		p.advance()
@@ -4472,12 +4472,12 @@ func (p *Parser) parseObjectLiteral() *ASTNode {
 		for p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
 			p.advance()
 		}
-		
+
 		// Check if we reached the closing brace
 		if p.current().Type == TOKEN_RBRACE {
 			break
 		}
-		
+
 		// Parse property name (can be identifier or string)
 		if p.current().Type != TOKEN_IDENTIFIER && p.current().Type != TOKEN_STRING {
 			if p.LintMode {
@@ -4520,7 +4520,7 @@ func (p *Parser) parseObjectLiteral() *ASTNode {
 		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
 			p.advance()
 		}
-		
+
 		// Now check if we need a comma
 		if p.current().Type == TOKEN_COMMA {
 			p.advance()
@@ -4541,12 +4541,12 @@ func (p *Parser) parseObjectLiteral() *ASTNode {
 	}
 
 	p.inObjectLiteral = false
-	
+
 	// Skip any remaining dedents before closing brace
 	for p.current().Type == TOKEN_DEDENT {
 		p.advance()
 	}
-	
+
 	p.expect(TOKEN_RBRACE)
 
 	// Check for member access after object literal
