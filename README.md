@@ -9,7 +9,6 @@ A modern, expressive programming language with clean syntax and powerful feature
 - **Default Arguments**: Flexible function parameters
 - **Assert & Defer**: Runtime validation and guaranteed cleanup
 - **Pipe Syntax**: Function calls with `|args|`
-- **Word Operators**: Use `plus`, `minus`, `times`, etc.
 - **Arrays**: Built-in with `[]` syntax
 - **Objects/Structs**: C-style with `{}` syntax
 - **Dictionaries**: Hash maps with `<>` syntax
@@ -17,6 +16,8 @@ A modern, expressive programming language with clean syntax and powerful feature
 - **LSP Support**: Real-time linting and validation
 - **Single-Line Statements**: Use `;` to combine statements
 - **`ahoy` Keyword**: Shorthand for print statements
+- ** $ to close block scopes
+
 
 ## Quick Start
 
@@ -287,7 +288,7 @@ struct Point:
   x: float,
   y: float
   type star:
-  3 sides:int
+    3 sides:int
 $
 
 ? Typed object instantiation
@@ -351,11 +352,13 @@ enum Color:
     RED
     GREEN
     BLUE
+$
 
 enum Status:
     PENDING: 0
     ACTIVE: 1
     DONE: 2
+$
 
 ? Usage
 current_color: Color.RED
@@ -397,12 +400,14 @@ TIMEOUT::float= 30.0
         if result is true
             success: true
             halt
+    $
     
     ? Postcondition validation
     assert attempt <= retries
     assert attempt > 0
     
     return success
+$
 
 ? Main execution
 config:dict= <
@@ -439,13 +444,14 @@ ahoy |f"Mode: {mode}"|
 ### Pattern Matching (Switch)
 
 ```ahoy
-switch expression on
-    value1:
+switch expression:
+    on value1:
         ? code for value1
-    value2, value3:
+    on value2, value3:
         ? code for multiple values
-    default:
+    on _:
         ? default case
+$
 ```
 
 ### Type System
