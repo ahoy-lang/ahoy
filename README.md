@@ -129,23 +129,35 @@ else then
     other_action||
 $
 
+? If anif statements
+if   condition then action||
+anif other_condition then another_action||
+else no_action||
+$
+
+
 ? Switch statements
-switch value on
-    1:
+switch value:
+    on 1:
         ahoy |"One"|
-    2:
+    on 2:
         ahoy |"Two"|
-    default:
+    _:
         ahoy |"Other"|
 $
 
 ? Loops (halt = break, next = continue)
-loop i:0 to 10
+loop i:0 to 10 do
     if i is 5
         next  ? Skip 5
     if i is 8
         halt  ? Stop at 8
     ahoy |f"i = {i}"|
+$
+
+? loops till condition met
+loop i:0 till i is 5 do
+    print|i|
 $
 
 ? Loop over array
