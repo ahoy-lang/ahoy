@@ -67,6 +67,7 @@ type CodeGenerator struct {
 	funcForwardDecls              strings.Builder // Forward declarations for user functions
 	funcDecls                     strings.Builder
 	constantDecls                 strings.Builder // Global constant declarations
+	enumDecls                     strings.Builder // Enum type declarations
 	structDecls                   strings.Builder
 	includes                      map[string]bool
 	orderedIncludes               []string                     // Keep track of include order
@@ -319,6 +320,13 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 	if gen.dictMethods["print_dict"] {
 		result.WriteString("char* print_dict_helper(HashMap* dict);\n")
 		result.WriteString("char* format_hashmap_value(HashMap* dict, const char* key);\n")
+	}
+
+	// Write enum declarations (typedefs)
+	if gen.enumDecls.Len() > 0 {
+		result.WriteString("// Enum declarations\n")
+		result.WriteString(gen.enumDecls.String())
+		result.WriteString("\n")
 	}
 
 	// Write struct declarations (typedefs)
@@ -4962,14 +4970,11 @@ func (gen *CodeGenerator) generateIntEnum(node *ahoy.ASTNode) {
 	// Track enum type
 	gen.enumTypes[enumName] = "int"
 
-	gen.writeIndent()
-	gen.output.WriteString(fmt.Sprintf("typedef enum {\n"))
-	gen.indent++
+	// Write enum typedef to enumDecls
+	gen.enumDecls.WriteString(fmt.Sprintf("typedef enum {\n"))
 
 	nextAutoValue := 0
 	for _, member := range node.Children {
-		gen.writeIndent()
-
 		// Track this member
 		gen.enums[enumName][member.Value] = true
 		// Track member type
@@ -4978,21 +4983,19 @@ func (gen *CodeGenerator) generateIntEnum(node *ahoy.ASTNode) {
 		// Check if member has a custom value (in Children[0])
 		if len(member.Children) > 0 && member.Children[0].Type == ahoy.NODE_NUMBER {
 			value := member.Children[0].Value
-			gen.output.WriteString(fmt.Sprintf("%s_%s = %s,\n", enumName, member.Value, value))
+			gen.enumDecls.WriteString(fmt.Sprintf("    %s_%s = %s,\n", enumName, member.Value, value))
 			// Parse the value to set nextAutoValue for next member
 			if val, err := strconv.Atoi(value); err == nil {
 				nextAutoValue = val + 1
 			}
 		} else {
 			// Auto-increment value
-			gen.output.WriteString(fmt.Sprintf("%s_%s = %d,\n", enumName, member.Value, nextAutoValue))
+			gen.enumDecls.WriteString(fmt.Sprintf("    %s_%s = %d,\n", enumName, member.Value, nextAutoValue))
 			nextAutoValue++
 		}
 	}
 
-	gen.indent--
-	gen.writeIndent()
-	gen.output.WriteString(fmt.Sprintf("} %s_enum;\n\n", enumName))
+	gen.enumDecls.WriteString(fmt.Sprintf("} %s_enum;\n\n", enumName))
 
 	// Also generate a struct instance for member access (e.g., numbers.one)
 	gen.generateEnumAccessStruct(node, "int")
@@ -5346,28 +5349,20 @@ func (gen *CodeGenerator) generateMixedEnum(node *ahoy.ASTNode) {
 func (gen *CodeGenerator) generateEnumAccessStruct(node *ahoy.ASTNode, baseType string) {
 	enumName := node.Value
 
-	// Generate access struct
-	gen.writeIndent()
-	gen.output.WriteString(fmt.Sprintf("typedef struct {\n"))
-	gen.indent++
+	// Generate access struct typedef to enumDecls
+	gen.enumDecls.WriteString(fmt.Sprintf("typedef struct {\n"))
 
 	for _, member := range node.Children {
-		gen.writeIndent()
-		gen.output.WriteString(fmt.Sprintf("const int %s;\n", member.Value))
+		gen.enumDecls.WriteString(fmt.Sprintf("    const int %s;\n", member.Value))
 	}
 
-	gen.indent--
-	gen.writeIndent()
-	gen.output.WriteString(fmt.Sprintf("} %s_struct;\n\n", enumName))
+	gen.enumDecls.WriteString(fmt.Sprintf("} %s_struct;\n\n", enumName))
 
-	// Generate instance
-	gen.writeIndent()
-	gen.output.WriteString(fmt.Sprintf("%s_struct %s = {\n", enumName, enumName))
-	gen.indent++
+	// Generate instance to constantDecls (it's a global constant)
+	gen.constantDecls.WriteString(fmt.Sprintf("%s_struct %s = {\n", enumName, enumName))
 
 	nextAutoValue := 0
 	for _, member := range node.Children {
-		gen.writeIndent()
 		var value int
 		if len(member.Children) > 0 && member.Children[0].Type == ahoy.NODE_NUMBER {
 			if val, err := strconv.Atoi(member.Children[0].Value); err == nil {
@@ -5381,12 +5376,10 @@ func (gen *CodeGenerator) generateEnumAccessStruct(node *ahoy.ASTNode, baseType 
 			value = nextAutoValue
 			nextAutoValue++
 		}
-		gen.output.WriteString(fmt.Sprintf(".%s = %d,\n", member.Value, value))
+		gen.constantDecls.WriteString(fmt.Sprintf("    .%s = %d,\n", member.Value, value))
 	}
 
-	gen.indent--
-	gen.writeIndent()
-	gen.output.WriteString("};\n\n")
+	gen.constantDecls.WriteString("};\n\n")
 }
 
 // Generate enum print helper function
