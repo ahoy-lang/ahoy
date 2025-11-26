@@ -66,6 +66,7 @@ type CodeGenerator struct {
 	funcReturnStructs             strings.Builder // Struct definitions for multi-return functions
 	funcForwardDecls              strings.Builder // Forward declarations for user functions
 	funcDecls                     strings.Builder
+	constantDecls                 strings.Builder // Global constant declarations
 	structDecls                   strings.Builder
 	includes                      map[string]bool
 	orderedIncludes               []string                     // Keep track of include order
@@ -335,6 +336,13 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 	if gen.funcForwardDecls.Len() > 0 {
 		result.WriteString("// User function forward declarations\n")
 		result.WriteString(gen.funcForwardDecls.String())
+		result.WriteString("\n")
+	}
+
+	// Write global constants before functions
+	if gen.constantDecls.Len() > 0 {
+		result.WriteString("// Global constants\n")
+		result.WriteString(gen.constantDecls.String())
 		result.WriteString("\n")
 	}
 
@@ -3678,7 +3686,7 @@ func (gen *CodeGenerator) generateConstant(node *ahoy.ASTNode) {
 	// Update constant type for inference (may have been set in scan pass)
 	gen.constants[constName] = ahoyType
 
-	// Constants at global scope (not in a function) should go into funcDecls
+	// Constants at global scope (not in a function) should go into constantDecls
 	if gen.currentFunction == "" {
 		savedOutput := gen.output
 		gen.output = strings.Builder{}
@@ -3687,7 +3695,7 @@ func (gen *CodeGenerator) generateConstant(node *ahoy.ASTNode) {
 		gen.generateNode(node.Children[0])
 		gen.output.WriteString(";\n")
 
-		gen.funcDecls.WriteString(gen.output.String())
+		gen.constantDecls.WriteString(gen.output.String())
 		gen.output = savedOutput
 	} else {
 		// Local constants in functions
