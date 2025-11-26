@@ -7324,7 +7324,9 @@ func (gen *CodeGenerator) writeStructHelperFunctions() {
 		}
 		processed[structInfo.Name] = true
 		cStructName := capitalizeFirst(structInfo.Name)
-		gen.funcForwardDecls.WriteString(fmt.Sprintf("char* print_struct_helper_%s(%s obj);\n", structInfo.Name, cStructName))
+		// Use lowercase for function name to match call sites
+		funcName := strings.ToLower(structInfo.Name)
+		gen.funcForwardDecls.WriteString(fmt.Sprintf("char* print_struct_helper_%s(%s obj);\n", funcName, cStructName))
 	}
 
 	// Second pass: Add implementations
@@ -7341,8 +7343,10 @@ func (gen *CodeGenerator) writeStructHelperFunctions() {
 		processed[structInfo.Name] = true
 
 		cStructName := capitalizeFirst(structInfo.Name)
+		// Use lowercase for function name to match call sites
+		funcName := strings.ToLower(structInfo.Name)
 		gen.funcDecls.WriteString(fmt.Sprintf("\n// Print helper for %s\n", structInfo.Name))
-		gen.funcDecls.WriteString(fmt.Sprintf("char* print_struct_helper_%s(%s obj) {\n", structInfo.Name, cStructName))
+		gen.funcDecls.WriteString(fmt.Sprintf("char* print_struct_helper_%s(%s obj) {\n", funcName, cStructName))
 		// Use malloc instead of static buffer to avoid overwrites in nested calls
 		gen.funcDecls.WriteString("    char* buffer = malloc(1024);\n")
 		gen.funcDecls.WriteString("    if (!buffer) return \"<out of memory>\";\n")
