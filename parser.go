@@ -890,10 +890,6 @@ func (p *Parser) parseStatement() *ASTNode {
 	case TOKEN_AT:
 		return p.parseFunctionDeclaration()
 	case TOKEN_IDENTIFIER:
-		// Check for json:struct syntax
-		if p.current().Value == "json" && p.peek(1).Type == TOKEN_ASSIGN && p.peek(2).Type == TOKEN_STRUCT {
-			return p.parseJsonStructDeclaration()
-		}
 		// Check for constant declaration (name ::)
 		nextType := p.peek(1).Type
 		if nextType == TOKEN_DOUBLE_COLON {
@@ -3236,6 +3232,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				// Parse object literal with properties
 				value = p.parseObjectLiteral()
 				value.Value = explicitType // Set the type name
+				value.Line = line           // Set the line number
 			} else {
 				// Parse as regular expression (fallback)
 				value = p.parseExpression()
@@ -4304,6 +4301,7 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 				// Object instantiation with properties: vector2{x: 10, y: 20}
 				obj := p.parseObjectLiteral()
 				obj.Value = token.Value // Set the type name
+				obj.Line = token.Line   // Set the line number
 				return obj
 			}
 
@@ -4321,6 +4319,7 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 				// Old object instantiation: vector2<x: 10, y: 20> - convert to new syntax warning
 				obj := p.parseObjectLiteral()
 				obj.Value = token.Value // Set the type name
+				obj.Line = token.Line   // Set the line number
 				return obj
 			}
 
@@ -4457,6 +4456,8 @@ func (p *Parser) parseArrayLiteral() *ASTNode {
 
 func (p *Parser) parseObjectLiteral() *ASTNode {
 	// TOKEN_LBRACE already consumed by caller
+	// Save line before advancing
+	line := p.current().Line
 
 	// Skip any newlines and indents after opening brace
 	for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT {
@@ -4467,6 +4468,7 @@ func (p *Parser) parseObjectLiteral() *ASTNode {
 		Type:     NODE_OBJECT_LITERAL,
 		DataType: "object",
 		Children: []*ASTNode{},
+		Line:     line,
 	}
 
 	p.inObjectLiteral = true
@@ -5508,19 +5510,10 @@ func (p *Parser) parseUnionDeclaration() *ASTNode {
 
 // Parse struct declaration
 func (p *Parser) parseJsonStructDeclaration() *ASTNode {
-	// Parse json:struct name: OR struct:json name:
+	// Parse struct:json name:
 	firstToken := p.current()
 	
-	if firstToken.Type == TOKEN_IDENTIFIER && firstToken.Value == "json" {
-		// json:struct syntax
-		p.expect(TOKEN_IDENTIFIER) // "json"
-		p.expect(TOKEN_ASSIGN)     // ":"
-		struc := p.parseStructDeclaration()
-		if struc != nil {
-			struc.DataType = "json" // Mark this as a JSON struct
-		}
-		return struc
-	} else if firstToken.Type == TOKEN_STRUCT {
+	if firstToken.Type == TOKEN_STRUCT {
 		// struct:json syntax
 		p.expect(TOKEN_STRUCT)     // "struct"
 		p.expect(TOKEN_ASSIGN)     // ":"
@@ -5625,7 +5618,8 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 
 	// Parse struct fields
 	for p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_TYPE ||
-		p.current().Type == TOKEN_NUMBER || p.current().Type == TOKEN_MINUS || p.current().Type == TOKEN_LANGLE {
+		p.current().Type == TOKEN_NUMBER || p.current().Type == TOKEN_MINUS || p.current().Type == TOKEN_LANGLE ||
+		p.current().Type == TOKEN_TRUE || p.current().Type == TOKEN_FALSE {
 		if p.current().Type == TOKEN_TYPE {
 			// Nested type (e.g., "type smoke_particle:")
 			p.advance() // consume 'type'
@@ -5687,6 +5681,14 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 						if p.current().Type == TOKEN_NUMBER {
 							defaultValue = &ASTNode{
 								Type:  NODE_NUMBER,
+								Value: p.current().Value,
+								Line:  p.current().Line,
+							}
+							p.advance()
+						} else if p.current().Type == TOKEN_TRUE || p.current().Type == TOKEN_FALSE {
+							// Handle boolean defaults
+							defaultValue = &ASTNode{
+								Type:  NODE_BOOLEAN,
 								Value: p.current().Value,
 								Line:  p.current().Line,
 							}
