@@ -188,6 +188,8 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 	gen.orderedIncludes = append(gen.orderedIncludes, "stdbool.h")
 	gen.includes["stdint.h"] = true
 	gen.orderedIncludes = append(gen.orderedIncludes, "stdint.h")
+	gen.includes["assert.h"] = true
+	gen.orderedIncludes = append(gen.orderedIncludes, "assert.h")
 
 	// Generate hash map implementation
 	gen.writeHashMapImplementation()
