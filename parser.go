@@ -2819,7 +2819,8 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 		}
 	}
 
-	// Check for array index assignment: arr[index]: value or arr[index] += value
+	// Check for array index with member access assignment: arr[index].property: value
+	// This must come BEFORE simple array index check to handle the more complex case first
 	if p.pos+2 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_LBRACKET {
 		savedPos := p.pos
 		p.advance() // skip identifier
@@ -2834,6 +2835,62 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			}
 			p.advance()
 		}
+		// Now check if there's a dot followed by member access
+		if p.current().Type == TOKEN_DOT {
+			p.advance() // skip .
+			// Skip the property name(s)
+			for p.pos < len(p.tokens) && p.current().Type == TOKEN_IDENTIFIER {
+				p.advance()
+				if p.current().Type == TOKEN_DOT {
+					p.advance() // skip next dot
+				} else {
+					break
+				}
+			}
+			isAssignment := p.current().Type == TOKEN_ASSIGN
+			isCompoundAssignment := p.isCompoundAssignOp(p.current().Type)
+			p.pos = savedPos // restore position
+
+			if isAssignment || isCompoundAssignment {
+				target := p.parsePrimaryExpression() // This will parse arr[index].property
+
+				if isCompoundAssignment {
+					// Handle +=, -=, *=, /=, %=
+					opToken := p.current()
+					p.advance() // consume compound operator
+					value := p.parseExpression()
+
+					// Convert to: target: target op value
+					op := p.getCompoundAssignOp(opToken.Type)
+
+					// Create a copy of target for the right side of the binary op
+					targetCopy := p.copyASTNode(target)
+
+					binaryOp := &ASTNode{
+						Type:     NODE_BINARY_OP,
+						Value:    op,
+						Children: []*ASTNode{targetCopy, value},
+						Line:     target.Line,
+					}
+
+					return &ASTNode{
+						Type:     NODE_ASSIGNMENT,
+						Children: []*ASTNode{target, binaryOp},
+						Line:     target.Line,
+					}
+				} else {
+					p.expect(TOKEN_ASSIGN)
+					value := p.parseExpression()
+
+					return &ASTNode{
+						Type:     NODE_ASSIGNMENT,
+						Children: []*ASTNode{target, value},
+						Line:     target.Line,
+					}
+				}
+			}
+		}
+		// If no dot found, check for simple array assignment
 		isAssignment := p.current().Type == TOKEN_ASSIGN
 		isCompoundAssignment := p.isCompoundAssignOp(p.current().Type)
 		p.pos = savedPos // restore position
@@ -2876,6 +2933,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				}
 			}
 		}
+		p.pos = savedPos // restore position
 	}
 
 	// Check for member access assignment: obj.property: value
@@ -3051,6 +3109,11 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				}
 			}
 
+			// Skip newlines before parsing value for multiline literals
+			for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
+				p.advance()
+			}
+
 			// Regular constant value
 			value := p.parseExpression()
 
@@ -3077,6 +3140,11 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 		}
 
 		p.expect(TOKEN_ASSIGN)
+
+		// Skip newlines after colon for multiline expressions
+		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
+			p.advance()
+		}
 
 		// Check for type annotation (type=) or inferred type (:=)
 		var explicitType string
@@ -3238,6 +3306,10 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				value = p.parseExpression()
 			}
 		} else {
+			// Skip newlines before parsing value for multiline literals
+			for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
+				p.advance()
+			}
 			value = p.parseExpression()
 		}
 
@@ -4650,17 +4722,53 @@ func (p *Parser) parseDictLiteral() *ASTNode {
 
 	p.inDictLiteral = true
 
+	// Skip leading newlines/indents for multiline dicts
+	for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
+		p.advance()
+	}
+
 	for p.current().Type != endToken && p.current().Type != TOKEN_EOF {
+		// Skip newlines/indents between entries
+		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
+			p.advance()
+		}
+
+		// Check if we've reached the end
+		if p.current().Type == endToken {
+			break
+		}
+
 		// Parse key (can be string or identifier)
 		key := p.parseCallArgument()
+		
+		// Skip newlines/indents before colon
+		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
+			p.advance()
+		}
+		
 		p.expect(TOKEN_ASSIGN) // Using : as separator between key and value
+		
+		// Skip newlines/indents after colon
+		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
+			p.advance()
+		}
+		
 		value := p.parseCallArgument()
 
 		// Store key-value pair as two consecutive children
 		dict.Children = append(dict.Children, key, value)
 
+		// Skip newlines/indents before comma or end
+		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
+			p.advance()
+		}
+
 		if p.current().Type == TOKEN_COMMA {
 			p.advance()
+			// Skip newlines/indents after comma
+			for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
+				p.advance()
+			}
 		} else if p.current().Type != endToken {
 			break
 		}

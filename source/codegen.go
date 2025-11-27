@@ -1414,8 +1414,8 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			node.Children[0].Type == ahoy.NODE_MEMBER_ACCESS ||
 			node.Children[0].Type == ahoy.NODE_UNARY_OP) {
 
-		// Special handling for array assignment with bounds checking
-		if node.Children[0].Type == ahoy.NODE_ARRAY_ACCESS && gen.enableBoundsChecking {
+		// Special handling for array assignment
+		if node.Children[0].Type == ahoy.NODE_ARRAY_ACCESS {
 			arrayName := node.Children[0].Value
 			indexNode := node.Children[0].Children[0]
 			valueNode := node.Children[1]
@@ -1433,50 +1433,133 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				}
 			}
 
-			// Generate bounds check before assignment
-			gen.output.WriteString("{ int __idx = ")
-			gen.generateNode(indexNode)
-			gen.output.WriteString("; ")
-
-			if needsArrayCast {
-				gen.output.WriteString(fmt.Sprintf("AhoyArray* __arr = (AhoyArray*)%s; ", arrayName))
-			} else {
-				gen.output.WriteString(fmt.Sprintf("AhoyArray* __arr = %s; ", arrayName))
-			}
-
-			gen.output.WriteString("if (__idx < 0 || __idx >= __arr->length) { ")
-			gen.output.WriteString("fprintf(stderr, \"RUNTIME ERROR: Array bounds violation\\n\"); ")
-			gen.output.WriteString(fmt.Sprintf("fprintf(stderr, \"  File: %s\\n\"); ", gen.sourceFilename))
-			gen.output.WriteString(fmt.Sprintf("fprintf(stderr, \"  Line: %d\\n\"); ", node.Children[0].Line))
-			gen.output.WriteString(fmt.Sprintf("fprintf(stderr, \"  Array: %s\\n\"); ", arrayName))
-			gen.output.WriteString("fprintf(stderr, \"  Index: %d\\n\", __idx); ")
-			gen.output.WriteString("fprintf(stderr, \"  Valid range: 0 to %d\\n\", __arr->length - 1); ")
-			gen.output.WriteString("exit(1); ")
-			gen.output.WriteString("} ")
-
-			// Check if we're assigning a C struct type
+			// Check element type for proper assignment
 			var elemType string
 			if et, exists := gen.arrayElementTypes[arrayName]; exists {
 				elemType = et
 			}
-			cType := gen.mapType(elemType)
-			isCStruct := elemType != "" && gen.cTypeDefinitions[cType] && !strings.HasSuffix(cType, "*") && 
-				cType != "int" && cType != "double" && cType != "char*" && cType != "bool"
-			
-			if isCStruct {
-				// For C structs, assign to the dereferenced pointer
-				gen.output.WriteString(fmt.Sprintf("*(%s*)__arr->data[__idx] = ", cType))
-				gen.generateNode(valueNode)
-				gen.output.WriteString("; }\n")
-			} else {
-				// Now do the actual assignment with skipBoundsCheck enabled
-				gen.skipBoundsCheck = true
-				gen.generateNode(node.Children[0])
-				gen.skipBoundsCheck = false
 
-				gen.output.WriteString(" = ")
+			if gen.enableBoundsChecking {
+				// Generate bounds check before assignment
+				gen.output.WriteString("{ int __idx = ")
+				gen.generateNode(indexNode)
+				gen.output.WriteString("; ")
+
+				if needsArrayCast {
+					gen.output.WriteString(fmt.Sprintf("AhoyArray* __arr = (AhoyArray*)%s; ", arrayName))
+				} else {
+					gen.output.WriteString(fmt.Sprintf("AhoyArray* __arr = %s; ", arrayName))
+				}
+
+				gen.output.WriteString("if (__idx < 0 || __idx >= __arr->length) { ")
+				gen.output.WriteString("fprintf(stderr, \"RUNTIME ERROR: Array bounds violation\\n\"); ")
+				gen.output.WriteString(fmt.Sprintf("fprintf(stderr, \"  File: %s\\n\"); ", gen.sourceFilename))
+				gen.output.WriteString(fmt.Sprintf("fprintf(stderr, \"  Line: %d\\n\"); ", node.Children[0].Line))
+				gen.output.WriteString(fmt.Sprintf("fprintf(stderr, \"  Array: %s\\n\"); ", arrayName))
+				gen.output.WriteString("fprintf(stderr, \"  Index: %d\\n\", __idx); ")
+				gen.output.WriteString("fprintf(stderr, \"  Valid range: 0 to %d\\n\", __arr->length - 1); ")
+				gen.output.WriteString("exit(1); ")
+				gen.output.WriteString("} ")
+			}
+
+			// Handle assignment based on element type
+			if elemType != "" {
+				cType := gen.mapType(elemType)
+				// Check if it's a C struct OR an Ahoy user-defined struct
+				isCStruct := gen.cTypeDefinitions[cType] && !strings.HasSuffix(cType, "*") && 
+					cType != "int" && cType != "double" && cType != "char*" && cType != "bool"
+				isAhoyStruct := false
+				if !isCStruct {
+					// Check if it's an Ahoy struct
+					if _, exists := gen.structs[elemType]; exists {
+						isAhoyStruct = true
+					} else if _, exists := gen.structs[cType]; exists {
+						isAhoyStruct = true
+					}
+				}
+				
+				if isCStruct || isAhoyStruct {
+					// For C structs, assign to the dereferenced pointer
+					if gen.enableBoundsChecking {
+						gen.output.WriteString(fmt.Sprintf("*(%s*)__arr->data[__idx] = ", cType))
+					} else {
+						if needsArrayCast {
+							gen.output.WriteString(fmt.Sprintf("*(%s*)((AhoyArray*)%s)->data[", cType, arrayName))
+						} else {
+							gen.output.WriteString(fmt.Sprintf("*(%s*)%s->data[", cType, arrayName))
+						}
+						gen.generateNode(indexNode)
+						gen.output.WriteString("] = ")
+					}
+					gen.generateNode(valueNode)
+					gen.output.WriteString(";")
+				} else if cType == "double" || cType == "float" {
+					// For float/double, store via intptr_t cast
+					if gen.enableBoundsChecking {
+						gen.output.WriteString("__arr->data[__idx] = (void*)(intptr_t)(double)")
+					} else {
+						if needsArrayCast {
+							gen.output.WriteString(fmt.Sprintf("((AhoyArray*)%s)->data[", arrayName))
+						} else {
+							gen.output.WriteString(fmt.Sprintf("%s->data[", arrayName))
+						}
+						gen.generateNode(indexNode)
+						gen.output.WriteString("] = (void*)(intptr_t)(double)")
+					}
+					gen.generateNode(valueNode)
+					gen.output.WriteString(";")
+				} else if cType == "char*" {
+					// For strings, store as pointer
+					if gen.enableBoundsChecking {
+						gen.output.WriteString("__arr->data[__idx] = (void*)")
+					} else {
+						if needsArrayCast {
+							gen.output.WriteString(fmt.Sprintf("((AhoyArray*)%s)->data[", arrayName))
+						} else {
+							gen.output.WriteString(fmt.Sprintf("%s->data[", arrayName))
+						}
+						gen.generateNode(indexNode)
+						gen.output.WriteString("] = (void*)")
+					}
+					gen.generateNode(valueNode)
+					gen.output.WriteString(";")
+				} else {
+					// For int and other intptr_t-compatible types, direct assignment
+					if gen.enableBoundsChecking {
+						gen.output.WriteString("__arr->data[__idx] = (void*)(intptr_t)")
+					} else {
+						if needsArrayCast {
+							gen.output.WriteString(fmt.Sprintf("((AhoyArray*)%s)->data[", arrayName))
+						} else {
+							gen.output.WriteString(fmt.Sprintf("%s->data[", arrayName))
+						}
+						gen.generateNode(indexNode)
+						gen.output.WriteString("] = (void*)(intptr_t)")
+					}
+					gen.generateNode(valueNode)
+					gen.output.WriteString(";")
+				}
+			} else {
+				// Unknown type - assume intptr_t
+				if gen.enableBoundsChecking {
+					gen.output.WriteString("__arr->data[__idx] = (void*)(intptr_t)")
+				} else {
+					if needsArrayCast {
+						gen.output.WriteString(fmt.Sprintf("((AhoyArray*)%s)->data[", arrayName))
+					} else {
+						gen.output.WriteString(fmt.Sprintf("%s->data[", arrayName))
+					}
+					gen.generateNode(indexNode)
+					gen.output.WriteString("] = (void*)(intptr_t)")
+				}
 				gen.generateNode(valueNode)
-				gen.output.WriteString("; }\n")
+				gen.output.WriteString(";")
+			}
+
+			if gen.enableBoundsChecking {
+				gen.output.WriteString(" }\n")
+			} else {
+				gen.output.WriteString("\n")
 			}
 			return
 		}
@@ -1527,6 +1610,68 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			}
 		}
 
+		// Special handling for member access on array elements: arr[i].field: value
+		if node.Children[0].Type == ahoy.NODE_MEMBER_ACCESS && 
+			len(node.Children[0].Children) > 0 && 
+			node.Children[0].Children[0].Type == ahoy.NODE_ARRAY_ACCESS {
+			
+			arrayAccessNode := node.Children[0].Children[0]
+			memberName := node.Children[0].Value
+			arrayName := arrayAccessNode.Value
+			indexNode := arrayAccessNode.Children[0]
+			valueNode := node.Children[1]
+			
+			// Get array element type
+			var elemType string
+			if et, exists := gen.arrayElementTypes[arrayName]; exists {
+				elemType = et
+			}
+			
+			if elemType != "" {
+				cType := gen.mapType(elemType)
+				// Check if it's a struct type
+				isCStruct := gen.cTypeDefinitions[cType] && !strings.HasSuffix(cType, "*") && 
+					cType != "int" && cType != "double" && cType != "char*" && cType != "bool"
+				isAhoyStruct := false
+				if !isCStruct {
+					if _, exists := gen.structs[elemType]; exists {
+						isAhoyStruct = true
+					} else if _, exists := gen.structs[cType]; exists {
+						isAhoyStruct = true
+					}
+				}
+				
+				if isCStruct || isAhoyStruct {
+					// For struct arrays, we need to access the pointer directly
+					gen.writeIndent()
+					if gen.enableBoundsChecking {
+						gen.output.WriteString("{ int __idx = ")
+						gen.generateNode(indexNode)
+						gen.output.WriteString("; ")
+						gen.output.WriteString(fmt.Sprintf("AhoyArray* __arr = %s; ", arrayName))
+						gen.output.WriteString("if (__idx < 0 || __idx >= __arr->length) { ")
+						gen.output.WriteString("fprintf(stderr, \"RUNTIME ERROR: Array bounds violation\\n\"); ")
+						gen.output.WriteString(fmt.Sprintf("fprintf(stderr, \"  File: %s\\n\"); ", gen.sourceFilename))
+						gen.output.WriteString(fmt.Sprintf("fprintf(stderr, \"  Line: %d\\n\"); ", node.Line))
+						gen.output.WriteString(fmt.Sprintf("fprintf(stderr, \"  Array: %s\\n\"); ", arrayName))
+						gen.output.WriteString("fprintf(stderr, \"  Index: %d\\n\", __idx); ")
+						gen.output.WriteString("fprintf(stderr, \"  Valid range: 0 to %d\\n\", __arr->length - 1); ")
+						gen.output.WriteString("exit(1); } ")
+						gen.output.WriteString(fmt.Sprintf("((%s*)__arr->data[__idx])->%s = ", cType, memberName))
+						gen.generateNode(valueNode)
+						gen.output.WriteString("; }\n")
+					} else {
+						gen.output.WriteString(fmt.Sprintf("((%s*)%s->data[", cType, arrayName))
+						gen.generateNode(indexNode)
+						gen.output.WriteString(fmt.Sprintf("])->%s = ", memberName))
+						gen.generateNode(valueNode)
+						gen.output.WriteString(";\n")
+					}
+					return
+				}
+			}
+		}
+		
 		// For struct field/array/pointer access, direct assignment works
 		// Mark any variables in the value as escaping (being stored)
 		gen.markEscapingVariables(node.Children[1])
@@ -4045,13 +4190,22 @@ func (gen *CodeGenerator) generateArrayLiteral(node *ahoy.ASTNode) {
 		gen.output.WriteString(fmt.Sprintf("%s->is_typed = 0; ", arrName))
 	}
 
-	// Check if array element type is a C struct (for typed arrays)
+	// Check if array element type is a C struct or Ahoy struct (for typed arrays)
 	var elemCType string
-	var isElemCStruct bool
+	var isElemStruct bool
 	if isTyped && elementType != "" {
 		elemCType = gen.mapType(elementType)
-		isElemCStruct = gen.cTypeDefinitions[elemCType] && !strings.HasSuffix(elemCType, "*") && 
+		isCStruct := gen.cTypeDefinitions[elemCType] && !strings.HasSuffix(elemCType, "*") && 
 			elemCType != "int" && elemCType != "double" && elemCType != "char*" && elemCType != "bool"
+		isAhoyStruct := false
+		if !isCStruct {
+			if _, exists := gen.structs[elementType]; exists {
+				isAhoyStruct = true
+			} else if _, exists := gen.structs[elemCType]; exists {
+				isAhoyStruct = true
+			}
+		}
+		isElemStruct = isCStruct || isAhoyStruct
 	}
 
 	// Add elements - cast to intptr_t for pointer safety and track types
@@ -4065,8 +4219,8 @@ func (gen *CodeGenerator) generateArrayLiteral(node *ahoy.ASTNode) {
 			gen.varCounter++
 			gen.generateNode(child)
 			gen.output.WriteString(fmt.Sprintf("; __float_ptr_%d; }); ", gen.varCounter-1))
-		} else if isElemCStruct {
-			// For C structs, determine actual C type from element
+		} else if isElemStruct {
+			// For structs (C or Ahoy), determine actual C type from element
 			actualCType := elemCType
 			if child.Type == ahoy.NODE_IDENTIFIER {
 				// Look up the variable's actual declared type
@@ -4077,7 +4231,7 @@ func (gen *CodeGenerator) generateArrayLiteral(node *ahoy.ASTNode) {
 				}
 			}
 			
-			// For C structs, allocate heap memory and copy the struct
+			// For structs (C or Ahoy), allocate heap memory and copy the struct
 			gen.output.WriteString(fmt.Sprintf("%s->data[%d] = (intptr_t)({ %s* __struct_ptr_%d = malloc(sizeof(%s)); *__struct_ptr_%d = ", 
 				arrName, i, actualCType, gen.varCounter, actualCType, gen.varCounter))
 			gen.varCounter++
@@ -4137,20 +4291,30 @@ func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 		if elemType, exists := gen.arrayElementTypes[arrayName]; exists {
 			cType := gen.mapType(elemType)
 			if cType != "int" {
-				// Check if this is a C struct type stored as pointer
+				// Check if this is a C struct OR Ahoy struct type stored as pointer
 				isCStruct := gen.cTypeDefinitions[cType] && !strings.HasSuffix(cType, "*") && 
 					cType != "int" && cType != "double" && cType != "char*" && cType != "bool"
-				if isCStruct {
+				isAhoyStruct := false
+				if !isCStruct {
+					if _, exists := gen.structs[elemType]; exists {
+						isAhoyStruct = true
+					} else if _, exists := gen.structs[cType]; exists {
+						isAhoyStruct = true
+					}
+				}
+				if isCStruct || isAhoyStruct {
 					// Dereference the pointer to get the struct value
 					gen.output.WriteString(fmt.Sprintf("(*(%s*)__arr->data[__idx])", cType))
 				} else {
 					gen.output.WriteString(fmt.Sprintf("((%s)(intptr_t)__arr->data[__idx])", cType))
 				}
 			} else {
-				gen.output.WriteString("__arr->data[__idx]")
+				// For int, cast from void* through intptr_t
+				gen.output.WriteString("((int)(intptr_t)__arr->data[__idx])")
 			}
 		} else {
-			gen.output.WriteString("__arr->data[__idx]")
+			// Unknown type, assume int
+			gen.output.WriteString("((int)(intptr_t)__arr->data[__idx])")
 		}
 
 		gen.output.WriteString("; })")
@@ -4162,10 +4326,18 @@ func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 		cType := gen.mapType(elemType)
 		// Cast to the appropriate type for non-int types (need intptr_t intermediate for pointer safety)
 		if cType != "int" {
-			// Check if this is a C struct type stored as pointer
+			// Check if this is a C struct OR Ahoy struct type stored as pointer
 			isCStruct := gen.cTypeDefinitions[cType] && !strings.HasSuffix(cType, "*") && 
 				cType != "int" && cType != "double" && cType != "char*" && cType != "bool"
-			if isCStruct {
+			isAhoyStruct := false
+			if !isCStruct {
+				if _, exists := gen.structs[elemType]; exists {
+					isAhoyStruct = true
+				} else if _, exists := gen.structs[cType]; exists {
+					isAhoyStruct = true
+				}
+			}
+			if isCStruct || isAhoyStruct {
 				// Dereference the pointer to get the struct value
 				if needsArrayCast {
 					gen.output.WriteString(fmt.Sprintf("(*(%s*)((AhoyArray*)%s)->data[", cType, arrayName))
