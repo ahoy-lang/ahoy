@@ -1,6 +1,6 @@
 expected: []
 ? Enums test
-enum:int numbers ? enum should default to int type 0,1,2,... not nillable
+enum:int numbers: ? enum should default to int type 0,1,2,... not nillable
 	one
 	two
 	three

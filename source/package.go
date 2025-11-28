@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"ahoy"
 )
@@ -111,22 +112,51 @@ func (pm *PackageManager) LoadPackageFromFile(mainFilePath string) (*Package, er
 		Files: []PackageFile{},
 	}
 
+	// Collect .ahoy file paths first
+	var ahoyFilePaths []string
 	for _, file := range files {
 		if file.IsDir() || !strings.HasSuffix(file.Name(), ".ahoy") {
 			continue
 		}
+		ahoyFilePaths = append(ahoyFilePaths, filepath.Join(dir, file.Name()))
+	}
 
-		filePath := filepath.Join(dir, file.Name())
-		pf, err := pm.LoadFile(filePath)
-		if err != nil {
+	// Load files in parallel using goroutines
+	type fileResult struct {
+		file *PackageFile
+		err  error
+		path string
+	}
+	
+	results := make(chan fileResult, len(ahoyFilePaths))
+	var wg sync.WaitGroup
+
+	for _, filePath := range ahoyFilePaths {
+		wg.Add(1)
+		go func(fp string) {
+			defer wg.Done()
+			pf, err := pm.LoadFile(fp)
+			results <- fileResult{file: pf, err: err, path: fp}
+		}(filePath)
+	}
+
+	// Close results channel when all goroutines complete
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Collect results
+	for result := range results {
+		if result.err != nil {
 			// Skip files that fail to parse instead of failing the whole package
-			fmt.Printf("Warning: Skipping file %s due to error: %v\n", file.Name(), err)
+			fmt.Printf("Warning: Skipping file %s due to error: %v\n", filepath.Base(result.path), result.err)
 			continue
 		}
 
 		// Only include files with matching program name
-		if pf.ProgramName == mainFile.ProgramName {
-			pkg.Files = append(pkg.Files, *pf)
+		if result.file.ProgramName == mainFile.ProgramName {
+			pkg.Files = append(pkg.Files, *result.file)
 		}
 	}
 

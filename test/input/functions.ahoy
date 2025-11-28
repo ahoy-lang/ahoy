@@ -1,14 +1,14 @@
 expected: []
 ? Functions test
-x: 5
+x:int= 5
 y: 10
 z: x + y
 print|z| ? should print: 15
-expected.push|"15"|
+expected.push|"15"|;
 
 
 
-@ multiple |name:string,phone:int| string, int:
+@ multiple |name:string,phone:int| string,int:
 	return name, phone
 $
 

@@ -2,11 +2,11 @@ expected: []
 ? Conditionals - if statements and switch
 
 ? Basic if
-x: 10
+x:int= 10
 
 if x is 10 then print|"ten"| expected.push|"ten"| $
 ? If-else
-y: 5
+y: int = 5
 if y greater_than 10 then print|"big"|; expected.push|"big"|;
 else print|"small"| expected.push|"small"|
 $
@@ -134,8 +134,8 @@ if i is not 11 then ? fixed: is i not -> is not
 $
 expected.push|"Not selected"|
 
-if i is 99 then print|"Not selected"|
-else then print|"else_then"| ? the then should be allowed as optional not required and should not be a linting or lsp error.
+if i is 99 then print|"Not selected"|;
+else then print|"else_then"|; ? the then should be allowed as optional not required and should not be a linting or lsp error.
 $
 expected.push|"else_then"|;
 
@@ -143,9 +143,9 @@ expected.push|"else_then"|;
 
 rotation: 3
 switch rotation:
-		on UP: print|"UP"|
-		on RIGHT: print|"RIGHT"|
-		on DOWN: print|"DOWN"|
+		on direction.UP: print|"UP"|
+		on direction.RIGHT: print|"RIGHT"|
+		on direction.DOWN: print|"DOWN"|
 		on direction.LEFT: print|"LEFT"| ? we should prefix with enum name because there is a clash with enum_with_same_member.LEFT
 		_:print|"NONE"
 $
@@ -173,6 +173,25 @@ enum direction:
 	2 DOWN
 	3 LEFT
 $
+
+switch rotation:
+		on .UP: print|"UP"|
+		on .RIGHT: print|"RIGHT"|
+		on .DOWN: print|"DOWN"|
+		on .LEFT: print|"LEFT"|
+		_:print|"NONE"
+$
+expected.push|"DOWN"|
+
+rotation: 3
+switch rotation:
+		on .UP: print|"UP"|
+		on .RIGHT: print|"RIGHT"|
+		on .DOWN: print|"DOWN"|
+		on .LEFT: print|"LEFT"| ? we should prefix with enum name because there is a clash with enum_with_same_member.LEFT
+		_:print|"NONE"
+$
+expected.push|"LEFT"|
 
 enum enum_with_same_member:
 	0 FORWARD

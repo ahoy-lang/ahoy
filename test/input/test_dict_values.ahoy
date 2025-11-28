@@ -5,7 +5,6 @@ x: pos<"x">
 y: pos<"y">
 z: pos<"z">
 
-result: x + y + z
 
 print|"X:", x|
 expected.push|"X: 10.5"|
@@ -13,6 +12,7 @@ print|"Y:", y|
 expected.push|"Y: 20.3"|
 print|"Z:", z|
 expected.push|"Z: 5.8"|
+result: x + y + z
 print|"Sum:", result|
 expected.push|"Sum: 36.6"|
 

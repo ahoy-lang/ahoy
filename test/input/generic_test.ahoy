@@ -2,7 +2,7 @@ expected: []
 ? Test generic type inference with infer
 
 ? Function with generic parameters
-@ test_generics :: |name,phone,location:generic,postcode| infer:
+@ test_generics |name,phone,location,postcode| infer:
 return name, phone,location,postcode
 $
 

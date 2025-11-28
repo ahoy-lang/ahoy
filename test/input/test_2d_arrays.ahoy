@@ -3,15 +3,12 @@ expected: []
 ? Test 2D arrays - Tic Tac Toe style grid
 ? Create a 3x3 grid using arrays of arrays
 
-? Create rows
-row0: [0, 0, 0]
-row1: [0, 0, 0]
-row2: [0, 0, 0]
-
 struct Card:
 	suit: string
 	rank: string
 $
+
+
 
 cardA: Card{suit:"Hearts", rank:"Ace"}
 cardK: Card{suit:"Spades", rank:"King"}
@@ -21,13 +18,20 @@ card9: Card{suit:"Hearts", rank:"9"}
 card8: Card{suit:"Clubs", rank:"8"}
 card7: Card{suit:"Spades", rank:"7"}
 card6: Card{suit:"Clubs", rank:"6"}
-card5: Card{suit:"Diamonss", rank:"5"}
+card5: Card{suit:"Diamonds", rank:"5"}
+
+? Create rows
+row0: [0, 0, 0]
+row1: [0, 0, 0]
+row2: [0, 0, 0]
 
 card_row0: [card5, card6, card7]
 card_row1: [card8, card9, card10]
 card_row2: [cardQ, cardK, cardA]
+
 ? Create grid (2D array)
 grid: [row0, row1, row2]
+card_grid: [card_row0, card_row1, card_row2]
 
 ? Test initial values are 0
 print|grid[0][0]|
@@ -37,6 +41,20 @@ expected.push|"0"|
 print|grid[2][2]|
 expected.push|"0"|
 
+
+? test values are cards
+print|card_grid[0][0].suit|
+expected.push|"Diamonds"|
+print|card_grid[1][1].rank|
+expected.push|"9"|
+print|card_grid[2][2].rank|
+expected.push|"Ace"|
+
+print|card_grid[0][1].suit|
+expected.push|"Clubs"|
+card_grid[0][1].suit : "Hearts"
+print|card_grid[0][1].suit|
+expected.push|"Hearts"|
 ? Set some values (1 = X, 2 = O)
 grid[0][0]: 1  ? X in corner
 grid[1][1]: 2  ? O in center

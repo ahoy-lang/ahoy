@@ -95,6 +95,7 @@ type CodeGenerator struct {
 	currentFunctionHasMultiReturn bool                         // Whether current function has multiple returns
 	hasMainFunc                   bool                         // Whether there's an Ahoy main function
 	arrayElementTypes             map[string]string            // array variable name -> element type
+	array2DElementTypes           map[string]string            // 2D array variable name -> nested element type (element type of inner arrays)
 	structs                       map[string]*StructInfo       // struct name -> struct info
 	currentTypeContext            string                       // Current type annotation context (e.g., "array[int]")
 	functionReturnTypes           map[string][]string          // function name -> return types (for inferred functions)
@@ -151,6 +152,7 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		dictMethods:           make(map[string]bool),
 		hasMainFunc:           false,
 		arrayElementTypes:     make(map[string]string),
+		array2DElementTypes:   make(map[string]string),
 		structs:               make(map[string]*StructInfo),
 		functionReturnTypes:   make(map[string][]string),
 		functionParamTypes:    make(map[string][]string),
@@ -1619,6 +1621,52 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			}
 		}
 
+		// Special handling for member access on 2D array elements: arr[i][j].field: value
+		if node.Children[0].Type == ahoy.NODE_MEMBER_ACCESS && 
+			len(node.Children[0].Children) > 0 && 
+			node.Children[0].Children[0].Type == ahoy.NODE_ARRAY_ACCESS &&
+			node.Children[0].Children[0].Value == "" &&
+			len(node.Children[0].Children[0].Children) == 2 {
+			
+			chainedAccess := node.Children[0].Children[0]
+			memberName := node.Children[0].Value
+			innerAccess := chainedAccess.Children[0]
+			outerIndex := chainedAccess.Children[1]
+			valueNode := node.Children[1]
+			
+			// Get the 2D array's nested element type
+			var elemType string
+			if innerAccess.Type == ahoy.NODE_ARRAY_ACCESS && innerAccess.Value != "" {
+				if et, exists := gen.array2DElementTypes[innerAccess.Value]; exists {
+					elemType = et
+				}
+			}
+			
+			if elemType != "" {
+				cType := gen.mapType(elemType)
+				// Check if it's a struct type
+				isStruct := false
+				if _, exists := gen.structs[elemType]; exists {
+					isStruct = true
+				} else if _, exists := gen.structs[cType]; exists {
+					isStruct = true
+				}
+				
+				if isStruct {
+					gen.writeIndent()
+					// Generate: ((StructType*)((AhoyArray*)inner_access)->data[outer_idx])->member = value
+					gen.output.WriteString(fmt.Sprintf("((%s*)((AhoyArray*)", cType))
+					gen.generateNode(innerAccess)
+					gen.output.WriteString(")->data[")
+					gen.generateNode(outerIndex)
+					gen.output.WriteString(fmt.Sprintf("])->%s = ", memberName))
+					gen.generateNode(valueNode)
+					gen.output.WriteString(";\n")
+					return
+				}
+			}
+		}
+
 		// Special handling for member access on array elements: arr[i].field: value
 		if node.Children[0].Type == ahoy.NODE_MEMBER_ACCESS && 
 			len(node.Children[0].Children) > 0 && 
@@ -1831,6 +1879,14 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				} else if len(valueNode.Children) > 0 {
 					elemType := gen.inferType(valueNode.Children[0])
 					gen.arrayElementTypes[node.Value] = elemType
+					
+					// For 2D arrays: if the first element is an array variable, track its element type
+					firstChild := valueNode.Children[0]
+					if firstChild.Type == ahoy.NODE_IDENTIFIER {
+						if nestedElemType, exists := gen.arrayElementTypes[firstChild.Value]; exists {
+							gen.array2DElementTypes[node.Value] = nestedElemType
+						}
+					}
 				}
 			}
 
@@ -4294,9 +4350,46 @@ func (gen *CodeGenerator) generateArrayLiteral(node *ahoy.ASTNode) {
 			gen.generateNode(child)
 			gen.output.WriteString(fmt.Sprintf("; __struct_ptr_%d; }); ", gen.varCounter-1))
 		} else {
-			gen.output.WriteString(fmt.Sprintf("%s->data[%d] = (intptr_t)", arrName, i))
-			gen.generateNode(child)
-			gen.output.WriteString("; ")
+			// Check if this element is a struct (even in untyped arrays)
+			isChildStruct := false
+			childCType := ""
+			if child.Type == ahoy.NODE_IDENTIFIER {
+				if varType, exists := gen.variables[child.Value]; exists {
+					childCType = gen.mapType(varType)
+					// Check if it's a known struct
+					if _, isStruct := gen.structs[varType]; isStruct {
+						isChildStruct = true
+					} else if _, isStruct := gen.structs[childCType]; isStruct {
+						isChildStruct = true
+					}
+				} else if varType, exists := gen.functionVars[child.Value]; exists {
+					childCType = gen.mapType(varType)
+					if _, isStruct := gen.structs[varType]; isStruct {
+						isChildStruct = true
+					} else if _, isStruct := gen.structs[childCType]; isStruct {
+						isChildStruct = true
+					}
+				}
+			} else if child.Type == ahoy.NODE_OBJECT_LITERAL && child.Value != "" {
+				// Object literal with type name
+				childCType = gen.mapType(child.Value)
+				if _, isStruct := gen.structs[child.Value]; isStruct {
+					isChildStruct = true
+				}
+			}
+			
+			if isChildStruct && childCType != "" {
+				// Struct in untyped array - need to allocate heap memory
+				gen.output.WriteString(fmt.Sprintf("%s->data[%d] = (intptr_t)({ %s* __struct_ptr_%d = malloc(sizeof(%s)); *__struct_ptr_%d = ", 
+					arrName, i, childCType, gen.varCounter, childCType, gen.varCounter))
+				gen.varCounter++
+				gen.generateNode(child)
+				gen.output.WriteString(fmt.Sprintf("; __struct_ptr_%d; }); ", gen.varCounter-1))
+			} else {
+				gen.output.WriteString(fmt.Sprintf("%s->data[%d] = (intptr_t)", arrName, i))
+				gen.generateNode(child)
+				gen.output.WriteString("; ")
+			}
 		}
 	}
 
@@ -6424,6 +6517,47 @@ func (gen *CodeGenerator) generateMemberAccess(node *ahoy.ASTNode) {
 		gen.generateNodeInternal(object, false)
 		gen.output.WriteString(fmt.Sprintf(", \"%s\")", memberName))
 		return
+	}
+
+	// Special handling for chained array access (2D arrays) with member access
+	// e.g., card_grid[0][1].suit -> need to cast the element to proper struct type
+	if object.Type == ahoy.NODE_ARRAY_ACCESS && object.Value == "" && len(object.Children) == 2 {
+		// This is a chained array access: arr[i][j]
+		// We need to determine the element type and cast properly
+		innerAccess := object.Children[0]
+		outerIndex := object.Children[1]
+		
+		// Try to find the nested element type (what the inner arrays contain)
+		var elemType string
+		if innerAccess.Type == ahoy.NODE_ARRAY_ACCESS && innerAccess.Value != "" {
+			// The inner access is grid[i] where grid is the 2D array name
+			// Look up what the inner arrays contain
+			if et, exists := gen.array2DElementTypes[innerAccess.Value]; exists {
+				elemType = et
+			}
+		}
+		
+		if elemType != "" {
+			cType := gen.mapType(elemType)
+			// Check if it's a struct
+			isStruct := false
+			if _, exists := gen.structs[elemType]; exists {
+				isStruct = true
+			} else if _, exists := gen.structs[cType]; exists {
+				isStruct = true
+			}
+			
+			if isStruct {
+				// Generate: ((StructType*)((AhoyArray*)inner_access)->data[outer_idx])->member
+				gen.output.WriteString(fmt.Sprintf("((%s*)((AhoyArray*)", cType))
+				gen.generateNode(innerAccess)
+				gen.output.WriteString(")->data[")
+				gen.generateNode(outerIndex)
+				gen.output.WriteString("])->")
+				gen.output.WriteString(memberName)
+				return
+			}
+		}
 	}
 
 	gen.generateNodeInternal(object, false)

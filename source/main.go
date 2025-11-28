@@ -116,15 +116,20 @@ func main() {
 	// Initialize package manager
 	pm := NewPackageManager(filepath.Dir(absPath))
 
-	// Start parse timing
-	parseStart := time.Now()
+	// Start load/parse timing
+	loadStart := time.Now()
 
-	// Load the package
+	// Load the package (tokenization + parsing)
 	pkg, err := pm.LoadPackageFromFile(absPath)
 	if err != nil {
 		fmt.Printf("Error loading package: %v\n", err)
 		os.Exit(1)
 	}
+
+	loadTime := time.Since(loadStart)
+
+	// Start imports timing
+	importsStart := time.Now()
 
 	// Resolve imports recursively
 	imports, err := resolveImports(pkg, pm, absPath)
@@ -133,10 +138,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	parseTime := time.Since(parseStart)
+	importsTime := time.Since(importsStart)
+
+	// Start merge timing
+	mergeStart := time.Now()
 
 	// Merge package with all imports into one AST
 	ast := MergeWithImports(pkg, imports)
+
+	mergeTime := time.Since(mergeStart)
 
 	// Start codegen timing
 	codegenStart := time.Now()
@@ -186,11 +196,15 @@ func main() {
 		return fmt.Sprintf("%.1fms", ms)
 	}
 
+	// Calculate total parse time (load + imports + merge)
+	parseTime := loadTime + importsTime + mergeTime
+
 	if len(pkg.Files) > 1 {
-		fmt.Printf("✓ Compiled package '%s' (%d files) to %s (parse: %s, codegen: %s)\n", 
-			pkg.Name, len(pkg.Files), outputFile, formatTime(parseTime), formatTime(codegenTime))
+		fmt.Printf("✓ Compiled package '%s' (%d files) to %s\n", pkg.Name, len(pkg.Files), outputFile)
+		fmt.Printf("  Timing: parse=%s, imports=%s, merge=%s, codegen=%s\n",
+			formatTime(loadTime), formatTime(importsTime), formatTime(mergeTime), formatTime(codegenTime))
 	} else {
-		fmt.Printf("✓ Compiled %s to %s (parse: %s, codegen: %s)\n", 
+		fmt.Printf("✓ Compiled %s to %s (parse: %s, codegen: %s)\n",
 			sourceFile, outputFile, formatTime(parseTime), formatTime(codegenTime))
 	}
 
@@ -232,7 +246,7 @@ func main() {
 			compileArgs = append(compileArgs, "-lm")
 		}
 
-		cmd := exec.Command("gcc", compileArgs...)
+		cmd := exec.Command("tcc", compileArgs...)
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			fmt.Printf("Error compiling C code:\n%s\n", output)

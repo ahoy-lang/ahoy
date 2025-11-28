@@ -17,22 +17,39 @@ struct player_info:
 	-1 hover_row:int
 	-1 hover_col:int
 	0 placed_count:int
+	type dist:
+	 10 bob:int
 $
 
-json:struct json_example:
-    page page:int
-    fruits fruits:array[string]
+struct Card:
+	id:int
+	row:int
+	col:int
+	rotation: int
+	owner:int  ? 0=player, 1=enemy
+	image_idx:int
+	health:int
+	attack:int
 $
 
-player_information : player_info{deck_count:15, hand_size:5}
+? struct:json json_example:
+?   page page:int
+?   fruits fruits:array[string]
+? $
 
 camera_zoom:float = 1.5
+player_information : dist{deck_count:15, hand_size:5}
+print|player_information|
+expected.push|"dist{MAX_HAND:5, hand_size:5, deck_count:15, selected_idx:-1, dragging:false, hover_row:-1, hover_col:-1, placed_count:0, bob:10}"|;
+
+new_card: Card{ id: 3, row: 1, col: 0, rotation: 45, owner: 0, image_idx: 0, health: 0, attack: 5 }
+print|new_card|
+expected.push|"Card{id:3, row:1, col:0, rotation:45, owner:0, image_idx:0, health:0, attack:5}"|
+
 
 ? camera2D{offset:vector2{x:0,y:0}, target:vector2{x:0,y:0}, rotation:0.0, zoom:camera_zoom}
 ? test:"jkjkl"
 ? print|test|
 ? expected.push|"jkjkl"|
 
-print|player_information|
-expected.push|"player_info{MAX_HAND:5, hand_size:5, deck_count:15, selected_idx:-1, dragging:false, hover_row:-1, hover_col:-1, placed_count:0}"|
 print|expected|

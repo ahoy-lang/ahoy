@@ -4,8 +4,8 @@ expected: []
 ? Test 1: Basic type alias for int
 alias my_int: int
 x: my_int = 42
-print|x|
-expected.push|"42"|
+print|x,x.type|
+expected.push|"42 my_int"|
 
 ? Test 2: Alias in function signature
 alias distance: float
