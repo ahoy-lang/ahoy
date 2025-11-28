@@ -6,11 +6,293 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	"ahoy"
 )
+
+// findCompiler finds the appropriate C compiler based on mode and OS
+// Returns: compiler path, args, isOptimized, error
+func findCompiler(releaseMode bool, executablePath string) (string, []string, bool, error) {
+	// Get the directory where the ahoy binary is located
+	ahoyDir, err := os.Executable()
+	if err != nil {
+		ahoyDir = "."
+	} else {
+		ahoyDir = filepath.Dir(ahoyDir)
+	}
+
+	// Determine TCC path based on OS
+	var tccPath string
+	var tccArgs []string
+
+	switch runtime.GOOS {
+	case "linux":
+		tccPath = filepath.Join(ahoyDir, "tcc", "linux", "tcc")
+		tccArgs = []string{"-B" + filepath.Join(ahoyDir, "tcc", "linux")}
+	case "windows":
+		// Check architecture for 32-bit vs 64-bit
+		if runtime.GOARCH == "386" {
+			tccPath = filepath.Join(ahoyDir, "tcc", "windows", "i386-win32-tcc.exe")
+		} else {
+			tccPath = filepath.Join(ahoyDir, "tcc", "windows", "tcc.exe")
+		}
+		tccArgs = []string{"-B" + filepath.Join(ahoyDir, "tcc", "windows")}
+	default:
+		// Unsupported OS for bundled TCC
+		tccPath = ""
+	}
+
+	if releaseMode {
+		// Try to find gcc or clang for optimized builds
+		gccPath, err := exec.LookPath("gcc")
+		if err == nil {
+			return gccPath, []string{"-O3"}, true, nil
+		}
+
+		clangPath, err := exec.LookPath("clang")
+		if err == nil {
+			return clangPath, []string{"-O3"}, true, nil
+		}
+
+		// Fall back to TCC with warning
+		if tccPath != "" {
+			if _, err := os.Stat(tccPath); err == nil {
+				fmt.Println("⚠ Warning: gcc/clang not found, using TCC (code may not be optimized)")
+				fmt.Println("  Install gcc or clang for optimized release builds")
+				return tccPath, tccArgs, false, nil
+			}
+		}
+
+		return "", nil, false, fmt.Errorf("no C compiler found (tried gcc, clang, tcc)")
+	}
+
+	// Debug mode - prefer TCC for fast compilation
+	if tccPath != "" {
+		if _, err := os.Stat(tccPath); err == nil {
+			return tccPath, tccArgs, false, nil
+		}
+	}
+
+	// TCC not available, try system compilers
+	gccPath, err := exec.LookPath("gcc")
+	if err == nil {
+		return gccPath, []string{"-O0"}, false, nil
+	}
+
+	clangPath, err := exec.LookPath("clang")
+	if err == nil {
+		return clangPath, []string{"-O0"}, false, nil
+	}
+
+	// Provide helpful error message based on OS
+	switch runtime.GOOS {
+	case "linux", "windows":
+		return "", nil, false, fmt.Errorf("TCC not found at %s and no system compiler (gcc/clang) available", tccPath)
+	default:
+		return "", nil, false, fmt.Errorf("unsupported OS '%s' - no bundled TCC available and no system compiler found\nInstall gcc or clang for your platform", runtime.GOOS)
+	}
+}
+
+// CrossCompileTarget represents a target platform for cross-compilation
+type CrossCompileTarget struct {
+	Name       string
+	OutputDir  string
+	Compiler   string
+	Args       []string
+	Extension  string
+}
+
+// findCrossCompiler finds the compiler for cross-compilation
+func findCrossCompiler(target string, ahoyDir string) (*CrossCompileTarget, error) {
+	homeDir, _ := os.UserHomeDir()
+	
+	switch target {
+	case "linux":
+		if runtime.GOOS == "linux" {
+			// Native compilation
+			compiler, args, _, err := findCompiler(true, "")
+			if err != nil {
+				return nil, err
+			}
+			return &CrossCompileTarget{
+				Name:      "linux",
+				OutputDir: "build/linux",
+				Compiler:  compiler,
+				Args:      args,
+				Extension: "",
+			}, nil
+		}
+		// Cross-compile using zig cc
+		zigPath, err := exec.LookPath("zig")
+		if err != nil {
+			return nil, fmt.Errorf("cross-compilation to Linux requires zig (zig cc)\nInstall zig: https://ziglang.org/download/")
+		}
+		return &CrossCompileTarget{
+			Name:      "linux",
+			OutputDir: "build/linux",
+			Compiler:  zigPath,
+			Args:      []string{"cc", "-target", "x86_64-linux-gnu", "-O3", "-Wno-int-conversion", "-Wno-format"},
+			Extension: "",
+		}, nil
+
+	case "windows":
+		if runtime.GOOS == "windows" {
+			// Native compilation
+			compiler, args, _, err := findCompiler(true, "")
+			if err != nil {
+				return nil, err
+			}
+			return &CrossCompileTarget{
+				Name:      "windows",
+				OutputDir: "build/windows",
+				Compiler:  compiler,
+				Args:      args,
+				Extension: ".exe",
+			}, nil
+		}
+		// Cross-compile using zig cc
+		zigPath, err := exec.LookPath("zig")
+		if err != nil {
+			return nil, fmt.Errorf("cross-compilation to Windows requires zig (zig cc)\nInstall zig: https://ziglang.org/download/")
+		}
+		return &CrossCompileTarget{
+			Name:      "windows",
+			OutputDir: "build/windows",
+			Compiler:  zigPath,
+			Args:      []string{"cc", "-target", "x86_64-windows-gnu", "-O3", "-Wno-int-conversion", "-Wno-format"},
+			Extension: ".exe",
+		}, nil
+
+	case "macos":
+		if runtime.GOOS == "darwin" {
+			// Native compilation
+			compiler, args, _, err := findCompiler(true, "")
+			if err != nil {
+				return nil, err
+			}
+			return &CrossCompileTarget{
+				Name:      "macos",
+				OutputDir: "build/macos",
+				Compiler:  compiler,
+				Args:      args,
+				Extension: "",
+			}, nil
+		}
+		// Cross-compile using zig cc
+		zigPath, err := exec.LookPath("zig")
+		if err != nil {
+			return nil, fmt.Errorf("cross-compilation to macOS requires zig (zig cc)\nInstall zig: https://ziglang.org/download/")
+		}
+		return &CrossCompileTarget{
+			Name:      "macos",
+			OutputDir: "build/macos",
+			Compiler:  zigPath,
+			Args:      []string{"cc", "-target", "x86_64-macos", "-O3", "-Wno-int-conversion", "-Wno-format"},
+			Extension: "",
+		}, nil
+
+	case "web":
+		// Check for emscripten
+		emccPath := filepath.Join(homeDir, "Documents", "emsdk", "upstream", "emscripten", "emcc")
+		if _, err := os.Stat(emccPath); os.IsNotExist(err) {
+			// Try looking in PATH
+			var pathErr error
+			emccPath, pathErr = exec.LookPath("emcc")
+			if pathErr != nil {
+				return nil, fmt.Errorf("web compilation requires Emscripten (emcc)\nExpected at: %s/Documents/emsdk\nOr install and add emcc to PATH", homeDir)
+			}
+		}
+		return &CrossCompileTarget{
+			Name:      "web",
+			OutputDir: "build/web",
+			Compiler:  emccPath,
+			Args:      []string{"-O3", "-s", "WASM=1", "-Wno-int-conversion", "-Wno-format"},
+			Extension: ".html",
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("unknown target: %s\nValid targets: linux, windows, macos, web, all", target)
+	}
+}
+
+// copyAssets copies the assets folder to the build directory
+func copyAssets(sourceDir, destDir string) error {
+	assetsDir := filepath.Join(sourceDir, "assets")
+	if _, err := os.Stat(assetsDir); os.IsNotExist(err) {
+		// No assets folder, skip
+		return nil
+	}
+
+	destAssets := filepath.Join(destDir, "assets")
+	
+	// Remove existing assets in dest
+	os.RemoveAll(destAssets)
+	
+	// Copy assets directory recursively
+	return filepath.Walk(assetsDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		
+		relPath, _ := filepath.Rel(assetsDir, path)
+		destPath := filepath.Join(destAssets, relPath)
+		
+		if info.IsDir() {
+			return os.MkdirAll(destPath, 0755)
+		}
+		
+		// Copy file
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(destPath, data, 0644)
+	})
+}
+
+// buildForTarget compiles for a specific target
+func buildForTarget(target *CrossCompileTarget, cFile, baseName, sourceDir string, hasRaylib bool, raylibPath string) error {
+	// Create output directory
+	if err := os.MkdirAll(target.OutputDir, 0755); err != nil {
+		return fmt.Errorf("failed to create output directory: %v", err)
+	}
+
+	executable := filepath.Join(target.OutputDir, baseName+target.Extension)
+	
+	// Build compile arguments
+	args := append(target.Args, "-o", executable, cFile)
+	
+	// Add raylib flags if needed
+	if hasRaylib {
+		if raylibPath != "" {
+			args = append(args, "-L"+raylibPath)
+		}
+		args = append(args, "-lraylib", "-lm", "-lpthread", "-ldl")
+		if target.Name != "windows" && target.Name != "web" {
+			args = append(args, "-lrt", "-lX11")
+		}
+	} else {
+		args = append(args, "-lm")
+	}
+
+	// Run compiler
+	cmd := exec.Command(target.Compiler, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("compilation failed for %s:\n%s", target.Name, output)
+	}
+
+	// Copy assets
+	if err := copyAssets(sourceDir, target.OutputDir); err != nil {
+		fmt.Printf("⚠ Warning: Failed to copy assets to %s: %v\n", target.OutputDir, err)
+	}
+
+	fmt.Printf("✓ Built %s: %s\n", target.Name, executable)
+	return nil
+}
 
 func main() {
 	// Define CLI flags
@@ -18,6 +300,8 @@ func main() {
 	runFlag := flag.Bool("r", false, "Run the compiled C program after compilation")
 	formatFlag := flag.Bool("format", false, "Format the source file")
 	lintFlag := flag.Bool("lint", false, "Run linter to check for errors without compiling")
+	releaseFlag := flag.Bool("release", false, "Use optimizing compiler (gcc/clang) for release build")
+	targetFlag := flag.String("target", "", "Cross-compile target: linux, windows, web, macos, or all")
 	helpFlag := flag.Bool("h", false, "Show help")
 
 	flag.Parse()
@@ -215,8 +499,15 @@ func main() {
 		// Start C compilation timing
 		cCompileStart := time.Now()
 
+		// Find the appropriate C compiler
+		compiler, baseArgs, isOptimized, err := findCompiler(*releaseFlag, executable)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+
 		// Build compilation arguments
-		compileArgs := []string{"-o", executable, outputFile}
+		compileArgs := append(baseArgs, "-o", executable, outputFile)
 
 		// Check if raylib is imported
 		hasRaylib := false
@@ -246,7 +537,7 @@ func main() {
 			compileArgs = append(compileArgs, "-lm")
 		}
 
-		cmd := exec.Command("tcc", compileArgs...)
+		cmd := exec.Command(compiler, compileArgs...)
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			fmt.Printf("Error compiling C code:\n%s\n", output)
@@ -256,7 +547,14 @@ func main() {
 		cCompileTime := time.Since(cCompileStart)
 		totalTime := time.Since(totalStart)
 
-		fmt.Printf("✓ Compiled C code to %s (gcc: %s, total: %s)\n", executable, formatTime(cCompileTime), formatTime(totalTime))
+		// Show compiler info
+		compilerName := filepath.Base(compiler)
+		modeStr := "debug"
+		if isOptimized {
+			modeStr = "release"
+		}
+		fmt.Printf("✓ Compiled C code to %s (%s %s: %s, total: %s)\n",
+			executable, compilerName, modeStr, formatTime(cCompileTime), formatTime(totalTime))
 		fmt.Println("Running program:")
 		fmt.Println("==================")
 
@@ -269,6 +567,56 @@ func main() {
 		if err != nil {
 			fmt.Printf("Program exited with error: %v\n", err)
 			os.Exit(1)
+		}
+	}
+
+	// Cross-compilation if target flag is set
+	if *targetFlag != "" {
+		ahoyDir, _ := os.Executable()
+		if ahoyDir != "" {
+			ahoyDir = filepath.Dir(ahoyDir)
+		} else {
+			ahoyDir = "."
+		}
+
+		// Check raylib for cross-compilation
+		hasRaylib := false
+		raylibPath := ""
+		for _, file := range pkg.Files {
+			if file.AST != nil {
+				for _, child := range file.AST.Children {
+					if child.Type == ahoy.NODE_IMPORT_STATEMENT && strings.Contains(child.Value, "raylib.h") {
+						hasRaylib = true
+						raylibPath = filepath.Dir(child.Value)
+						break
+					}
+				}
+			}
+			if hasRaylib {
+				break
+			}
+		}
+
+		var targets []string
+		if *targetFlag == "all" {
+			targets = []string{"linux", "windows", "web"}
+		} else {
+			targets = []string{*targetFlag}
+		}
+
+		fmt.Println("\nBuilding release builds...")
+		sourceDir := filepath.Dir(sourceFile)
+
+		for _, targetName := range targets {
+			target, err := findCrossCompiler(targetName, ahoyDir)
+			if err != nil {
+				fmt.Printf("✗ %s: %v\n", targetName, err)
+				continue
+			}
+
+			if err := buildForTarget(target, outputFile, baseName, sourceDir, hasRaylib, raylibPath); err != nil {
+				fmt.Printf("✗ %s: %v\n", targetName, err)
+			}
 		}
 	}
 }
@@ -429,18 +777,37 @@ func showHelp() {
 	fmt.Println("======================")
 	fmt.Println()
 	fmt.Println("Usage:")
-	fmt.Println("  go run main.go -f <file.ahoy> [options]")
+	fmt.Println("  ahoy -f <file.ahoy> [options]")
 	fmt.Println()
 	fmt.Println("Options:")
 	fmt.Println("  -f <file>     Input .ahoy source file (required)")
 	fmt.Println("  -r            Run the compiled C program")
+	fmt.Println("  -release      Use optimizing compiler (gcc/clang -O3) for release build")
+	fmt.Println("  -target <t>   Cross-compile to target: linux, windows, macos, web, or all")
 	fmt.Println("  -format       Format the source file")
 	fmt.Println("  -lint         Check for syntax errors without compiling")
 	fmt.Println("  -h            Show this help message")
 	fmt.Println()
+	fmt.Println("Compilation modes:")
+	fmt.Println("  Default (debug): Uses TCC for fast compilation (~5ms)")
+	fmt.Println("  Release (-release): Uses gcc/clang with -O3 optimization")
+	fmt.Println()
+	fmt.Println("Cross-compilation targets:")
+	fmt.Println("  linux    - Linux x86_64 (uses zig cc for cross-compilation)")
+	fmt.Println("  windows  - Windows x86_64 (uses zig cc for cross-compilation)")
+	fmt.Println("  macos    - macOS x86_64 (uses zig cc for cross-compilation)")
+	fmt.Println("  web      - WebAssembly (requires Emscripten/emcc)")
+	fmt.Println("  all      - Build for linux, windows, and web")
+	fmt.Println()
+	fmt.Println("Build output:")
+	fmt.Println("  Without -target: output/<name>")
+	fmt.Println("  With -target:    build/<target>/<name> (with assets folder)")
+	fmt.Println()
 	fmt.Println("Examples:")
-	fmt.Println("  go run main.go -f input/main.ahoy")
-	fmt.Println("  go run main.go -f input/main.ahoy -r")
-	fmt.Println("  go run main.go -f input/main.ahoy -format")
-	fmt.Println("  go run main.go -f input/main.ahoy -lint")
+	fmt.Println("  ahoy -f main.ahoy                    # Compile to C only")
+	fmt.Println("  ahoy -f main.ahoy -r                 # Compile and run (debug)")
+	fmt.Println("  ahoy -f main.ahoy -r -release        # Compile and run (optimized)")
+	fmt.Println("  ahoy -f main.ahoy -target linux      # Build for Linux")
+	fmt.Println("  ahoy -f main.ahoy -target all        # Build for all platforms")
+	fmt.Println("  ahoy -f main.ahoy -lint              # Check for errors")
 }
