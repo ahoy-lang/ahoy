@@ -77,6 +77,7 @@ type CodeGenerator struct {
 	constants                     map[string]string            // constant name -> type
 	declaredConstants             map[string]bool              // constant name -> declared (for duplicate check)
 	enums                         map[string]map[string]bool   // enum name -> {member names}
+	enumOriginalNames             map[string]bool              // tracks original (lowercase) enum names vs aliases
 	enumMemberTypes               map[string]string            // "enumName.memberName" -> type
 	enumTypes                     map[string]string            // enum name -> enum type (int, string, etc.)
 	userFunctions                 map[string]bool              // user-defined function names (keep snake_case)
@@ -139,6 +140,7 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		constants:             make(map[string]string),
 		declaredConstants:     make(map[string]bool),
 		enums:                 make(map[string]map[string]bool),
+		enumOriginalNames:     make(map[string]bool),
 		enumMemberTypes:       make(map[string]string),
 		enumTypes:             make(map[string]string),
 		userFunctions:         make(map[string]bool),
@@ -885,7 +887,8 @@ func (gen *CodeGenerator) scanTypeDeclarations(node *ahoy.ASTNode) {
 		
 		// Store enum members
 		gen.enums[enumName] = make(map[string]bool)
-		gen.enums[capitalizeFirst(enumName)] = gen.enums[enumName]
+		gen.enumOriginalNames[enumName] = true  // Mark this as the original name
+		// Note: Don't create capitalized duplicate here anymore to avoid ambiguity in resolution
 		
 		for _, member := range node.Children {
 			memberName := member.Value
@@ -2223,7 +2226,8 @@ func (gen *CodeGenerator) generateSwitchStatement(node *ahoy.ASTNode) {
 					gen.indent++
 					gen.writeIndent()
 					gen.output.WriteString("case ")
-					gen.generateNode(val)
+					// Resolve dot-prefixed enum members
+					gen.generateSwitchCaseValue(val, switchExprType)
 					gen.output.WriteString(":\n")
 					gen.indent--
 				}
@@ -2271,7 +2275,8 @@ func (gen *CodeGenerator) generateSwitchStatement(node *ahoy.ASTNode) {
 					gen.output.WriteString("default:\n")
 				} else {
 					gen.output.WriteString("case ")
-					gen.generateNode(caseValue) // Case value
+					// Resolve dot-prefixed enum members
+					gen.generateSwitchCaseValue(caseValue, switchExprType)
 					gen.output.WriteString(":\n")
 				}
 
@@ -2287,6 +2292,37 @@ func (gen *CodeGenerator) generateSwitchStatement(node *ahoy.ASTNode) {
 
 	gen.writeIndent()
 	gen.output.WriteString("}\n")
+}
+
+// generateSwitchCaseValue generates a case value, resolving dot-prefixed enum members
+func (gen *CodeGenerator) generateSwitchCaseValue(val *ahoy.ASTNode, switchExprType string) {
+	// Check if this is a dot-prefixed enum member
+	if val.Type == ahoy.NODE_IDENTIFIER && len(val.Value) > 0 && val.Value[0] == '.' {
+		// Extract the member name (without the dot)
+		memberName := val.Value[1:]
+		
+		// Try to find which enum this member belongs to
+		// Search enumMemberTypes which has keys like "EnumName.MEMBER"
+		found := false
+		for memberKey := range gen.enumMemberTypes {
+			parts := strings.Split(memberKey, ".")
+			if len(parts) == 2 && parts[1] == memberName {
+				enumName := parts[0]
+				// Generate the C enum constant name using the original enum name case
+				gen.output.WriteString(fmt.Sprintf("%s_%s", enumName, memberName))
+				found = true
+				break
+			}
+		}
+		
+		if !found {
+			// Fallback: just output the member name without dot
+			gen.output.WriteString(memberName)
+		}
+	} else {
+		// Normal case value - generate as usual
+		gen.generateNode(val)
+	}
 }
 
 func (gen *CodeGenerator) generateWhenStatement(node *ahoy.ASTNode) {
@@ -3143,7 +3179,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 					argType := gen.inferType(arg)
 					formatSpec := ""
 
-					// Check if this is HashMap member access - we can't determine type at codegen time
+					// Check if this is HashMap member access or dict access - we can't determine type at codegen time
 					isHashMapAccess := false
 					if arg.Type == ahoy.NODE_MEMBER_ACCESS && len(arg.Children) > 0 {
 						objType := gen.inferType(arg.Children[0])
@@ -3152,6 +3188,10 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 							// For HashMap, format as string by default (will use print_dict_value helper)
 							formatSpec = "%s"
 						}
+					} else if arg.Type == ahoy.NODE_DICT_ACCESS {
+						// Direct dict access like dict<key> - will use format_dict_value
+						isHashMapAccess = true
+						formatSpec = "%s"
 					}
 
 					// Check if argument is an enum itself (needs special handling)
@@ -4381,7 +4421,7 @@ func (gen *CodeGenerator) generateDictAccess(node *ahoy.ASTNode) {
 		dictType = varType
 	}
 
-	// Use hashMapGetDouble which converts values to double
+	// Use hashMapGetDouble which converts values to double (works for all numeric types)
 	// If generic, cast to HashMap*
 	if dictType == "generic" {
 		gen.output.WriteString("hashMapGetDouble((HashMap*)")
@@ -5089,6 +5129,8 @@ func (gen *CodeGenerator) generateEnum(node *ahoy.ASTNode) {
 	if gen.enums[enumName] == nil {
 		gen.enums[enumName] = make(map[string]bool)
 	}
+	// Always mark as original name (in case it was created by another path)
+	gen.enumOriginalNames[enumName] = true
 
 	// Determine generation strategy based on type
 	// If no type specified AND no explicit type, analyze members to determine type
@@ -6249,9 +6291,30 @@ func (gen *CodeGenerator) generateMemberAccess(node *ahoy.ASTNode) {
 
 	// Check if this is enum member access (enum_name.MEMBER)
 	if object.Type == ahoy.NODE_IDENTIFIER {
-		// Check if the identifier is an enum name
-		if gen.isEnumType(object.Value) {
-			enumName := object.Value
+		// Check if the identifier is an enum name (try both as-is and lowercase)
+		enumName := object.Value
+		isEnum := gen.isEnumType(enumName)
+		
+		// If not found, try lowercase version
+		if !isEnum {
+			lowerName := strings.ToLower(string(enumName[0])) + enumName[1:]
+			if gen.isEnumType(lowerName) {
+				enumName = lowerName
+				isEnum = true
+			}
+		}
+		
+		if isEnum {
+			// Always use the original enum name (should be lowercase)
+			// Double-check that we have the original name
+			if !gen.enumOriginalNames[enumName] {
+				// This might be a capitalized version, try lowercase
+				lowerName := strings.ToLower(string(enumName[0])) + enumName[1:]
+				if gen.enumOriginalNames[lowerName] {
+					enumName = lowerName
+				}
+			}
+			
 			enumType := gen.enumTypes[enumName]
 
 			// For int enums, use the C enum format: enum_name_MEMBER
@@ -8139,6 +8202,56 @@ func splitReturnTypes(typeStr string) []string {
 // tryResolveEnumMember attempts to resolve a simple identifier to an enum member
 // Returns the fully qualified name (enumName_MEMBER) if found, empty string otherwise
 func (gen *CodeGenerator) tryResolveEnumMember(memberName string) string {
+	// Check if this is a dot-prefixed enum member
+	if len(memberName) > 0 && memberName[0] == '.' {
+		// Extract member name without dot
+		actualMemberName := memberName[1:]
+		
+		// Search all registered enums to find which one has this member
+		// Only consider original enum names (not capitalized aliases)
+		var foundEnum string
+		
+		for enumName, members := range gen.enums {
+			if members != nil && members[actualMemberName] {
+				// Only use original enum names
+				if gen.enumOriginalNames[enumName] {
+					foundEnum = enumName
+					break
+				}
+				// If we find a match but it's not an original name,
+				// continue looking for the original version
+			}
+		}
+		
+		// If we still haven't found it in the original names,
+		// fall back to any match (shouldn't happen but defensive)
+		if foundEnum == "" {
+			for enumName, members := range gen.enums {
+				if members != nil && members[actualMemberName] {
+					// Prefer lowercase names
+					if len(enumName) > 0 && enumName[0] >= 'a' && enumName[0] <= 'z' {
+						foundEnum = enumName
+						break
+					}
+					if foundEnum == "" {
+						foundEnum = enumName
+					}
+				}
+			}
+		}
+		
+		if foundEnum != "" {
+			// Check if this is an int enum
+			if gen.enumTypes[foundEnum] == "int" || gen.enumTypes[foundEnum] == "" {
+				return foundEnum + "_" + actualMemberName
+			}
+			// For struct-based enums, use the struct accessor
+			return foundEnum + "." + actualMemberName
+		}
+		
+		return ""
+	}
+	
 	// Check all registered enums
 	var foundEnums []string
 

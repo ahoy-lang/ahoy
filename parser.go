@@ -1082,12 +1082,8 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		condition = p.parseExpression()
 	}
 
-	// Accept 'then', 'do', or ':'
+	// Only accept 'then' for if statements
 	if p.current().Type == TOKEN_THEN {
-		p.advance()
-	} else if p.current().Type == TOKEN_DO {
-		p.advance()
-	} else if p.current().Type == TOKEN_ASSIGN {
 		p.advance()
 	} else if p.current().Type == TOKEN_NOT {
 		// Check for "not is" error
@@ -1097,7 +1093,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 			p.advance() // consume is
 		} else {
 			current := p.current()
-			errMsg := fmt.Sprintf("Expected 'then', 'do', or ':', got %s at line %d:%d",
+			errMsg := fmt.Sprintf("Expected 'then', got %s at line %d:%d",
 				tokenTypeName(current.Type), current.Line, current.Column)
 			if p.LintMode {
 				p.recordError(errMsg)
@@ -1107,7 +1103,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		}
 	} else {
 		current := p.current()
-		errMsg := fmt.Sprintf("Expected 'then', 'do', or ':', got %s at line %d:%d",
+		errMsg := fmt.Sprintf("Expected 'then', got %s at line %d:%d",
 			tokenTypeName(current.Type), current.Line, current.Column)
 		if p.LintMode {
 			p.recordError(errMsg)
@@ -1141,16 +1137,12 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		p.advance()
 		elseifCondition := p.parseExpression()
 
-		// Accept 'then', 'do', or ':'
+		// Only accept 'then' for elseif
 		if p.current().Type == TOKEN_THEN {
-			p.advance()
-		} else if p.current().Type == TOKEN_DO {
-			p.advance()
-		} else if p.current().Type == TOKEN_ASSIGN {
 			p.advance()
 		} else {
 			current := p.current()
-			errMsg := fmt.Sprintf("Expected 'then', 'do', or ':', got %s at line %d:%d",
+			errMsg := fmt.Sprintf("Expected 'then', got %s at line %d:%d",
 				tokenTypeName(current.Type), current.Line, current.Column)
 			if p.LintMode {
 				p.recordError(errMsg)
@@ -1160,7 +1152,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		}
 
 		// Both inline and multiline now require $ to close
-		// Skip optional newlines after then/do/colon
+		// Skip optional newlines after then
 		for p.current().Type == TOKEN_NEWLINE {
 			p.advance()
 		}
@@ -1300,6 +1292,22 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 						Type:  NODE_STRING,
 						Value: tok.Value,
 					}
+				} else if p.current().Type == TOKEN_DOT {
+					// New syntax: .MEMBER (dot-prefixed enum member)
+					p.advance() // consume .
+					if p.current().Type == TOKEN_IDENTIFIER {
+						member := p.current()
+						p.advance()
+						// Create a special node to indicate this is a dot-prefixed enum member
+						// The codegen will need to infer the enum type from context
+						caseValue = &ASTNode{
+							Type:  NODE_IDENTIFIER,
+							Value: "." + member.Value, // Store with dot prefix to indicate it's enum member
+						}
+					} else {
+						// Malformed - skip
+						break
+					}
 				} else if p.current().Type == TOKEN_IDENTIFIER {
 					tok := p.current()
 					p.advance()
@@ -1330,15 +1338,18 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 							}
 						}
 					} else {
-						// Just an identifier (could be enum member without prefix)
+						// Just an identifier without prefix - this should now be an error for user-defined enums
 						caseValue = &ASTNode{
 							Type:  NODE_IDENTIFIER,
 							Value: tok.Value,
 						}
 
-						// Validate if this identifier is an ambiguous enum member
+						// In lint mode, report error for bare enum members
 						if p.LintMode {
-							p.validateEnumMemberInSwitch(tok.Value, tok.Line)
+							// Check if this looks like an enum member (all uppercase)
+							if isScreamingSnakeCase(tok.Value) {
+								p.recordErrorAtLine(fmt.Sprintf("Enum member '%s' must be prefixed with enum name (e.g., EnumName.%s) or dot (e.g., .%s)", tok.Value, tok.Value, tok.Value), tok.Line)
+							}
 						}
 					}
 				} else {
@@ -1799,16 +1810,14 @@ func (p *Parser) parseLoop() *ASTNode {
 			p.advance() // consume 'to'
 			endExpr := p.parseExpression()
 
-			// Accept either 'do' or ':'
+			// Only accept 'do'
 			if p.current().Type == TOKEN_DO {
-				p.advance()
-			} else if p.current().Type == TOKEN_ASSIGN {
 				p.advance()
 			} else {
 				if !p.LintMode {
-					panic(fmt.Sprintf("Expected 'do' or ':' after loop range at line %d", p.current().Line))
+					panic(fmt.Sprintf("Expected 'do' after loop range at line %d", p.current().Line))
 				}
-				p.recordError("Expected 'do' or ':' after loop range")
+				p.recordError("Expected 'do' after loop range")
 			}
 
 			// Register loop variable in scope
@@ -1849,16 +1858,14 @@ func (p *Parser) parseLoop() *ASTNode {
 			p.advance() // consume 'till'
 			condition := p.parseExpression()
 
-			// Accept either 'do' or ':'
+			// Only accept 'do'
 			if p.current().Type == TOKEN_DO {
-				p.advance()
-			} else if p.current().Type == TOKEN_ASSIGN {
 				p.advance()
 			} else {
 				if !p.LintMode {
-					panic(fmt.Sprintf("Expected 'do' or ':' after loop condition at line %d", p.current().Line))
+					panic(fmt.Sprintf("Expected 'do' after loop condition at line %d", p.current().Line))
 				}
-				p.recordError("Expected 'do' or ':' after loop condition")
+				p.recordError("Expected 'do' after loop condition")
 			}
 
 			// Register loop variable in scope
@@ -1926,16 +1933,16 @@ func (p *Parser) parseLoop() *ASTNode {
 		p.advance() // consume 'to'
 		endExpr := p.parseExpression()
 
-		// Accept either 'do' or ':'
+		// Only accept 'do'
 		if p.current().Type == TOKEN_DO {
 			p.advance()
 		} else if p.current().Type == TOKEN_ASSIGN {
 			p.advance()
 		} else {
 			if !p.LintMode {
-				panic(fmt.Sprintf("Expected 'do' or ':' after loop range at line %d", p.current().Line))
+				panic(fmt.Sprintf("Expected 'do' after loop range at line %d", p.current().Line))
 			}
-			p.recordError("Expected 'do' or ':' after loop range")
+			p.recordError("Expected 'do' after loop range")
 		}
 
 		// Both inline and multiline now require $ to close
@@ -1957,16 +1964,16 @@ func (p *Parser) parseLoop() *ASTNode {
 		p.advance() // consume 'to'
 		endExpr := p.parseExpression()
 
-		// Accept either 'do' or ':'
+		// Only accept 'do'
 		if p.current().Type == TOKEN_DO {
 			p.advance()
 		} else if p.current().Type == TOKEN_ASSIGN {
 			p.advance()
 		} else {
 			if !p.LintMode {
-				panic(fmt.Sprintf("Expected 'do' or ':' after loop range at line %d", p.current().Line))
+				panic(fmt.Sprintf("Expected 'do' after loop range at line %d", p.current().Line))
 			}
-			p.recordError("Expected 'do' or ':' after loop range")
+			p.recordError("Expected 'do' after loop range")
 		}
 
 		// Both inline and multiline now require $ to close
@@ -1989,16 +1996,16 @@ func (p *Parser) parseLoop() *ASTNode {
 		p.advance() // consume 'till'
 		condition := p.parseExpression()
 
-		// Accept either 'do' or ':'
+		// Only accept 'do'
 		if p.current().Type == TOKEN_DO {
 			p.advance()
 		} else if p.current().Type == TOKEN_ASSIGN {
 			p.advance()
 		} else {
 			if !p.LintMode {
-				panic(fmt.Sprintf("Expected 'do' or ':' after loop condition at line %d", p.current().Line))
+				panic(fmt.Sprintf("Expected 'do' after loop condition at line %d", p.current().Line))
 			}
-			p.recordError("Expected 'do' or ':' after loop condition")
+			p.recordError("Expected 'do' after loop condition")
 		}
 
 		// Both inline and multiline now require $ to close
@@ -2047,16 +2054,16 @@ func (p *Parser) parseLoop() *ASTNode {
 		// For now, simple case: loop element in array
 		collectionExpr := p.parseExpression()
 
-		// Accept either 'do' or ':'
+		// Only accept 'do'
 		if p.current().Type == TOKEN_DO {
 			p.advance()
 		} else if p.current().Type == TOKEN_ASSIGN {
 			p.advance()
 		} else {
 			if !p.LintMode {
-				panic(fmt.Sprintf("Expected 'do' or ':' after 'in' expression at line %d", p.current().Line))
+				panic(fmt.Sprintf("Expected 'do' after 'in' expression at line %d", p.current().Line))
 			}
-			p.recordError("Expected 'do' or ':' after 'in' expression")
+			p.recordError("Expected 'do' after 'in' expression")
 		}
 
 		// Both inline and multiline now require $ to close
@@ -2085,16 +2092,16 @@ func (p *Parser) parseLoop() *ASTNode {
 		p.expect(TOKEN_IN)
 		dictExpr := p.parseExpression()
 
-		// Accept either 'do' or ':'
+		// Only accept 'do'
 		if p.current().Type == TOKEN_DO {
 			p.advance()
 		} else if p.current().Type == TOKEN_ASSIGN {
 			p.advance()
 		} else {
 			if !p.LintMode {
-				panic(fmt.Sprintf("Expected 'do' or ':' after 'in' expression at line %d", p.current().Line))
+				panic(fmt.Sprintf("Expected 'do' after 'in' expression at line %d", p.current().Line))
 			}
-			p.recordError("Expected 'do' or ':' after 'in' expression")
+			p.recordError("Expected 'do' after 'in' expression")
 		}
 
 		// Both inline and multiline now require $ to close
@@ -3300,7 +3307,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				// Parse object literal with properties
 				value = p.parseObjectLiteral()
 				value.Value = explicitType // Set the type name
-				value.Line = line           // Set the line number
+				value.Line = line          // Set the line number
 			} else {
 				// Parse as regular expression (fallback)
 				value = p.parseExpression()
@@ -4740,19 +4747,19 @@ func (p *Parser) parseDictLiteral() *ASTNode {
 
 		// Parse key (can be string or identifier)
 		key := p.parseCallArgument()
-		
+
 		// Skip newlines/indents before colon
 		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
 			p.advance()
 		}
-		
+
 		p.expect(TOKEN_ASSIGN) // Using : as separator between key and value
-		
+
 		// Skip newlines/indents after colon
 		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
 			p.advance()
 		}
-		
+
 		value := p.parseCallArgument()
 
 		// Store key-value pair as two consecutive children
@@ -5620,13 +5627,13 @@ func (p *Parser) parseUnionDeclaration() *ASTNode {
 func (p *Parser) parseJsonStructDeclaration() *ASTNode {
 	// Parse struct:json name:
 	firstToken := p.current()
-	
+
 	if firstToken.Type == TOKEN_STRUCT {
 		// struct:json syntax
 		p.expect(TOKEN_STRUCT)     // "struct"
 		p.expect(TOKEN_ASSIGN)     // ":"
 		p.expect(TOKEN_IDENTIFIER) // "json"
-		
+
 		// Now parse the struct name and body
 		var name Token
 		if p.current().Type == TOKEN_IDENTIFIER {
@@ -5643,28 +5650,28 @@ func (p *Parser) parseJsonStructDeclaration() *ASTNode {
 			Line:     name.Line,
 			DataType: "json", // Mark this as a JSON struct
 		}
-		
+
 		// Parse struct fields (same as regular struct)
 		p.skipNewlines()
 		if p.current().Type == TOKEN_INDENT {
 			p.advance()
 		}
-		
+
 		// Parse fields with field field:type syntax
 		for p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_NUMBER {
 			fieldName := p.current()
 			p.advance()
-			
+
 			// Expect the field name again (JSON mapping)
 			if p.current().Type == TOKEN_IDENTIFIER && p.current().Value == fieldName.Value {
 				p.advance() // Consume duplicate name
 			}
-			
+
 			// Expect : and type
 			p.expect(TOKEN_ASSIGN)
 			fieldType := p.current().Value
 			p.advance()
-			
+
 			field := &ASTNode{
 				Type:     NODE_IDENTIFIER,
 				Value:    fieldName.Value,
@@ -5672,26 +5679,26 @@ func (p *Parser) parseJsonStructDeclaration() *ASTNode {
 				Line:     fieldName.Line,
 			}
 			struc.Children = append(struc.Children, field)
-			
+
 			// Skip optional delimiters
 			for p.current().Type == TOKEN_COMMA || p.current().Type == TOKEN_SEMICOLON || p.current().Type == TOKEN_NEWLINE {
 				p.advance()
 			}
-			
+
 			if p.current().Type == TOKEN_DEDENT {
 				p.advance()
 				break
 			}
 		}
-		
+
 		// Consume $ if present
 		if p.current().Type == TOKEN_END {
 			p.advance()
 		}
-		
+
 		return struc
 	}
-	
+
 	return nil
 }
 
