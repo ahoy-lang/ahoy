@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"ahoy"
 )
@@ -109,8 +110,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Start total timing
+	totalStart := time.Now()
+
 	// Initialize package manager
 	pm := NewPackageManager(filepath.Dir(absPath))
+
+	// Start parse timing
+	parseStart := time.Now()
 
 	// Load the package
 	pkg, err := pm.LoadPackageFromFile(absPath)
@@ -126,11 +133,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	parseTime := time.Since(parseStart)
+
 	// Merge package with all imports into one AST
 	ast := MergeWithImports(pkg, imports)
 
+	// Start codegen timing
+	codegenStart := time.Now()
+
 	// Generate C code with source filename for better error messages
 	cCode := generateC(ast, sourceFile)
+
+	codegenTime := time.Since(codegenStart)
 
 	// Check if code generation failed
 	if cCode == "" {
@@ -163,15 +177,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Format time as milliseconds with 1 decimal
+	formatTime := func(d time.Duration) string {
+		ms := float64(d.Nanoseconds()) / 1e6
+		if ms < 1 {
+			return fmt.Sprintf("%.2fms", ms)
+		}
+		return fmt.Sprintf("%.1fms", ms)
+	}
+
 	if len(pkg.Files) > 1 {
-		fmt.Printf("✓ Compiled package '%s' (%d files) to %s\n", pkg.Name, len(pkg.Files), outputFile)
+		fmt.Printf("✓ Compiled package '%s' (%d files) to %s (parse: %s, codegen: %s)\n", 
+			pkg.Name, len(pkg.Files), outputFile, formatTime(parseTime), formatTime(codegenTime))
 	} else {
-		fmt.Printf("✓ Compiled %s to %s\n", sourceFile, outputFile)
+		fmt.Printf("✓ Compiled %s to %s (parse: %s, codegen: %s)\n", 
+			sourceFile, outputFile, formatTime(parseTime), formatTime(codegenTime))
 	}
 
 	// Compile C code if run flag is set
 	if *runFlag {
 		fmt.Println("Compiling C code...")
+
+		// Start C compilation timing
+		cCompileStart := time.Now()
 
 		// Build compilation arguments
 		compileArgs := []string{"-o", executable, outputFile}
@@ -211,7 +239,10 @@ func main() {
 			os.Exit(1)
 		}
 
-		fmt.Printf("✓ Compiled C code to %s\n", executable)
+		cCompileTime := time.Since(cCompileStart)
+		totalTime := time.Since(totalStart)
+
+		fmt.Printf("✓ Compiled C code to %s (gcc: %s, total: %s)\n", executable, formatTime(cCompileTime), formatTime(totalTime))
 		fmt.Println("Running program:")
 		fmt.Println("==================")
 

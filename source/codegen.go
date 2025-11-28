@@ -1417,6 +1417,12 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			node.Children[0].Type == ahoy.NODE_MEMBER_ACCESS ||
 			node.Children[0].Type == ahoy.NODE_UNARY_OP) {
 
+		// Special handling for chained array assignment (2D arrays): grid[i][j]: value
+		if node.Children[0].Type == ahoy.NODE_ARRAY_ACCESS && node.Children[0].Value == "" {
+			gen.generateChainedArrayAssignment(node)
+			return
+		}
+
 		// Special handling for array assignment
 		if node.Children[0].Type == ahoy.NODE_ARRAY_ACCESS {
 			arrayName := node.Children[0].Value
@@ -2302,13 +2308,11 @@ func (gen *CodeGenerator) generateSwitchCaseValue(val *ahoy.ASTNode, switchExprT
 		memberName := val.Value[1:]
 		
 		// Try to find which enum this member belongs to
-		// Search enumMemberTypes which has keys like "EnumName.MEMBER"
+		// Only search using original enum names (lowercase)
 		found := false
-		for memberKey := range gen.enumMemberTypes {
-			parts := strings.Split(memberKey, ".")
-			if len(parts) == 2 && parts[1] == memberName {
-				enumName := parts[0]
-				// Generate the C enum constant name using the original enum name case
+		for enumName := range gen.enumOriginalNames {
+			if gen.enums[enumName] != nil && gen.enums[enumName][memberName] {
+				// Generate the C enum constant name using the original enum name
 				gen.output.WriteString(fmt.Sprintf("%s_%s", enumName, memberName))
 				found = true
 				break
@@ -2319,10 +2323,17 @@ func (gen *CodeGenerator) generateSwitchCaseValue(val *ahoy.ASTNode, switchExprT
 			// Fallback: just output the member name without dot
 			gen.output.WriteString(memberName)
 		}
-	} else {
-		// Normal case value - generate as usual
-		gen.generateNode(val)
+		return
 	}
+	
+	if val.Type == ahoy.NODE_MEMBER_ACCESS {
+		// Handle direction.UP syntax - this goes through generateMemberAccess
+		gen.generateMemberAccess(val)
+		return
+	}
+	
+	// Normal case value - generate as usual
+	gen.generateNode(val)
 }
 
 func (gen *CodeGenerator) generateWhenStatement(node *ahoy.ASTNode) {
@@ -3997,6 +4008,11 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 		}
 	}
 
+	// Support "len" as alias for "length"
+	if methodName == "len" {
+		methodName = "length"
+	}
+
 	// For "length" method, route based on object type
 	if methodName == "length" {
 		if objectType == "char*" || objectType == "string" {
@@ -4288,6 +4304,13 @@ func (gen *CodeGenerator) generateArrayLiteral(node *ahoy.ASTNode) {
 }
 
 func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
+	// Check if this is a chained array access (2D array): grid[r][c]
+	// In this case, Value is empty and Children[0] is the inner array access, Children[1] is the outer index
+	if node.Value == "" && len(node.Children) == 2 {
+		gen.generateChainedArrayAccess(node)
+		return
+	}
+
 	arrayName := node.Value
 
 	// Check if the variable type is intptr_t, void*, or generic (might need casting to AhoyArray*)
@@ -4407,6 +4430,40 @@ func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 	}
 	gen.generateNode(node.Children[0])
 	gen.output.WriteString("]")
+}
+
+// generateChainedArrayAccess handles 2D array access: grid[r][c]
+// Children[0] = inner array access (grid[r]), Children[1] = outer index (c)
+func (gen *CodeGenerator) generateChainedArrayAccess(node *ahoy.ASTNode) {
+	innerAccess := node.Children[0]
+	outerIndex := node.Children[1]
+	
+	// The inner access gives us an AhoyArray*, then we access its element
+	// Cast result to AhoyArray* and access
+	gen.output.WriteString("((AhoyArray*)")
+	gen.generateNode(innerAccess)
+	gen.output.WriteString(")->data[")
+	gen.generateNode(outerIndex)
+	gen.output.WriteString("]")
+}
+
+// generateChainedArrayAssignment handles 2D array assignment: grid[r][c]: value
+func (gen *CodeGenerator) generateChainedArrayAssignment(node *ahoy.ASTNode) {
+	accessNode := node.Children[0]
+	valueNode := node.Children[1]
+	
+	// For chained access, Children[0] is the inner array access, Children[1] is the outer index
+	innerAccess := accessNode.Children[0]
+	outerIndex := accessNode.Children[1]
+	
+	// Generate: ((AhoyArray*)(inner_access))->data[outer_index] = value
+	gen.output.WriteString("((AhoyArray*)")
+	gen.generateNode(innerAccess)
+	gen.output.WriteString(")->data[")
+	gen.generateNode(outerIndex)
+	gen.output.WriteString("] = (void*)(intptr_t)")
+	gen.generateNode(valueNode)
+	gen.output.WriteString(";\n")
 }
 
 func (gen *CodeGenerator) generateDictAccess(node *ahoy.ASTNode) {
@@ -5004,13 +5061,21 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 	i := 0
 	for i < len(fstring) {
 		if fstring[i] == '{' {
-			// Find closing brace
+			// Find closing brace - need to handle nested braces for dict access
 			j := i + 1
-			for j < len(fstring) && fstring[j] != '}' {
-				j++
+			braceDepth := 1
+			for j < len(fstring) && braceDepth > 0 {
+				if fstring[j] == '{' {
+					braceDepth++
+				} else if fstring[j] == '}' {
+					braceDepth--
+				}
+				if braceDepth > 0 {
+					j++
+				}
 			}
 			if j < len(fstring) {
-				// Extract variable name
+				// Extract variable name/expression
 				varName := fstring[i+1 : j]
 				vars = append(vars, varName)
 
@@ -5018,12 +5083,18 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 				// For now, use %d for numbers, %s for strings
 				// We'll need to look up the variable type
 				varType := "int"
-				if knownType, exists := gen.variables[varName]; exists {
+				// Check for simple variable name (no braces/dots)
+				simpleVarName := varName
+				if idx := strings.IndexAny(varName, ".{<"); idx != -1 {
+					simpleVarName = varName[:idx]
+				}
+				if knownType, exists := gen.variables[simpleVarName]; exists {
 					varType = knownType
 				}
 
 				formatSpec := "%d"
-				if varType == "string" || varType == "char*" || varType == "intptr_t" {
+				if varType == "string" || varType == "char*" || varType == "intptr_t" ||
+					varType == "dict" || varType == "HashMap*" {
 					formatSpec = "%s"
 				} else if varType == "float" {
 					formatSpec = "%f"
@@ -8207,36 +8278,13 @@ func (gen *CodeGenerator) tryResolveEnumMember(memberName string) string {
 		// Extract member name without dot
 		actualMemberName := memberName[1:]
 		
-		// Search all registered enums to find which one has this member
-		// Only consider original enum names (not capitalized aliases)
+		// Search only original enum names (not capitalized aliases) for deterministic results
 		var foundEnum string
 		
-		for enumName, members := range gen.enums {
-			if members != nil && members[actualMemberName] {
-				// Only use original enum names
-				if gen.enumOriginalNames[enumName] {
-					foundEnum = enumName
-					break
-				}
-				// If we find a match but it's not an original name,
-				// continue looking for the original version
-			}
-		}
-		
-		// If we still haven't found it in the original names,
-		// fall back to any match (shouldn't happen but defensive)
-		if foundEnum == "" {
-			for enumName, members := range gen.enums {
-				if members != nil && members[actualMemberName] {
-					// Prefer lowercase names
-					if len(enumName) > 0 && enumName[0] >= 'a' && enumName[0] <= 'z' {
-						foundEnum = enumName
-						break
-					}
-					if foundEnum == "" {
-						foundEnum = enumName
-					}
-				}
+		for enumName := range gen.enumOriginalNames {
+			if gen.enums[enumName] != nil && gen.enums[enumName][actualMemberName] {
+				foundEnum = enumName
+				break
 			}
 		}
 		
@@ -8252,29 +8300,16 @@ func (gen *CodeGenerator) tryResolveEnumMember(memberName string) string {
 		return ""
 	}
 	
-	// Check all registered enums
-	var foundEnums []string
-
-	for enumName, members := range gen.enums {
-		if members != nil && members[memberName] {
-			// Skip if this is a capitalized version and lowercase exists
-			lowerName := strings.ToLower(string(enumName[0])) + enumName[1:]
-			if enumName != lowerName && gen.enums[lowerName] != nil {
-				continue
+	// Check only original enum names for deterministic results
+	for enumName := range gen.enumOriginalNames {
+		if gen.enums[enumName] != nil && gen.enums[enumName][memberName] {
+			// Check if this is an int enum
+			if gen.enumTypes[enumName] == "int" || gen.enumTypes[enumName] == "" {
+				return enumName + "_" + memberName
 			}
-			foundEnums = append(foundEnums, enumName)
+			// For struct-based enums, use the struct accessor
+			return enumName + "." + memberName
 		}
-	}
-
-	// Only resolve if found (prefer first/only match)
-	if len(foundEnums) > 0 {
-		foundEnum := foundEnums[0]
-		// Check if this is an int enum
-		if gen.enumTypes[foundEnum] == "int" || gen.enumTypes[foundEnum] == "" {
-			return foundEnum + "_" + memberName
-		}
-		// For struct-based enums, use the struct accessor
-		return foundEnum + "." + memberName
 	}
 
 	return ""

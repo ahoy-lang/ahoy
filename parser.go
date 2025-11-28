@@ -2827,6 +2827,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 	}
 
 	// Check for array index with member access assignment: arr[index].property: value
+	// Also handles 2D array assignment: arr[i][j]: value
 	// This must come BEFORE simple array index check to handle the more complex case first
 	if p.pos+2 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_LBRACKET {
 		savedPos := p.pos
@@ -2841,6 +2842,19 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				depth--
 			}
 			p.advance()
+		}
+		// Handle chained array access (2D arrays): arr[i][j]
+		for p.current().Type == TOKEN_LBRACKET {
+			p.advance() // skip [
+			depth = 1
+			for p.pos < len(p.tokens) && depth > 0 {
+				if p.current().Type == TOKEN_LBRACKET {
+					depth++
+				} else if p.current().Type == TOKEN_RBRACKET {
+					depth--
+				}
+				p.advance()
+			}
 		}
 		// Now check if there's a dot followed by member access
 		if p.current().Type == TOKEN_DOT {
@@ -3257,9 +3271,19 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 							}
 						}
 					} else {
-						// array[element_type]=
+						// array[element_type]= - supports nested arrays like array[array[int]]
 						elementType := p.current().Value
 						p.advance()
+						// Check for nested array type: array[array[inner_type]]
+						if elementType == "array" && p.current().Type == TOKEN_LBRACKET {
+							p.advance() // consume inner [
+							innerType := p.current().Value
+							p.advance()
+							if p.current().Type == TOKEN_RBRACKET {
+								p.advance() // consume inner ]
+								elementType = fmt.Sprintf("array[%s]", innerType)
+							}
+						}
 						if p.current().Type == TOKEN_RBRACKET {
 							p.advance() // consume ]
 							possibleType = fmt.Sprintf("%s[%s]", baseType, elementType)
@@ -3370,6 +3394,14 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 
 				if explicitType != "" {
 					targetScope[varName] = explicitType
+
+					// Validate bool type - don't allow 0 or 1 literal assignments
+					if explicitType == "bool" && value.Type == NODE_NUMBER {
+						if value.Value == "0" || value.Value == "1" {
+							errMsg := fmt.Sprintf("Boolean variable '%s' should use 'true' or 'false', not '%s' (line %d)", varName, value.Value, line)
+							p.recordError(errMsg)
+						}
+					}
 
 					// Validate struct initialization
 					if value.Type == NODE_OBJECT_LITERAL {
@@ -4006,6 +4038,21 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 				p.validateArrayAccess(identNode, index, token.Line)
 			}
 
+			// Check for chained array access (2D arrays): grid[r][c]
+			for p.current().Type == TOKEN_LBRACKET {
+				p.advance()
+				nextIndex := p.parseExpression()
+				p.expect(TOKEN_RBRACKET)
+				// Wrap the previous node as a chained array access
+				// Children[0] = previous array access, Children[1] = new index
+				node = &ASTNode{
+					Type:     NODE_ARRAY_ACCESS,
+					Value:    "", // Empty value indicates chained access
+					Children: []*ASTNode{node, nextIndex},
+					Line:     token.Line,
+				}
+			}
+
 			// Check for member access after array access
 			if p.current().Type == TOKEN_DOT {
 				return p.parseMemberAccessChain(node)
@@ -4017,8 +4064,8 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 		if p.current().Type == TOKEN_LBRACE {
 			p.advance()
 
-			// Skip any newlines after opening brace
-			for p.current().Type == TOKEN_NEWLINE {
+			// Skip any newlines and indents after opening brace (for multiline objects)
+			for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT {
 				p.advance()
 			}
 
@@ -5528,10 +5575,24 @@ func (p *Parser) parseAliasDeclaration() *ASTNode {
 		aliasedType = p.current().Value
 		p.advance()
 
-		// Handle array[type] syntax
+		// Handle array[type] syntax - supports nested arrays like array[array[int]]
 		if p.current().Type == TOKEN_LBRACKET {
 			p.advance()
-			if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
+			// Check for nested array
+			if p.current().Type == TOKEN_ARRAY_TYPE && p.peek(1).Type == TOKEN_LBRACKET {
+				// Nested array - recursively build type string
+				innerType := p.current().Value
+				p.advance()
+				p.advance() // consume [
+				if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
+					p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
+					p.current().Type == TOKEN_IDENTIFIER {
+					innerType = innerType + "[" + p.current().Value + "]"
+					p.advance()
+				}
+				p.expect(TOKEN_RBRACKET) // inner ]
+				aliasedType = aliasedType + "[" + innerType + "]"
+			} else if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
 				p.current().Type == TOKEN_IDENTIFIER {
 				aliasedType = aliasedType + "[" + p.current().Value + "]"
@@ -7214,9 +7275,16 @@ func (p *Parser) parseComplexReturnType() string {
 	baseType := p.current().Value
 	p.advance()
 
-	// Check for array[type] syntax
+	// Check for array[type] syntax - supports nested arrays like array[array[int]]
 	if baseType == "array" && p.current().Type == TOKEN_LBRACKET {
 		p.advance() // consume [
+		// Check if element type is also an array (nested)
+		if p.current().Value == "array" && p.peek(1).Type == TOKEN_LBRACKET {
+			// Recursively parse nested array type
+			elementType := p.parseComplexReturnType()
+			p.expect(TOKEN_RBRACKET)
+			return fmt.Sprintf("array[%s]", elementType)
+		}
 		elementType := p.current().Value
 		p.advance() // consume type
 		p.expect(TOKEN_RBRACKET)

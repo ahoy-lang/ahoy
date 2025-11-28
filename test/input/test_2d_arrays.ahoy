@@ -1,0 +1,76 @@
+expected: []
+
+? Test 2D arrays - Tic Tac Toe style grid
+? Create a 3x3 grid using arrays of arrays
+
+? Create rows
+row0: [0, 0, 0]
+row1: [0, 0, 0]
+row2: [0, 0, 0]
+
+struct Card:
+	suit: string
+	rank: string
+$
+
+cardA: Card{suit:"Hearts", rank:"Ace"}
+cardK: Card{suit:"Spades", rank:"King"}
+cardQ: Card{suit:"Diamonds", rank:"Queen"}
+card10: Card{suit:"Clubs", rank:"10"}
+card9: Card{suit:"Hearts", rank:"9"}
+card8: Card{suit:"Clubs", rank:"8"}
+card7: Card{suit:"Spades", rank:"7"}
+card6: Card{suit:"Clubs", rank:"6"}
+card5: Card{suit:"Diamonss", rank:"5"}
+
+card_row0: [card5, card6, card7]
+card_row1: [card8, card9, card10]
+card_row2: [cardQ, cardK, cardA]
+? Create grid (2D array)
+grid: [row0, row1, row2]
+
+? Test initial values are 0
+print|grid[0][0]|
+expected.push|"0"|
+print|grid[1][1]|
+expected.push|"0"|
+print|grid[2][2]|
+expected.push|"0"|
+
+? Set some values (1 = X, 2 = O)
+grid[0][0]: 1  ? X in corner
+grid[1][1]: 2  ? O in center
+grid[2][2]: 1  ? X in opposite corner
+grid[0][2]: 2  ? O blocks
+
+? Verify the values
+print|grid[0][0]|
+expected.push|"1"|
+print|grid[1][1]|
+expected.push|"2"|
+print|grid[2][2]|
+expected.push|"1"|
+print|grid[0][2]|
+expected.push|"2"|
+
+? Check unchanged values
+print|grid[0][1]|
+expected.push|"0"|
+print|grid[2][0]|
+expected.push|"0"|
+
+? Calculate row sum (simple check)
+row_sum: grid[0][0] + grid[0][1] + grid[0][2]
+print|row_sum|
+expected.push|"3"|  ? 1 + 0 + 2
+
+? Test 2D array access with variables
+row_idx: 1
+col_idx: 2
+grid[row_idx][col_idx]: 7
+var_val: grid[row_idx][col_idx]
+print|var_val|
+expected.push|"7"|
+
+? Print expected values for test validation
+print|expected|
