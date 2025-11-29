@@ -877,7 +877,7 @@ func (gen *CodeGenerator) scanTypeDeclarations(node *ahoy.ASTNode) {
 	if node.Type == ahoy.NODE_ENUM_DECLARATION {
 		enumName := node.Value
 		enumType := node.EnumType
-		
+
 		// Store enum type
 		if enumType != "" {
 			gen.enumTypes[enumName] = enumType
@@ -886,12 +886,12 @@ func (gen *CodeGenerator) scanTypeDeclarations(node *ahoy.ASTNode) {
 			gen.enumTypes[enumName] = "int"
 			gen.enumTypes[capitalizeFirst(enumName)] = "int"
 		}
-		
+
 		// Store enum members
 		gen.enums[enumName] = make(map[string]bool)
-		gen.enumOriginalNames[enumName] = true  // Mark this as the original name
+		gen.enumOriginalNames[enumName] = true // Mark this as the original name
 		// Note: Don't create capitalized duplicate here anymore to avoid ambiguity in resolution
-		
+
 		for _, member := range node.Children {
 			memberName := member.Value
 			gen.enums[enumName][memberName] = true
@@ -1477,7 +1477,7 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			if elemType != "" {
 				cType := gen.mapType(elemType)
 				// Check if it's a C struct OR an Ahoy user-defined struct
-				isCStruct := gen.cTypeDefinitions[cType] && !strings.HasSuffix(cType, "*") && 
+				isCStruct := gen.cTypeDefinitions[cType] && !strings.HasSuffix(cType, "*") &&
 					cType != "int" && cType != "double" && cType != "char*" && cType != "bool"
 				isAhoyStruct := false
 				if !isCStruct {
@@ -1488,7 +1488,7 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 						isAhoyStruct = true
 					}
 				}
-				
+
 				if isCStruct || isAhoyStruct {
 					// For C structs, assign to the dereferenced pointer
 					if gen.enableBoundsChecking {
@@ -1622,18 +1622,18 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 		}
 
 		// Special handling for member access on 2D array elements: arr[i][j].field: value
-		if node.Children[0].Type == ahoy.NODE_MEMBER_ACCESS && 
-			len(node.Children[0].Children) > 0 && 
+		if node.Children[0].Type == ahoy.NODE_MEMBER_ACCESS &&
+			len(node.Children[0].Children) > 0 &&
 			node.Children[0].Children[0].Type == ahoy.NODE_ARRAY_ACCESS &&
 			node.Children[0].Children[0].Value == "" &&
 			len(node.Children[0].Children[0].Children) == 2 {
-			
+
 			chainedAccess := node.Children[0].Children[0]
 			memberName := node.Children[0].Value
 			innerAccess := chainedAccess.Children[0]
 			outerIndex := chainedAccess.Children[1]
 			valueNode := node.Children[1]
-			
+
 			// Get the 2D array's nested element type
 			var elemType string
 			if innerAccess.Type == ahoy.NODE_ARRAY_ACCESS && innerAccess.Value != "" {
@@ -1641,7 +1641,7 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 					elemType = et
 				}
 			}
-			
+
 			if elemType != "" {
 				cType := gen.mapType(elemType)
 				// Check if it's a struct type
@@ -1651,7 +1651,7 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				} else if _, exists := gen.structs[cType]; exists {
 					isStruct = true
 				}
-				
+
 				if isStruct {
 					gen.writeIndent()
 					// Generate: ((StructType*)((AhoyArray*)inner_access)->data[outer_idx])->member = value
@@ -1668,26 +1668,26 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 		}
 
 		// Special handling for member access on array elements: arr[i].field: value
-		if node.Children[0].Type == ahoy.NODE_MEMBER_ACCESS && 
-			len(node.Children[0].Children) > 0 && 
+		if node.Children[0].Type == ahoy.NODE_MEMBER_ACCESS &&
+			len(node.Children[0].Children) > 0 &&
 			node.Children[0].Children[0].Type == ahoy.NODE_ARRAY_ACCESS {
-			
+
 			arrayAccessNode := node.Children[0].Children[0]
 			memberName := node.Children[0].Value
 			arrayName := arrayAccessNode.Value
 			indexNode := arrayAccessNode.Children[0]
 			valueNode := node.Children[1]
-			
+
 			// Get array element type
 			var elemType string
 			if et, exists := gen.arrayElementTypes[arrayName]; exists {
 				elemType = et
 			}
-			
+
 			if elemType != "" {
 				cType := gen.mapType(elemType)
 				// Check if it's a struct type
-				isCStruct := gen.cTypeDefinitions[cType] && !strings.HasSuffix(cType, "*") && 
+				isCStruct := gen.cTypeDefinitions[cType] && !strings.HasSuffix(cType, "*") &&
 					cType != "int" && cType != "double" && cType != "char*" && cType != "bool"
 				isAhoyStruct := false
 				if !isCStruct {
@@ -1697,7 +1697,7 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 						isAhoyStruct = true
 					}
 				}
-				
+
 				if isCStruct || isAhoyStruct {
 					// For struct arrays, we need to access the pointer directly
 					gen.writeIndent()
@@ -1728,11 +1728,11 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				}
 			}
 		}
-		
+
 		// For struct field/array/pointer access, direct assignment works
 		// Mark any variables in the value as escaping (being stored)
 		gen.markEscapingVariables(node.Children[1])
-		
+
 		gen.generateNode(node.Children[0])
 		gen.output.WriteString(" = ")
 		gen.generateNode(node.Children[1])
@@ -1757,7 +1757,7 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 	if isDeclared && !canRedeclare {
 		// Just assignment - mark RHS variables as escaping if being assigned to existing var
 		gen.markEscapingVariables(node.Children[0])
-		
+
 		if valueNode.Type == ahoy.NODE_SWITCH_STATEMENT {
 			// Generate switch as expression (assign in each case)
 			gen.generateSwitchExpression(valueNode, node.Value)
@@ -1879,7 +1879,7 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				} else if len(valueNode.Children) > 0 {
 					elemType := gen.inferType(valueNode.Children[0])
 					gen.arrayElementTypes[node.Value] = elemType
-					
+
 					// For 2D arrays: if the first element is an array variable, track its element type
 					firstChild := valueNode.Children[0]
 					if firstChild.Type == ahoy.NODE_IDENTIFIER {
@@ -2362,7 +2362,7 @@ func (gen *CodeGenerator) generateSwitchCaseValue(val *ahoy.ASTNode, switchExprT
 	if val.Type == ahoy.NODE_IDENTIFIER && len(val.Value) > 0 && val.Value[0] == '.' {
 		// Extract the member name (without the dot)
 		memberName := val.Value[1:]
-		
+
 		// Try to find which enum this member belongs to
 		// Only search using original enum names (lowercase)
 		found := false
@@ -2374,20 +2374,20 @@ func (gen *CodeGenerator) generateSwitchCaseValue(val *ahoy.ASTNode, switchExprT
 				break
 			}
 		}
-		
+
 		if !found {
 			// Fallback: just output the member name without dot
 			gen.output.WriteString(memberName)
 		}
 		return
 	}
-	
+
 	if val.Type == ahoy.NODE_MEMBER_ACCESS {
 		// Handle direction.UP syntax - this goes through generateMemberAccess
 		gen.generateMemberAccess(val)
 		return
 	}
-	
+
 	// Normal case value - generate as usual
 	gen.generateNode(val)
 }
@@ -2721,14 +2721,14 @@ func (gen *CodeGenerator) generateForInArrayLoop(node *ahoy.ASTNode) {
 		// Determine element type
 		elementType := "int"
 		cElementType := "int"
-		
+
 		// Check if we know the element type for this array
 		if iterableExpr.Type == ahoy.NODE_IDENTIFIER {
 			arrayVarName := iterableExpr.Value
 			if elemType, exists := gen.arrayElementTypes[arrayVarName]; exists {
 				elementType = elemType
 				cElementType = gen.mapType(elemType)
-				
+
 				// For struct types, ensure we use pointers
 				if _, isStruct := gen.structs[elemType]; isStruct {
 					if !strings.HasSuffix(cElementType, "*") {
@@ -2737,7 +2737,7 @@ func (gen *CodeGenerator) generateForInArrayLoop(node *ahoy.ASTNode) {
 				}
 			}
 		}
-		
+
 		// Generate appropriate cast based on element type
 		if gen.isHeapAllocatedType(elementType) || strings.Contains(cElementType, "*") {
 			// For pointers (structs, strings, etc.), cast through intptr_t to pointer
@@ -3018,18 +3018,18 @@ func (gen *CodeGenerator) addAutomaticDeferFrees() {
 	// 2. Don't escape the function (not returned or stored globally)
 	// 3. Aren't manually freed
 	// 4. Aren't function parameters
-	
+
 	for varName := range gen.heapAllocatedVars {
 		// Skip if variable escapes
 		if gen.escapingVars[varName] {
 			continue
 		}
-		
+
 		// Skip if manually freed
 		if gen.manuallyFreedVars[varName] {
 			continue
 		}
-		
+
 		// Skip if it's a function parameter
 		if gen.functionVars[varName] != "" {
 			// Check if it's a parameter by checking if it was declared in the function vars
@@ -3037,7 +3037,7 @@ func (gen *CodeGenerator) addAutomaticDeferFrees() {
 			// We need to distinguish between parameters and locally declared variables
 			// For now, we'll be conservative and only auto-free variables we explicitly track
 		}
-		
+
 		// Get the variable type to determine the free function
 		varType := ""
 		if t, exists := gen.functionVars[varName]; exists {
@@ -3045,30 +3045,30 @@ func (gen *CodeGenerator) addAutomaticDeferFrees() {
 		} else if t, exists := gen.variables[varName]; exists {
 			varType = t
 		}
-		
+
 		if varType == "" {
 			continue
 		}
-		
+
 		// Generate the appropriate free call based on type
 		freeCode := ""
 		if strings.HasPrefix(varType, "array") || varType == "AhoyArray*" {
 			// For arrays, need to free the array structure
-			freeCode = fmt.Sprintf("    if (%s) { free(%s->data); free(%s->types); free(%s); }\n", 
+			freeCode = fmt.Sprintf("    if (%s) { free(%s->data); free(%s->types); free(%s); }\n",
 				varName, varName, varName, varName)
 		} else if strings.HasPrefix(varType, "dict") || varType == "HashMap*" {
 			// For dicts/HashMaps, use the dict cleanup function
-			freeCode = fmt.Sprintf("    if (%s) { /* TODO: proper HashMap cleanup */ free(%s); }\n", 
+			freeCode = fmt.Sprintf("    if (%s) { /* TODO: proper HashMap cleanup */ free(%s); }\n",
 				varName, varName)
 		} else if varType == "AhoyJSON*" {
 			// For JSON objects
-			freeCode = fmt.Sprintf("    if (%s) { /* TODO: proper JSON cleanup */ free(%s); }\n", 
+			freeCode = fmt.Sprintf("    if (%s) { /* TODO: proper JSON cleanup */ free(%s); }\n",
 				varName, varName)
 		} else if varType == "char*" || varType == "string" {
 			// For heap-allocated strings
 			freeCode = fmt.Sprintf("    if (%s) { free(%s); }\n", varName, varName)
 		}
-		
+
 		if freeCode != "" {
 			gen.deferredStatements = append(gen.deferredStatements, freeCode)
 			gen.autoFreedVars[varName] = true
@@ -4144,12 +4144,12 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 				gen.output.WriteString("ahoy_array_push(")
 				gen.generateNodeInternal(object, false)
 				gen.output.WriteString(", (intptr_t)")
-				
+
 				// Check if we're pushing a struct value (needs heap allocation)
 				argType := gen.inferType(arg)
 				needsHeapAlloc := false
 				structType := ""
-				
+
 				// For struct literals
 				if arg.Type == ahoy.NODE_OBJECT_LITERAL && arg.Value != "" {
 					needsHeapAlloc = true
@@ -4159,7 +4159,7 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 					needsHeapAlloc = true
 					structType = gen.mapType(argType)
 				}
-				
+
 				if needsHeapAlloc {
 					gen.output.WriteString(fmt.Sprintf("({ %s* __tmp = malloc(sizeof(%s)); *__tmp = ", structType, structType))
 					gen.generateNodeInternal(arg, false)
@@ -4167,7 +4167,7 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 				} else {
 					gen.generateNodeInternal(arg, false)
 				}
-				
+
 				valueType := gen.getValueType(arg)
 				gen.output.WriteString(fmt.Sprintf(", %s)", gen.getAhoyTypeEnum(valueType)))
 			}
@@ -4194,13 +4194,13 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 				// For array methods like push, cast to intptr_t
 				if methodName == "push" || methodName == "has" || methodName == "fill" {
 					gen.output.WriteString("(intptr_t)")
-					
+
 					// Check if we're pushing a struct value (needs heap allocation)
 					if methodName == "push" {
 						argType := gen.inferType(arg)
 						needsHeapAlloc := false
 						structType := ""
-						
+
 						// For struct literals
 						if arg.Type == ahoy.NODE_OBJECT_LITERAL && arg.Value != "" {
 							needsHeapAlloc = true
@@ -4210,7 +4210,7 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 							needsHeapAlloc = true
 							structType = gen.mapType(argType)
 						}
-						
+
 						if needsHeapAlloc {
 							gen.output.WriteString(fmt.Sprintf("({ %s* __tmp = malloc(sizeof(%s)); *__tmp = ", structType, structType))
 							gen.generateNodeInternal(arg, false)
@@ -4307,7 +4307,7 @@ func (gen *CodeGenerator) generateArrayLiteral(node *ahoy.ASTNode) {
 	var isElemStruct bool
 	if isTyped && elementType != "" {
 		elemCType = gen.mapType(elementType)
-		isCStruct := gen.cTypeDefinitions[elemCType] && !strings.HasSuffix(elemCType, "*") && 
+		isCStruct := gen.cTypeDefinitions[elemCType] && !strings.HasSuffix(elemCType, "*") &&
 			elemCType != "int" && elemCType != "double" && elemCType != "char*" && elemCType != "bool"
 		isAhoyStruct := false
 		if !isCStruct {
@@ -4342,9 +4342,9 @@ func (gen *CodeGenerator) generateArrayLiteral(node *ahoy.ASTNode) {
 					actualCType = gen.mapType(varType)
 				}
 			}
-			
+
 			// For structs (C or Ahoy), allocate heap memory and copy the struct
-			gen.output.WriteString(fmt.Sprintf("%s->data[%d] = (intptr_t)({ %s* __struct_ptr_%d = malloc(sizeof(%s)); *__struct_ptr_%d = ", 
+			gen.output.WriteString(fmt.Sprintf("%s->data[%d] = (intptr_t)({ %s* __struct_ptr_%d = malloc(sizeof(%s)); *__struct_ptr_%d = ",
 				arrName, i, actualCType, gen.varCounter, actualCType, gen.varCounter))
 			gen.varCounter++
 			gen.generateNode(child)
@@ -4377,10 +4377,10 @@ func (gen *CodeGenerator) generateArrayLiteral(node *ahoy.ASTNode) {
 					isChildStruct = true
 				}
 			}
-			
+
 			if isChildStruct && childCType != "" {
 				// Struct in untyped array - need to allocate heap memory
-				gen.output.WriteString(fmt.Sprintf("%s->data[%d] = (intptr_t)({ %s* __struct_ptr_%d = malloc(sizeof(%s)); *__struct_ptr_%d = ", 
+				gen.output.WriteString(fmt.Sprintf("%s->data[%d] = (intptr_t)({ %s* __struct_ptr_%d = malloc(sizeof(%s)); *__struct_ptr_%d = ",
 					arrName, i, childCType, gen.varCounter, childCType, gen.varCounter))
 				gen.varCounter++
 				gen.generateNode(child)
@@ -4448,7 +4448,7 @@ func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 			cType := gen.mapType(elemType)
 			if cType != "int" {
 				// Check if this is a C struct OR Ahoy struct type stored as pointer
-				isCStruct := gen.cTypeDefinitions[cType] && !strings.HasSuffix(cType, "*") && 
+				isCStruct := gen.cTypeDefinitions[cType] && !strings.HasSuffix(cType, "*") &&
 					cType != "int" && cType != "double" && cType != "char*" && cType != "bool"
 				isAhoyStruct := false
 				if !isCStruct {
@@ -4483,7 +4483,7 @@ func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 		// Cast to the appropriate type for non-int types (need intptr_t intermediate for pointer safety)
 		if cType != "int" {
 			// Check if this is a C struct OR Ahoy struct type stored as pointer
-			isCStruct := gen.cTypeDefinitions[cType] && !strings.HasSuffix(cType, "*") && 
+			isCStruct := gen.cTypeDefinitions[cType] && !strings.HasSuffix(cType, "*") &&
 				cType != "int" && cType != "double" && cType != "char*" && cType != "bool"
 			isAhoyStruct := false
 			if !isCStruct {
@@ -4530,7 +4530,7 @@ func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 func (gen *CodeGenerator) generateChainedArrayAccess(node *ahoy.ASTNode) {
 	innerAccess := node.Children[0]
 	outerIndex := node.Children[1]
-	
+
 	// The inner access gives us an AhoyArray*, then we access its element
 	// Cast result to AhoyArray* and access
 	gen.output.WriteString("((AhoyArray*)")
@@ -4544,11 +4544,11 @@ func (gen *CodeGenerator) generateChainedArrayAccess(node *ahoy.ASTNode) {
 func (gen *CodeGenerator) generateChainedArrayAssignment(node *ahoy.ASTNode) {
 	accessNode := node.Children[0]
 	valueNode := node.Children[1]
-	
+
 	// For chained access, Children[0] is the inner array access, Children[1] is the outer index
 	innerAccess := accessNode.Children[0]
 	outerIndex := accessNode.Children[1]
-	
+
 	// Generate: ((AhoyArray*)(inner_access))->data[outer_index] = value
 	gen.output.WriteString("((AhoyArray*)")
 	gen.generateNode(innerAccess)
@@ -5231,7 +5231,7 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 
 		for _, v := range vars {
 			gen.output.WriteString(", ")
-			
+
 			// Check if this is a member access expression (contains a dot)
 			if strings.Contains(v, ".") {
 				// Parse member access: object.member
@@ -5239,13 +5239,13 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 				if len(parts) == 2 {
 					objectName := parts[0]
 					memberName := parts[1]
-					
+
 					// Determine if we need -> or .
 					objectType := ""
 					if knownType, exists := gen.variables[objectName]; exists {
 						objectType = knownType
 					}
-					
+
 					// Use -> for pointer types
 					if strings.HasSuffix(objectType, "*") {
 						gen.output.WriteString(fmt.Sprintf("%s->%s", objectName, memberName))
@@ -5280,13 +5280,13 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 // Generate enum declaration
 func (gen *CodeGenerator) generateEnum(node *ahoy.ASTNode) {
 	enumName := node.Value
-	
+
 	// Skip if already generated
 	if gen.generatedTypes[enumName] {
 		return
 	}
 	gen.generatedTypes[enumName] = true
-	
+
 	enumType := node.EnumType
 
 	// Track enum members for validation
@@ -6458,7 +6458,7 @@ func (gen *CodeGenerator) generateMemberAccess(node *ahoy.ASTNode) {
 		// Check if the identifier is an enum name (try both as-is and lowercase)
 		enumName := object.Value
 		isEnum := gen.isEnumType(enumName)
-		
+
 		// If not found, try lowercase version
 		if !isEnum {
 			lowerName := strings.ToLower(string(enumName[0])) + enumName[1:]
@@ -6467,7 +6467,7 @@ func (gen *CodeGenerator) generateMemberAccess(node *ahoy.ASTNode) {
 				isEnum = true
 			}
 		}
-		
+
 		if isEnum {
 			// Always use the original enum name (should be lowercase)
 			// Double-check that we have the original name
@@ -6478,7 +6478,7 @@ func (gen *CodeGenerator) generateMemberAccess(node *ahoy.ASTNode) {
 					enumName = lowerName
 				}
 			}
-			
+
 			enumType := gen.enumTypes[enumName]
 
 			// For int enums, use the C enum format: enum_name_MEMBER
@@ -6526,7 +6526,7 @@ func (gen *CodeGenerator) generateMemberAccess(node *ahoy.ASTNode) {
 		// We need to determine the element type and cast properly
 		innerAccess := object.Children[0]
 		outerIndex := object.Children[1]
-		
+
 		// Try to find the nested element type (what the inner arrays contain)
 		var elemType string
 		if innerAccess.Type == ahoy.NODE_ARRAY_ACCESS && innerAccess.Value != "" {
@@ -6536,7 +6536,7 @@ func (gen *CodeGenerator) generateMemberAccess(node *ahoy.ASTNode) {
 				elemType = et
 			}
 		}
-		
+
 		if elemType != "" {
 			cType := gen.mapType(elemType)
 			// Check if it's a struct
@@ -6546,7 +6546,7 @@ func (gen *CodeGenerator) generateMemberAccess(node *ahoy.ASTNode) {
 			} else if _, exists := gen.structs[cType]; exists {
 				isStruct = true
 			}
-			
+
 			if isStruct {
 				// Generate: ((StructType*)((AhoyArray*)inner_access)->data[outer_idx])->member
 				gen.output.WriteString(fmt.Sprintf("((%s*)((AhoyArray*)", cType))
@@ -8411,17 +8411,17 @@ func (gen *CodeGenerator) tryResolveEnumMember(memberName string) string {
 	if len(memberName) > 0 && memberName[0] == '.' {
 		// Extract member name without dot
 		actualMemberName := memberName[1:]
-		
+
 		// Search only original enum names (not capitalized aliases) for deterministic results
 		var foundEnum string
-		
+
 		for enumName := range gen.enumOriginalNames {
 			if gen.enums[enumName] != nil && gen.enums[enumName][actualMemberName] {
 				foundEnum = enumName
 				break
 			}
 		}
-		
+
 		if foundEnum != "" {
 			// Check if this is an int enum
 			if gen.enumTypes[foundEnum] == "int" || gen.enumTypes[foundEnum] == "" {
@@ -8430,10 +8430,10 @@ func (gen *CodeGenerator) tryResolveEnumMember(memberName string) string {
 			// For struct-based enums, use the struct accessor
 			return foundEnum + "." + actualMemberName
 		}
-		
+
 		return ""
 	}
-	
+
 	// Check only original enum names for deterministic results
 	for enumName := range gen.enumOriginalNames {
 		if gen.enums[enumName] != nil && gen.enums[enumName][memberName] {

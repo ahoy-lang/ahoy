@@ -114,17 +114,17 @@ func findCompiler(releaseMode bool, executablePath string) (string, []string, bo
 
 // CrossCompileTarget represents a target platform for cross-compilation
 type CrossCompileTarget struct {
-	Name       string
-	OutputDir  string
-	Compiler   string
-	Args       []string
-	Extension  string
+	Name      string
+	OutputDir string
+	Compiler  string
+	Args      []string
+	Extension string
 }
 
 // findCrossCompiler finds the compiler for cross-compilation
 func findCrossCompiler(target string, ahoyDir string) (*CrossCompileTarget, error) {
 	homeDir, _ := os.UserHomeDir()
-	
+
 	switch target {
 	case "linux":
 		if runtime.GOOS == "linux" {
@@ -243,23 +243,23 @@ func copyAssets(sourceDir, destDir string) error {
 	}
 
 	destAssets := filepath.Join(destDir, "assets")
-	
+
 	// Remove existing assets in dest
 	os.RemoveAll(destAssets)
-	
+
 	// Copy assets directory recursively
 	return filepath.Walk(assetsDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		
+
 		relPath, _ := filepath.Rel(assetsDir, path)
 		destPath := filepath.Join(destAssets, relPath)
-		
+
 		if info.IsDir() {
 			return os.MkdirAll(destPath, 0755)
 		}
-		
+
 		// Copy file
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -272,16 +272,16 @@ func copyAssets(sourceDir, destDir string) error {
 // getRaylibFlags returns the appropriate raylib linker flags for each target platform
 func getRaylibFlags(target *CrossCompileTarget, raylibPath string, sourceDir string) ([]string, error) {
 	var flags []string
-	
+
 	// Determine if this is a native or cross build
 	isNativeBuild := (target.Name == "linux" && runtime.GOOS == "linux") ||
 		(target.Name == "windows" && runtime.GOOS == "windows") ||
 		(target.Name == "macos" && runtime.GOOS == "darwin")
-	
+
 	// Check for platform-specific raylib library
 	var expectedLib string
 	var libSearchPaths []string
-	
+
 	switch target.Name {
 	case "linux":
 		expectedLib = "libraylib.a"
@@ -332,7 +332,7 @@ func getRaylibFlags(target *CrossCompileTarget, raylibPath string, sourceDir str
 			filepath.Join(sourceDir, "libs", "web", "libraylib.a"),
 		}
 	}
-	
+
 	// Find the raylib library for this platform
 	var foundLibPath string
 	for _, libPath := range libSearchPaths {
@@ -341,32 +341,32 @@ func getRaylibFlags(target *CrossCompileTarget, raylibPath string, sourceDir str
 			break
 		}
 	}
-	
+
 	// For non-native builds, require platform-specific lib
 	if !isNativeBuild && foundLibPath == "" {
 		var buildInstructions string
 		if target.Name == "web" {
 			buildInstructions = fmt.Sprintf(
 				"  To build raylib for web using emscripten:\n"+
-				"    cd %s\n"+
-				"    source ~/Documents/emsdk/emsdk_env.sh\n"+
-				"    mkdir build_web && cd build_web\n"+
-				"    emcmake cmake .. -DPLATFORM=Web -DCMAKE_BUILD_TYPE=Release\n"+
-				"    emmake make\n"+
-				"    mkdir -p %s/libs/web\n"+
-				"    cp libraylib.a %s/libs/web/",
+					"    cd %s\n"+
+					"    source ~/Documents/emsdk/emsdk_env.sh\n"+
+					"    mkdir build_web && cd build_web\n"+
+					"    emcmake cmake .. -DPLATFORM=Web -DCMAKE_BUILD_TYPE=Release\n"+
+					"    emmake make\n"+
+					"    mkdir -p %s/libs/web\n"+
+					"    cp libraylib.a %s/libs/web/",
 				filepath.Dir(raylibPath), sourceDir, sourceDir)
 		} else {
 			buildInstructions = fmt.Sprintf(
 				"  To build raylib for %s using zig:\n"+
-				"    cd %s && zig build -Dtarget=%s -Doptimize=ReleaseFast\n"+
-				"    mkdir -p %s/libs/%s\n"+
-				"    cp zig-out/lib/libraylib.a %s/libs/%s/",
+					"    cd %s && zig build -Dtarget=%s -Doptimize=ReleaseFast\n"+
+					"    mkdir -p %s/libs/%s\n"+
+					"    cp zig-out/lib/libraylib.a %s/libs/%s/",
 				target.Name, filepath.Dir(raylibPath), getZigTarget(target.Name),
 				sourceDir, target.Name,
 				sourceDir, target.Name)
 		}
-		
+
 		return nil, fmt.Errorf("cross-compilation with raylib requires platform-specific library\n"+
 			"  Expected: %s\n"+
 			"  Searched: %v\n"+
@@ -374,27 +374,27 @@ func getRaylibFlags(target *CrossCompileTarget, raylibPath string, sourceDir str
 			"  \n%s",
 			expectedLib, libSearchPaths, target.Name, target.Name, buildInstructions)
 	}
-	
+
 	// Use found path or default raylibPath
 	effectivePath := raylibPath
 	if foundLibPath != "" {
 		effectivePath = foundLibPath
 	}
-	
+
 	if effectivePath != "" {
 		flags = append(flags, "-L"+effectivePath)
 		flags = append(flags, "-I"+effectivePath)
 	}
-	
+
 	switch target.Name {
 	case "linux":
 		// Linux uses X11 and standard Unix libraries
 		flags = append(flags, "-lraylib", "-lGL", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
-		
+
 	case "windows":
 		// Windows uses different system libraries
 		flags = append(flags, "-lraylib", "-lopengl32", "-lgdi32", "-lwinmm", "-lm")
-		
+
 	case "macos":
 		// macOS uses frameworks instead of libraries
 		flags = append(flags, "-lraylib")
@@ -402,10 +402,10 @@ func getRaylibFlags(target *CrossCompileTarget, raylibPath string, sourceDir str
 		flags = append(flags, "-framework", "Cocoa")
 		flags = append(flags, "-framework", "OpenGL")
 		flags = append(flags, "-lm")
-		
+
 	case "web":
 		// Web/Emscripten has special requirements
-		flags = append(flags, 
+		flags = append(flags,
 			"-s", "USE_GLFW=3",
 			"-s", "ASYNCIFY",
 			"-s", "TOTAL_MEMORY=67108864",
@@ -420,7 +420,7 @@ func getRaylibFlags(target *CrossCompileTarget, raylibPath string, sourceDir str
 			flags = append(flags, filepath.Join(effectivePath, "libraylib.a"))
 		}
 	}
-	
+
 	return flags, nil
 }
 
@@ -446,10 +446,10 @@ func buildForTarget(target *CrossCompileTarget, cFile, baseName, sourceDir strin
 	}
 
 	executable := filepath.Join(target.OutputDir, baseName+target.Extension)
-	
+
 	// Build compile arguments
 	args := append(target.Args, "-o", executable, cFile)
-	
+
 	// Add library flags
 	if hasRaylib {
 		raylibFlags, err := getRaylibFlags(target, raylibPath, sourceDir)

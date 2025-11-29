@@ -4311,56 +4311,6 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			}
 		}
 
-		// Check if this could be a zero-argument function call (no || needed)
-		// This happens when:
-		// - It's a C function with zero params
-		// - Or it's an Ahoy function with zero params
-		// - And it's NOT followed by || (which would make it explicit)
-		isLikelyZeroArgFunc := false
-
-		// Check C functions (global and namespaced)
-		if p.cHeaderGlobal != nil {
-			for cFuncName, cFunc := range p.cHeaderGlobal.Functions {
-				snakeName := PascalToSnake(cFuncName)
-				if snakeName == token.Value && len(cFunc.Parameters) == 0 {
-					isLikelyZeroArgFunc = true
-					break
-				}
-			}
-		}
-
-		if !isLikelyZeroArgFunc {
-			for _, headerInfo := range p.cHeaders {
-				for cFuncName, cFunc := range headerInfo.Functions {
-					snakeName := PascalToSnake(cFuncName)
-					if snakeName == token.Value && len(cFunc.Parameters) == 0 {
-						isLikelyZeroArgFunc = true
-						break
-					}
-				}
-				if isLikelyZeroArgFunc {
-					break
-				}
-			}
-		}
-
-		// Check Ahoy functions - look for function declarations with zero params
-		if !isLikelyZeroArgFunc && p.LintMode {
-			// In lint mode, we track function signatures
-			// For now, just check if it's a known function name
-			// (We could enhance this by tracking function parameter counts)
-		}
-
-		// If it's a zero-arg function, create a call node
-		if isLikelyZeroArgFunc {
-			return &ASTNode{
-				Type:     NODE_CALL,
-				Value:    token.Value,
-				Line:     token.Line,
-				Children: []*ASTNode{}, // Empty args
-			}
-		}
-
 		// Check for member access (property or method)
 		if p.current().Type == TOKEN_DOT {
 			node := &ASTNode{

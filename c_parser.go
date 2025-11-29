@@ -413,38 +413,45 @@ func ToLowerFirst(s string) string {
 }
 
 func PascalToSnake(s string) string {
-	var result []rune
-	runes := []rune(s)
-	
-	for i := 0; i < len(runes); i++ {
-		if unicode.IsUpper(runes[i]) {
+	// Optimized for ASCII-only input (C function names)
+	n := len(s)
+	if n == 0 {
+		return s
+	}
+
+	// Pre-allocate with extra space for underscores
+	result := make([]byte, 0, n+n/2)
+
+	for i := 0; i < n; i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
 			// Add underscore before uppercase if not at start
 			if i > 0 {
-				// Check if previous was lowercase (normal case: myVariable)
-				prevIsLower := unicode.IsLower(runes[i-1])
-				
+				prev := s[i-1]
+				prevIsLower := prev >= 'a' && prev <= 'z'
+
 				// Check if we're transitioning from acronym to word
 				// Example: "HTTPServer" -> at 'S', prev is 'P' (upper), next is 'e' (lower)
 				transitionFromAcronym := false
-				if i > 0 && i < len(runes)-1 {
-					prevIsUpper := unicode.IsUpper(runes[i-1])
-					nextIsLower := unicode.IsLower(runes[i+1])
+				if i < n-1 {
+					prevIsUpper := prev >= 'A' && prev <= 'Z'
+					next := s[i+1]
+					nextIsLower := next >= 'a' && next <= 'z'
 					if prevIsUpper && nextIsLower {
 						transitionFromAcronym = true
 					}
 				}
-				
-				// Add underscore if transitioning from lowercase or from acronym to word
+
 				if prevIsLower || transitionFromAcronym {
 					result = append(result, '_')
 				}
 			}
-			result = append(result, unicode.ToLower(runes[i]))
+			result = append(result, c+32) // ASCII lowercase
 		} else {
-			result = append(result, runes[i])
+			result = append(result, c)
 		}
 	}
-	
+
 	return string(result)
 }
 
