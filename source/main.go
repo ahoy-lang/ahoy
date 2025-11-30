@@ -16,33 +16,31 @@ import (
 // findCompiler finds the appropriate C compiler based on mode and OS
 // Returns: compiler path, args, isOptimized, error
 func findCompiler(releaseMode bool, executablePath string) (string, []string, bool, error) {
-	// Get the directory where the ahoy binary is located
-	ahoyDir, err := os.Executable()
+	// Try embedded TCC first
+	tccPath, tccArgs, err := GetEmbeddedTCCPath()
 	if err != nil {
-		ahoyDir = "."
-	} else {
-		ahoyDir = filepath.Dir(ahoyDir)
-	}
-
-	// Determine TCC path based on OS
-	var tccPath string
-	var tccArgs []string
-
-	switch runtime.GOOS {
-	case "linux":
-		tccPath = filepath.Join(ahoyDir, "tcc", "linux", "tcc")
-		tccArgs = []string{"-B" + filepath.Join(ahoyDir, "tcc", "linux")}
-	case "windows":
-		// Check architecture for 32-bit vs 64-bit
-		if runtime.GOARCH == "386" {
-			tccPath = filepath.Join(ahoyDir, "tcc", "windows", "i386-win32-tcc.exe")
+		// Fall back to looking for TCC next to the binary
+		ahoyDir, err := os.Executable()
+		if err != nil {
+			ahoyDir = "."
 		} else {
-			tccPath = filepath.Join(ahoyDir, "tcc", "windows", "tcc.exe")
+			ahoyDir = filepath.Dir(ahoyDir)
 		}
-		tccArgs = []string{"-B" + filepath.Join(ahoyDir, "tcc", "windows")}
-	default:
-		// Unsupported OS for bundled TCC
-		tccPath = ""
+
+		switch runtime.GOOS {
+		case "linux":
+			tccPath = filepath.Join(ahoyDir, "tcc", "linux", "tcc")
+			tccArgs = []string{"-B" + filepath.Join(ahoyDir, "tcc", "linux")}
+		case "windows":
+			if runtime.GOARCH == "386" {
+				tccPath = filepath.Join(ahoyDir, "tcc", "windows", "i386-win32-tcc.exe")
+			} else {
+				tccPath = filepath.Join(ahoyDir, "tcc", "windows", "tcc.exe")
+			}
+			tccArgs = []string{"-B" + filepath.Join(ahoyDir, "tcc", "windows")}
+		default:
+			tccPath = ""
+		}
 	}
 
 	if releaseMode {
