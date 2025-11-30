@@ -24,6 +24,7 @@ card5: Card{suit:"Diamonds", rank:"5"}
 row0: [0, 0, 0]
 row1: [0, 0, 0]
 row2: [0, 0, 0]
+grid: [row0, row1, row2]
 
 card_row0: [card5, card6, card7]
 card_row1: [card8, card9, card10]
@@ -31,7 +32,6 @@ card_row2: [cardQ, cardK, cardA]
 
 ? Create grid (2D array)
 grid: [row0, row1, row2]
-card_grid: [card_row0, card_row1, card_row2]
 
 ? Test initial values are 0
 print|grid[0][0]|
@@ -43,9 +43,12 @@ expected.push|"0"|
 
 
 ? test values are cards
-print|card_grid[0][0].suit|
+zero:0
+one:1
+card_grid: [card_row0, card_row1, card_row2]
+print|card_grid[zero][zero].suit|
 expected.push|"Diamonds"|
-print|card_grid[1][1].rank|
+print|card_grid[one][one].rank|
 expected.push|"9"|
 print|card_grid[2][2].rank|
 expected.push|"Ace"|

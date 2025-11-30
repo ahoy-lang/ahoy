@@ -310,7 +310,7 @@ func compileAndRun(t *testing.T, ahoyFile string, compilerPath string) (string, 
 
 	// Build compile command with appropriate flags
 	compileArgs := []string{"-o", executable, cFile}
-	
+
 	// If raylib is included, add raylib linking
 	if strings.Contains(string(cFileContent), "raylib.h") {
 		compileArgs = append(compileArgs, "-I../repos/raylib/src", "-L../repos/raylib/src", "-lraylib", "-lGL", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
