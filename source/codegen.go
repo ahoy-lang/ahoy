@@ -1876,6 +1876,12 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 					gen.arrayElementTypes[node.Value] = elemType
 					// Set context for array literal generation
 					gen.currentTypeContext = explicitType
+					
+					// For 2D arrays (array[array[type]]), also extract inner element type
+					if strings.HasPrefix(elemType, "array[") {
+						nestedElemType := strings.TrimSuffix(strings.TrimPrefix(elemType, "array["), "]")
+						gen.array2DElementTypes[node.Value] = nestedElemType
+					}
 				} else if len(valueNode.Children) > 0 {
 					elemType := gen.inferType(valueNode.Children[0])
 					gen.arrayElementTypes[node.Value] = elemType
