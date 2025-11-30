@@ -131,7 +131,8 @@ type CFunction struct {
 	Name       string
 	ReturnType string
 	Parameters []CParameter
-	Line       int // Line number in header file
+	Line       int    // Line number in header file
+	File       string // Path to the header file
 }
 
 type CParameter struct {
@@ -144,12 +145,14 @@ type CEnum struct {
 	Values     map[string]int
 	ValueLines map[string]int // Line number for each enum value
 	Line       int            // Line number in header file
+	File       string         // Path to the header file
 }
 
 type CDefine struct {
 	Name  string
 	Value string
-	Line  int // Line number in header file
+	Line  int    // Line number in header file
+	File  string // Path to the header file
 }
 
 type CStructField struct {
@@ -160,7 +163,8 @@ type CStructField struct {
 type CStruct struct {
 	Name   string
 	Fields []CStructField
-	Line   int // Line number in header file
+	Line   int    // Line number in header file
+	File   string // Path to the header file
 }
 
 type CHeaderInfo struct {

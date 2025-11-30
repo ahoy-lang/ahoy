@@ -31,27 +31,27 @@ func ParseCHeader(path string) (*CHeaderInfo, error) {
 		
 		// Parse RLAPI/RMAPI function declarations
 		if strings.Contains(line, "RLAPI") || strings.Contains(line, "RMAPI") {
-			parseRLAPIFunction(line, lineNum, info)
-		} else if parseMacroFunction(line, lineNum, info) {
+			parseRLAPIFunction(line, lineNum, path, info)
+		} else if parseMacroFunction(line, lineNum, path, info) {
 			// Successfully parsed as macro function (like CJSON_PUBLIC)
 		} else if strings.Contains(line, "(") && strings.Contains(line, ");") && !strings.HasPrefix(line, "typedef") && !strings.HasPrefix(line, "#") {
 			// Try to parse as generic function declaration
-			parseRLAPIFunction(line, lineNum, info)
+			parseRLAPIFunction(line, lineNum, path, info)
 		}
 		
 		// Parse #define constants
 		if strings.HasPrefix(line, "#define") {
-			parseDefine(line, lineNum, info)
+			parseDefine(line, lineNum, path, info)
 		}
 		
 		// Parse typedef struct
 		if strings.HasPrefix(line, "typedef struct") {
-			parseStruct(lines, i, info)
+			parseStruct(lines, i, path, info)
 		}
 		
 		// Parse typedef enum
 		if strings.HasPrefix(line, "typedef enum") {
-			parseEnum(lines, i, info)
+			parseEnum(lines, i, path, info)
 		}
 		
 		// Parse simple typedef aliases (e.g., typedef Texture Texture2D;)
@@ -64,7 +64,7 @@ func ParseCHeader(path string) (*CHeaderInfo, error) {
 }
 
 // parseRLAPIFunction parses a function declaration like: RLAPI void InitWindow(int width, int height, const char *title);
-func parseRLAPIFunction(line string, lineNum int, info *CHeaderInfo) {
+func parseRLAPIFunction(line string, lineNum int, filePath string, info *CHeaderInfo) {
 	// Remove RLAPI/RMAPI prefix and comments
 	line = strings.Replace(line, "RLAPI", "", 1)
 	line = strings.Replace(line, "RMAPI", "", 1)
@@ -102,13 +102,14 @@ func parseRLAPIFunction(line string, lineNum int, info *CHeaderInfo) {
 		ReturnType: returnType,
 		Parameters: params,
 		Line:       lineNum,
+		File:       filePath,
 	}
 }
 
 // parseMacroFunction parses function declarations with macro prefixes
 // Examples: CJSON_PUBLIC(cJSON *) cJSON_Parse(const char *value);
 //           SOME_MACRO(void) MyFunction(int x);
-func parseMacroFunction(line string, lineNum int, info *CHeaderInfo) bool {
+func parseMacroFunction(line string, lineNum int, filePath string, info *CHeaderInfo) bool {
 	// Skip #define lines
 	if strings.HasPrefix(line, "#define") || strings.HasPrefix(line, "typedef") {
 		return false
@@ -189,6 +190,7 @@ func parseMacroFunction(line string, lineNum int, info *CHeaderInfo) bool {
 		ReturnType: returnType,
 		Parameters: params,
 		Line:       lineNum,
+		File:       filePath,
 	}
 	
 	return true
@@ -261,7 +263,7 @@ func parseParameters(paramStr string) []CParameter {
 }
 
 // parseDefine parses #define constants
-func parseDefine(line string, lineNum int, info *CHeaderInfo) {
+func parseDefine(line string, lineNum int, filePath string, info *CHeaderInfo) {
 	if strings.Contains(line, "RAYLIB_VERSION") || strings.Contains(line, "__declspec") {
 		return
 	}
@@ -279,12 +281,13 @@ func parseDefine(line string, lineNum int, info *CHeaderInfo) {
 			Name:  name,
 			Value: value,
 			Line:  lineNum,
+			File:  filePath,
 		}
 	}
 }
 
 // parseStruct parses typedef struct definitions
-func parseStruct(lines []string, startIdx int, info *CHeaderInfo) {
+func parseStruct(lines []string, startIdx int, filePath string, info *CHeaderInfo) {
 	line := lines[startIdx]
 	
 	var structName string
@@ -317,6 +320,7 @@ func parseStruct(lines []string, startIdx int, info *CHeaderInfo) {
 			Name:   structName,
 			Fields: fields,
 			Line:   startIdx + 1,
+			File:   filePath,
 		}
 	}
 }
@@ -342,7 +346,7 @@ func parseStructField(line string, fields *[]CStructField) {
 }
 
 // parseEnum parses typedef enum definitions
-func parseEnum(lines []string, startIdx int, info *CHeaderInfo) {
+func parseEnum(lines []string, startIdx int, filePath string, info *CHeaderInfo) {
 	var enumName string
 	values := make(map[string]int)
 	valueLines := make(map[string]int)
@@ -370,6 +374,7 @@ func parseEnum(lines []string, startIdx int, info *CHeaderInfo) {
 			Values:     values,
 			ValueLines: valueLines,
 			Line:       startIdx + 1,
+			File:       filePath,
 		}
 	}
 }
