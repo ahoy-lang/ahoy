@@ -199,6 +199,7 @@ type Parser struct {
 	hasProgramDecl     bool                          // Track if program declaration exists
 	inFunctionBody     bool                          // Track if we're inside a function body
 	sourceFilePath     string                        // Source file path for resolving relative imports
+	zeroArgFunctions   map[string]bool               // O(1) lookup for zero-argument functions (snake_case name -> true)
 }
 
 func Parse(tokens []Token) *ASTNode {
@@ -226,6 +227,7 @@ func Parse(tokens []Token) *ASTNode {
 		hasProgramDecl:     false,
 		inFunctionBody:     false,
 		sourceFilePath:     "",
+		zeroArgFunctions:   make(map[string]bool),
 	}
 	return parser.parseProgram()
 }
@@ -255,6 +257,7 @@ func ParseWithPath(tokens []Token, sourceFilePath string) *ASTNode {
 		hasProgramDecl:     false,
 		inFunctionBody:     false,
 		sourceFilePath:     sourceFilePath,
+		zeroArgFunctions:   make(map[string]bool),
 	}
 	return parser.parseProgram()
 }
@@ -284,6 +287,7 @@ func ParseLint(tokens []Token) (*ASTNode, []ParseError) {
 		hasProgramDecl:     false,
 		inFunctionBody:     false,
 		sourceFilePath:     "",
+		zeroArgFunctions:   make(map[string]bool),
 	}
 	ast := parser.parseProgram()
 	return ast, parser.Errors
@@ -314,6 +318,7 @@ func ParseLintWithPath(tokens []Token, sourceFilePath string) (*ASTNode, []Parse
 		hasProgramDecl:     false,
 		inFunctionBody:     false,
 		sourceFilePath:     sourceFilePath,
+		zeroArgFunctions:   make(map[string]bool),
 	}
 	ast := parser.parseProgram()
 	return ast, parser.Errors
@@ -2622,10 +2627,22 @@ func (p *Parser) parseImportStatement() *ASTNode {
 			if namespace != "" {
 				// Store with namespace
 				p.cHeaders[namespace] = headerInfo
+				// Register zero-arg functions from namespaced header
+				for cFuncName, cFunc := range headerInfo.Functions {
+					if len(cFunc.Parameters) == 0 {
+						snakeName := PascalToSnake(cFuncName)
+						p.zeroArgFunctions[namespace+"."+snakeName] = true
+					}
+				}
 			} else {
 				// Merge into global
 				for name, fn := range headerInfo.Functions {
 					p.cHeaderGlobal.Functions[name] = fn
+					// Register zero-arg functions for O(1) lookup
+					if len(fn.Parameters) == 0 {
+						snakeName := PascalToSnake(name)
+						p.zeroArgFunctions[snakeName] = true
+					}
 				}
 				for name, enum := range headerInfo.Enums {
 					p.cHeaderGlobal.Enums[name] = enum
@@ -4321,6 +4338,17 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			return p.parseMemberAccessChain(node)
 		}
 
+		// Check if this is a zero-arg function that can be called without ||
+		// Only do this at top-level (not inside another function call)
+		if p.inFunctionCall == 0 && p.zeroArgFunctions[token.Value] {
+			return &ASTNode{
+				Type:     NODE_CALL,
+				Value:    token.Value,
+				Line:     token.Line,
+				Children: []*ASTNode{},
+			}
+		}
+
 		return &ASTNode{
 			Type:  NODE_IDENTIFIER,
 			Value: token.Value,
@@ -5365,6 +5393,16 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 				p.recordErrorAtLine("main function must return void when program is declared", name.Line)
 			}
 		}
+	}
+
+	// Register zero-arg functions for O(1) lookup (must be outside LintMode block)
+	// Count params from the parsed params node
+	paramCount := 0
+	if params != nil {
+		paramCount = len(params.Children)
+	}
+	if paramCount == 0 {
+		p.zeroArgFunctions[name.Value] = true
 	}
 
 	fn.Children = append(fn.Children, params)
