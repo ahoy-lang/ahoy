@@ -4,8 +4,40 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 )
+
+// CHeaderParseResult holds the result of parsing a C header file
+type CHeaderParseResult struct {
+	Path      string
+	Namespace string
+	Info      *CHeaderInfo
+	Err       error
+}
+
+// ParseCHeadersConcurrently parses multiple C header files in parallel using goroutines
+func ParseCHeadersConcurrently(headers []struct{ Path, Namespace string }) []CHeaderParseResult {
+	results := make([]CHeaderParseResult, len(headers))
+	var wg sync.WaitGroup
+
+	for i, h := range headers {
+		wg.Add(1)
+		go func(idx int, header struct{ Path, Namespace string }) {
+			defer wg.Done()
+			info, err := ParseCHeader(header.Path)
+			results[idx] = CHeaderParseResult{
+				Path:      header.Path,
+				Namespace: header.Namespace,
+				Info:      info,
+				Err:       err,
+			}
+		}(i, h)
+	}
+
+	wg.Wait()
+	return results
+}
 
 // ParseCHeader parses a C header file and extracts function signatures, enums, defines, and structs
 func ParseCHeader(path string) (*CHeaderInfo, error) {

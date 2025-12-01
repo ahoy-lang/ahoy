@@ -648,12 +648,12 @@ func (gen *CodeGenerator) scanVariableTypes(node *ahoy.ASTNode) {
 		varName := node.Value
 		if len(node.Children) > 0 {
 			// Check for explicit type annotation
-			if node.DataType != "" && node.DataType != "generic" {
+			if node.DataType != "" && node.DataType != "generic" && node.DataType != "any" {
 				gen.variables[varName] = node.DataType
 			} else {
 				// Try to infer from value
 				valueType := gen.inferType(node.Children[0])
-				if valueType != "unknown" && valueType != "generic" {
+				if valueType != "unknown" && valueType != "generic" && valueType != "any" {
 					gen.variables[varName] = valueType
 				}
 			}
@@ -720,9 +720,9 @@ func (gen *CodeGenerator) inferParameterTypesFromCalls(node *ahoy.ASTNode) {
 
 						// If we already have an inferred type for this parameter, check consistency
 						if existingType, hasType := paramTypeInferences[funcName][i]; hasType {
-							// If types differ and one is more specific (not generic), prefer the specific one
+							// If types differ and one is more specific (not generic/any), prefer the specific one
 							if existingType != argType {
-								if existingType == "int" || existingType == "generic" {
+								if existingType == "int" || existingType == "generic" || existingType == "any" {
 									paramTypeInferences[funcName][i] = argType
 								}
 								// Otherwise keep existing type if it's more specific
@@ -754,10 +754,10 @@ func (gen *CodeGenerator) inferParameterTypesFromCalls(node *ahoy.ASTNode) {
 					for i, param := range params.Children {
 						if param.Type == ahoy.NODE_IDENTIFIER {
 							// Only apply inferred type if parameter doesn't already have an explicit type
-							if param.DataType == "" || param.DataType == "generic" {
+							if param.DataType == "" || param.DataType == "generic" || param.DataType == "any" {
 								if inferredType, hasInference := inferences[i]; hasInference {
-									// Don't override with generic/int/char* (char* is a fallback when type is unknown)
-									if inferredType != "generic" && inferredType != "int" && inferredType != "char*" {
+									// Don't override with generic/any/int/char* (char* is a fallback when type is unknown)
+									if inferredType != "generic" && inferredType != "any" && inferredType != "int" && inferredType != "char*" {
 										param.DataType = inferredType
 									}
 								}
@@ -1255,9 +1255,9 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 				structName := fmt.Sprintf("%s_return", funcName)
 				gen.funcReturnStructs.WriteString(fmt.Sprintf("typedef struct {\n"))
 				for i, rType := range returnTypes {
-					// Use intptr_t for generic types (will be cast at call site)
+					// Use intptr_t for generic/any types (will be cast at call site)
 					var mappedType string
-					if rType == "generic" {
+					if rType == "generic" || rType == "any" {
 						mappedType = "intptr_t"
 					} else {
 						mappedType = gen.mapType(rType)
@@ -1302,10 +1302,10 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 		if i > 0 {
 			paramList += ", "
 		}
-		paramType := "intptr_t" // default for untyped/generic parameters
+		paramType := "intptr_t" // default for untyped/generic/any parameters
 		if param.DataType != "" {
-			if param.DataType == "generic" {
-				paramType = "intptr_t" // Use intptr_t for generic parameters
+			if param.DataType == "generic" || param.DataType == "any" {
+				paramType = "intptr_t" // Use intptr_t for generic/any parameters
 			} else {
 				paramType = gen.mapType(param.DataType)
 			}
@@ -1328,7 +1328,7 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 		if param.DataType != "" {
 			paramTypes = append(paramTypes, param.DataType)
 		} else {
-			paramTypes = append(paramTypes, "generic")
+			paramTypes = append(paramTypes, "any")
 		}
 	}
 	gen.functionParamTypes[funcName] = paramTypes
@@ -1370,8 +1370,8 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 				gen.arrayElementTypes[param.Value] = elemType
 			}
 		} else {
-			// Parameters without explicit type are generic
-			gen.functionVars[param.Value] = "generic"
+			// Parameters without explicit type are any (generic)
+			gen.functionVars[param.Value] = "any"
 		}
 	}
 
@@ -1431,15 +1431,15 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			indexNode := node.Children[0].Children[0]
 			valueNode := node.Children[1]
 
-			// Check if the variable type is intptr_t, void*, or generic (might need casting to AhoyArray*)
+			// Check if the variable type is intptr_t, void*, generic, or any (might need casting to AhoyArray*)
 			needsArrayCast := false
 			if varType, exists := gen.variables[arrayName]; exists {
-				if varType == "intptr_t" || varType == "void*" || varType == "generic" {
+				if varType == "intptr_t" || varType == "void*" || varType == "generic" || varType == "any" {
 					needsArrayCast = true
 				}
 			}
 			if varType, exists := gen.functionVars[arrayName]; exists {
-				if varType == "intptr_t" || varType == "void*" || varType == "generic" {
+				if varType == "intptr_t" || varType == "void*" || varType == "generic" || varType == "any" {
 					needsArrayCast = true
 				}
 			}
@@ -1605,12 +1605,12 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				objectType = varType
 			}
 
-			// If object is dict, HashMap*, generic, or intptr_t, use hashMapPut
-			if objectType == "dict" || objectType == "HashMap*" || objectType == "generic" || objectType == "intptr_t" ||
+			// If object is dict, HashMap*, generic, any, or intptr_t, use hashMapPut
+			if objectType == "dict" || objectType == "HashMap*" || objectType == "generic" || objectType == "any" || objectType == "intptr_t" ||
 				strings.HasPrefix(objectType, "dict[") || strings.HasPrefix(objectType, "dict<") {
 				gen.output.WriteString("hashMapPut(")
-				// Cast generic/intptr_t to HashMap*
-				if objectType == "generic" || objectType == "intptr_t" {
+				// Cast generic/any/intptr_t to HashMap*
+				if objectType == "generic" || objectType == "any" || objectType == "intptr_t" {
 					gen.output.WriteString("(HashMap*)")
 				}
 				gen.output.WriteString(objectName)
@@ -2799,10 +2799,10 @@ func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
 
 	dictName := gen.nodeToString(dictExpr)
 
-	// Check if we need to cast (for generic parameters)
+	// Check if we need to cast (for generic/any parameters)
 	dictType := gen.inferType(dictExpr)
 	dictRef := dictName
-	if dictType == "generic" {
+	if dictType == "generic" || dictType == "any" {
 		dictRef = "((HashMap*)" + dictName + ")"
 	}
 
@@ -2940,8 +2940,8 @@ func (gen *CodeGenerator) generateReturnStatement(node *ahoy.ASTNode) {
 				}
 				gen.output.WriteString(fmt.Sprintf(".ret%d = ", i))
 
-				// If this return type is generic (intptr_t) and value is string, cast
-				if hasReturnTypes && i < len(returnTypes) && returnTypes[i] == "generic" {
+				// If this return type is generic/any (intptr_t) and value is string, cast
+				if hasReturnTypes && i < len(returnTypes) && (returnTypes[i] == "generic" || returnTypes[i] == "any") {
 					childType := gen.inferType(child)
 					if childType == "string" || childType == "char*" || childType == "const char*" {
 						gen.output.WriteString("(intptr_t)")
@@ -3436,7 +3436,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 								} else if vt, exists := gen.functionVars[dictName]; exists {
 									varType = vt
 								}
-								if varType == "generic" {
+								if varType == "generic" || varType == "any" {
 									gen.output.WriteString("(HashMap*)")
 								}
 							}
@@ -3766,9 +3766,9 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 
 					// Check if this parameter was provided as named argument
 					if argNode, exists := namedArgs[paramName]; exists {
-						if hasParamInfo && i < len(paramTypes) && paramTypes[i] == "generic" {
+						if hasParamInfo && i < len(paramTypes) && (paramTypes[i] == "generic" || paramTypes[i] == "any") {
 							argType := gen.inferType(argNode)
-							// Cast all pointer types to intptr_t for generic parameters
+							// Cast all pointer types to intptr_t for generic/any parameters
 							if argType == "string" || argType == "char*" || argType == "const char*" ||
 								argType == "array" || strings.HasPrefix(argType, "array[") ||
 								argType == "dict" || strings.HasPrefix(argType, "dict[") || strings.HasPrefix(argType, "dict<") ||
@@ -3781,9 +3781,9 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 						// Use positional argument
 						argNode := positionalArgs[positionalIndex]
 						positionalIndex++
-						if hasParamInfo && i < len(paramTypes) && paramTypes[i] == "generic" {
+						if hasParamInfo && i < len(paramTypes) && (paramTypes[i] == "generic" || paramTypes[i] == "any") {
 							argType := gen.inferType(argNode)
-							// Cast all pointer types to intptr_t for generic parameters
+							// Cast all pointer types to intptr_t for generic/any parameters
 							if argType == "string" || argType == "char*" || argType == "const char*" ||
 								argType == "array" || strings.HasPrefix(argType, "array[") ||
 								argType == "dict" || strings.HasPrefix(argType, "dict[") || strings.HasPrefix(argType, "dict<") ||
@@ -3834,8 +3834,8 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 					}
 				}
 
-				// If this parameter is generic, cast pointer types to intptr_t
-				if hasParamInfo && i < len(paramTypes) && paramTypes[i] == "generic" {
+				// If this parameter is generic/any, cast pointer types to intptr_t
+				if hasParamInfo && i < len(paramTypes) && (paramTypes[i] == "generic" || paramTypes[i] == "any") {
 					argType := gen.inferType(arg)
 					// Cast all pointer types (strings, arrays, dicts, structs) to intptr_t
 					if argType == "string" || argType == "char*" || argType == "const char*" ||
@@ -4118,10 +4118,10 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 
 		// Generate dict method function call
 		gen.output.WriteString(fmt.Sprintf("ahoy_dict_%s(", methodName))
-		// Cast generic parameters to HashMap*
+		// Cast generic/any parameters to HashMap*
 		if object.Type == ahoy.NODE_IDENTIFIER {
 			objType := gen.inferType(object)
-			if objType == "generic" {
+			if objType == "generic" || objType == "any" {
 				gen.output.WriteString("(HashMap*)")
 			}
 		}
@@ -4182,10 +4182,10 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 
 		// Generate array method function call
 		gen.output.WriteString(fmt.Sprintf("ahoy_array_%s(", methodName))
-		// Cast generic parameters to AhoyArray*
+		// Cast generic/any parameters to AhoyArray*
 		if object.Type == ahoy.NODE_IDENTIFIER {
 			objType := gen.inferType(object)
-			if objType == "generic" {
+			if objType == "generic" || objType == "any" {
 				gen.output.WriteString("(AhoyArray*)")
 			}
 		}
@@ -4412,15 +4412,15 @@ func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 
 	arrayName := node.Value
 
-	// Check if the variable type is intptr_t, void*, or generic (might need casting to AhoyArray*)
+	// Check if the variable type is intptr_t, void*, generic, or any (might need casting to AhoyArray*)
 	needsArrayCast := false
 	if varType, exists := gen.variables[arrayName]; exists {
-		if varType == "intptr_t" || varType == "void*" || varType == "generic" {
+		if varType == "intptr_t" || varType == "void*" || varType == "generic" || varType == "any" {
 			needsArrayCast = true
 		}
 	}
 	if varType, exists := gen.functionVars[arrayName]; exists {
-		if varType == "intptr_t" || varType == "void*" || varType == "generic" {
+		if varType == "intptr_t" || varType == "void*" || varType == "generic" || varType == "any" {
 			needsArrayCast = true
 		}
 	}
@@ -4578,8 +4578,8 @@ func (gen *CodeGenerator) generateDictAccess(node *ahoy.ASTNode) {
 	}
 
 	// Use hashMapGetDouble which converts values to double (works for all numeric types)
-	// If generic, cast to HashMap*
-	if dictType == "generic" {
+	// If generic/any, cast to HashMap*
+	if dictType == "generic" || dictType == "any" {
 		gen.output.WriteString("hashMapGetDouble((HashMap*)")
 		gen.output.WriteString(dictName)
 		gen.output.WriteString(", ")
@@ -4653,7 +4653,7 @@ func (gen *CodeGenerator) mapType(langType string) string {
 
 	// Handle known types first before pointer logic
 	switch langType {
-	case "generic":
+	case "generic", "any":
 		return "intptr_t"
 	case "int":
 		return "int"
@@ -4928,9 +4928,9 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		} else if varType, exists := gen.functionVars[arrayName]; exists {
 			arrayType = varType
 		}
-		// If array is generic, elements are also generic (intptr_t)
-		if arrayType == "generic" {
-			return "generic"
+		// If array is generic/any, elements are also generic/any (intptr_t)
+		if arrayType == "generic" || arrayType == "any" {
+			return "any"
 		}
 		// Default to int if we don't know the element type
 		return "int"
@@ -5024,8 +5024,8 @@ func (gen *CodeGenerator) inferReturnTypes(funcNode *ahoy.ASTNode) []string {
 		if param.DataType != "" {
 			gen.functionVars[param.Value] = param.DataType
 		} else {
-			// Parameters without explicit type are generic (will be inferred at call site)
-			gen.functionVars[param.Value] = "generic"
+			// Parameters without explicit type are any (generic) (will be inferred at call site)
+			gen.functionVars[param.Value] = "any"
 		}
 	}
 
@@ -6038,8 +6038,8 @@ func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 						inferredType = "char*"
 					}
 				} else if retTypes, ok := gen.functionReturnTypes[funcName]; ok && i < len(retTypes) {
-					// If return type is "generic", infer from actual call arguments
-					if retTypes[i] == "generic" && i < len(callNode.Children) {
+					// If return type is "generic" or "any", infer from actual call arguments
+					if (retTypes[i] == "generic" || retTypes[i] == "any") && i < len(callNode.Children) {
 						inferredType = gen.inferType(callNode.Children[i])
 						needsCast = true // Need to cast from intptr_t
 					} else {
@@ -8351,12 +8351,12 @@ func (gen *CodeGenerator) generateObjectAccess(node *ahoy.ASTNode) {
 		objectType = varType
 	}
 
-	// If object is dict, HashMap*, generic, or intptr_t, use hashMapGet
-	if objectType == "dict" || objectType == "HashMap*" || objectType == "generic" || objectType == "intptr_t" ||
+	// If object is dict, HashMap*, generic, any, or intptr_t, use hashMapGet
+	if objectType == "dict" || objectType == "HashMap*" || objectType == "generic" || objectType == "any" || objectType == "intptr_t" ||
 		strings.HasPrefix(objectType, "dict[") || strings.HasPrefix(objectType, "dict<") {
 		gen.output.WriteString(fmt.Sprintf("((char*)hashMapGet("))
-		// Cast generic/intptr_t to HashMap*
-		if objectType == "generic" || objectType == "intptr_t" {
+		// Cast generic/any/intptr_t to HashMap*
+		if objectType == "generic" || objectType == "any" || objectType == "intptr_t" {
 			gen.output.WriteString("(HashMap*)")
 		}
 		gen.output.WriteString(objectName)

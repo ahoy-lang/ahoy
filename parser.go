@@ -117,7 +117,7 @@ type FunctionSignature struct {
 // ParameterInfo stores parameter information
 type ParameterInfo struct {
 	Name string
-	Type string // "generic" if no type specified
+	Type string // "any" if no type specified
 }
 
 // ArrayInfo stores information about an array's length
@@ -197,6 +197,7 @@ type Parser struct {
 	arrayLengths       map[string]ArrayInfo          // Track array lengths
 	cHeaders           map[string]*CHeaderInfo       // Track imported C headers (namespace -> header info)
 	cHeaderGlobal      *CHeaderInfo                  // Global C header imports (no namespace)
+	preParsedHeaders   map[string]*CHeaderInfo       // Pre-parsed C headers (path -> header info) for parallel parsing
 	blockDepth         int                           // Track nesting depth of multi-line blocks
 	loopVarScopes      []map[string]string           // Stack of loop variable scopes
 	functionDepth      int                           // Track nesting depth of function definitions
@@ -458,8 +459,9 @@ func (p *Parser) checkTypeCompatibility(expectedType, actualType string) bool {
 		return true // Can't check unknown types
 	}
 
-	// Generic types are compatible with anything
-	if expectedType == "generic" || actualType == "generic" {
+	// Generic/any types are compatible with anything
+	if expectedType == "generic" || actualType == "generic" ||
+		expectedType == "any" || actualType == "any" {
 		return true
 	}
 
@@ -763,6 +765,9 @@ func (p *Parser) expect(tokenType TokenType) Token {
 
 func (p *Parser) parseProgram() *ASTNode {
 	program := &ASTNode{Type: NODE_PROGRAM}
+
+	// First pass: collect all C header imports and parse them concurrently
+	p.parseCHeadersParallel()
 
 	for p.current().Type != TOKEN_EOF {
 		if p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_SEMICOLON || p.current().Type == TOKEN_DEDENT {
@@ -2562,6 +2567,98 @@ func (p *Parser) parseDeferStatement() *ASTNode {
 	}
 }
 
+// parseCHeadersParallel scans for C header imports and parses them concurrently
+func (p *Parser) parseCHeadersParallel() {
+	// Save current position
+	savedPos := p.pos
+
+	// Collect all C header imports
+	var headers []struct{ Path, Namespace string }
+	headerLines := make(map[string]int) // path -> line number for error reporting
+
+	for p.current().Type != TOKEN_EOF {
+		if p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_SEMICOLON || p.current().Type == TOKEN_DEDENT || p.current().Type == TOKEN_INDENT {
+			p.advance()
+			continue
+		}
+
+		// Stop scanning when we hit non-import statements (except program declaration)
+		if p.current().Type != TOKEN_IMPORT && p.current().Type != TOKEN_PROGRAM {
+			break
+		}
+
+		// Skip program declaration
+		if p.current().Type == TOKEN_PROGRAM {
+			// Advance past program declaration
+			for p.current().Type != TOKEN_NEWLINE && p.current().Type != TOKEN_EOF {
+				p.advance()
+			}
+			continue
+		}
+
+		// Parse import to get the path
+		if p.current().Type == TOKEN_IMPORT {
+			importLine := p.current().Line
+			p.advance() // skip 'import'
+
+			var namespace, path string
+			if p.current().Type == TOKEN_IDENTIFIER {
+				namespace = p.current().Value
+				p.advance()
+				if p.current().Type == TOKEN_STRING {
+					path = p.current().Value
+					p.advance()
+				}
+			} else if p.current().Type == TOKEN_STRING {
+				path = p.current().Value
+				p.advance()
+			}
+
+			// Only collect .h files
+			if strings.HasSuffix(path, ".h") {
+				// Resolve relative paths
+				resolvedPath := path
+				if !filepath.IsAbs(path) && p.sourceFilePath != "" {
+					sourceDir := filepath.Dir(p.sourceFilePath)
+					resolvedPath = filepath.Join(sourceDir, path)
+					resolvedPath = filepath.Clean(resolvedPath)
+				}
+
+				// Check if file exists
+				if _, err := os.Stat(resolvedPath); err == nil {
+					headers = append(headers, struct{ Path, Namespace string }{resolvedPath, namespace})
+					headerLines[resolvedPath] = importLine
+				}
+			}
+		}
+	}
+
+	// Restore position
+	p.pos = savedPos
+
+	// If we have headers, parse them concurrently
+	if len(headers) > 0 {
+		results := ParseCHeadersConcurrently(headers)
+
+		// Process results
+		for _, result := range results {
+			if result.Err != nil {
+				if p.LintMode {
+					errMsg := fmt.Sprintf("Failed to parse C header '%s': %v", result.Path, result.Err)
+					p.recordErrorAtLine(errMsg, headerLines[result.Path])
+				}
+				continue
+			}
+
+			// Mark as pre-parsed so parseImportStatement skips re-parsing
+			if p.preParsedHeaders == nil {
+				p.preParsedHeaders = make(map[string]*CHeaderInfo)
+			}
+			p.preParsedHeaders[result.Path] = result.Info
+		}
+	}
+}
+
 func (p *Parser) parseImportStatement() *ASTNode {
 	importToken := p.current()
 	p.expect(TOKEN_IMPORT)
@@ -2620,14 +2717,25 @@ func (p *Parser) parseImportStatement() *ASTNode {
 
 	// Parse the C header file if it ends with .h
 	if strings.HasSuffix(path, ".h") {
-		headerInfo, err := ParseCHeader(resolvedPath)
+		// Check if header was pre-parsed (parallel parsing)
+		var headerInfo *CHeaderInfo
+		var err error
+		if p.preParsedHeaders != nil {
+			if preParsed, ok := p.preParsedHeaders[resolvedPath]; ok {
+				headerInfo = preParsed
+			}
+		}
+		// If not pre-parsed, parse now
+		if headerInfo == nil {
+			headerInfo, err = ParseCHeader(resolvedPath)
+		}
 		if err != nil {
 			// Record error in lint mode
 			if p.LintMode {
 				errMsg := fmt.Sprintf("Failed to parse C header '%s': %v", path, err)
 				p.recordErrorAtLine(errMsg, importToken.Line)
 			}
-		} else {
+		} else if headerInfo != nil {
 			if namespace != "" {
 				// Store with namespace
 				p.cHeaders[namespace] = headerInfo
@@ -5202,17 +5310,17 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 		if p.current().Type == TOKEN_ASSIGN { // :
 			p.advance()
 
-			// Type is optional - if not present, treat as generic
+			// Type is optional - if not present, treat as any
 			if p.isTypeToken(p.current().Type) {
 				// Parse complex types like array[int] or dict<string,int>
 				paramType = p.parseComplexReturnType()
 			} else {
-				// No type specified - generic parameter
-				paramType = "generic"
+				// No type specified - any (generic) parameter
+				paramType = "any"
 			}
 		} else {
-			// No colon, no type - generic parameter
-			paramType = "generic"
+			// No colon, no type - any (generic) parameter
+			paramType = "any"
 		}
 
 		// Check for default value (= expression)
@@ -7082,14 +7190,14 @@ func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int)
 	}
 }
 
-// substituteGenericTypes substitutes generic parameter types with actual argument types
+// substituteGenericTypes substitutes generic/any parameter types with actual argument types
 func (p *Parser) substituteGenericTypes(funcSig *FunctionSignature, argTypes []string) []string {
 	// Create a map of parameter name to actual type
 	genericSubstitutions := make(map[string]string)
 
 	for i, param := range funcSig.Parameters {
 		if i < len(argTypes) {
-			if param.Type == "generic" || param.Type == "" {
+			if param.Type == "generic" || param.Type == "any" || param.Type == "" {
 				genericSubstitutions[param.Name] = argTypes[i]
 			}
 		}
@@ -7098,7 +7206,7 @@ func (p *Parser) substituteGenericTypes(funcSig *FunctionSignature, argTypes []s
 	// Substitute in return types
 	result := make([]string, len(funcSig.ReturnTypes))
 	for i, retType := range funcSig.ReturnTypes {
-		// Check if this return type is a parameter name (generic)
+		// Check if this return type is a parameter name (generic/any)
 		if actualType, ok := genericSubstitutions[retType]; ok {
 			result[i] = actualType
 		} else {
@@ -7115,11 +7223,11 @@ func (p *Parser) inferReturnTypesFromFunction(funcSig *FunctionSignature, argTyp
 		return []string{}
 	}
 
-	// Create substitutions for generic parameters
+	// Create substitutions for generic/any parameters
 	genericSubstitutions := make(map[string]string)
 	for i, param := range funcSig.Parameters {
 		if i < len(argTypes) {
-			if param.Type == "generic" || param.Type == "" {
+			if param.Type == "generic" || param.Type == "any" || param.Type == "" {
 				genericSubstitutions[param.Name] = argTypes[i]
 			} else {
 				genericSubstitutions[param.Name] = param.Type
@@ -7259,13 +7367,18 @@ func (p *Parser) isTypeToken(tokenType TokenType) bool {
 	return tokenType == TOKEN_INT_TYPE || tokenType == TOKEN_FLOAT_TYPE ||
 		tokenType == TOKEN_STRING_TYPE || tokenType == TOKEN_BOOL_TYPE ||
 		tokenType == TOKEN_DICT_TYPE || tokenType == TOKEN_ARRAY_TYPE ||
-		tokenType == TOKEN_IDENTIFIER
+		tokenType == TOKEN_ANY_TYPE || tokenType == TOKEN_IDENTIFIER
 }
 
 // parseComplexReturnType parses a return type that may include complex types like array[int] or dict<string,int>
 func (p *Parser) parseComplexReturnType() string {
 	baseType := p.current().Value
 	p.advance()
+
+	// Map 'any' to internal 'any' type (generic)
+	if baseType == "any" {
+		return "any"
+	}
 
 	// Check for array[type] syntax - supports nested arrays like array[array[int]]
 	if baseType == "array" && p.current().Type == TOKEN_LBRACKET {

@@ -97,6 +97,7 @@ const (
 	TOKEN_EQUALS          // = (for default arguments)
 	TOKEN_INFER           // infer (inferred return type)
 	TOKEN_VOID            // void (no return value)
+	TOKEN_ANY_TYPE        // any (generic type)
 	TOKEN_END             // $ or ⚓ (block terminator)
 	TOKEN_AT              // @ (function declaration prefix)
 	TOKEN_PLUS_ASSIGN     // +=
@@ -174,6 +175,7 @@ func Tokenize(input string) []Token {
 		"defer":        TOKEN_DEFER,
 		"infer":        TOKEN_INFER,
 		"void":         TOKEN_VOID,
+		"any":          TOKEN_ANY_TYPE,
 	}
 
 	for lineNum, line := range lines {
