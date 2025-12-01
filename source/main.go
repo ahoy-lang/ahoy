@@ -487,6 +487,9 @@ func main() {
 
 	flag.Parse()
 
+	// Ensure stdlib is in cache (for LSP goto definition support)
+	_ = EnsureStdlibExists()
+
 	if *helpFlag || (*fileFlag == "" && !*formatFlag) {
 		showHelp()
 		return

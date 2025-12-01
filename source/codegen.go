@@ -1876,7 +1876,7 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 					gen.arrayElementTypes[node.Value] = elemType
 					// Set context for array literal generation
 					gen.currentTypeContext = explicitType
-					
+
 					// For 2D arrays (array[array[type]]), also extract inner element type
 					if strings.HasPrefix(elemType, "array[") {
 						nestedElemType := strings.TrimSuffix(strings.TrimPrefix(elemType, "array["), "]")
@@ -6754,119 +6754,15 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 
 	gen.includes["time.h"] = true // For shuffle
 
-	// length method
-	if gen.arrayMethods["length"] {
-		gen.funcDecls.WriteString("int ahoy_array_length(AhoyArray* arr) {\n")
-		gen.funcDecls.WriteString("    return arr->length;\n")
-		gen.funcDecls.WriteString("}\n\n")
-	}
-
-	// push method
-	if gen.arrayMethods["push"] {
-		gen.funcDecls.WriteString("AhoyArray* ahoy_array_push(AhoyArray* arr, intptr_t value, AhoyValueType type) {\n")
-		gen.funcDecls.WriteString("    if (arr->length >= arr->capacity) {\n")
-		gen.funcDecls.WriteString("        arr->capacity = arr->capacity == 0 ? 4 : arr->capacity * 2;\n")
-		gen.funcDecls.WriteString("        arr->data = realloc(arr->data, arr->capacity * sizeof(intptr_t));\n")
-		gen.funcDecls.WriteString("        arr->types = realloc(arr->types, arr->capacity * sizeof(AhoyValueType));\n")
-		gen.funcDecls.WriteString("    }\n")
-		gen.funcDecls.WriteString("    arr->data[arr->length] = value;\n")
-		gen.funcDecls.WriteString("    arr->types[arr->length] = type;\n")
-		gen.funcDecls.WriteString("    arr->length++;\n")
-		gen.funcDecls.WriteString("    return arr;\n")
-		gen.funcDecls.WriteString("}\n\n")
-	}
-
-	// pop method
-	if gen.arrayMethods["pop"] {
-		gen.funcDecls.WriteString("intptr_t ahoy_array_pop(AhoyArray* arr) {\n")
-		gen.funcDecls.WriteString("    if (arr->length == 0) return 0;\n")
-		gen.funcDecls.WriteString("    return arr->data[--arr->length];\n")
-		gen.funcDecls.WriteString("}\n\n")
-	}
-
-	// sum method
-	if gen.arrayMethods["sum"] {
-		gen.funcDecls.WriteString("int ahoy_array_sum(AhoyArray* arr) {\n")
-		gen.funcDecls.WriteString("    int total = 0;\n")
-		gen.funcDecls.WriteString("    for (int i = 0; i < arr->length; i++) {\n")
-		gen.funcDecls.WriteString("        total += (int)arr->data[i];\n")
-		gen.funcDecls.WriteString("    }\n")
-		gen.funcDecls.WriteString("    return total;\n")
-		gen.funcDecls.WriteString("}\n\n")
-	}
-
-	// has method
-	if gen.arrayMethods["has"] {
-		gen.funcDecls.WriteString("int ahoy_array_has(AhoyArray* arr, intptr_t value) {\n")
-		gen.funcDecls.WriteString("    for (int i = 0; i < arr->length; i++) {\n")
-		gen.funcDecls.WriteString("        if (arr->data[i] == value) return 1;\n")
-		gen.funcDecls.WriteString("    }\n")
-		gen.funcDecls.WriteString("    return 0;\n")
-		gen.funcDecls.WriteString("}\n\n")
-	}
-
-	// sort method
-	if gen.arrayMethods["sort"] {
-		gen.funcDecls.WriteString("int __ahoy_compare_ints(const void* a, const void* b) {\n")
-		gen.funcDecls.WriteString("    return (*(intptr_t*)a - *(intptr_t*)b);\n")
-		gen.funcDecls.WriteString("}\n\n")
-		gen.funcDecls.WriteString("AhoyArray* ahoy_array_sort(AhoyArray* arr) {\n")
-		gen.funcDecls.WriteString("    qsort(arr->data, arr->length, sizeof(intptr_t), __ahoy_compare_ints);\n")
-		gen.funcDecls.WriteString("    return arr;\n")
-		gen.funcDecls.WriteString("}\n\n")
-	}
-
-	// reverse method
-	if gen.arrayMethods["reverse"] {
-		gen.funcDecls.WriteString("AhoyArray* ahoy_array_reverse(AhoyArray* arr) {\n")
-		gen.funcDecls.WriteString("    for (int i = 0; i < arr->length / 2; i++) {\n")
-		gen.funcDecls.WriteString("        intptr_t temp = arr->data[i];\n")
-		gen.funcDecls.WriteString("        arr->data[i] = arr->data[arr->length - 1 - i];\n")
-		gen.funcDecls.WriteString("        arr->data[arr->length - 1 - i] = temp;\n")
-		gen.funcDecls.WriteString("    }\n")
-		gen.funcDecls.WriteString("    return arr;\n")
-		gen.funcDecls.WriteString("}\n\n")
-	}
-
-	// shuffle method
-	if gen.arrayMethods["shuffle"] {
-		gen.funcDecls.WriteString("AhoyArray* ahoy_array_shuffle(AhoyArray* arr) {\n")
-		gen.funcDecls.WriteString("    srand(time(NULL));\n")
-		gen.funcDecls.WriteString("    for (int i = arr->length - 1; i > 0; i--) {\n")
-		gen.funcDecls.WriteString("        int j = rand() % (i + 1);\n")
-		gen.funcDecls.WriteString("        intptr_t temp = arr->data[i];\n")
-		gen.funcDecls.WriteString("        arr->data[i] = arr->data[j];\n")
-		gen.funcDecls.WriteString("        arr->data[j] = temp;\n")
-		gen.funcDecls.WriteString("    }\n")
-		gen.funcDecls.WriteString("    return arr;\n")
-		gen.funcDecls.WriteString("}\n\n")
-	}
-
-	// pick method
-	if gen.arrayMethods["pick"] {
-		gen.funcDecls.WriteString("intptr_t ahoy_array_pick(AhoyArray* arr) {\n")
-		gen.funcDecls.WriteString("    if (arr->length == 0) return 0;\n")
-		gen.funcDecls.WriteString("    srand(time(NULL));\n")
-		gen.funcDecls.WriteString("    return arr->data[rand() % arr->length];\n")
-		gen.funcDecls.WriteString("}\n\n")
-	}
-
-	// fill method
-	if gen.arrayMethods["fill"] {
-		gen.funcDecls.WriteString("AhoyArray* ahoy_array_fill(AhoyArray* arr, intptr_t value, AhoyValueType type, int count) {\n")
-		gen.funcDecls.WriteString("    if (count <= 0) return arr;\n")
-		gen.funcDecls.WriteString("    if (arr->capacity < count) {\n")
-		gen.funcDecls.WriteString("        arr->capacity = count;\n")
-		gen.funcDecls.WriteString("        arr->data = realloc(arr->data, arr->capacity * sizeof(intptr_t));\n")
-		gen.funcDecls.WriteString("        arr->types = realloc(arr->types, arr->capacity * sizeof(AhoyValueType));\n")
-		gen.funcDecls.WriteString("    }\n")
-		gen.funcDecls.WriteString("    for (int i = 0; i < count; i++) {\n")
-		gen.funcDecls.WriteString("        arr->data[i] = value;\n")
-		gen.funcDecls.WriteString("        arr->types[i] = type;\n")
-		gen.funcDecls.WriteString("    }\n")
-		gen.funcDecls.WriteString("    arr->length = count;\n")
-		gen.funcDecls.WriteString("    return arr;\n")
-		gen.funcDecls.WriteString("}\n\n")
+	// Use stdlib definitions for standard array methods
+	stdlibMethods := []string{"length", "push", "pop", "sum", "has", "sort", "reverse", "shuffle", "pick", "fill"}
+	for _, method := range stdlibMethods {
+		if gen.arrayMethods[method] {
+			if stdlibFunc, ok := ArrayMethods[method]; ok {
+				gen.funcDecls.WriteString(stdlibFunc.Code)
+				gen.funcDecls.WriteString("\n")
+			}
+		}
 	}
 
 	// print_array helper - formats array for printing with type support
