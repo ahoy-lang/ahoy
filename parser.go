@@ -3385,6 +3385,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 							if bracketType == TOKEN_LANGLE {
 								endBracket = TOKEN_RANGLE
 							}
+							// Handle dict<string,string>= case where >= is tokenized as GREATER_EQUAL
 							if p.current().Type == endBracket {
 								p.advance() // consume ] or >
 								if bracketType == TOKEN_LANGLE {
@@ -3397,6 +3398,13 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 								if p.current().Type == TOKEN_EQUALS {
 									p.advance() // consume =
 								}
+							} else if bracketType == TOKEN_LANGLE && p.current().Type == TOKEN_GREATER_EQUAL {
+								// Special case: dict<string,string>= where >= is tokenized as a single token
+								// Treat >= as > followed by = in this context
+								p.advance() // consume >=, which acts as both > and =
+								possibleType = fmt.Sprintf("%s<%s,%s>", baseType, keyType, valueType)
+								explicitType = possibleType
+								// No need to consume = separately, it was part of >=
 							}
 						}
 					} else {

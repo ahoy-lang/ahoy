@@ -6825,171 +6825,25 @@ func (gen *CodeGenerator) writeDictHelperFunctions() {
 		return
 	}
 
-	// HashMap structure (if not already defined - should be in stdlib)
 	gen.funcDecls.WriteString("\n// Dictionary Helper Methods\n")
 
 	// Check if we need array support for keys() or values() methods
 	if gen.dictMethods["keys"] || gen.dictMethods["values"] {
-		// Ensure AhoyArray structure is defined
 		gen.arrayImpls = true
 	}
 
-	// size method
-	if gen.dictMethods["size"] {
-		gen.funcDecls.WriteString("int ahoy_dict_size(HashMap* dict) {\n")
-		gen.funcDecls.WriteString("    if (dict == NULL) return 0;\n")
-		gen.funcDecls.WriteString("    return dict->size;\n")
-		gen.funcDecls.WriteString("}\n\n")
+	// Use stdlib definitions for standard dict methods
+	stdlibMethods := []string{"size", "clear", "has", "has_all", "keys", "values", "sort", "stable_sort", "merge"}
+	for _, method := range stdlibMethods {
+		if gen.dictMethods[method] {
+			if stdlibFunc, ok := DictMethods[method]; ok {
+				gen.funcDecls.WriteString(stdlibFunc.Code)
+				gen.funcDecls.WriteString("\n")
+			}
+		}
 	}
 
-	// clear method
-	if gen.dictMethods["clear"] {
-		gen.funcDecls.WriteString("void ahoy_dict_clear(HashMap* dict) {\n")
-		gen.funcDecls.WriteString("    if (dict == NULL) return;\n")
-		gen.funcDecls.WriteString("    for (int i = 0; i < dict->capacity; i++) {\n")
-		gen.funcDecls.WriteString("        HashMapEntry* entry = dict->buckets[i];\n")
-		gen.funcDecls.WriteString("        while (entry != NULL) {\n")
-		gen.funcDecls.WriteString("            HashMapEntry* temp = entry;\n")
-		gen.funcDecls.WriteString("            entry = entry->next;\n")
-		gen.funcDecls.WriteString("            free(temp->key);\n")
-		gen.funcDecls.WriteString("            free(temp);\n")
-		gen.funcDecls.WriteString("        }\n")
-		gen.funcDecls.WriteString("        dict->buckets[i] = NULL;\n")
-		gen.funcDecls.WriteString("    }\n")
-		gen.funcDecls.WriteString("    dict->size = 0;\n")
-		gen.funcDecls.WriteString("}\n\n")
-	}
-
-	// has method
-	if gen.dictMethods["has"] {
-		gen.funcDecls.WriteString("int ahoy_dict_has(HashMap* dict, char* key) {\n")
-		gen.funcDecls.WriteString("    if (dict == NULL || key == NULL) return 0;\n")
-		gen.funcDecls.WriteString("    return hashMapGet(dict, key) != NULL ? 1 : 0;\n")
-		gen.funcDecls.WriteString("}\n\n")
-	}
-
-	// has_all method
-	if gen.dictMethods["has_all"] {
-		gen.funcDecls.WriteString("int ahoy_dict_has_all(HashMap* dict, AhoyArray* keys) {\n")
-		gen.funcDecls.WriteString("    if (dict == NULL || keys == NULL) return 0;\n")
-		gen.funcDecls.WriteString("    for (int i = 0; i < keys->length; i++) {\n")
-		gen.funcDecls.WriteString("        char* key = (char*)(intptr_t)keys->data[i];\n")
-		gen.funcDecls.WriteString("        if (hashMapGet(dict, key) == NULL) return 0;\n")
-		gen.funcDecls.WriteString("    }\n")
-		gen.funcDecls.WriteString("    return 1;\n")
-		gen.funcDecls.WriteString("}\n\n")
-	}
-
-	// keys method
-	if gen.dictMethods["keys"] {
-		gen.funcDecls.WriteString("AhoyArray* ahoy_dict_keys(HashMap* dict) {\n")
-		gen.funcDecls.WriteString("    AhoyArray* arr = malloc(sizeof(AhoyArray));\n")
-		gen.funcDecls.WriteString("    arr->length = 0;\n")
-		gen.funcDecls.WriteString("    arr->capacity = dict->size;\n")
-		gen.funcDecls.WriteString("    arr->data = malloc(arr->capacity * sizeof(int));\n")
-		gen.funcDecls.WriteString("    \n")
-		gen.funcDecls.WriteString("    for (int i = 0; i < dict->capacity; i++) {\n")
-		gen.funcDecls.WriteString("        HashMapEntry* entry = dict->buckets[i];\n")
-		gen.funcDecls.WriteString("        while (entry != NULL) {\n")
-		gen.funcDecls.WriteString("            arr->data[arr->length++] = (int)(intptr_t)entry->key;\n")
-		gen.funcDecls.WriteString("            entry = entry->next;\n")
-		gen.funcDecls.WriteString("        }\n")
-		gen.funcDecls.WriteString("    }\n")
-		gen.funcDecls.WriteString("    return arr;\n")
-		gen.funcDecls.WriteString("}\n\n")
-	}
-
-	// values method
-	if gen.dictMethods["values"] {
-		gen.funcDecls.WriteString("AhoyArray* ahoy_dict_values(HashMap* dict) {\n")
-		gen.funcDecls.WriteString("    AhoyArray* arr = malloc(sizeof(AhoyArray));\n")
-		gen.funcDecls.WriteString("    arr->length = 0;\n")
-		gen.funcDecls.WriteString("    arr->capacity = dict->size;\n")
-		gen.funcDecls.WriteString("    arr->data = malloc(arr->capacity * sizeof(int));\n")
-		gen.funcDecls.WriteString("    \n")
-		gen.funcDecls.WriteString("    for (int i = 0; i < dict->capacity; i++) {\n")
-		gen.funcDecls.WriteString("        HashMapEntry* entry = dict->buckets[i];\n")
-		gen.funcDecls.WriteString("        while (entry != NULL) {\n")
-		gen.funcDecls.WriteString("            arr->data[arr->length++] = (int)(intptr_t)entry->value;\n")
-		gen.funcDecls.WriteString("            entry = entry->next;\n")
-		gen.funcDecls.WriteString("        }\n")
-		gen.funcDecls.WriteString("    }\n")
-		gen.funcDecls.WriteString("    return arr;\n")
-		gen.funcDecls.WriteString("}\n\n")
-	}
-
-	// sort method
-	if gen.dictMethods["sort"] {
-		gen.funcDecls.WriteString("int __ahoy_compare_keys(const void* a, const void* b) {\n")
-		gen.funcDecls.WriteString("    return strcmp((char*)a, (char*)b);\n")
-		gen.funcDecls.WriteString("}\n\n")
-		gen.funcDecls.WriteString("HashMap* ahoy_dict_sort(HashMap* dict) {\n")
-		gen.funcDecls.WriteString("    if (dict == NULL || dict->size == 0) return dict;\n")
-		gen.funcDecls.WriteString("    \n")
-		gen.funcDecls.WriteString("    // Get all keys\n")
-		gen.funcDecls.WriteString("    char** keys = malloc(dict->size * sizeof(char*));\n")
-		gen.funcDecls.WriteString("    int idx = 0;\n")
-		gen.funcDecls.WriteString("    for (int i = 0; i < dict->capacity; i++) {\n")
-		gen.funcDecls.WriteString("        HashMapEntry* entry = dict->buckets[i];\n")
-		gen.funcDecls.WriteString("        while (entry != NULL) {\n")
-		gen.funcDecls.WriteString("            keys[idx++] = entry->key;\n")
-		gen.funcDecls.WriteString("            entry = entry->next;\n")
-		gen.funcDecls.WriteString("        }\n")
-		gen.funcDecls.WriteString("    }\n")
-		gen.funcDecls.WriteString("    \n")
-		gen.funcDecls.WriteString("    // Sort keys\n")
-		gen.funcDecls.WriteString("    qsort(keys, dict->size, sizeof(char*), __ahoy_compare_keys);\n")
-		gen.funcDecls.WriteString("    \n")
-		gen.funcDecls.WriteString("    // Create new sorted dict\n")
-		gen.funcDecls.WriteString("    HashMap* sorted = createHashMap(dict->capacity);\n")
-		gen.funcDecls.WriteString("    for (int i = 0; i < dict->size; i++) {\n")
-		gen.funcDecls.WriteString("        void* value = hashMapGet(dict, keys[i]);\n")
-		gen.funcDecls.WriteString("        hashMapPut(sorted, keys[i], value);\n")
-		gen.funcDecls.WriteString("    }\n")
-		gen.funcDecls.WriteString("    \n")
-		gen.funcDecls.WriteString("    free(keys);\n")
-		gen.funcDecls.WriteString("    return sorted;\n")
-		gen.funcDecls.WriteString("}\n\n")
-	}
-
-	// stable_sort method (same as sort for dictionaries)
-	if gen.dictMethods["stable_sort"] {
-		gen.funcDecls.WriteString("HashMap* ahoy_dict_stable_sort(HashMap* dict) {\n")
-		gen.funcDecls.WriteString("    return ahoy_dict_sort(dict);\n")
-		gen.funcDecls.WriteString("}\n\n")
-	}
-
-	// merge method
-	if gen.dictMethods["merge"] {
-		gen.funcDecls.WriteString("HashMap* ahoy_dict_merge(HashMap* dict1, HashMap* dict2) {\n")
-		gen.funcDecls.WriteString("    if (dict1 == NULL) return dict2;\n")
-		gen.funcDecls.WriteString("    if (dict2 == NULL) return dict1;\n")
-		gen.funcDecls.WriteString("    \n")
-		gen.funcDecls.WriteString("    HashMap* merged = createHashMap(dict1->capacity + dict2->capacity);\n")
-		gen.funcDecls.WriteString("    \n")
-		gen.funcDecls.WriteString("    // Copy all from dict1\n")
-		gen.funcDecls.WriteString("    for (int i = 0; i < dict1->capacity; i++) {\n")
-		gen.funcDecls.WriteString("        HashMapEntry* entry = dict1->buckets[i];\n")
-		gen.funcDecls.WriteString("        while (entry != NULL) {\n")
-		gen.funcDecls.WriteString("            hashMapPut(merged, entry->key, entry->value);\n")
-		gen.funcDecls.WriteString("            entry = entry->next;\n")
-		gen.funcDecls.WriteString("        }\n")
-		gen.funcDecls.WriteString("    }\n")
-		gen.funcDecls.WriteString("    \n")
-		gen.funcDecls.WriteString("    // Copy all from dict2 (overrides if keys exist)\n")
-		gen.funcDecls.WriteString("    for (int i = 0; i < dict2->capacity; i++) {\n")
-		gen.funcDecls.WriteString("        HashMapEntry* entry = dict2->buckets[i];\n")
-		gen.funcDecls.WriteString("        while (entry != NULL) {\n")
-		gen.funcDecls.WriteString("            hashMapPut(merged, entry->key, entry->value);\n")
-		gen.funcDecls.WriteString("            entry = entry->next;\n")
-		gen.funcDecls.WriteString("        }\n")
-		gen.funcDecls.WriteString("    }\n")
-		gen.funcDecls.WriteString("    \n")
-		gen.funcDecls.WriteString("    return merged;\n")
-		gen.funcDecls.WriteString("}\n\n")
-	}
-
-	// print_dict helper - formats dict for printing
+	// print_dict helper - formats dict for printing (keep inline since it's complex)
 	if gen.dictMethods["print_dict"] {
 		gen.funcDecls.WriteString("char* print_dict_helper(HashMap* dict) {\n")
 		gen.funcDecls.WriteString("    if (dict == NULL || dict->size == 0) return \"{}\";\n")
