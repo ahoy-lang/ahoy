@@ -3903,6 +3903,17 @@ func (gen *CodeGenerator) generateBinaryOp(node *ahoy.ASTNode) {
 		gen.output.WriteString(" % ")
 		gen.generateNode(node.Children[1])
 		gen.output.WriteString(")")
+	case "pow", "**":
+		// Use pow() function from math.h for exponentiation
+		if !gen.includes["math.h"] {
+			gen.includes["math.h"] = true
+			gen.orderedIncludes = append(gen.orderedIncludes, "math.h")
+		}
+		gen.output.WriteString("pow(")
+		gen.generateNode(node.Children[0])
+		gen.output.WriteString(", ")
+		gen.generateNode(node.Children[1])
+		gen.output.WriteString(")")
 	case "greater_than":
 		gen.output.WriteString("(")
 		gen.generateNode(node.Children[0])
@@ -6000,11 +6011,18 @@ func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 		// Special handling for read_json - track that first return value is AhoyJSON*
 		if funcName == "read_json" && len(leftSide.Children) >= 1 {
 			jsonVarName := leftSide.Children[0].Value
-			gen.jsonVariables[jsonVarName] = true // Track this as a JSON variable
+			if jsonVarName != "_" { // Don't track underscore placeholders
+				gen.jsonVariables[jsonVarName] = true // Track this as a JSON variable
+			}
 		}
 
 		// Assign struct fields to left side variables
 		for i, target := range leftSide.Children {
+			// Skip underscore placeholders - they indicate the value should be discarded
+			if target.Value == "_" {
+				continue
+			}
+			
 			gen.writeIndent()
 			// Check if variable needs to be declared in CURRENT scope
 			// Variables can shadow between scopes (global vs function)

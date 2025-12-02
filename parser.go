@@ -76,6 +76,8 @@ type ASTNode struct {
 	DefaultValue *ASTNode // For default parameter values
 	EnumType     string   // Type of enum (int, string, color, etc.) or "" for mixed
 	IsMutable    bool     // For enum members marked as mutable
+	IsStatic     bool     // For struct fields prefixed with # (static/shared)
+	IsConst      bool     // For struct fields in SCREAMING_SNAKE_CASE (immutable)
 }
 
 type ParseError struct {
@@ -88,6 +90,8 @@ type StructField struct {
 	Name         string
 	Type         string
 	DefaultValue *ASTNode
+	IsStatic     bool // Field prefixed with # is static (shared across instances)
+	IsConst      bool // Field is SCREAMING_SNAKE_CASE (immutable)
 }
 
 type StructDefinition struct {
@@ -730,6 +734,8 @@ func (p *Parser) copyASTNode(node *ASTNode) *ASTNode {
 		DefaultValue: defaultValue,
 		EnumType:     node.EnumType,
 		IsMutable:    node.IsMutable,
+		IsStatic:     node.IsStatic,
+		IsConst:      node.IsConst,
 	}
 }
 
@@ -4027,19 +4033,38 @@ func (p *Parser) parseAdditiveExpression() *ASTNode {
 }
 
 func (p *Parser) parseMultiplicativeExpression() *ASTNode {
-	left := p.parseUnaryExpression()
+	left := p.parsePowerExpression()
 
 	for p.current().Type == TOKEN_MULTIPLY || p.current().Type == TOKEN_DIVIDE ||
 		p.current().Type == TOKEN_MODULO || p.current().Type == TOKEN_TIMES_WORD ||
 		p.current().Type == TOKEN_DIV_WORD || p.current().Type == TOKEN_MOD_WORD {
 		op := p.current()
 		p.advance()
-		right := p.parseUnaryExpression()
+		right := p.parsePowerExpression()
 		left = &ASTNode{
 			Type:     NODE_BINARY_OP,
 			Value:    op.Value,
 			Children: []*ASTNode{left, right},
 		}
+	}
+
+	return left
+}
+
+func (p *Parser) parsePowerExpression() *ASTNode {
+	left := p.parseUnaryExpression()
+
+	// Power operator is right-associative (2 ** 3 ** 2 = 2 ** 9 = 512)
+	for p.current().Type == TOKEN_POWER || p.current().Type == TOKEN_POW_WORD {
+		op := p.current()
+		p.advance()
+		right := p.parsePowerExpression() // Right-associative recursion
+		left = &ASTNode{
+			Type:     NODE_BINARY_OP,
+			Value:    "pow", // Normalize to "pow" for code generation
+			Children: []*ASTNode{left, right},
+		}
+		_ = op // Suppress unused warning
 	}
 
 	return left
@@ -5903,7 +5928,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 	// Parse struct fields
 	for p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_TYPE ||
 		p.current().Type == TOKEN_NUMBER || p.current().Type == TOKEN_MINUS || p.current().Type == TOKEN_LANGLE ||
-		p.current().Type == TOKEN_TRUE || p.current().Type == TOKEN_FALSE {
+		p.current().Type == TOKEN_TRUE || p.current().Type == TOKEN_FALSE || p.current().Type == TOKEN_HASH {
 		if p.current().Type == TOKEN_TYPE {
 			// Nested type (e.g., "type smoke_particle:")
 			p.advance() // consume 'type'
@@ -6132,7 +6157,13 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 
 			struc.Children = append(struc.Children, nestedType)
 		} else {
-			// Regular field - check for default value syntax: "value field: type"
+			// Regular field - check for # prefix (static property) and default value syntax
+			isStatic := false
+			if p.current().Type == TOKEN_HASH {
+				isStatic = true
+				p.advance() // consume #
+			}
+			
 			var defaultValue *ASTNode
 
 			// Check if this might be a default value (number, vector2 literal, etc.)
@@ -6276,12 +6307,17 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 				}
 			}
 
+			// Check if field name is SCREAMING_SNAKE_CASE (const property)
+			isConst := isScreamingSnakeCase(fieldName.Value)
+
 			field := &ASTNode{
 				Type:         NODE_IDENTIFIER,
 				Value:        fieldName.Value,
 				DataType:     fieldType,
 				Line:         fieldName.Line,
 				DefaultValue: defaultValue,
+				IsStatic:     isStatic,
+				IsConst:      isConst,
 			}
 			struc.Children = append(struc.Children, field)
 		}
@@ -6387,6 +6423,8 @@ func (p *Parser) storeStructDefinition(struc *ASTNode, startLine int) {
 					Name:         field.Value,
 					Type:         field.DataType,
 					DefaultValue: field.DefaultValue,
+					IsStatic:     field.IsStatic,
+					IsConst:      field.IsConst,
 				})
 			}
 
@@ -6397,6 +6435,8 @@ func (p *Parser) storeStructDefinition(struc *ASTNode, startLine int) {
 				Name:         child.Value,
 				Type:         child.DataType,
 				DefaultValue: child.DefaultValue,
+				IsStatic:     child.IsStatic,
+				IsConst:      child.IsConst,
 			})
 		}
 	}

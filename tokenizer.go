@@ -45,11 +45,13 @@ const (
 	TOKEN_MULTIPLY      // *
 	TOKEN_DIVIDE        // /
 	TOKEN_MODULO        // %
+	TOKEN_POWER         // ** (exponentiation)
 	TOKEN_PLUS_WORD     // plus
 	TOKEN_MINUS_WORD    // minus
 	TOKEN_TIMES_WORD    // times
 	TOKEN_DIV_WORD      // div
 	TOKEN_MOD_WORD      // mod
+	TOKEN_POW_WORD      // pow (exponentiation keyword)
 	TOKEN_LESS          // <
 	TOKEN_GREATER       // >
 	TOKEN_LESS_EQUAL    // <=
@@ -107,6 +109,8 @@ const (
 	TOKEN_MODULO_ASSIGN   // %=
 	TOKEN_CARET           // ^ (pointer dereference, Pascal-style)
 	TOKEN_AMPERSAND       // & (address-of, Pascal-style)
+	TOKEN_HASH            // # (static property prefix)
+	TOKEN_UNDERSCORE      // _ (discard placeholder in multiple returns)
 )
 
 type Token struct {
@@ -151,6 +155,7 @@ func Tokenize(input string) []Token {
 		"times":        TOKEN_TIMES_WORD,
 		"div":          TOKEN_DIV_WORD,
 		"mod":          TOKEN_MOD_WORD,
+		"pow":          TOKEN_POW_WORD,
 		"greater_than": TOKEN_GREATER_WORD,
 		"lesser_than":  TOKEN_LESSER_WORD,
 		"less_than":    TOKEN_LESSER_WORD,
@@ -240,15 +245,17 @@ func Tokenize(input string) []Token {
 				break // Skip rest of line
 			}
 
-			// Numbers
+			// Numbers (supports underscores for readability like 1_000_000)
 			if unicode.IsDigit(rune(content[i])) {
 				start := i
-				for i < len(content) && (unicode.IsDigit(rune(content[i])) || content[i] == '.') {
+				for i < len(content) && (unicode.IsDigit(rune(content[i])) || content[i] == '.' || content[i] == '_') {
 					i++
 				}
+				// Remove underscores from the number value (they're just for readability)
+				numValue := strings.ReplaceAll(content[start:i], "_", "")
 				tokens = append(tokens, Token{
 					Type:   TOKEN_NUMBER,
-					Value:  content[start:i],
+					Value:  numValue,
 					Line:   lineNum + 1,
 					Column: start + 1,
 				})
@@ -334,6 +341,10 @@ func Tokenize(input string) []Token {
 					tokens = append(tokens, Token{Type: TOKEN_DOUBLE_COLON, Value: "::", Line: lineNum + 1, Column: i + 1})
 					i += 2
 					continue
+				case "**":
+					tokens = append(tokens, Token{Type: TOKEN_POWER, Value: "**", Line: lineNum + 1, Column: i + 1})
+					i += 2
+					continue
 				case "<=":
 					tokens = append(tokens, Token{Type: TOKEN_LESS_EQUAL, Value: "<=", Line: lineNum + 1, Column: i + 1})
 					i += 2
@@ -411,6 +422,8 @@ func Tokenize(input string) []Token {
 				tokens = append(tokens, Token{Type: TOKEN_CARET, Value: "^", Line: lineNum + 1, Column: i + 1})
 			case '&':
 				tokens = append(tokens, Token{Type: TOKEN_AMPERSAND, Value: "&", Line: lineNum + 1, Column: i + 1})
+			case '#':
+				tokens = append(tokens, Token{Type: TOKEN_HASH, Value: "#", Line: lineNum + 1, Column: i + 1})
 			case '$':
 				// Check for $#N syntax (multiple block closures)
 				if i+1 < len(content) && content[i+1] == '#' {
