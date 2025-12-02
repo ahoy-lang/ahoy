@@ -54,6 +54,7 @@ const (
 	NODE_UNION_DECLARATION
 	NODE_METHOD_CALL
 	NODE_MEMBER_ACCESS
+	NODE_STATIC_MEMBER_ACCESS // StructType.#static_field access
 	NODE_HALT
 	NODE_NEXT
 	NODE_LAMBDA
@@ -3092,16 +3093,24 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 		p.pos = savedPos // restore position
 	}
 
-	// Check for member access assignment: obj.property: value
+	// Check for member access assignment: obj.property: value or StructType.#static_field: value
 	if p.pos+2 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_DOT {
 		savedPos := p.pos
 		p.advance() // skip identifier
 		p.advance() // skip .
+		// Skip optional # for static field access
+		if p.current().Type == TOKEN_HASH {
+			p.advance() // skip #
+		}
 		// Skip the property name(s)
 		for p.pos < len(p.tokens) && p.current().Type == TOKEN_IDENTIFIER {
 			p.advance()
 			if p.current().Type == TOKEN_DOT {
 				p.advance() // skip next dot
+				// Skip optional # for chained static field access
+				if p.current().Type == TOKEN_HASH {
+					p.advance() // skip #
+				}
 			} else {
 				break
 			}
@@ -3111,7 +3120,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 		p.pos = savedPos // restore position
 
 		if isAssignment || isCompoundAssignment {
-			target := p.parsePrimaryExpression() // This will parse obj.property
+			target := p.parsePrimaryExpression() // This will parse obj.property or StructType.#field
 
 			if isCompoundAssignment {
 				// Handle +=, -=, *=, /=, %=
@@ -3133,7 +3142,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				}
 
 				// Validate property assignment in lint mode
-				if p.LintMode && target.Type == NODE_MEMBER_ACCESS {
+				if p.LintMode && (target.Type == NODE_MEMBER_ACCESS || target.Type == NODE_STATIC_MEMBER_ACCESS) {
 					p.validatePropertyAssignment(target, binaryOp, target.Line)
 				}
 
@@ -3147,7 +3156,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				value := p.parseExpression()
 
 				// Validate property assignment in lint mode
-				if p.LintMode && target.Type == NODE_MEMBER_ACCESS {
+				if p.LintMode && (target.Type == NODE_MEMBER_ACCESS || target.Type == NODE_STATIC_MEMBER_ACCESS) {
 					p.validatePropertyAssignment(target, value, target.Line)
 				}
 
@@ -6157,14 +6166,9 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 
 			struc.Children = append(struc.Children, nestedType)
 		} else {
-			// Regular field - check for # prefix (static property) and default value syntax
-			isStatic := false
-			if p.current().Type == TOKEN_HASH {
-				isStatic = true
-				p.advance() // consume #
-			}
-			
+			// Regular field - check for default value syntax and optional # prefix (static property)
 			var defaultValue *ASTNode
+			isStatic := false
 
 			// Check if this might be a default value (number, vector2 literal, etc.)
 			if p.current().Type == TOKEN_NUMBER {
@@ -6221,6 +6225,12 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 			} else if p.current().Type == TOKEN_LBRACE {
 				// Parse dict literal default value
 				defaultValue = p.parseDictLiteral()
+			}
+
+			// Check for # prefix (static property) after default value but before field name
+			if p.current().Type == TOKEN_HASH {
+				isStatic = true
+				p.advance() // consume #
 			}
 
 			// Get field name (could be identifier or type keyword used as name)
@@ -6554,6 +6564,15 @@ func (p *Parser) validatePropertyAssignment(target *ASTNode, value *ASTNode, lin
 			propType := p.getStructFieldType(objectType, propName)
 
 			if isLastProp {
+				// Check if this property is const (SCREAMING_SNAKE_CASE)
+				field := p.getStructField(objectType, propName)
+				if field != nil && field.IsConst {
+					errMsg := fmt.Sprintf("Cannot assign to const property '%s' - SCREAMING_SNAKE_CASE properties are immutable (line %d)",
+						propName, line)
+					p.recordError(errMsg)
+					return
+				}
+
 				// Validate type compatibility for the final assignment
 				valueType := p.inferType(value)
 				if !p.checkTypeCompatibility(propType, valueType) {
@@ -6591,6 +6610,17 @@ func (p *Parser) structHasField(typeName, fieldName string) bool {
 	return false
 }
 
+// Get the full field info from struct
+func (p *Parser) getStructField(typeName, fieldName string) *StructField {
+	fields := p.getStructFields(typeName)
+	for i := range fields {
+		if fields[i].Name == fieldName {
+			return &fields[i]
+		}
+	}
+	return nil
+}
+
 // Get field type from struct
 func (p *Parser) getStructFieldType(typeName, fieldName string) string {
 	fields := p.getStructFields(typeName)
@@ -6602,10 +6632,26 @@ func (p *Parser) getStructFieldType(typeName, fieldName string) string {
 	return ""
 }
 
-// Parse member access chain (obj.prop or obj.method||)
+// Parse member access chain (obj.prop or obj.method|| or StructType.#static_field)
 func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 	for p.current().Type == TOKEN_DOT {
 		p.advance()
+
+		// Check for static member access: .#field_name
+		if p.current().Type == TOKEN_HASH {
+			p.advance() // consume #
+			member := p.expect(TOKEN_IDENTIFIER)
+
+			// This is a static member access
+			object = &ASTNode{
+				Type:     NODE_STATIC_MEMBER_ACCESS,
+				Value:    member.Value,
+				Line:     member.Line,
+				Children: []*ASTNode{object},
+				IsStatic: true,
+			}
+			continue
+		}
 
 		// Allow 'type' keyword as a member name (special case for .type property)
 		var member Token

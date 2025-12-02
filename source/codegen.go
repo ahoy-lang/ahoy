@@ -47,10 +47,35 @@ func snakeToPascal(s string) string {
 	return strings.Join(parts, "")
 }
 
+// isScreamingSnakeCase checks if a string is in SCREAMING_SNAKE_CASE (all uppercase with underscores)
+func isScreamingSnakeCase(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+
+	// Must have at least one uppercase letter
+	hasUpper := false
+	for _, ch := range s {
+		if ch >= 'A' && ch <= 'Z' {
+			hasUpper = true
+		} else if ch >= 'a' && ch <= 'z' {
+			// Has lowercase, not screaming snake case
+			return false
+		} else if ch != '_' && (ch < '0' || ch > '9') {
+			// Has character that's not uppercase, underscore, or digit
+			return false
+		}
+	}
+
+	return hasUpper
+}
+
 type StructField struct {
 	Name         string
 	Type         string
 	DefaultValue string // C code for default value (if any)
+	IsStatic     bool   // Static field (shared across instances)
+	IsConst      bool   // Const field (SCREAMING_SNAKE_CASE - immutable)
 }
 
 type StructInfo struct {
@@ -1213,6 +1238,8 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 		gen.generateTypeProperty(node)
 	case ahoy.NODE_MEMBER_ACCESS:
 		gen.generateMemberAccess(node)
+	case ahoy.NODE_STATIC_MEMBER_ACCESS:
+		gen.generateStaticMemberAccess(node)
 	case ahoy.NODE_HALT:
 		gen.writeIndent()
 		gen.output.WriteString("break;\n")
@@ -1409,6 +1436,15 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 
 func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 	gen.writeIndent()
+
+	// Check if this is a static member access assignment (StructType.#static_field: value)
+	if len(node.Children) == 2 && node.Children[0].Type == ahoy.NODE_STATIC_MEMBER_ACCESS {
+		gen.generateStaticMemberAccess(node.Children[0])
+		gen.output.WriteString(" = ")
+		gen.generateNode(node.Children[1])
+		gen.output.WriteString(";\n")
+		return
+	}
 
 	// Check if this is a property/element/pointer assignment (obj<'prop'>: value or dict{"key"}: value or obj.prop: value or ^ptr: value)
 	// In this case, Children[0] is the access node, Children[1] is the value
@@ -1730,6 +1766,17 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 		}
 
 		// For struct field/array/pointer access, direct assignment works
+		// But skip assignment to const properties (SCREAMING_SNAKE_CASE)
+		if node.Children[0].Type == ahoy.NODE_MEMBER_ACCESS && len(node.Children[0].Children) > 0 {
+			memberName := node.Children[0].Value
+			// Check if this is a const property (SCREAMING_SNAKE_CASE)
+			if isScreamingSnakeCase(memberName) {
+				// Skip generating assignment for const properties
+				// This effectively makes the assignment a no-op
+				return
+			}
+		}
+
 		// Mark any variables in the value as escaping (being stored)
 		gen.markEscapingVariables(node.Children[1])
 
@@ -4172,9 +4219,20 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 					needsHeapAlloc = true
 					structType = gen.mapType(arg.Value)
 				} else if _, isStruct := gen.structs[argType]; isStruct {
-					// For struct variables
+					// For Ahoy-defined struct variables
 					needsHeapAlloc = true
 					structType = gen.mapType(argType)
+				} else {
+					// Check if it's a C struct type from imported headers
+					cType := gen.mapType(argType)
+					isCStruct := gen.cTypeDefinitions[cType] && !strings.HasSuffix(cType, "*") &&
+						cType != "int" && cType != "float" && cType != "double" &&
+						cType != "char" && cType != "bool" && cType != "void" &&
+						cType != "char*" && cType != "intptr_t"
+					if isCStruct {
+						needsHeapAlloc = true
+						structType = cType
+					}
 				}
 
 				if needsHeapAlloc {
@@ -4223,9 +4281,20 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 							needsHeapAlloc = true
 							structType = gen.mapType(arg.Value)
 						} else if _, isStruct := gen.structs[argType]; isStruct {
-							// For struct variables
+							// For Ahoy-defined struct variables
 							needsHeapAlloc = true
 							structType = gen.mapType(argType)
+						} else {
+							// Check if it's a C struct type from imported headers
+							cType := gen.mapType(argType)
+							isCStruct := gen.cTypeDefinitions[cType] && !strings.HasSuffix(cType, "*") &&
+								cType != "int" && cType != "float" && cType != "double" &&
+								cType != "char" && cType != "bool" && cType != "void" &&
+								cType != "char*" && cType != "intptr_t"
+							if isCStruct {
+								needsHeapAlloc = true
+								structType = cType
+							}
 						}
 
 						if needsHeapAlloc {
@@ -6251,7 +6320,16 @@ func (gen *CodeGenerator) generateStruct(node *ahoy.ASTNode) {
 
 	gen.structDecls.WriteString(fmt.Sprintf("typedef struct {\n"))
 
+	// Track static fields separately - they will be generated as global variables
+	var staticFields []*ahoy.ASTNode
+
 	for _, field := range baseFields {
+		// Skip static fields - they are not part of the struct
+		if field.IsStatic {
+			staticFields = append(staticFields, field)
+			continue
+		}
+
 		fieldType := gen.mapType(field.DataType)
 		gen.structDecls.WriteString(fmt.Sprintf("    %s %s;\n", fieldType, field.Value))
 
@@ -6261,10 +6339,36 @@ func (gen *CodeGenerator) generateStruct(node *ahoy.ASTNode) {
 			Name:         field.Value,
 			Type:         fieldType,
 			DefaultValue: defaultValue,
+			IsStatic:     false,
+			IsConst:      field.IsConst,
 		})
 	}
 
 	gen.structDecls.WriteString(fmt.Sprintf("} %s;\n\n", cStructName))
+
+	// Generate static fields as global variables
+	for _, field := range staticFields {
+		fieldType := gen.mapType(field.DataType)
+		defaultValue := "0"
+		if field.DefaultValue != nil {
+			defaultValue = gen.generateDefaultValue(field.DefaultValue)
+		}
+		// Static field name format: StructName_fieldname
+		staticFieldName := fmt.Sprintf("%s_%s", cStructName, field.Value)
+		gen.structDecls.WriteString(fmt.Sprintf("static %s %s = %s;\n", fieldType, staticFieldName, defaultValue))
+
+		// Also track in struct info for type checking (marked as static)
+		structInfo.Fields = append(structInfo.Fields, StructField{
+			Name:         field.Value,
+			Type:         fieldType,
+			DefaultValue: defaultValue,
+			IsStatic:     true,
+			IsConst:      field.IsConst,
+		})
+	}
+	if len(staticFields) > 0 {
+		gen.structDecls.WriteString("\n")
+	}
 
 	// Store struct info with both lowercase and capitalized names
 	gen.structs[structName] = structInfo
@@ -6594,6 +6698,32 @@ func (gen *CodeGenerator) generateMemberAccess(node *ahoy.ASTNode) {
 		gen.output.WriteString(".")
 	}
 	gen.output.WriteString(memberName)
+}
+
+// generateStaticMemberAccess handles StructType.#static_field access
+func (gen *CodeGenerator) generateStaticMemberAccess(node *ahoy.ASTNode) {
+	object := node.Children[0]
+	memberName := node.Value
+
+	// Get the struct type name
+	structTypeName := ""
+	if object.Type == ahoy.NODE_IDENTIFIER {
+		structTypeName = object.Value
+	}
+
+	if structTypeName == "" {
+		// Fallback - just use the identifier
+		gen.generateNodeInternal(object, false)
+		gen.output.WriteString("_")
+		gen.output.WriteString(memberName)
+		return
+	}
+
+	// Generate the static variable name: StructName_fieldname
+	// Use capitalizeFirst to match struct naming convention
+	cStructName := capitalizeFirst(structTypeName)
+	staticFieldName := fmt.Sprintf("%s_%s", cStructName, memberName)
+	gen.output.WriteString(staticFieldName)
 }
 
 func (gen *CodeGenerator) generateTypeProperty(node *ahoy.ASTNode) {
@@ -7629,7 +7759,15 @@ func (gen *CodeGenerator) writeStructHelperFunctions() {
 			}
 			firstValue = false
 
-			if field.Type == "bool" {
+			// For static fields, access the global variable instead of obj.field
+			if field.IsStatic {
+				staticFieldName := fmt.Sprintf("%s_%s", cStructName, field.Name)
+				if field.Type == "bool" {
+					gen.funcDecls.WriteString(fmt.Sprintf("%s ? \"true\" : \"false\"", staticFieldName))
+				} else {
+					gen.funcDecls.WriteString(staticFieldName)
+				}
+			} else if field.Type == "bool" {
 				gen.funcDecls.WriteString(fmt.Sprintf("obj.%s ? \"true\" : \"false\"", field.Name))
 			} else if field.Type == "char*" || field.Type == "const char*" {
 				gen.funcDecls.WriteString(fmt.Sprintf("(obj.%s ? obj.%s : \"\")", field.Name, field.Name))
@@ -8001,6 +8139,11 @@ func (gen *CodeGenerator) generateObjectLiteral(node *ahoy.ASTNode) {
 	if hasStructInfo {
 		// Generate all fields with defaults or explicit values
 		for _, field := range structInfo.Fields {
+			// Skip static fields - they are not part of the struct instance
+			if field.IsStatic {
+				continue
+			}
+
 			if !first {
 				gen.output.WriteString(", ")
 			}
