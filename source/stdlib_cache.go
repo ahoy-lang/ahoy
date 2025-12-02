@@ -74,11 +74,11 @@ func generateStdlibCFile() string {
  * This file documents all built-in functions and methods available in Ahoy.
  * It is used by the LSP for goto definition, hover documentation, and autocomplete.
  * 
- * Comment format:
- *   // @ function_name |param:type, ...| return_type:
- *   // ? Description of the function
- *   // return [default_value]
- *   // $
+ * Comment format (multiline C comments):
+ *   @ function_name |param:type, ...| return_type:
+ *   ? Description of the function
+ *   return [default_value]
+ *   $
  * =============================================================================
  */
 
@@ -168,48 +168,48 @@ func generateStdlibCFile() string {
 }
 
 func writeCMethodDoc(sb *strings.Builder, method StdlibFunc) {
-	sb.WriteString("/* -----------------------------------------------------------------------------\n")
-
-	// Write method signature in Ahoy format as a comment
+	// Write method signature in Ahoy format using multiline C comment
 	funcName := fmt.Sprintf("%s_%s", method.Category, method.MethodName)
 	if method.Category == "builtin" {
 		funcName = method.MethodName
 	}
-	sb.WriteString(fmt.Sprintf(" * // @ %s |%s| %s:\n", funcName, method.Params, method.ReturnType))
-	sb.WriteString(fmt.Sprintf(" * // ? %s\n", method.Doc))
+	
+	sb.WriteString("/*\n")
+	sb.WriteString(fmt.Sprintf(" * @ %s |%s| %s:\n", funcName, method.Params, method.ReturnType))
+	sb.WriteString(fmt.Sprintf(" * ? %s\n", method.Doc))
 	
 	// Write return statement marker based on return type
 	switch method.ReturnType {
 	case "void":
-		sb.WriteString(" * // return\n")
+		sb.WriteString(" * return\n")
 	case "int":
-		sb.WriteString(" * // return 0\n")
+		sb.WriteString(" * return 0\n")
 	case "bool":
-		sb.WriteString(" * // return false\n")
+		sb.WriteString(" * return false\n")
 	case "string":
-		sb.WriteString(" * // return \"\"\n")
+		sb.WriteString(" * return \"\"\n")
 	case "array", "array[string]":
-		sb.WriteString(" * // return []\n")
+		sb.WriteString(" * return []\n")
 	case "dict":
-		sb.WriteString(" * // return <>\n")
+		sb.WriteString(" * return <>\n")
 	case "any":
-		sb.WriteString(" * // return 0\n")
+		sb.WriteString(" * return 0\n")
 	default:
 		if strings.HasPrefix(method.ReturnType, "array") {
-			sb.WriteString(" * // return []\n")
+			sb.WriteString(" * return []\n")
 		} else {
-			sb.WriteString(" * // return\n")
+			sb.WriteString(" * return\n")
 		}
 	}
-	sb.WriteString(" * // $\n")
-	sb.WriteString(" * ----------------------------------------------------------------------------- */\n")
+	sb.WriteString(" * $\n")
+	sb.WriteString(" */\n")
 
 	// Write actual C implementation
 	if method.Code != "" {
 		sb.WriteString(method.Code)
 	} else {
 		// For builtins without code, write a stub
-		sb.WriteString(fmt.Sprintf("// %s is a compiler builtin\n", funcName))
+		sb.WriteString(fmt.Sprintf("/* %s is a compiler builtin */\n", funcName))
 	}
 	sb.WriteString("\n")
 }

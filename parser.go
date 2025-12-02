@@ -1461,9 +1461,9 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 			statements := []*ASTNode{}
 
 			for {
-				// Skip cosmetic tokens
+				// Skip cosmetic tokens (including semicolons for inline case statements)
 				for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT ||
-					p.current().Type == TOKEN_DEDENT {
+					p.current().Type == TOKEN_DEDENT || p.current().Type == TOKEN_SEMICOLON {
 					p.advance()
 				}
 
@@ -1504,8 +1504,8 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 				if stmt != nil {
 					statements = append(statements, stmt)
 
-					// Skip trailing cosmetic tokens
-					for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_DEDENT {
+					// Skip trailing cosmetic tokens (including semicolons)
+					for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_DEDENT || p.current().Type == TOKEN_SEMICOLON {
 						p.advance()
 					}
 
@@ -6834,12 +6834,43 @@ func (p *Parser) parseArrayLiteralBracket() *ASTNode {
 
 	p.inArrayLiteral = true
 
+	// Skip leading newlines/indents for multiline arrays
+	for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT {
+		p.advance()
+	}
+
 	for p.current().Type != TOKEN_RBRACKET {
+		// Skip newlines/indents before element
+		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
+			p.advance()
+		}
+		
+		// Check if we've reached the closing bracket after whitespace
+		if p.current().Type == TOKEN_RBRACKET {
+			break
+		}
+		
 		element := p.parseExpression()
 		array.Children = append(array.Children, element)
 
+		// Skip trailing whitespace after element
+		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
+			p.advance()
+		}
+
 		if p.current().Type == TOKEN_COMMA {
 			p.advance()
+			// Skip whitespace after comma
+			for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
+				p.advance()
+			}
+		} else if p.current().Type == TOKEN_SEMICOLON {
+			// Also allow semicolon as delimiter in arrays
+			p.advance()
+			// Skip whitespace after semicolon
+			for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
+				p.advance()
+			}
 		} else if p.current().Type != TOKEN_RBRACKET {
 			break
 		}

@@ -1,6 +1,14 @@
 expected: []
 ? Arrays test
-numbers: [1, 2, 3, 4, 5]
+
+numbers:array=
+[1,
+	2,
+	3,
+	4,
+	5,
+]
+
 first: numbers[0]
 print|first| ? should print: 1
 expected.push|"1"|
@@ -84,6 +92,17 @@ complex.push|"six"|
 complex.push|7|
 print|complex|
 expected.push|"[1, \"two\", 3, \"four\", 5, \"six\", 7]"|
+
+
+
+? Test multiline array with trailing commas
+card_paths: array[string] = [
+"assets/cards/peasant.png",
+"assets/cards/scout.png",
+"assets/cards/boulder.png"
+]
+print|card_paths|
+expected.push|"[\"assets/cards/peasant.png\", \"assets/cards/scout.png\", \"assets/cards/boulder.png\"]"|
 
 ? Print expected values for test validation
 print|expected|
