@@ -13,6 +13,7 @@ const (
 	TOKEN_IDENTIFIER
 	TOKEN_NUMBER
 	TOKEN_STRING
+	TOKEN_RAW_STRING // `raw string with newlines`
 	TOKEN_CHAR
 	TOKEN_F_STRING // f"string with {vars}"
 	TOKEN_ASSIGN   // :
@@ -259,6 +260,31 @@ func Tokenize(input string) []Token {
 					Line:   lineNum + 1,
 					Column: start + 1,
 				})
+				continue
+			}
+
+			// Raw strings (backtick strings) - preserve newlines, no escape sequences
+			if content[i] == '`' {
+				i++
+				start := i
+				startLine := lineNum + 1
+				startCol := i + 1
+
+				// Raw strings can span multiple lines
+				for i < len(content) && content[i] != '`' {
+					i++
+				}
+
+				if i < len(content) {
+					value := content[start:i]
+					tokens = append(tokens, Token{
+						Type:   TOKEN_RAW_STRING,
+						Value:  value,
+						Line:   startLine,
+						Column: startCol,
+					})
+					i++ // Skip closing backtick
+				}
 				continue
 			}
 

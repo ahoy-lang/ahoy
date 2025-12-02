@@ -70,6 +70,50 @@ func isScreamingSnakeCase(s string) bool {
 	return hasUpper
 }
 
+// escapeRawString converts a raw string (with actual newlines) to a C string literal
+// Newlines become \n, backslashes become \\, etc.
+func escapeRawString(s string) string {
+	var result strings.Builder
+	for _, ch := range s {
+		switch ch {
+		case '\n':
+			result.WriteString("\\n")
+		case '\r':
+			result.WriteString("\\r")
+		case '\t':
+			result.WriteString("\\t")
+		case '\\':
+			result.WriteString("\\\\")
+		case '"':
+			result.WriteString("\\\"")
+		default:
+			result.WriteRune(ch)
+		}
+	}
+	return result.String()
+}
+
+// toCStructName converts a struct name to a valid C identifier
+// e.g., "Card.Assassin" -> "Card_Assassin", "player_info" -> "Player_info", "particle.wind_particle" -> "Particle_Wind_particle"
+func toCStructName(name string) string {
+	// Split by dots for nested types
+	if strings.Contains(name, ".") {
+		parts := strings.Split(name, ".")
+		for i := range parts {
+			parts[i] = capitalizeFirst(parts[i])
+		}
+		return strings.Join(parts, "_")
+	}
+	// Simple type name - just capitalize first letter
+	return capitalizeFirst(name)
+}
+
+// toCFuncName converts a name to a valid C function name (lowercase with underscores)
+// e.g., "Card.Assassin" -> "card_assassin"
+func toCFuncName(name string) string {
+	return strings.ToLower(strings.ReplaceAll(name, ".", "_"))
+}
+
 type StructField struct {
 	Name         string
 	Type         string
@@ -1176,6 +1220,12 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 
 	case ahoy.NODE_STRING:
 		gen.output.WriteString(fmt.Sprintf("\"%s\"", node.Value))
+
+	case ahoy.NODE_RAW_STRING:
+		// Raw strings preserve newlines and don't interpret escape sequences
+		// In C, we need to escape the actual newlines and special chars for the string literal
+		escaped := escapeRawString(node.Value)
+		gen.output.WriteString(fmt.Sprintf("\"%s\"", escaped))
 
 	case ahoy.NODE_F_STRING:
 		gen.generateFString(node)
@@ -3461,9 +3511,16 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 						// Struct type - use print helper
 						gen.arrayMethods["print_struct"] = true
 						gen.output.WriteString("print_struct_helper_")
-						// Convert C type to lowercase Ahoy type (Vector2 -> vector2)
-						ahoyType := strings.ToLower(argType)
-						gen.output.WriteString(ahoyType)
+						// Look up struct info to get the canonical name for print helper
+						funcName := ""
+						if structInfo := gen.structs[argType]; structInfo != nil {
+							funcName = toCFuncName(structInfo.Name)
+						} else if structInfo := gen.structs[strings.ToLower(argType)]; structInfo != nil {
+							funcName = toCFuncName(structInfo.Name)
+						} else {
+							funcName = toCFuncName(argType)
+						}
+						gen.output.WriteString(funcName)
 						gen.output.WriteString("(")
 						gen.generateNode(arg)
 						gen.output.WriteString(")")
@@ -4731,6 +4788,11 @@ func (gen *CodeGenerator) mapType(langType string) string {
 		return "HashMap*"
 	}
 
+	// Handle nested type names (e.g., Card.Assassin -> Card_Assassin, particle.wind_particle -> Particle_Wind_particle)
+	if strings.Contains(langType, ".") {
+		return toCStructName(langType)
+	}
+
 	// Handle known types first before pointer logic
 	switch langType {
 	case "generic", "any":
@@ -4796,7 +4858,7 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			return "float"
 		}
 		return "int"
-	case ahoy.NODE_STRING:
+	case ahoy.NODE_STRING, ahoy.NODE_RAW_STRING:
 		return "string"
 	case ahoy.NODE_F_STRING:
 		return "string"
@@ -6298,13 +6360,16 @@ func (gen *CodeGenerator) generateStruct(node *ahoy.ASTNode) {
 	var baseFields []*ahoy.ASTNode
 	var nestedTypes []*ahoy.ASTNode
 
-	for _, child := range node.Children {
+	fmt.Printf("DEBUG generateStructDeclaration: structName=%s, node.Children=%d\n", structName, len(node.Children))
+	for i, child := range node.Children {
+		fmt.Printf("DEBUG: node.Children[%d]: Type=%d, Value=%s\n", i, child.Type, child.Value)
 		if child.Type == ahoy.NODE_TYPE {
 			nestedTypes = append(nestedTypes, child)
 		} else {
 			baseFields = append(baseFields, child)
 		}
 	}
+	fmt.Printf("DEBUG: baseFields=%d, nestedTypes=%d\n", len(baseFields), len(nestedTypes))
 
 	// Generate nested types first (they inherit from base struct)
 	for _, nestedType := range nestedTypes {
@@ -6516,18 +6581,41 @@ func (gen *CodeGenerator) getTypeDefault(cType string) string {
 // Generate a nested struct type that inherits fields from parent
 func (gen *CodeGenerator) generateNestedStruct(node *ahoy.ASTNode, parentName string, parentFields []*ahoy.ASTNode) {
 	typeName := node.Value
-	cTypeName := capitalizeFirst(typeName)
+	fullTypeName := parentName + "." + typeName // Full name like Card.Assassin
+	// Use short name for C type (preserving original behavior)
+	cTypeName := capitalizeFirst(typeName) // Assassin for C
+	// Also create the full C type name for explicit Parent.Child syntax
+	fullCTypeName := capitalizeFirst(parentName) + "_" + capitalizeFirst(typeName) // Card_Assassin
 
 	// Track struct info
 	structInfo := &StructInfo{
-		Name:   typeName,
+		Name:   typeName, // Use short name for print output
 		Fields: make([]StructField, 0),
+	}
+
+	fmt.Printf("DEBUG generateNestedStruct: typeName=%s, node.Children=%d, parentFields=%d\n", typeName, len(node.Children), len(parentFields))
+	for i, child := range node.Children {
+		fmt.Printf("DEBUG: node.Children[%d]: Type=%d, Value=%s, DataType=%s\n", i, child.Type, child.Value, child.DataType)
+	}
+
+	// Build a set of field names defined in the nested type (for override detection)
+	nestedFieldNames := make(map[string]bool)
+	for _, field := range node.Children {
+		nestedFieldNames[field.Value] = true
+		fmt.Printf("DEBUG: Nested field: %s\n", field.Value)
 	}
 
 	gen.structDecls.WriteString(fmt.Sprintf("typedef struct {\n"))
 
-	// First, include parent fields
+	// First, include parent fields (skip those overridden by nested type)
 	for _, field := range parentFields {
+		// Skip if the nested type overrides this field
+		if nestedFieldNames[field.Value] {
+			fmt.Printf("DEBUG: Skipping overridden field: %s\n", field.Value)
+			continue
+		}
+		fmt.Printf("DEBUG: Including parent field: %s\n", field.Value)
+
 		fieldType := gen.mapType(field.DataType)
 		gen.structDecls.WriteString(fmt.Sprintf("    %s %s;\n", fieldType, field.Value))
 
@@ -6567,11 +6655,17 @@ func (gen *CodeGenerator) generateNestedStruct(node *ahoy.ASTNode, parentName st
 		})
 	}
 
+	// Generate typedef with short name (original behavior)
 	gen.structDecls.WriteString(fmt.Sprintf("} %s;\n\n", cTypeName))
 
-	// Store struct info with both lowercase and capitalized names
+	// Also generate a typedef alias for the full name syntax
+	gen.structDecls.WriteString(fmt.Sprintf("typedef %s %s;\n\n", cTypeName, fullCTypeName))
+
+	// Store struct info with multiple names for lookup
 	gen.structs[typeName] = structInfo
 	gen.structs[cTypeName] = structInfo
+	gen.structs[fullTypeName] = structInfo
+	gen.structs[fullCTypeName] = structInfo
 }
 
 // Generate method call
@@ -7670,9 +7764,8 @@ func (gen *CodeGenerator) writeStructHelperFunctions() {
 			continue
 		}
 		processed[structInfo.Name] = true
-		cStructName := capitalizeFirst(structInfo.Name)
-		// Use lowercase for function name to match call sites
-		funcName := strings.ToLower(structInfo.Name)
+		cStructName := toCStructName(structInfo.Name)
+		funcName := toCFuncName(structInfo.Name)
 		gen.funcForwardDecls.WriteString(fmt.Sprintf("char* print_struct_helper_%s(%s obj);\n", funcName, cStructName))
 	}
 
@@ -7689,9 +7782,8 @@ func (gen *CodeGenerator) writeStructHelperFunctions() {
 		}
 		processed[structInfo.Name] = true
 
-		cStructName := capitalizeFirst(structInfo.Name)
-		// Use lowercase for function name to match call sites
-		funcName := strings.ToLower(structInfo.Name)
+		cStructName := toCStructName(structInfo.Name)
+		funcName := toCFuncName(structInfo.Name)
 		gen.funcDecls.WriteString(fmt.Sprintf("\n// Print helper for %s\n", structInfo.Name))
 		gen.funcDecls.WriteString(fmt.Sprintf("char* print_struct_helper_%s(%s obj) {\n", funcName, cStructName))
 		// Use malloc instead of static buffer to avoid overwrites in nested calls

@@ -37,7 +37,8 @@ const (
 	NODE_IDENTIFIER
 	NODE_NUMBER
 	NODE_STRING
-	NODE_F_STRING // f-string with interpolation
+	NODE_RAW_STRING // Raw string with backticks - no escape sequences, preserves newlines
+	NODE_F_STRING   // f-string with interpolation
 	NODE_CHAR
 	NODE_BOOLEAN
 	NODE_DICT_LITERAL
@@ -4128,6 +4129,21 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 		}
 		return node
 
+	case TOKEN_RAW_STRING:
+		token := p.current()
+		p.advance()
+		node := &ASTNode{
+			Type:     NODE_RAW_STRING,
+			Value:    token.Value,
+			DataType: "string",
+			Line:     token.Line,
+		}
+		// Check for method call on raw string literal
+		if p.current().Type == TOKEN_DOT {
+			return p.parseMemberAccessChain(node)
+		}
+		return node
+
 	case TOKEN_F_STRING:
 		token := p.current()
 		p.advance()
@@ -6371,10 +6387,8 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 		}
 	}
 
-	// Store struct definition for linting
-	if p.LintMode {
-		p.storeStructDefinition(struc, startLine)
-	}
+	// Store struct definition for type checking (needed for nested type instantiation like Card.Assassin{})
+	p.storeStructDefinition(struc, startLine)
 
 	return struc
 }
@@ -6415,15 +6429,25 @@ func (p *Parser) storeStructDefinition(struc *ASTNode, startLine int) {
 		if child.Type == NODE_TYPE {
 			// This is a nested type
 			nestedName := child.Value
+			fullNestedName := structName + "." + nestedName // Full name like Card.Assassin
 			nestedDef := &StructDefinition{
-				Name:   nestedName,
+				Name:   fullNestedName,
 				Parent: structName, // Track parent struct
 				Fields: []StructField{},
 				Line:   child.Line,
 			}
 
-			// Add parent struct fields to nested type
+			// Build a set of field names defined in the nested type (for override detection)
+			nestedFieldNames := make(map[string]bool)
+			for _, field := range child.Children {
+				nestedFieldNames[field.Value] = true
+			}
+
+			// Add parent struct fields to nested type (skip those overridden)
 			for _, field := range structDef.Fields {
+				if nestedFieldNames[field.Name] {
+					continue // Skip overridden fields
+				}
 				nestedDef.Fields = append(nestedDef.Fields, field)
 			}
 
@@ -6438,6 +6462,9 @@ func (p *Parser) storeStructDefinition(struc *ASTNode, startLine int) {
 				})
 			}
 
+			// Register nested type with full name (Card.Assassin)
+			p.structs[fullNestedName] = nestedDef
+			// Also register with short name for backward compatibility
 			p.structs[nestedName] = nestedDef
 		} else {
 			// Regular field
@@ -6496,6 +6523,34 @@ func (p *Parser) validateStructInitialization(typeName string, value *ASTNode, l
 
 // Validate property assignment
 func (p *Parser) validatePropertyAssignment(target *ASTNode, value *ASTNode, line int) {
+	// Handle static member access assignments (StructType.#field)
+	if target.Type == NODE_STATIC_MEMBER_ACCESS {
+		// Check if the left side is a struct type name (valid) or an instance variable (invalid)
+		if len(target.Children) > 0 && target.Children[0].Type == NODE_IDENTIFIER {
+			leftSideName := target.Children[0].Value
+			staticFieldName := target.Value
+
+			// Check if left side is a known struct type
+			_, isStructType := p.structs[leftSideName]
+
+			// Check if left side is a variable (instance)
+			_, isVariable := p.variableTypes[leftSideName]
+
+			if isVariable && !isStructType {
+				// It's an instance variable, not allowed with # syntax
+				// Get the struct type to provide a helpful error message
+				varType := p.variableTypes[leftSideName]
+				structType := strings.TrimPrefix(varType, "struct:")
+				errMsg := fmt.Sprintf("Cannot use '#' syntax on instance variable '%s' - use %s.#%s : value syntax instead (line %d)",
+					leftSideName, structType, staticFieldName, line)
+				p.recordError(errMsg)
+				return
+			}
+		}
+		// Static member access on struct type is valid - no error needed
+		return
+	}
+
 	if target.Type != NODE_MEMBER_ACCESS || len(target.Children) == 0 {
 		return
 	}
@@ -6564,8 +6619,16 @@ func (p *Parser) validatePropertyAssignment(target *ASTNode, value *ASTNode, lin
 			propType := p.getStructFieldType(objectType, propName)
 
 			if isLastProp {
-				// Check if this property is const (SCREAMING_SNAKE_CASE)
+				// Check if this property is static
 				field := p.getStructField(objectType, propName)
+				if field != nil && field.IsStatic {
+					errMsg := fmt.Sprintf("Cannot assign to static property '%s' via instance - use %s.#%s : value syntax instead (line %d)",
+						propName, objectType, propName, line)
+					p.recordError(errMsg)
+					return
+				}
+
+				// Check if this property is const (SCREAMING_SNAKE_CASE)
 				if field != nil && field.IsConst {
 					errMsg := fmt.Sprintf("Cannot assign to const property '%s' - SCREAMING_SNAKE_CASE properties are immutable (line %d)",
 						propName, line)
@@ -6781,6 +6844,48 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 		}
 	}
 
+	// Check if this is a nested struct type instantiation (e.g., Card.Assassin{})
+	if object.Type == NODE_MEMBER_ACCESS && p.current().Type == TOKEN_LBRACE {
+		// Build the full type name from the member access chain
+		fullTypeName := p.buildMemberAccessTypeName(object)
+
+		// Check if this is a known nested type
+		if _, exists := p.structs[fullTypeName]; exists {
+			p.advance() // consume {
+
+			// Skip any newlines/indents
+			for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT {
+				p.advance()
+			}
+
+			// Check for empty instantiation
+			if p.current().Type == TOKEN_RBRACE {
+				p.advance() // consume }
+				obj := &ASTNode{
+					Type:     NODE_OBJECT_LITERAL,
+					DataType: "object",
+					Value:    fullTypeName, // Set the full type name
+					Children: []*ASTNode{},
+					Line:     object.Line,
+				}
+				return obj
+			}
+
+			// Check if this is object instantiation with properties
+			if (p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_STRING) &&
+				p.peek(1).Type == TOKEN_ASSIGN {
+				obj := p.parseObjectLiteral()
+				obj.Value = fullTypeName
+				return obj
+			}
+
+			// Handle other cases - for now just parse as object literal
+			obj := p.parseObjectLiteral()
+			obj.Value = fullTypeName
+			return obj
+		}
+	}
+
 	return object
 }
 
@@ -6823,6 +6928,21 @@ func (p *Parser) inferMemberAccessType(node *ASTNode) string {
 				return "int"
 			}
 		}
+	}
+
+	return ""
+}
+
+// buildMemberAccessTypeName builds a full type name from a member access chain
+// e.g., for Card.Assassin it returns "Card.Assassin"
+func (p *Parser) buildMemberAccessTypeName(node *ASTNode) string {
+	if node.Type == NODE_IDENTIFIER {
+		return node.Value
+	}
+
+	if node.Type == NODE_MEMBER_ACCESS && len(node.Children) > 0 {
+		parentName := p.buildMemberAccessTypeName(node.Children[0])
+		return parentName + "." + node.Value
 	}
 
 	return ""
