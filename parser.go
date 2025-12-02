@@ -6849,8 +6849,27 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 		// Build the full type name from the member access chain
 		fullTypeName := p.buildMemberAccessTypeName(object)
 
-		// Check if this is a known nested type
-		if _, exists := p.structs[fullTypeName]; exists {
+		// Check if this looks like a nested type instantiation pattern (Parent.Child{})
+		// We accept it if:
+		// 1. The full type name is known, OR
+		// 2. The parent struct name is known (for multi-file packages), OR
+		// 3. It matches the pattern of Identifier.Identifier{ (for multi-file packages where
+		//    the parent struct is defined in another file)
+		parentName := ""
+		isNestedPattern := false
+		if len(object.Children) > 0 && object.Children[0].Type == NODE_IDENTIFIER {
+			parentName = object.Children[0].Value
+			// Check if the pattern is Identifier.Identifier (not a.b.c or expression.field)
+			// The child should be an identifier, and object.Value should be the nested type name
+			if object.Value != "" {
+				isNestedPattern = true
+			}
+		}
+		
+		_, fullTypeExists := p.structs[fullTypeName]
+		_, parentExists := p.structs[parentName]
+		
+		if fullTypeExists || parentExists || isNestedPattern {
 			p.advance() // consume {
 
 			// Skip any newlines/indents
