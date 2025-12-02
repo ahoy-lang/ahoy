@@ -6360,16 +6360,13 @@ func (gen *CodeGenerator) generateStruct(node *ahoy.ASTNode) {
 	var baseFields []*ahoy.ASTNode
 	var nestedTypes []*ahoy.ASTNode
 
-	fmt.Printf("DEBUG generateStructDeclaration: structName=%s, node.Children=%d\n", structName, len(node.Children))
-	for i, child := range node.Children {
-		fmt.Printf("DEBUG: node.Children[%d]: Type=%d, Value=%s\n", i, child.Type, child.Value)
+	for _, child := range node.Children {
 		if child.Type == ahoy.NODE_TYPE {
 			nestedTypes = append(nestedTypes, child)
 		} else {
 			baseFields = append(baseFields, child)
 		}
 	}
-	fmt.Printf("DEBUG: baseFields=%d, nestedTypes=%d\n", len(baseFields), len(nestedTypes))
 
 	// Generate nested types first (they inherit from base struct)
 	for _, nestedType := range nestedTypes {
@@ -6593,16 +6590,10 @@ func (gen *CodeGenerator) generateNestedStruct(node *ahoy.ASTNode, parentName st
 		Fields: make([]StructField, 0),
 	}
 
-	fmt.Printf("DEBUG generateNestedStruct: typeName=%s, node.Children=%d, parentFields=%d\n", typeName, len(node.Children), len(parentFields))
-	for i, child := range node.Children {
-		fmt.Printf("DEBUG: node.Children[%d]: Type=%d, Value=%s, DataType=%s\n", i, child.Type, child.Value, child.DataType)
-	}
-
 	// Build a set of field names defined in the nested type (for override detection)
 	nestedFieldNames := make(map[string]bool)
 	for _, field := range node.Children {
 		nestedFieldNames[field.Value] = true
-		fmt.Printf("DEBUG: Nested field: %s\n", field.Value)
 	}
 
 	gen.structDecls.WriteString(fmt.Sprintf("typedef struct {\n"))
@@ -6611,10 +6602,8 @@ func (gen *CodeGenerator) generateNestedStruct(node *ahoy.ASTNode, parentName st
 	for _, field := range parentFields {
 		// Skip if the nested type overrides this field
 		if nestedFieldNames[field.Value] {
-			fmt.Printf("DEBUG: Skipping overridden field: %s\n", field.Value)
 			continue
 		}
-		fmt.Printf("DEBUG: Including parent field: %s\n", field.Value)
 
 		fieldType := gen.mapType(field.DataType)
 		gen.structDecls.WriteString(fmt.Sprintf("    %s %s;\n", fieldType, field.Value))
