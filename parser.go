@@ -173,11 +173,19 @@ type CStruct struct {
 	File   string // Path to the header file
 }
 
+type CTypedef struct {
+	AliasName string
+	BaseType  string
+	Line      int
+	File      string
+}
+
 type CHeaderInfo struct {
 	Functions map[string]*CFunction
 	Enums     map[string]*CEnum
 	Defines   map[string]*CDefine
 	Structs   map[string]*CStruct
+	Typedefs  map[string]*CTypedef // alias name -> typedef info
 }
 
 type Parser struct {

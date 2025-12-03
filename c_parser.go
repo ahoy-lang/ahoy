@@ -46,6 +46,7 @@ func ParseCHeader(path string) (*CHeaderInfo, error) {
 		Enums:     make(map[string]*CEnum),
 		Defines:   make(map[string]*CDefine),
 		Structs:   make(map[string]*CStruct),
+		Typedefs:  make(map[string]*CTypedef),
 	}
 	
 	// Read the header file
@@ -88,7 +89,7 @@ func ParseCHeader(path string) (*CHeaderInfo, error) {
 		
 		// Parse simple typedef aliases (e.g., typedef Texture Texture2D;)
 		if strings.HasPrefix(line, "typedef ") && !strings.Contains(line, "{") && strings.HasSuffix(line, ";") {
-			parseTypedefAlias(line, info)
+			parseTypedefAlias(line, lineNum, path, info)
 		}
 	}
 	
@@ -493,7 +494,7 @@ func PascalToSnake(s string) string {
 }
 
 // parseTypedefAlias parses simple typedef aliases like: typedef Texture Texture2D;
-func parseTypedefAlias(line string, info *CHeaderInfo) {
+func parseTypedefAlias(line string, lineNum int, filePath string, info *CHeaderInfo) {
 	// Remove typedef and semicolon
 	line = strings.TrimPrefix(line, "typedef")
 	line = strings.TrimSuffix(line, ";")
@@ -504,6 +505,16 @@ func parseTypedefAlias(line string, info *CHeaderInfo) {
 	if len(parts) == 2 {
 		baseType := parts[0]
 		aliasName := parts[1]
+		
+		// Store the alias -> typedef info with line and file
+		if info.Typedefs != nil {
+			info.Typedefs[aliasName] = &CTypedef{
+				AliasName: aliasName,
+				BaseType:  baseType,
+				Line:      lineNum,
+				File:      filePath,
+			}
+		}
 		
 		// Store as a struct entry so it's treated as a known C type
 		// We don't need the full struct definition, just the name
