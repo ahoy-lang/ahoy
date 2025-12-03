@@ -63,6 +63,11 @@ var ArrayMethods = map[string]StdlibFunc{
 		Params: "arr:array, value:any, count:int", Doc: "Fills the array with the specified value",
 		Code: "AhoyArray* ahoy_array_fill(AhoyArray* arr, intptr_t value, AhoyValueType type, int count) {\n    if (count <= 0) return arr;\n    if (arr->capacity < count) {\n        arr->capacity = count;\n        arr->data = realloc(arr->data, arr->capacity * sizeof(intptr_t));\n        arr->types = realloc(arr->types, arr->capacity * sizeof(AhoyValueType));\n    }\n    for (int i = 0; i < count; i++) {\n        arr->data[i] = value;\n        arr->types[i] = type;\n    }\n    arr->length = count;\n    return arr;\n}\n",
 	},
+	"remove": {
+		Name: "ahoy_array_remove", Category: "array", MethodName: "remove", ReturnType: "array",
+		Params: "arr:array, index:int", Doc: "Removes the element at the specified index",
+		Code: "AhoyArray* ahoy_array_remove(AhoyArray* arr, int index) {\n    if (arr == NULL || index < 0 || index >= arr->length) return arr;\n    for (int i = index; i < arr->length - 1; i++) {\n        arr->data[i] = arr->data[i + 1];\n        arr->types[i] = arr->types[i + 1];\n    }\n    arr->length--;\n    return arr;\n}\n",
+	},
 }
 
 // DictMethods contains all dictionary method implementations

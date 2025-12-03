@@ -177,6 +177,7 @@ func Tokenize(input string) []Token {
 		"do":           TOKEN_DO,
 		"halt":         TOKEN_HALT,
 		"next":         TOKEN_NEXT,
+		"continue":     TOKEN_NEXT, // alias for next
 		"assert":       TOKEN_ASSERT,
 		"defer":        TOKEN_DEFER,
 		"infer":        TOKEN_INFER,

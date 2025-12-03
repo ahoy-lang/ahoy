@@ -282,8 +282,14 @@ func parseParameters(paramStr string) []CParameter {
 			paramName = ""
 		} else {
 			paramName = tokens[len(tokens)-1]
-			paramName = strings.TrimPrefix(paramName, "*")
-			paramType = strings.Join(tokens[:len(tokens)-1], " ")
+			// Check if param name starts with * (pointer declaration like "const void *value")
+			if strings.HasPrefix(paramName, "*") {
+				// Move * to the type
+				paramType = strings.Join(tokens[:len(tokens)-1], " ") + " *"
+				paramName = strings.TrimPrefix(paramName, "*")
+			} else {
+				paramType = strings.Join(tokens[:len(tokens)-1], " ")
+			}
 		}
 		
 		params = append(params, CParameter{

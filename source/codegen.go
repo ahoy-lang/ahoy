@@ -190,6 +190,9 @@ type CodeGenerator struct {
 	escapingVars                  map[string]bool              // Track variables that escape the function (returned or stored)
 	manuallyFreedVars             map[string]bool              // Track variables with manual defer free
 	autoFreedVars                 map[string]bool              // Track variables with automatic defer free
+	cStructFields                 map[string]map[string]string // C struct name -> (field name -> field type)
+	cTypedefs                     map[string]string            // typedef alias -> base type
+	cFunctionParamTypes           map[string][]string          // C function name (snake_case) -> parameter types
 }
 
 // GenerateC generates C code from an AST (exported for testing)
@@ -248,6 +251,9 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		escapingVars:          make(map[string]bool),
 		manuallyFreedVars:     make(map[string]bool),
 		autoFreedVars:         make(map[string]bool),
+		cStructFields:         make(map[string]map[string]string),
+		cTypedefs:             make(map[string]string),
+		cFunctionParamTypes:   make(map[string][]string),
 	}
 
 	// Add standard includes
@@ -386,6 +392,9 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		}
 		if gen.arrayMethods["fill"] {
 			result.WriteString("AhoyArray* ahoy_array_fill(AhoyArray* arr, intptr_t value, AhoyValueType type, int count);\n")
+		}
+		if gen.arrayMethods["remove"] {
+			result.WriteString("AhoyArray* ahoy_array_remove(AhoyArray* arr, int index);\n")
 		}
 		result.WriteString("char* print_array_helper(AhoyArray* arr);\n")
 		result.WriteString("\n")
@@ -890,11 +899,35 @@ func (gen *CodeGenerator) scanImports(node *ahoy.ASTNode) {
 
 			if headerPath != "" {
 				if headerInfo, err := ahoy.ParseCHeader(headerPath); err == nil {
-					// Track struct/typedef names as known C types
-					for typeName := range headerInfo.Structs {
+					// Track struct/typedef names as known C types and store struct fields
+					for typeName, structInfo := range headerInfo.Structs {
 						gen.cTypeDefinitions[typeName] = true
 						// Also register lowercase version for easier matching
 						gen.cTypeDefinitions[strings.ToLower(typeName)] = true
+						
+						// Store struct fields for member access type inference
+						if gen.cStructFields[typeName] == nil {
+							gen.cStructFields[typeName] = make(map[string]string)
+						}
+						for _, field := range structInfo.Fields {
+							gen.cStructFields[typeName][field.Name] = field.Type
+						}
+						// Also store lowercase version
+						if gen.cStructFields[strings.ToLower(typeName)] == nil {
+							gen.cStructFields[strings.ToLower(typeName)] = make(map[string]string)
+						}
+						for _, field := range structInfo.Fields {
+							gen.cStructFields[strings.ToLower(typeName)][field.Name] = field.Type
+						}
+					}
+
+					// Store typedef aliases
+					for aliasName, typedefInfo := range headerInfo.Typedefs {
+						gen.cTypedefs[aliasName] = typedefInfo.BaseType
+						gen.cTypedefs[strings.ToLower(aliasName)] = typedefInfo.BaseType
+						// Also mark the alias as a known type
+						gen.cTypeDefinitions[aliasName] = true
+						gen.cTypeDefinitions[strings.ToLower(aliasName)] = true
 					}
 
 					// Store function return types and register them as C types if they're structs
@@ -912,6 +945,13 @@ func (gen *CodeGenerator) scanImports(node *ahoy.ASTNode) {
 								gen.cTypeDefinitions[funcInfo.ReturnType] = true
 								gen.cTypeDefinitions[strings.ToLower(funcInfo.ReturnType)] = true
 							}
+							
+							// Store function parameter types
+							paramTypes := []string{}
+							for _, param := range funcInfo.Parameters {
+								paramTypes = append(paramTypes, param.Type)
+							}
+							gen.cFunctionParamTypes[snakeName] = paramTypes
 						}
 					} else {
 						for cFuncName, funcInfo := range headerInfo.Functions {
@@ -924,6 +964,13 @@ func (gen *CodeGenerator) scanImports(node *ahoy.ASTNode) {
 								gen.cTypeDefinitions[funcInfo.ReturnType] = true
 								gen.cTypeDefinitions[strings.ToLower(funcInfo.ReturnType)] = true
 							}
+							
+							// Store function parameter types
+							paramTypes := []string{}
+							for _, param := range funcInfo.Parameters {
+								paramTypes = append(paramTypes, param.Type)
+							}
+							gen.cFunctionParamTypes[snakeName] = paramTypes
 						}
 					}
 				}
@@ -3226,11 +3273,35 @@ func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
 
 			if headerPath != "" {
 				if headerInfo, err := ahoy.ParseCHeader(headerPath); err == nil {
-					// Track struct/typedef names as known C types
-					for typeName := range headerInfo.Structs {
+					// Track struct/typedef names as known C types and store struct fields
+					for typeName, structInfo := range headerInfo.Structs {
 						gen.cTypeDefinitions[typeName] = true
 						// Also register lowercase version for easier matching
 						gen.cTypeDefinitions[strings.ToLower(typeName)] = true
+						
+						// Store struct fields for member access type inference
+						if gen.cStructFields[typeName] == nil {
+							gen.cStructFields[typeName] = make(map[string]string)
+						}
+						for _, field := range structInfo.Fields {
+							gen.cStructFields[typeName][field.Name] = field.Type
+						}
+						// Also store lowercase version
+						if gen.cStructFields[strings.ToLower(typeName)] == nil {
+							gen.cStructFields[strings.ToLower(typeName)] = make(map[string]string)
+						}
+						for _, field := range structInfo.Fields {
+							gen.cStructFields[strings.ToLower(typeName)][field.Name] = field.Type
+						}
+					}
+
+					// Store typedef aliases
+					for aliasName, typedefInfo := range headerInfo.Typedefs {
+						gen.cTypedefs[aliasName] = typedefInfo.BaseType
+						gen.cTypedefs[strings.ToLower(aliasName)] = typedefInfo.BaseType
+						// Also mark the alias as a known type
+						gen.cTypeDefinitions[aliasName] = true
+						gen.cTypeDefinitions[strings.ToLower(aliasName)] = true
 					}
 
 					// If there's a namespace, store functions under that namespace
@@ -3252,6 +3323,13 @@ func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
 								gen.cTypeDefinitions[funcInfo.ReturnType] = true
 								gen.cTypeDefinitions[strings.ToLower(funcInfo.ReturnType)] = true
 							}
+							
+							// Store function parameter types
+							paramTypes := []string{}
+							for _, param := range funcInfo.Parameters {
+								paramTypes = append(paramTypes, param.Type)
+							}
+							gen.cFunctionParamTypes[snakeName] = paramTypes
 						}
 					} else {
 						// No namespace - add to global scope
@@ -3266,6 +3344,13 @@ func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
 								gen.cTypeDefinitions[funcInfo.ReturnType] = true
 								gen.cTypeDefinitions[strings.ToLower(funcInfo.ReturnType)] = true
 							}
+							
+							// Store function parameter types
+							paramTypes := []string{}
+							for _, param := range funcInfo.Parameters {
+								paramTypes = append(paramTypes, param.Type)
+							}
+							gen.cFunctionParamTypes[snakeName] = paramTypes
 						}
 					}
 				}
@@ -3298,6 +3383,43 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 
 	// Handle special functions
 	switch node.Value {
+	case "len", "length":
+		// len/length function - returns length of array, dict, string, etc.
+		if len(node.Children) > 0 {
+			arg := node.Children[0]
+			argType := gen.inferType(arg)
+			
+			// Check if it's an array type
+			if argType == "array" || strings.HasPrefix(argType, "array[") || argType == "AhoyArray*" {
+				gen.output.WriteString("(")
+				gen.generateNode(arg)
+				gen.output.WriteString(")->length")
+				return
+			}
+			
+			// Check if it's a dict type
+			if argType == "dict" || strings.HasPrefix(argType, "dict[") || argType == "HashMap*" {
+				gen.output.WriteString("(")
+				gen.generateNode(arg)
+				gen.output.WriteString(")->size")
+				return
+			}
+			
+			// Check if it's a string type
+			if argType == "string" || argType == "char*" || argType == "const char*" {
+				gen.output.WriteString("strlen(")
+				gen.generateNode(arg)
+				gen.output.WriteString(")")
+				return
+			}
+			
+			// For unknown types, try to call ->length as fallback
+			gen.output.WriteString("(")
+			gen.generateNode(arg)
+			gen.output.WriteString(")->length")
+			return
+		}
+		return
 	case "print":
 		// Check if we have multiple arguments or if first arg is a format string
 		hasMultipleArgs := len(node.Children) > 1
@@ -3924,6 +4046,9 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 			}
 		} else {
 			// Regular positional arguments
+			// Check if we have C function parameter type information
+			cParamTypes, hasCParamInfo := gen.cFunctionParamTypes[node.Value]
+			
 			for i, arg := range node.Children {
 				if i > 0 {
 					gen.output.WriteString(", ")
@@ -3935,6 +4060,25 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 					if argType == "float" {
 						// Dict access returns double, cast to char* for string values
 						gen.output.WriteString("(char*)(intptr_t)")
+					}
+				}
+
+				// Check if C function parameter is void* or const void* - add & for non-pointer arguments
+				if hasCParamInfo && i < len(cParamTypes) {
+					paramType := cParamTypes[i]
+					if paramType == "void *" || paramType == "const void *" || 
+					   paramType == "void*" || paramType == "const void*" {
+						argType := gen.inferType(arg)
+						// Only add & if the argument is not already a pointer type
+						// AND the argument is a variable (not a literal, constant, or enum)
+						isLValue := arg.Type == ahoy.NODE_IDENTIFIER && 
+						            !gen.isConstantOrEnum(arg.Value)
+						if isLValue && !strings.HasSuffix(argType, "*") && argType != "array" && 
+						   !strings.HasPrefix(argType, "array[") && argType != "dict" && 
+						   !strings.HasPrefix(argType, "dict[") && argType != "HashMap*" &&
+						   argType != "AhoyArray*" && argType != "string" && argType != "char*" {
+							gen.output.WriteString("&")
+						}
 					}
 				}
 
@@ -4970,7 +5114,7 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		if node.Value == "map" || node.Value == "filter" ||
 			node.Value == "sort" || node.Value == "reverse" ||
 			node.Value == "shuffle" || node.Value == "push" ||
-			node.Value == "fill" {
+			node.Value == "fill" || node.Value == "remove" {
 			return "array"
 		}
 		// Array methods that return int
@@ -5129,13 +5273,25 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			// Strip pointer suffix for struct lookup
 			lookupType := strings.TrimSuffix(objectType, "*")
 
-			// Look up the struct definition
+			// Resolve typedef aliases (e.g., RenderTexture2D -> RenderTexture)
+			if baseType, exists := gen.cTypedefs[lookupType]; exists {
+				lookupType = baseType
+			}
+
+			// Look up the Ahoy struct definition
 			if structInfo, exists := gen.structs[lookupType]; exists {
 				// Find the field type
 				for _, field := range structInfo.Fields {
 					if field.Name == memberName {
 						return field.Type
 					}
+				}
+			}
+
+			// Look up C struct fields
+			if fields, exists := gen.cStructFields[lookupType]; exists {
+				if fieldType, found := fields[memberName]; found {
+					return fieldType
 				}
 			}
 		}
@@ -5283,6 +5439,23 @@ func (gen *CodeGenerator) isEnumType(name string) bool {
 	return exists
 }
 
+// isConstantOrEnum checks if a name is a constant (Ahoy constant, C #define, or enum value)
+func (gen *CodeGenerator) isConstantOrEnum(name string) bool {
+	// Check if it's an Ahoy constant
+	if _, exists := gen.constants[name]; exists {
+		return true
+	}
+	// Check if it's an enum type name
+	if _, exists := gen.enums[name]; exists {
+		return true
+	}
+	// Check if it looks like an enum member (uppercase with underscores - likely C define or enum)
+	if isScreamingSnakeCase(name) {
+		return true
+	}
+	return false
+}
+
 func (gen *CodeGenerator) nodeToString(node *ahoy.ASTNode) string {
 	oldOutput := gen.output
 	gen.output = strings.Builder{}
@@ -5402,6 +5575,38 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 					}
 				} else {
 					gen.output.WriteString(v)
+				}
+			} else if strings.Contains(v, "|") {
+				// This looks like a function call with pipe syntax (e.g., len|my_array|)
+				// Parse and convert to C function call
+				pipeIdx := strings.Index(v, "|")
+				funcName := v[:pipeIdx]
+				argsStr := ""
+				if pipeIdx+1 < len(v) && v[len(v)-1] == '|' {
+					argsStr = v[pipeIdx+1 : len(v)-1]
+				}
+				
+				// Handle built-in len/length functions
+				if funcName == "len" || funcName == "length" {
+					argType := "int"
+					if knownType, exists := gen.variables[argsStr]; exists {
+						argType = knownType
+					}
+					
+					// Generate appropriate length access
+					if argType == "array" || strings.HasPrefix(argType, "array[") || argType == "AhoyArray*" {
+						gen.output.WriteString(fmt.Sprintf("(%s)->length", argsStr))
+					} else if argType == "dict" || strings.HasPrefix(argType, "dict[") || argType == "HashMap*" {
+						gen.output.WriteString(fmt.Sprintf("(%s)->size", argsStr))
+					} else if argType == "string" || argType == "char*" || argType == "const char*" {
+						gen.output.WriteString(fmt.Sprintf("strlen(%s)", argsStr))
+					} else {
+						// Default to ->length
+						gen.output.WriteString(fmt.Sprintf("(%s)->length", argsStr))
+					}
+				} else {
+					// Other function calls - convert pipe syntax to C function call
+					gen.output.WriteString(fmt.Sprintf("%s(%s)", funcName, argsStr))
 				}
 			} else {
 				// Simple variable
@@ -6986,7 +7191,7 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 	gen.includes["time.h"] = true // For shuffle
 
 	// Use stdlib definitions for standard array methods
-	stdlibMethods := []string{"length", "push", "pop", "sum", "has", "sort", "reverse", "shuffle", "pick", "fill"}
+	stdlibMethods := []string{"length", "push", "pop", "sum", "has", "sort", "reverse", "shuffle", "pick", "fill", "remove"}
 	for _, method := range stdlibMethods {
 		if gen.arrayMethods[method] {
 			if stdlibFunc, ok := ArrayMethods[method]; ok {
