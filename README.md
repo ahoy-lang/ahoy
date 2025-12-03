@@ -2,6 +2,43 @@
 
 A modern, expressive programming language with clean syntax and powerful features including default arguments, type annotations, assertions, and deferred execution.
 
+## Table of Contents
+
+- [Features](#features)
+- [Quick Start](#quick-start)
+  - [Installation](#installation)
+  - [Build](#build)
+  - [Usage](#usage)
+- [Language Syntax](#language-syntax)
+  - [Variables & Type Annotations](#variables--type-annotations)
+  - [Print Statements & F-Strings](#print-statements--f-strings)
+  - [Operators](#operators)
+  - [Control Flow](#control-flow)
+  - [Functions with Default Arguments](#functions-with-default-arguments-new)
+  - [Assert Statements](#assert-statements-new)
+  - [Defer Statements](#defer-statements-new)
+  - [Arrays](#arrays)
+  - [Objects/Structs](#objectsstructs)
+  - [Dictionaries](#dictionaries)
+  - [Enums](#enums)
+- [Advanced Features](#advanced-features)
+  - [Pattern Matching (Switch)](#pattern-matching-switch)
+  - [Type System](#type-system)
+  - [Programs (Multi-file)](#programs-multi-file)
+  - [Importing C Headers](#importing-c-headers)
+  - [Built-in Functions](#built-in-functions)
+  - [LSP Features](#lsp-features)
+- [CLI Reference](#cli-reference)
+- [File Extension](#file-extension)
+- [Language Reference Card](#language-reference-card)
+- [Project Structure](#project-structure)
+- [Features Summary](#features-summary)
+- [Examples in Repository](#examples-in-repository)
+- [Best Practices](#best-practices)
+- [Editor Support](#editor-support)
+- [Testing](#testing)
+- [Contributing](#contributing)
+
 ## Features
 
 - **Clean Syntax**: Python-inspired with whitespace indentation
@@ -297,9 +334,12 @@ value: person{key}
 
 ? Struct definitions
 struct Point:
-  x: float,
+  x: float ? initialized to 0 by default
   y: float
-  type star:
+  10 default_value:int ? Field with default value initilized to 10
+  #my_static_value:int ? Static field accessable with Point.#my_static_value
+  42 CONST_VALUE:int ? Constant field
+  type Polygon: ? struct type inherits properties from Point; to create object Point.Polygon{}
     3 sides:int
 $
 
@@ -459,8 +499,6 @@ ahoy |f"Mode: {mode}"|
 
 ### Pattern Matching (Switch)
 
-### Pattern Matching (Switch)
-
 ```ahoy
 switch expression:
     on value1:
@@ -478,6 +516,7 @@ $
 - `int` - Integers
 - `float` - Floating point
 - `string` - Text strings
+- `raw_string` - Raw strings (backticks, preserves newlines)
 - `bool` - Booleans (true/false)
 - `char` - Single characters
 - `array` - Arrays/lists
@@ -486,6 +525,66 @@ $
 - `color` - Color values
 - `infer` - Inferred return type (functions)
 - `void` - No return value (functions)
+
+### Programs (Multi-file)
+
+Programs allow you to organize code across multiple files. Use `program program_name` at the top of each file to group them together.
+
+```ahoy
+? File: main.ahoy
+program my_game
+
+@ main ||:
+    ? Entry point - global vars must be declared here, not in global scope
+    player_score: 0
+    game_loop||
+$
+```
+
+```ahoy
+? File: utils.ahoy  
+program my_game
+
+@ game_loop ||:
+    ? This function is available to main.ahoy because same program name
+    ahoy |"Game running!"|
+$
+```
+
+**Important Rules:**
+- All files with the same `program` declaration in the same folder are compiled together
+- The `main` function is the entry point
+- Global variables are NOT allowed in program files - declare them in the `main` function
+- Constants (`::`) ARE allowed in global scope
+
+### Importing C Headers
+
+You can import C header files directly to use C functions and types:
+
+```ahoy
+? Import a C header file
+import "/home/user/Documents/raylib/src/raylib.h"
+
+? Now you can use raylib functions (converted to snake_case)
+init_window|800, 600, "My Game"|
+```
+
+The compiler automatically:
+- Parses structs, functions, and enums from the header
+- Converts PascalCase function names to snake_case (e.g., `InitWindow` → `init_window`)
+- Makes types available for use in your code
+
+### Built-in Functions
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `print\|...\|` | Print to stdout | `print\|"Hello"\|` |
+| `ahoy\|...\|` | Alias for print | `ahoy\|"World"\|` |
+| `len\|x\|` | Get length of array, dict, or string | `len\|my_array\|` |
+| `length\|x\|` | Alias for len | `length\|my_dict\|` |
+| `int\|x\|` | Convert to integer | `int\|"42"\|` |
+| `float\|x\|` | Convert to float | `float\|"3.14"\|` |
+| `string\|x\|` | Convert to string | `string\|42\|` |
 
 ### LSP Features
 
@@ -665,9 +764,7 @@ The `zed-ahoy` extension provides:
 
 Ahoy is designed for:
 - Fast compilation
-- Type safety with minimal overhead
-- Optional runtime checks (assertions)
-- Efficient resource management (defer)
+- Autofree memory management (eventually)
 
 ## Testing
 
@@ -676,13 +773,6 @@ cd ahoy
 go test -v    # Run compiler tests
 ```
 
-## Community & Support
-
-For more examples and documentation, see:
-- `FEATURES_CHEAT_SHEET.md` - Quick syntax reference
-- `COMPLETE_IMPLEMENTATION_SUMMARY.md` - All features
-- `QUICK_REFERENCE_NEW_FEATURES.md` - New features guide
-
 ## Notes
 
 - Array use `[]`
@@ -690,20 +780,10 @@ For more examples and documentation, see:
 - Dictionaries use `<>` for key-value pairs
 - Comments use `?`
 - Keywords: `halt` (break), `next` (continue)
-- Function syntax: `name :: |params| returnType:`
+- Function syntax: `name |params| returnType:`
 - Default args must come after required params
 - Defer executes in LIFO order (Last-In-First-Out)
 - Assertions halt execution if false
-
-## Version History
-
-### Latest Features (October 2024)
-- ✅ Default function arguments
-- ✅ Explicit type annotations
-- ✅ Assert statements
-- ✅ Defer statements
-- ✅ Enhanced LSP with type checking
-- ✅ Function call validation
 
 ### Core Features
 - ✅ F-strings with interpolation
@@ -712,34 +792,22 @@ For more examples and documentation, see:
 - ✅ Pattern matching (switch)
 - ✅ Enum declarations
 - ✅ Multiple return values
+- ✅ Default function arguments
+- ✅ Explicit type annotations
+- ✅ Assert statements
+- ✅ Defer statements
+- ✅ Enhanced LSP with type checking
+- ✅ Function call validation
 
 Ahoy! 🏴‍☠️
 
 ## Testing
-
-Ahoy includes a comprehensive test suite with automated CI/CD.
 
 ### Run All Tests
 ```bash
 cd into folder: ahoy/test
 $ go test -v
 ```
-
-### Run Single Test
-```bash
-cd into folder: ahoy/source
-go run -f test/input/arrays_test.ahoy -r
-```
-
-### Test Categories
-- **arrays_test.ahoy** - Array operations
-- **dictionaries_test.ahoy** - Dictionary methods
-- **objects_structs_test.ahoy** - Object literals and structs
-- **conditionals_test.ahoy** - If and switch statements
-- **loops_test.ahoy** - All loop types
-- **tuples_test.ahoy** - Tuple operations
-- **enums_test.ahoy** - Enum declarations
-- **functions_test.ahoy** - Function features
 
 ### Continuous Integration
 
@@ -760,4 +828,3 @@ See [TESTING.md](TESTING.md) for detailed testing documentation.
 6. Submit a pull request
 
 Tests run automatically on PRs via GitHub Actions.
-
