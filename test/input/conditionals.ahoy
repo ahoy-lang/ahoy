@@ -36,10 +36,10 @@ expected.push|"Good"|
 ? Switch with multiple return values
 grade: 'A'
 quality, quality_grade: (string, int) = switch grade:
-    on 'A': "EXCELLENT", 1
-    on 'B': "Good",2
-    on 'C': "OK",2
-    _: "Poor",3
+  on 'A': "EXCELLENT", 1
+  on 'B': "Good",2
+  on 'C': "OK",2
+  _: "Poor",3
 $
 print|quality,quality_grade| ?"excellant",1
 expected.push|"EXCELLENT 1"|
@@ -153,10 +153,10 @@ expected.push|"LEFT"|
 
 rotation: 2
 switch rotation:
-		on direction.UP: print|"UP"|
-		on direction.RIGHT: print|"RIGHT"|
-		on direction.DOWN: print|"DOWN"|
-		on direction.LEFT: print|"LEFT"|
+		on direction.UP: print|"UP"|;
+		on direction.RIGHT: print|"RIGHT"|;
+		on direction.DOWN: print|"DOWN"|;
+		on direction.LEFT: print|"LEFT"|;
 		_:print|"NONE"
 $
 expected.push|"DOWN"|;
@@ -175,23 +175,23 @@ enum direction:
 $
 
 switch rotation:
-		on .UP: print|"UP"|
-		on .RIGHT: print|"RIGHT"|
-		on .DOWN: print|"DOWN"|
-		on .LEFT: print|"LEFT"|
-		_:print|"NONE"
+		on .UP: print|"UP"|;
+		on .RIGHT: print|"RIGHT"|;
+		on .DOWN: print|"DOWN"|;
+		on .LEFT: print|"LEFT"|;
+		_:print|"NONE"|;
 $
-expected.push|"DOWN"|
+expected.push|"DOWN"|;
 
-rotation: 3
+rotation: 3;
 switch rotation:
-		on .UP: print|"UP"|
-		on .RIGHT: print|"RIGHT"|
-		on .DOWN: print|"DOWN"|
-		on .LEFT: print|"LEFT"| ? we should prefix with enum name because there is a clash with enum_with_same_member.LEFT
-		_:print|"NONE"
+		on .UP: print|"UP"|;
+		on .RIGHT: print|"RIGHT"|;
+		on .DOWN: print|"DOWN"|;
+		on .LEFT: print|"LEFT"|; ? we should prefix with enum name because there is a clash with enum_with_same_member.LEFT
+		_:print|"NONE"|;
 $
-expected.push|"LEFT"|
+expected.push|"LEFT"|;
 
 enum enum_with_same_member:
 	0 FORWARD

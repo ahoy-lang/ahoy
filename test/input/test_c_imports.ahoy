@@ -19,5 +19,4 @@ $
 	print|x_val,y_val,r_val|
 	expected.push|"10 20 255"|
 	print|expected|
-
 $

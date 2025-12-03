@@ -1,13 +1,15 @@
 expected: []
 ? Dictionaries test
-person: dict<string, string> = <"name": "Alice", "city": "NYC">
+person: dict<string, string> =<"name": "Alice", "city": "NYC">
 name: person<"name">
 print|name| ? should print: Alice
 expected.push|"Alice"|
 
+
 city: person<"city">
 print|city| ? should print: NYC
 expected.push|"NYC"|
+
 
 ? check size of dict
 data: dict<string, string> = <"a": "first", "b": "second", "c": "third">

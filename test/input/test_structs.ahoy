@@ -9,16 +9,14 @@ expected:[]
 ? 	y: float
 
 struct player_info:
-	5 MAX_HAND:int ? because created with screaming snake case should be immutable.
-	5 hand_size:int
+	5 MAX_HAND:int
+	5 #hand_size:int
 	15 deck_count:int
 	-1 selected_idx
 	0 dragging:bool
 	-1 hover_row:int
 	-1 hover_col:int
 	0 placed_count:int
-	type dist:
-	 10 bob:int
 $
 
 struct Card:
@@ -26,30 +24,39 @@ struct Card:
 	row:int
 	col:int
 	rotation: int
-	owner:int  ? 0=player, 1=enemy
+	owner:int
 	image_idx:int
 	health:int
 	attack:int
+	type Assassin:
+		1 id:int
+		image_idx:int
+		2 health:int
+		2 attack:int
+		"my_image.png" image_path:string
+		true can_move:bool
 $
 
-? struct:json json_example:
-?   page page:int
-?   fruits fruits:array[string]
-? $
-
 camera_zoom:float = 1.5
-player_information : dist{deck_count:15, hand_size:5}
+player_information : player_info{deck_count:15, MAX_HAND:5}
+player_information2 : player_info{deck_count:15, MAX_HAND:5}
+player_information3 : player_info{deck_count:20, MAX_HAND:5}
+? player_information.MAX_HAND : 10 ? COMMENTED: because MAX_HAND is not mutable(screaming snake), this would be a linting error.
+player_information.deck_count : 10 ? should change on this instance object only
+player_info.#hand_size : 7 ? this should change player_information and player_information2 hand_size because #hand_size is static (#) accross instances
 print|player_information|
-expected.push|"dist{MAX_HAND:5, hand_size:5, deck_count:15, selected_idx:-1, dragging:false, hover_row:-1, hover_col:-1, placed_count:0, bob:10}"|;
+expected.push|"player_info{MAX_HAND:5, deck_count:10, selected_idx:-1, dragging:false, hover_row:-1, hover_col:-1, placed_count:0, hand_size:7}"|;
+print|player_information2|
+expected.push|"player_info{MAX_HAND:5, deck_count:15, selected_idx:-1, dragging:false, hover_row:-1, hover_col:-1, placed_count:0, hand_size:7}"|;
+print|player_information3|
+expected.push|"player_info{MAX_HAND:5, deck_count:20, selected_idx:-1, dragging:false, hover_row:-1, hover_col:-1, placed_count:0, hand_size:7}"|;
 
 new_card: Card{ id: 3, row: 1, col: 0, rotation: 45, owner: 0, image_idx: 0, health: 0, attack: 5 }
 print|new_card|
 expected.push|"Card{id:3, row:1, col:0, rotation:45, owner:0, image_idx:0, health:0, attack:5}"|
 
-
-? camera2D{offset:vector2{x:0,y:0}, target:vector2{x:0,y:0}, rotation:0.0, zoom:camera_zoom}
-? test:"jkjkl"
-? print|test|
-? expected.push|"jkjkl"|
+assassin_card: Assassin{}
+print|assassin_card|
+expected.push|"Assassin{row:0, col:0, rotation:0, owner:0, id:1, image_idx:0, health:2, attack:2, image_path:\"my_image.png\", can_move:true}"|
 
 print|expected|
