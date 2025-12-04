@@ -1,0 +1,17 @@
+expected: []
+
+? Test typed dict with >= syntax (dict<string,string>=)
+? This was failing before the fix because >= was tokenized as GREATER_EQUAL
+
+? Test dict<type,type>= syntax (fixed tokenizer issue)
+person: dict<string, string>= <"name": "Alice", "city": "NYC">
+print|person|
+expected.push|"{\"name\": \"Alice\", \"city\": \"NYC\"}"|
+
+? Test typed array (already working)
+names: array[string]= ["hello", "world"]
+print|names|
+expected.push|"[\"hello\", \"world\"]"|
+
+? Print expected values for test validation
+print|expected|

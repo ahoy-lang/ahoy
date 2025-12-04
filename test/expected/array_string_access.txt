@@ -1,4 +1,0 @@
-Testing string array access:
-hi
-bye
-bye

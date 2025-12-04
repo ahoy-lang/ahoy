@@ -1,8 +1,0 @@
-Test string arrays:
-hi
-bye
-bye
-Test integer arrays:
-10
-20
-30

@@ -3,7 +3,7 @@
   return x + y, x
 $
 x_input : 10; y_input : 20
-add|x_input, y_input|
+_ , _: add|x_input, y_input|
 
 @ greet :: |name:string, world:string| string:
 	return "Hello " + name

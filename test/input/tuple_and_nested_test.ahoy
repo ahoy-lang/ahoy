@@ -21,8 +21,9 @@ $
     expected.push|"int int"|
 
 
-    ? Test 2: Nested function call in print
-    print|get_number|||
+    ? Test 2: Function call stored in variable (nested calls not allowed)
+    num: get_number||
+    print|num|
     expected.push|"42"|
 
 

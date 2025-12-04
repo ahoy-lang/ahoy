@@ -378,6 +378,11 @@ func formatTypeAnnotations(line string) string {
 		return line
 	}
 
+	// Skip lines with string literals to avoid modifying "vendor:raylib.h"
+	if strings.Contains(line, "\"") {
+		return line
+	}
+
 	// For variable declarations: name:type or name : type
 	// But NOT for the final : in function defs or case labels
 	// Pattern: word followed by : followed by word (type)

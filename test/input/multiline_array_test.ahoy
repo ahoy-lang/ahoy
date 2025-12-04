@@ -1,0 +1,31 @@
+expected: []
+
+? Test multiline array with trailing commas
+card_paths: array[string] = [
+"assets/cards/peasant.png",
+"assets/cards/scout.png",
+"assets/cards/boulder.png"
+]
+
+print|card_paths|
+expected.push|"[\"assets/cards/peasant.png\", \"assets/cards/scout.png\", \"assets/cards/boulder.png\"]"|
+
+len: card_paths.length||
+print|len|
+expected.push|"3"|
+
+? Test switch with semicolons
+enum Direction: UP, DOWN, LEFT, RIGHT $
+
+rotation: 2
+switch rotation:
+on .UP: print|"UP"|;
+on .DOWN: print|"DOWN"|;
+on .LEFT: print|"LEFT"|;
+on .RIGHT: print|"RIGHT"|;
+_: print|"NONE"|;
+$
+expected.push|"LEFT"|
+
+? Print expected values for test validation
+print|expected|
