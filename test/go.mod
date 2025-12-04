@@ -1,4 +1,4 @@
-module ahoy/source
+module ahoy/test
 
 go 1.25
 

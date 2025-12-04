@@ -1,7 +1,5 @@
 
 
-import "/home/lee/Documents/ahoy-lang/ahoy/repos/raylib/src/raylib.h"
-
 expected:[]
 
 ? struct vector2:

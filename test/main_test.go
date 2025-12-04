@@ -13,7 +13,7 @@ import (
 // TestLinting runs the compiler's lint flag on all test files to catch linting errors
 func TestLinting(t *testing.T) {
 	// Build the compiler first
-	compilerPath := "../ahoy-bin"
+	compilerPath := "./ahoy-bin"
 	if _, err := os.Stat(compilerPath); os.IsNotExist(err) {
 		// Try to build it
 		cmd := exec.Command("go", "build", "-o", compilerPath, "../source")
@@ -128,7 +128,7 @@ func TestLSPDiagnostics(t *testing.T) {
 // TestConsolidatedFiles tests all consolidated test files
 func TestConsolidatedFiles(t *testing.T) {
 	// Build the compiler first
-	compilerPath := "../ahoy-bin"
+	compilerPath := "./ahoy-bin"
 	if _, err := os.Stat(compilerPath); os.IsNotExist(err) {
 		// Try to build it
 		cmd := exec.Command("go", "build", "-o", compilerPath, "../source")
