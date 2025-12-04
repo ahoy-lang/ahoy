@@ -450,6 +450,16 @@ func (p *Parser) validateNoNestedFunctionCalls(arg *ASTNode, outerFuncName strin
 
 	// Check if the argument itself is a function call (nested call pattern)
 	if arg.Type == NODE_CALL {
+		// Skip type casts - these are allowed as nested calls
+		// Type casts are: int(x), float(x), string(x), char(x), bool(x)
+		castTypes := map[string]bool{
+			"int": true, "float": true, "string": true, "char": true, "bool": true,
+			"vector2": true, "color": true, "rectangle": true, // Common struct constructors
+		}
+		if castTypes[arg.Value] {
+			return // This is a type cast, not a nested function call
+		}
+
 		// This is a nested function call like func1|func2|||
 		p.Errors = append(p.Errors, ParseError{
 			Message: fmt.Sprintf("nested function calls not allowed: put result of '%s||' into a variable first, e.g. my_var: %s||; %s|my_var|", arg.Value, arg.Value, outerFuncName),
