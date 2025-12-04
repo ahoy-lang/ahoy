@@ -189,124 +189,128 @@ type CHeaderInfo struct {
 }
 
 type Parser struct {
-	tokens             []Token
-	pos                int
-	inFunctionCall     int // Depth counter for nested function calls
-	inArrayLiteral     bool
-	inObjectLiteral    bool
-	inDictLiteral      bool
-	LintMode           bool
-	Errors             []ParseError
-	variableTypes      map[string]string             // Track variable types
-	constants          map[string]int                // Track constant declarations (name -> line number)
-	structs            map[string]*StructDefinition  // Track struct definitions
-	enums              map[string]*EnumDefinition    // Track enum definitions
-	typeAliases        map[string]string             // Track type aliases
-	unionTypes         map[string][]string           // Track union types
-	objectLiterals     map[string]map[string]bool    // Track object literal properties by variable name
-	currentFunctionRet string                        // Track current function return type
-	functionScope      map[string]string             // Track function-local variables
-	seenNonImport      bool                          // Track if we've seen non-import statements
-	functions          map[string]*FunctionSignature // Track function signatures
-	arrayLengths       map[string]ArrayInfo          // Track array lengths
-	cHeaders           map[string]*CHeaderInfo       // Track imported C headers (namespace -> header info)
-	cHeaderGlobal      *CHeaderInfo                  // Global C header imports (no namespace)
-	preParsedHeaders   map[string]*CHeaderInfo       // Pre-parsed C headers (path -> header info) for parallel parsing
-	blockDepth         int                           // Track nesting depth of multi-line blocks
-	loopVarScopes      []map[string]string           // Stack of loop variable scopes
-	functionDepth      int                           // Track nesting depth of function definitions
-	hasProgramDecl     bool                          // Track if program declaration exists
-	inFunctionBody     bool                          // Track if we're inside a function body
-	sourceFilePath     string                        // Source file path for resolving relative imports
-	zeroArgFunctions   map[string]bool               // O(1) lookup for zero-argument functions (snake_case name -> true)
+	tokens              []Token
+	pos                 int
+	inFunctionCall      int // Depth counter for nested function calls
+	inArrayLiteral      bool
+	inObjectLiteral     bool
+	inDictLiteral       bool
+	LintMode            bool
+	Errors              []ParseError
+	variableTypes       map[string]string             // Track variable types
+	constants           map[string]int                // Track constant declarations (name -> line number)
+	structs             map[string]*StructDefinition  // Track struct definitions
+	enums               map[string]*EnumDefinition    // Track enum definitions
+	typeAliases         map[string]string             // Track type aliases
+	unionTypes          map[string][]string           // Track union types
+	objectLiterals      map[string]map[string]bool    // Track object literal properties by variable name
+	currentFunctionRet  string                        // Track current function return type
+	currentFunctionName string                        // Track current function being defined (for recursion detection)
+	functionScope       map[string]string             // Track function-local variables
+	seenNonImport       bool                          // Track if we've seen non-import statements
+	functions           map[string]*FunctionSignature // Track function signatures
+	arrayLengths        map[string]ArrayInfo          // Track array lengths
+	cHeaders            map[string]*CHeaderInfo       // Track imported C headers (namespace -> header info)
+	cHeaderGlobal       *CHeaderInfo                  // Global C header imports (no namespace)
+	preParsedHeaders    map[string]*CHeaderInfo       // Pre-parsed C headers (path -> header info) for parallel parsing
+	blockDepth          int                           // Track nesting depth of multi-line blocks
+	loopVarScopes       []map[string]string           // Stack of loop variable scopes
+	functionDepth       int                           // Track nesting depth of function definitions
+	hasProgramDecl      bool                          // Track if program declaration exists
+	inFunctionBody      bool                          // Track if we're inside a function body
+	sourceFilePath      string                        // Source file path for resolving relative imports
+	zeroArgFunctions    map[string]bool               // O(1) lookup for zero-argument functions (snake_case name -> true)
 }
 
 func Parse(tokens []Token) *ASTNode {
 	parser := &Parser{
-		tokens:             tokens,
-		pos:                0,
-		LintMode:           false,
-		Errors:             []ParseError{},
-		variableTypes:      make(map[string]string),
-		constants:          make(map[string]int),
-		structs:            make(map[string]*StructDefinition),
-		enums:              make(map[string]*EnumDefinition),
-		typeAliases:        make(map[string]string),
-		unionTypes:         make(map[string][]string),
-		objectLiterals:     make(map[string]map[string]bool),
-		currentFunctionRet: "",
-		functionScope:      make(map[string]string),
-		functions:          make(map[string]*FunctionSignature),
-		arrayLengths:       make(map[string]ArrayInfo),
-		cHeaders:           make(map[string]*CHeaderInfo),
-		cHeaderGlobal:      &CHeaderInfo{Functions: make(map[string]*CFunction), Enums: make(map[string]*CEnum), Defines: make(map[string]*CDefine), Structs: make(map[string]*CStruct)},
-		blockDepth:         0,
-		loopVarScopes:      make([]map[string]string, 0),
-		functionDepth:      0,
-		hasProgramDecl:     false,
-		inFunctionBody:     false,
-		sourceFilePath:     "",
-		zeroArgFunctions:   make(map[string]bool),
+		tokens:              tokens,
+		pos:                 0,
+		LintMode:            false,
+		Errors:              []ParseError{},
+		variableTypes:       make(map[string]string),
+		constants:           make(map[string]int),
+		structs:             make(map[string]*StructDefinition),
+		enums:               make(map[string]*EnumDefinition),
+		typeAliases:         make(map[string]string),
+		unionTypes:          make(map[string][]string),
+		objectLiterals:      make(map[string]map[string]bool),
+		currentFunctionRet:  "",
+		currentFunctionName: "",
+		functionScope:       make(map[string]string),
+		functions:           make(map[string]*FunctionSignature),
+		arrayLengths:        make(map[string]ArrayInfo),
+		cHeaders:            make(map[string]*CHeaderInfo),
+		cHeaderGlobal:       &CHeaderInfo{Functions: make(map[string]*CFunction), Enums: make(map[string]*CEnum), Defines: make(map[string]*CDefine), Structs: make(map[string]*CStruct)},
+		blockDepth:          0,
+		loopVarScopes:       make([]map[string]string, 0),
+		functionDepth:       0,
+		hasProgramDecl:      false,
+		inFunctionBody:      false,
+		sourceFilePath:      "",
+		zeroArgFunctions:    make(map[string]bool),
 	}
 	return parser.parseProgram()
 }
 
 func ParseWithPath(tokens []Token, sourceFilePath string) *ASTNode {
 	parser := &Parser{
-		tokens:             tokens,
-		pos:                0,
-		LintMode:           false,
-		Errors:             []ParseError{},
-		variableTypes:      make(map[string]string),
-		constants:          make(map[string]int),
-		structs:            make(map[string]*StructDefinition),
-		enums:              make(map[string]*EnumDefinition),
-		typeAliases:        make(map[string]string),
-		unionTypes:         make(map[string][]string),
-		objectLiterals:     make(map[string]map[string]bool),
-		currentFunctionRet: "",
-		functionScope:      make(map[string]string),
-		functions:          make(map[string]*FunctionSignature),
-		arrayLengths:       make(map[string]ArrayInfo),
-		cHeaders:           make(map[string]*CHeaderInfo),
-		cHeaderGlobal:      &CHeaderInfo{Functions: make(map[string]*CFunction), Enums: make(map[string]*CEnum), Defines: make(map[string]*CDefine), Structs: make(map[string]*CStruct)},
-		blockDepth:         0,
-		loopVarScopes:      make([]map[string]string, 0),
-		functionDepth:      0,
-		hasProgramDecl:     false,
-		inFunctionBody:     false,
-		sourceFilePath:     sourceFilePath,
-		zeroArgFunctions:   make(map[string]bool),
+		tokens:              tokens,
+		pos:                 0,
+		LintMode:            false,
+		Errors:              []ParseError{},
+		variableTypes:       make(map[string]string),
+		constants:           make(map[string]int),
+		structs:             make(map[string]*StructDefinition),
+		enums:               make(map[string]*EnumDefinition),
+		typeAliases:         make(map[string]string),
+		unionTypes:          make(map[string][]string),
+		objectLiterals:      make(map[string]map[string]bool),
+		currentFunctionRet:  "",
+		currentFunctionName: "",
+		functionScope:       make(map[string]string),
+		functions:           make(map[string]*FunctionSignature),
+		arrayLengths:        make(map[string]ArrayInfo),
+		cHeaders:            make(map[string]*CHeaderInfo),
+		cHeaderGlobal:       &CHeaderInfo{Functions: make(map[string]*CFunction), Enums: make(map[string]*CEnum), Defines: make(map[string]*CDefine), Structs: make(map[string]*CStruct)},
+		blockDepth:          0,
+		loopVarScopes:       make([]map[string]string, 0),
+		functionDepth:       0,
+		hasProgramDecl:      false,
+		inFunctionBody:      false,
+		sourceFilePath:      sourceFilePath,
+		zeroArgFunctions:    make(map[string]bool),
 	}
 	return parser.parseProgram()
 }
 
 func ParseLint(tokens []Token) (*ASTNode, []ParseError) {
 	parser := &Parser{
-		tokens:             tokens,
-		pos:                0,
-		LintMode:           true,
-		Errors:             []ParseError{},
-		variableTypes:      make(map[string]string),
-		constants:          make(map[string]int),
-		structs:            make(map[string]*StructDefinition),
-		enums:              make(map[string]*EnumDefinition),
-		typeAliases:        make(map[string]string),
-		unionTypes:         make(map[string][]string),
-		objectLiterals:     make(map[string]map[string]bool),
-		currentFunctionRet: "",
-		functionScope:      make(map[string]string),
-		functions:          make(map[string]*FunctionSignature),
-		arrayLengths:       make(map[string]ArrayInfo),
-		cHeaders:           make(map[string]*CHeaderInfo),
-		cHeaderGlobal:      &CHeaderInfo{Functions: make(map[string]*CFunction), Enums: make(map[string]*CEnum), Defines: make(map[string]*CDefine), Structs: make(map[string]*CStruct)},
-		blockDepth:         0,
-		loopVarScopes:      make([]map[string]string, 0),
-		functionDepth:      0,
-		hasProgramDecl:     false,
-		inFunctionBody:     false,
-		sourceFilePath:     "",
-		zeroArgFunctions:   make(map[string]bool),
+		tokens:              tokens,
+		pos:                 0,
+		LintMode:            true,
+		Errors:              []ParseError{},
+		variableTypes:       make(map[string]string),
+		constants:           make(map[string]int),
+		structs:             make(map[string]*StructDefinition),
+		enums:               make(map[string]*EnumDefinition),
+		typeAliases:         make(map[string]string),
+		unionTypes:          make(map[string][]string),
+		objectLiterals:      make(map[string]map[string]bool),
+		currentFunctionRet:  "",
+		currentFunctionName: "",
+		functionScope:       make(map[string]string),
+		functions:           make(map[string]*FunctionSignature),
+		arrayLengths:        make(map[string]ArrayInfo),
+		cHeaders:            make(map[string]*CHeaderInfo),
+		cHeaderGlobal:       &CHeaderInfo{Functions: make(map[string]*CFunction), Enums: make(map[string]*CEnum), Defines: make(map[string]*CDefine), Structs: make(map[string]*CStruct)},
+		blockDepth:          0,
+		loopVarScopes:       make([]map[string]string, 0),
+		functionDepth:       0,
+		hasProgramDecl:      false,
+		inFunctionBody:      false,
+		sourceFilePath:      "",
+		zeroArgFunctions:    make(map[string]bool),
 	}
 	ast := parser.parseProgram()
 	return ast, parser.Errors
@@ -314,30 +318,31 @@ func ParseLint(tokens []Token) (*ASTNode, []ParseError) {
 
 func ParseLintWithPath(tokens []Token, sourceFilePath string) (*ASTNode, []ParseError) {
 	parser := &Parser{
-		tokens:             tokens,
-		pos:                0,
-		LintMode:           true,
-		Errors:             []ParseError{},
-		variableTypes:      make(map[string]string),
-		constants:          make(map[string]int),
-		structs:            make(map[string]*StructDefinition),
-		enums:              make(map[string]*EnumDefinition),
-		typeAliases:        make(map[string]string),
-		unionTypes:         make(map[string][]string),
-		objectLiterals:     make(map[string]map[string]bool),
-		currentFunctionRet: "",
-		functionScope:      make(map[string]string),
-		functions:          make(map[string]*FunctionSignature),
-		arrayLengths:       make(map[string]ArrayInfo),
-		cHeaders:           make(map[string]*CHeaderInfo),
-		cHeaderGlobal:      &CHeaderInfo{Functions: make(map[string]*CFunction), Enums: make(map[string]*CEnum), Defines: make(map[string]*CDefine), Structs: make(map[string]*CStruct)},
-		blockDepth:         0,
-		loopVarScopes:      make([]map[string]string, 0),
-		functionDepth:      0,
-		hasProgramDecl:     false,
-		inFunctionBody:     false,
-		sourceFilePath:     sourceFilePath,
-		zeroArgFunctions:   make(map[string]bool),
+		tokens:              tokens,
+		pos:                 0,
+		LintMode:            true,
+		Errors:              []ParseError{},
+		variableTypes:       make(map[string]string),
+		constants:           make(map[string]int),
+		structs:             make(map[string]*StructDefinition),
+		enums:               make(map[string]*EnumDefinition),
+		typeAliases:         make(map[string]string),
+		unionTypes:          make(map[string][]string),
+		objectLiterals:      make(map[string]map[string]bool),
+		currentFunctionRet:  "",
+		currentFunctionName: "",
+		functionScope:       make(map[string]string),
+		functions:           make(map[string]*FunctionSignature),
+		arrayLengths:        make(map[string]ArrayInfo),
+		cHeaders:            make(map[string]*CHeaderInfo),
+		cHeaderGlobal:       &CHeaderInfo{Functions: make(map[string]*CFunction), Enums: make(map[string]*CEnum), Defines: make(map[string]*CDefine), Structs: make(map[string]*CStruct)},
+		blockDepth:          0,
+		loopVarScopes:       make([]map[string]string, 0),
+		functionDepth:       0,
+		hasProgramDecl:      false,
+		inFunctionBody:      false,
+		sourceFilePath:      sourceFilePath,
+		zeroArgFunctions:    make(map[string]bool),
 	}
 	ast := parser.parseProgram()
 	return ast, parser.Errors
@@ -413,6 +418,44 @@ func (p *Parser) validateNoGlobalFunctionCalls(node *ASTNode) {
 	// Recursively check children
 	for _, child := range node.Children {
 		p.validateNoGlobalFunctionCalls(child)
+	}
+}
+
+// validateFunctionCall checks for recursion and nested function calls (higher order functions)
+// Returns true if the call is valid, false if an error was recorded
+func (p *Parser) validateFunctionCall(funcName string, line int, column int) bool {
+	if !p.LintMode {
+		return true
+	}
+
+	// Check for recursion: function calling itself
+	if p.currentFunctionName != "" && funcName == p.currentFunctionName {
+		p.Errors = append(p.Errors, ParseError{
+			Message: fmt.Sprintf("Recursion not allowed: function '%s' cannot call itself; use loop till condition instead.", funcName),
+			Line:    line,
+			Column:  column,
+		})
+		return false
+	}
+
+	return true
+}
+
+// validateNoNestedFunctionCalls checks if an argument contains a nested function call
+// which would indicate higher-order function usage like func1|func2|||
+func (p *Parser) validateNoNestedFunctionCalls(arg *ASTNode, outerFuncName string, line int) {
+	if !p.LintMode || arg == nil {
+		return
+	}
+
+	// Check if the argument itself is a function call (nested call pattern)
+	if arg.Type == NODE_CALL {
+		// This is a nested function call like func1|func2|||
+		p.Errors = append(p.Errors, ParseError{
+			Message: fmt.Sprintf("nested function calls not allowed: put result of '%s||' into a variable first, e.g. my_var: %s||; %s|my_var|", arg.Value, arg.Value, outerFuncName),
+			Line:    line,
+			Column:  arg.Column,
+		})
 	}
 }
 
@@ -2267,6 +2310,10 @@ func (p *Parser) parseAhoyStatement() *ASTNode {
 		}
 
 		arg := p.parseCallArgument()
+
+		// Validate no nested function calls (HOF)
+		p.validateNoNestedFunctionCalls(arg, "ahoy", call.Line)
+
 		call.Children = append(call.Children, arg)
 
 		if p.current().Type == TOKEN_COMMA {
@@ -2322,6 +2369,10 @@ func (p *Parser) parsePrintStatement() *ASTNode {
 		}
 
 		arg := p.parseCallArgument()
+
+		// Validate no nested function calls (HOF)
+		p.validateNoNestedFunctionCalls(arg, "print", call.Line)
+
 		call.Children = append(call.Children, arg)
 
 		if p.current().Type == TOKEN_COMMA {
@@ -2377,6 +2428,10 @@ func (p *Parser) parseLogStatement() *ASTNode {
 		}
 
 		arg := p.parseCallArgument()
+
+		// Validate no nested function calls (HOF)
+		p.validateNoNestedFunctionCalls(arg, "log", call.Line)
+
 		call.Children = append(call.Children, arg)
 
 		if p.current().Type == TOKEN_COMMA {
@@ -2432,6 +2487,10 @@ func (p *Parser) parsePanicStatement() *ASTNode {
 		}
 
 		arg := p.parseCallArgument()
+
+		// Validate no nested function calls (HOF)
+		p.validateNoNestedFunctionCalls(arg, "panic", call.Line)
+
 		call.Children = append(call.Children, arg)
 
 		if p.current().Type == TOKEN_COMMA {
@@ -2485,6 +2544,17 @@ func (p *Parser) parseReturnStatement() *ASTNode {
 
 	// In lint mode, validate return types against function signature
 	if p.LintMode {
+		// Check for returning the current function (recursion via return)
+		for _, returnVal := range returnValues {
+			if returnVal.Type == NODE_IDENTIFIER && returnVal.Value == p.currentFunctionName {
+				p.Errors = append(p.Errors, ParseError{
+					Message: fmt.Sprintf("recursion not allowed: cannot return function '%s' itself; use a loop till condition instead", p.currentFunctionName),
+					Line:    line,
+					Column:  returnVal.Column,
+				})
+			}
+		}
+
 		expectedRet := p.currentFunctionRet
 
 		// Skip validation if not in a function or return type is "infer"
@@ -4442,10 +4512,15 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			if p.inFunctionCall == 0 {
 				// Top-level: always parse as function call
 				p.advance()
+
+				// Validate no recursion
+				p.validateFunctionCall(token.Value, token.Line, token.Column)
+
 				call := &ASTNode{
-					Type:  NODE_CALL,
-					Value: token.Value,
-					Line:  token.Line,
+					Type:   NODE_CALL,
+					Value:  token.Value,
+					Line:   token.Line,
+					Column: token.Column,
 				}
 
 				// Increment depth to allow nested function calls
@@ -4463,6 +4538,10 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 					}
 
 					arg := p.parseCallArgument()
+
+					// Validate no nested function calls (HOF)
+					p.validateNoNestedFunctionCalls(arg, token.Value, token.Line)
+
 					call.Children = append(call.Children, arg)
 
 					if p.current().Type == TOKEN_COMMA {
@@ -4495,12 +4574,14 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			nextToken := p.peek(1)
 			if nextToken.Type == TOKEN_PIPE {
 				// This is identifier|| - definitely a nested zero-arg function call
+				// Note: nested call error is reported by validateNoNestedFunctionCalls after parsing
 				p.advance() // consume first |
 				p.advance() // consume second |
 				return &ASTNode{
 					Type:     NODE_CALL,
 					Value:    token.Value,
 					Line:     token.Line,
+					Column:   token.Column,
 					Children: []*ASTNode{},
 				}
 			}
@@ -5489,12 +5570,15 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 	var savedFunctionRet string
 	var savedFunctionScope map[string]string
 	var savedInFunctionBody bool
+	var savedFunctionName string
 	if p.LintMode {
 		savedFunctionRet = p.currentFunctionRet
 		savedFunctionScope = p.functionScope
 		savedInFunctionBody = p.inFunctionBody
+		savedFunctionName = p.currentFunctionName
 		p.currentFunctionRet = returnType
-		p.inFunctionBody = true // Mark that we're inside function body
+		p.currentFunctionName = name.Value // Track current function name for recursion detection
+		p.inFunctionBody = true            // Mark that we're inside function body
 		// Function scope already set up with parameters above
 	}
 
@@ -5509,6 +5593,7 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 		p.currentFunctionRet = savedFunctionRet
 		p.functionScope = savedFunctionScope
 		p.inFunctionBody = savedInFunctionBody
+		p.currentFunctionName = savedFunctionName
 
 		// Register function signature for later validation
 		paramInfos := []ParameterInfo{}
@@ -6873,10 +6958,10 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 				isNestedPattern = true
 			}
 		}
-		
+
 		_, fullTypeExists := p.structs[fullTypeName]
 		_, parentExists := p.structs[parentName]
-		
+
 		if fullTypeExists || parentExists || isNestedPattern {
 			p.advance() // consume {
 
@@ -7077,12 +7162,12 @@ func (p *Parser) parseArrayLiteralBracket() *ASTNode {
 		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
 			p.advance()
 		}
-		
+
 		// Check if we've reached the closing bracket after whitespace
 		if p.current().Type == TOKEN_RBRACKET {
 			break
 		}
-		
+
 		element := p.parseExpression()
 		array.Children = append(array.Children, element)
 

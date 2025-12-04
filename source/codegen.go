@@ -143,6 +143,7 @@ type CodeGenerator struct {
 	variables                     map[string]string            // variable name -> type (global scope)
 	functionVars                  map[string]string            // variable name -> type (function scope)
 	nestedScopeVars               map[string]bool              // variables declared in nested scopes (loops/ifs)
+	varDeclIndent                 map[string]int               // variable name -> indent level where it was declared
 	constants                     map[string]string            // constant name -> type
 	declaredConstants             map[string]bool              // constant name -> declared (for duplicate check)
 	enums                         map[string]map[string]bool   // enum name -> {member names}
@@ -233,6 +234,7 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		dictSourcedVars:       make(map[string]string),
 		dictSourcedKeys:       make(map[string]string),
 		nestedScopeVars:       make(map[string]bool),
+		varDeclIndent:         make(map[string]int),
 		cFunctionNames:        make(map[string]string),
 		cNamespaces:           make(map[string]map[string]string),
 		cFunctionReturnTypes:  make(map[string]string),
@@ -1480,6 +1482,7 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	gen.dictSourcedVars = make(map[string]string)
 	gen.dictSourcedKeys = make(map[string]string)
 	gen.nestedScopeVars = make(map[string]bool)
+	gen.varDeclIndent = make(map[string]int)
 
 	// Clear function-local declared variables for this new function
 	gen.declaredFunctionVars = make(map[string]bool)
@@ -1891,12 +1894,24 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 	_, isDeclaredLocal := gen.declaredFunctionVars[node.Value]
 	isDeclared := isDeclaredGlobal || isDeclaredLocal
 	isNestedScope := gen.nestedScopeVars[node.Value]
+	declIndent := gen.varDeclIndent[node.Value] // indent level where var was declared
 
 	valueNode := node.Children[0]
 
-	// Special case: Variables from nested scopes or array/dict access can be redeclared
+	// Determine if we need to redeclare the variable:
+	// 1. Loop local patterns (array/dict access) should redeclare
+	// 2. If variable was declared in a nested scope (inside if/loop block),
+	//    and we're now at a DIFFERENT block (sibling or parent), we need to redeclare
+	//    because the original declaration is out of scope in C
+	// 3. If we're in the SAME or DEEPER nesting within the same block chain,
+	//    we should reassign (not redeclare)
 	isLoopLocalPattern := valueNode.Type == ahoy.NODE_ARRAY_ACCESS || valueNode.Type == ahoy.NODE_DICT_ACCESS
-	canRedeclare := isLoopLocalPattern || (isNestedScope && gen.indent > 1)
+
+	// If variable was declared in nested scope and current indent is <= declaration indent,
+	// it means we've exited that scope and need to redeclare
+	needsRedeclare := isNestedScope && gen.indent <= declIndent
+
+	canRedeclare := isLoopLocalPattern || needsRedeclare
 
 	if isDeclared && !canRedeclare {
 		// Just assignment - mark RHS variables as escaping if being assigned to existing var
@@ -1998,8 +2013,10 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				// Inside a function - use function scope
 				gen.functionVars[node.Value] = varType
 				// Mark as nested scope if indent > 1 (inside loops/ifs)
+				// and track the indent level where this variable was declared
 				if gen.indent > 1 {
 					gen.nestedScopeVars[node.Value] = true
+					gen.varDeclIndent[node.Value] = gen.indent
 				}
 			} else {
 				// Global scope
@@ -5318,6 +5335,7 @@ func (gen *CodeGenerator) inferReturnTypes(funcNode *ahoy.ASTNode) []string {
 	gen.dictSourcedVars = make(map[string]string)
 	gen.dictSourcedKeys = make(map[string]string)
 	gen.nestedScopeVars = make(map[string]bool)
+	gen.varDeclIndent = make(map[string]int)
 	for _, param := range params.Children {
 		if param.DataType != "" {
 			gen.functionVars[param.Value] = param.DataType
