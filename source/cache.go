@@ -36,6 +36,7 @@ type CHeaderCache struct {
 // BuildCache manages the incremental build cache
 type BuildCache struct {
 	CacheDir    string
+	ProgramName string                    // Name of the program being cached
 	Files       map[string]*FileCache    // path -> cache entry
 	CHeaders    map[string]*CHeaderCache // path -> C header cache entry
 	Enabled     bool
@@ -56,11 +57,19 @@ func NewBuildCache(enabled bool) *BuildCache {
 		Enabled:  enabled,
 	}
 
-	if enabled {
+	// Don't load here - wait until SetProgramName is called
+	return bc
+}
+
+// SetProgramName sets the program name and loads the program-specific cache
+func (bc *BuildCache) SetProgramName(name string) {
+	if name == "" {
+		name = "default"
+	}
+	bc.ProgramName = name
+	if bc.Enabled {
 		bc.load()
 	}
-
-	return bc
 }
 
 // getCacheDir returns the cache directory path
@@ -78,13 +87,22 @@ type CacheData struct {
 	CHeaders map[string]*CHeaderCache
 }
 
+// getCacheFileName returns the cache file name for the current program
+func (bc *BuildCache) getCacheFileName() string {
+	name := bc.ProgramName
+	if name == "" {
+		name = "default"
+	}
+	return name + "_cache.gob"
+}
+
 // load loads the cache from disk
 func (bc *BuildCache) load() {
 	if !bc.Enabled {
 		return
 	}
 
-	cacheFile := filepath.Join(bc.CacheDir, "cache.gob")
+	cacheFile := filepath.Join(bc.CacheDir, bc.getCacheFileName())
 	file, err := os.Open(cacheFile)
 	if err != nil {
 		// Cache doesn't exist yet, that's fine
@@ -100,7 +118,7 @@ func (bc *BuildCache) load() {
 		bc.CHeaders = make(map[string]*CHeaderCache)
 		return
 	}
-	
+
 	if data.Files != nil {
 		bc.Files = data.Files
 	}
@@ -120,7 +138,7 @@ func (bc *BuildCache) save() {
 		return
 	}
 
-	cacheFile := filepath.Join(bc.CacheDir, "cache.gob")
+	cacheFile := filepath.Join(bc.CacheDir, bc.getCacheFileName())
 	file, err := os.Create(cacheFile)
 	if err != nil {
 		return

@@ -130,33 +130,38 @@ func (pm *PackageManager) LoadPackageFromFile(mainFilePath string) (*Package, er
 		ahoyFilePaths = append(ahoyFilePaths, filepath.Join(dir, file.Name()))
 	}
 
-	// Load files in parallel using goroutines
+	// Load files in parallel using goroutines, preserving original order
 	type fileResult struct {
-		file *PackageFile
-		err  error
-		path string
+		file  *PackageFile
+		err   error
+		path  string
+		index int
 	}
-	
-	results := make(chan fileResult, len(ahoyFilePaths))
-	var wg sync.WaitGroup
 
-	for _, filePath := range ahoyFilePaths {
+	// Use a slice to preserve order instead of a channel
+	resultSlice := make([]*fileResult, len(ahoyFilePaths))
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	for i, filePath := range ahoyFilePaths {
 		wg.Add(1)
-		go func(fp string) {
+		go func(fp string, idx int) {
 			defer wg.Done()
 			pf, err := pm.LoadFile(fp)
-			results <- fileResult{file: pf, err: err, path: fp}
-		}(filePath)
+			mu.Lock()
+			resultSlice[idx] = &fileResult{file: pf, err: err, path: fp, index: idx}
+			mu.Unlock()
+		}(filePath, i)
 	}
 
-	// Close results channel when all goroutines complete
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
+	// Wait for all goroutines to complete
+	wg.Wait()
 
-	// Collect results
-	for result := range results {
+	// Collect results in original order
+	for _, result := range resultSlice {
+		if result == nil {
+			continue
+		}
 		if result.err != nil {
 			// Skip files that fail to parse instead of failing the whole package
 			fmt.Printf("Warning: Skipping file %s due to error: %v\n", filepath.Base(result.path), result.err)

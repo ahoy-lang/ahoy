@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -3295,7 +3296,14 @@ func (gen *CodeGenerator) addAutomaticDeferFrees() {
 	// 3. Aren't manually freed
 	// 4. Aren't function parameters
 
+	// Sort heap allocated vars for deterministic output
+	heapVars := make([]string, 0, len(gen.heapAllocatedVars))
 	for varName := range gen.heapAllocatedVars {
+		heapVars = append(heapVars, varName)
+	}
+	sort.Strings(heapVars)
+
+	for _, varName := range heapVars {
 		// Skip if variable escapes
 		if gen.escapingVars[varName] {
 			continue
@@ -8078,8 +8086,16 @@ func (gen *CodeGenerator) writeStructHelperFunctions() {
 	// Track which structs we've processed to avoid duplicates (since we store both lowercase and capitalized)
 	processed := make(map[string]bool)
 
+	// Sort struct names for deterministic output
+	structNames := make([]string, 0, len(gen.structs))
+	for name := range gen.structs {
+		structNames = append(structNames, name)
+	}
+	sort.Strings(structNames)
+
 	// First pass: Add forward declarations
-	for _, structInfo := range gen.structs {
+	for _, name := range structNames {
+		structInfo := gen.structs[name]
 		if processed[structInfo.Name] {
 			continue
 		}
@@ -8095,7 +8111,8 @@ func (gen *CodeGenerator) writeStructHelperFunctions() {
 
 	// Second pass: Add implementations
 	processed = make(map[string]bool)
-	for _, structInfo := range gen.structs {
+	for _, name := range structNames {
+		structInfo := gen.structs[name]
 		// Skip if already processed (avoid duplicates from lowercase/capitalized pairs)
 		if processed[structInfo.Name] {
 			continue

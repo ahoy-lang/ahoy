@@ -492,9 +492,13 @@ func main() {
 	totalStart := time.Now()
 
 	// Initialize incremental build cache
+	cacheStart := time.Now()
 	InitBuildCache(*incFlag)
 	defer GetBuildCache().SaveAndClose()
+	cacheTime := time.Since(cacheStart)
 
+	// tokenize
+	tokenStart := time.Now()
 	// Ensure stdlib is in cache (for LSP goto definition support)
 	_ = EnsureStdlibExists()
 
@@ -531,10 +535,11 @@ func main() {
 	}
 
 	// Format source before compiling (tabs to spaces, etc)
-	formattedContent := formatSource(string(content))
+	// formattedContent := string(content)
 
 	// Tokenize
-	tokens := ahoy.Tokenize(formattedContent)
+	tokens := ahoy.Tokenize(string(content))
+	tokenTime := time.Since(tokenStart)
 
 	// Lint mode
 	if *lintFlag {
@@ -589,6 +594,13 @@ func main() {
 	// Initialize package manager
 	pm := NewPackageManager(filepath.Dir(absPath))
 
+	// Quick pre-parse to get program name for cache loading
+	if *incFlag {
+		if programName := getQuickProgramName(absPath); programName != "" {
+			GetBuildCache().SetProgramName(programName)
+		}
+	}
+
 	// Start load/parse timing
 	loadStart := time.Now()
 
@@ -597,6 +609,11 @@ func main() {
 	if err != nil {
 		fmt.Printf("Error loading package: %v\n", err)
 		os.Exit(1)
+	}
+
+	// Set the program name for the cache if not already set
+	if GetBuildCache().ProgramName == "" {
+		GetBuildCache().SetProgramName(pkg.Name)
 	}
 
 	loadTime := time.Since(loadStart)
@@ -671,14 +688,13 @@ func main() {
 
 	// Calculate total parse time (load + imports + merge)
 	parseTime := loadTime + importsTime + mergeTime
-
 	if len(pkg.Files) > 1 {
 		fmt.Printf("✓ Compiled package '%s' (%d files) to %s\n", pkg.Name, len(pkg.Files), outputFile)
-		fmt.Printf("  Timing: parse=%s, imports=%s, merge=%s, codegen=%s\n",
-			formatTime(loadTime), formatTime(importsTime), formatTime(mergeTime), formatTime(codegenTime))
+		fmt.Printf(" Time: token=%s, parse=%s, codegen=%s , cache=%s \n",
+			formatTime(tokenTime), formatTime(parseTime), formatTime(codegenTime), formatTime(cacheTime))
 	} else {
-		fmt.Printf("✓ Compiled %s to %s (parse: %s, codegen: %s)\n",
-			sourceFile, outputFile, formatTime(parseTime), formatTime(codegenTime))
+		fmt.Printf(" Time: token=%s, parse=%s, codegen=%s , cache=%s \n",
+			formatTime(tokenTime), formatTime(parseTime), formatTime(codegenTime), formatTime(cacheTime))
 	}
 
 	// Compile C code if run flag is set
@@ -959,6 +975,37 @@ func MergeWithImports(pkg *Package, imports map[string]*Package) *ahoy.ASTNode {
 	}
 
 	return merged
+}
+
+// getQuickProgramName does a quick scan of a file to extract the program name
+// without full parsing. This is used to load the correct cache before parsing.
+func getQuickProgramName(filePath string) string {
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return ""
+	}
+
+	// Quick scan for "program " at the start of a line
+	lines := strings.Split(string(content), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// Skip comments
+		if strings.HasPrefix(line, "?") {
+			continue
+		}
+		// Check for program declaration
+		if strings.HasPrefix(line, "program ") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				return parts[1]
+			}
+		}
+		// Stop after first non-comment, non-empty line if it's not a program declaration
+		if line != "" && !strings.HasPrefix(line, "program ") {
+			break
+		}
+	}
+	return ""
 }
 
 func showHelp() {
