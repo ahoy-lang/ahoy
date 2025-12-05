@@ -30,14 +30,14 @@ func findCompiler(releaseMode bool, executablePath string) (string, []string, bo
 		switch runtime.GOOS {
 		case "linux":
 			tccPath = filepath.Join(ahoyDir, "tcc", "linux", "tcc")
-			tccArgs = []string{"-B" + filepath.Join(ahoyDir, "tcc", "linux")}
+			tccArgs = []string{"-b" + filepath.Join(ahoyDir, "tcc", "linux")}
 		case "windows":
 			if runtime.GOARCH == "386" {
 				tccPath = filepath.Join(ahoyDir, "tcc", "windows", "i386-win32-tcc.exe")
 			} else {
 				tccPath = filepath.Join(ahoyDir, "tcc", "windows", "tcc.exe")
 			}
-			tccArgs = []string{"-B" + filepath.Join(ahoyDir, "tcc", "windows")}
+			tccArgs = []string{"-b" + filepath.Join(ahoyDir, "tcc", "windows")}
 		default:
 			tccPath = ""
 		}

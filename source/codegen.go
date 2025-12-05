@@ -1183,7 +1183,7 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 	case ahoy.NODE_FUNCTION:
 		gen.generateFunction(node)
 
-	case ahoy.NODE_ASSIGNMENT:
+	case ahoy.NODE_ASSIGNMENT, ahoy.NODE_VARIABLE_DECLARATION:
 		gen.generateAssignment(node)
 
 	case ahoy.NODE_IF_STATEMENT:
@@ -1898,18 +1898,32 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 
 	valueNode := node.Children[0]
 
+	// In ahoy, `var: value` always creates a new variable in the current block scope
+	// In C, we need to declare variables in each block where they're used
+	
 	// Determine if we need to redeclare the variable:
 	// 1. Loop local patterns (array/dict access) should redeclare
-	// 2. If variable was declared in a nested scope (inside if/loop block),
-	//    and we're now at a DIFFERENT block (sibling or parent), we need to redeclare
-	//    because the original declaration is out of scope in C
-	// 3. If we're in the SAME or DEEPER nesting within the same block chain,
-	//    we should reassign (not redeclare)
+	// 2. If we're at a different indent level than where the variable was declared,
+	//    and we're in a nested block (indent > 2), we need to declare a new block-local variable
+	// Exception: if we're inside the same block chain (deeper indent but contiguous), 
+	//    we should reassign not redeclare - but detecting this is hard, so we just
+	//    redeclare when indent differs and we're deep enough
 	isLoopLocalPattern := valueNode.Type == ahoy.NODE_ARRAY_ACCESS || valueNode.Type == ahoy.NODE_DICT_ACCESS
 
+	needsRedeclare := false
+	
 	// If variable was declared in nested scope and current indent is <= declaration indent,
-	// it means we've exited that scope and need to redeclare
-	needsRedeclare := isNestedScope && gen.indent <= declIndent
+	// we've exited that scope and are in a sibling or parent block - need to redeclare
+	if isNestedScope && gen.indent <= declIndent {
+		needsRedeclare = true
+	}
+	
+	// If we're in a deeply nested block (indent > 2) and the indent differs from
+	// where the variable was declared, we're likely in a different block structure
+	// and should declare a new block-local variable
+	if isDeclared && gen.indent > 2 && gen.indent != declIndent {
+		needsRedeclare = true
+	}
 
 	canRedeclare := isLoopLocalPattern || needsRedeclare
 

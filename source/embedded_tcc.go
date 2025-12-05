@@ -127,12 +127,12 @@ func GetEmbeddedTCCPath() (string, []string, error) {
 	switch runtime.GOOS {
 	case "linux":
 		tccPath := filepath.Join(tccDir, "tcc", "linux", "tcc")
-		tccArgs := []string{"-B" + filepath.Join(tccDir, "tcc", "linux")}
+		tccArgs := []string{"-b" + filepath.Join(tccDir, "tcc", "linux")}
 		return tccPath, tccArgs, nil
 
 	case "windows":
 		tccPath := filepath.Join(tccDir, "tcc", "windows", "tcc.exe")
-		tccArgs := []string{"-B" + filepath.Join(tccDir, "tcc", "windows")}
+		tccArgs := []string{"-b" + filepath.Join(tccDir, "tcc", "windows")}
 		return tccPath, tccArgs, nil
 
 	default:
