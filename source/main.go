@@ -488,6 +488,9 @@ func main() {
 
 	flag.Parse()
 
+	// Start total timing
+	totalStart := time.Now()
+
 	// Initialize incremental build cache
 	InitBuildCache(*incFlag)
 	defer GetBuildCache().SaveAndClose()
@@ -583,9 +586,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Start total timing
-	totalStart := time.Now()
-
 	// Initialize package manager
 	pm := NewPackageManager(filepath.Dir(absPath))
 
@@ -672,27 +672,13 @@ func main() {
 	// Calculate total parse time (load + imports + merge)
 	parseTime := loadTime + importsTime + mergeTime
 
-	// Get cache timing
-	cache := GetBuildCache()
-	cacheTime := cache.GetCacheTime()
-
 	if len(pkg.Files) > 1 {
 		fmt.Printf("✓ Compiled package '%s' (%d files) to %s\n", pkg.Name, len(pkg.Files), outputFile)
-		if cache.Enabled && cacheTime > 0 {
-			fmt.Printf("  Timing: parse=%s, imports=%s, merge=%s, codegen=%s, cache=%s\n",
-				formatTime(loadTime), formatTime(importsTime), formatTime(mergeTime), formatTime(codegenTime), formatTime(cacheTime))
-		} else {
-			fmt.Printf("  Timing: parse=%s, imports=%s, merge=%s, codegen=%s\n",
-				formatTime(loadTime), formatTime(importsTime), formatTime(mergeTime), formatTime(codegenTime))
-		}
+		fmt.Printf("  Timing: parse=%s, imports=%s, merge=%s, codegen=%s\n",
+			formatTime(loadTime), formatTime(importsTime), formatTime(mergeTime), formatTime(codegenTime))
 	} else {
-		if cache.Enabled && cacheTime > 0 {
-			fmt.Printf("✓ Compiled %s to %s (parse: %s, codegen: %s, cache: %s)\n",
-				sourceFile, outputFile, formatTime(parseTime), formatTime(codegenTime), formatTime(cacheTime))
-		} else {
-			fmt.Printf("✓ Compiled %s to %s (parse: %s, codegen: %s)\n",
-				sourceFile, outputFile, formatTime(parseTime), formatTime(codegenTime))
-		}
+		fmt.Printf("✓ Compiled %s to %s (parse: %s, codegen: %s)\n",
+			sourceFile, outputFile, formatTime(parseTime), formatTime(codegenTime))
 	}
 
 	// Compile C code if run flag is set

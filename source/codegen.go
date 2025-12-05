@@ -195,6 +195,8 @@ type CodeGenerator struct {
 	cStructFields                 map[string]map[string]string // C struct name -> (field name -> field type)
 	cTypedefs                     map[string]string            // typedef alias -> base type
 	cFunctionParamTypes           map[string][]string          // C function name (snake_case) -> parameter types
+	parsedCHeaders                map[string]*ahoy.CHeaderInfo // In-memory cache for parsed C headers (path -> info)
+	parsedCHeadersMu              sync.Mutex                   // Mutex for parsedCHeaders
 }
 
 // GenerateC generates C code from an AST (exported for testing)
@@ -257,6 +259,7 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		cStructFields:         make(map[string]map[string]string),
 		cTypedefs:             make(map[string]string),
 		cFunctionParamTypes:   make(map[string][]string),
+		parsedCHeaders:        make(map[string]*ahoy.CHeaderInfo),
 	}
 
 	// Add standard includes
@@ -855,6 +858,40 @@ func (gen *CodeGenerator) inferParameterTypesFromCalls(node *ahoy.ASTNode) {
 	applyTypes(node)
 }
 
+// getOrParseCHeader returns a cached C header or parses it (thread-safe)
+func (gen *CodeGenerator) getOrParseCHeader(headerPath string) *ahoy.CHeaderInfo {
+	// Check in-memory cache first (thread-safe)
+	gen.parsedCHeadersMu.Lock()
+	if cached, ok := gen.parsedCHeaders[headerPath]; ok {
+		gen.parsedCHeadersMu.Unlock()
+		return cached
+	}
+	gen.parsedCHeadersMu.Unlock()
+
+	// Check file cache
+	cache := GetBuildCache()
+	if cachedInfo, ok := cache.GetCachedCHeader(headerPath); ok {
+		gen.parsedCHeadersMu.Lock()
+		gen.parsedCHeaders[headerPath] = cachedInfo
+		gen.parsedCHeadersMu.Unlock()
+		return cachedInfo
+	}
+
+	// Parse the header
+	headerInfo, err := ahoy.ParseCHeader(headerPath)
+	if err != nil {
+		return nil
+	}
+
+	// Store in both caches
+	cache.CacheCHeader(headerPath, headerInfo)
+	gen.parsedCHeadersMu.Lock()
+	gen.parsedCHeaders[headerPath] = headerInfo
+	gen.parsedCHeadersMu.Unlock()
+
+	return headerInfo
+}
+
 // scanImports scans imports to populate C type definitions before code generation
 func (gen *CodeGenerator) scanImports(node *ahoy.ASTNode) {
 	if node == nil {
@@ -945,19 +982,9 @@ func (gen *CodeGenerator) scanImports(node *ahoy.ASTNode) {
 				return
 			}
 
-			// Try to get from cache first
-			cache := GetBuildCache()
-			if cachedInfo, ok := cache.GetCachedCHeader(headerPath); ok {
-				mu.Lock()
-				results[idx] = &headerResult{idx, headerPath, cachedInfo, namespace}
-				mu.Unlock()
-				return
-			}
-
-			// Parse the header
-			if headerInfo, err := ahoy.ParseCHeader(headerPath); err == nil {
-				// Cache the result
-				cache.CacheCHeader(headerPath, headerInfo)
+			// Use the shared helper to get or parse the header
+			headerInfo := gen.getOrParseCHeader(headerPath)
+			if headerInfo != nil {
 				mu.Lock()
 				results[idx] = &headerResult{idx, headerPath, headerInfo, namespace}
 				mu.Unlock()
@@ -1968,24 +1995,24 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 
 	// In ahoy, `var: value` always creates a new variable in the current block scope
 	// In C, we need to declare variables in each block where they're used
-	
+
 	// Determine if we need to redeclare the variable:
 	// 1. Loop local patterns (array/dict access) should redeclare
 	// 2. If we're at a different indent level than where the variable was declared,
 	//    and we're in a nested block (indent > 2), we need to declare a new block-local variable
-	// Exception: if we're inside the same block chain (deeper indent but contiguous), 
+	// Exception: if we're inside the same block chain (deeper indent but contiguous),
 	//    we should reassign not redeclare - but detecting this is hard, so we just
 	//    redeclare when indent differs and we're deep enough
 	isLoopLocalPattern := valueNode.Type == ahoy.NODE_ARRAY_ACCESS || valueNode.Type == ahoy.NODE_DICT_ACCESS
 
 	needsRedeclare := false
-	
+
 	// If variable was declared in nested scope and current indent is <= declaration indent,
 	// we've exited that scope and are in a sibling or parent block - need to redeclare
 	if isNestedScope && gen.indent <= declIndent {
 		needsRedeclare = true
 	}
-	
+
 	// If we're in a deeply nested block (indent > 2) and the indent differs from
 	// where the variable was declared, we're likely in a different block structure
 	// and should declare a new block-local variable
@@ -3371,19 +3398,8 @@ func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
 			}
 
 			if headerPath != "" {
-				// Try to get from cache first
-				cache := GetBuildCache()
-				var headerInfo *ahoy.CHeaderInfo
-				var err error
-
-				if cachedInfo, ok := cache.GetCachedCHeader(headerPath); ok {
-					headerInfo = cachedInfo
-				} else {
-					headerInfo, err = ahoy.ParseCHeader(headerPath)
-					if err == nil {
-						cache.CacheCHeader(headerPath, headerInfo)
-					}
-				}
+				// Use the shared helper to get or parse the header (uses in-memory cache)
+				headerInfo := gen.getOrParseCHeader(headerPath)
 
 				if headerInfo != nil {
 					// Track struct/typedef names as known C types and store struct fields
@@ -3501,7 +3517,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 		if len(node.Children) > 0 {
 			arg := node.Children[0]
 			argType := gen.inferType(arg)
-			
+
 			// Check if it's an array type
 			if argType == "array" || strings.HasPrefix(argType, "array[") || argType == "AhoyArray*" {
 				gen.output.WriteString("(")
@@ -3509,7 +3525,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 				gen.output.WriteString(")->length")
 				return
 			}
-			
+
 			// Check if it's a dict type
 			if argType == "dict" || strings.HasPrefix(argType, "dict[") || argType == "HashMap*" {
 				gen.output.WriteString("(")
@@ -3517,7 +3533,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 				gen.output.WriteString(")->size")
 				return
 			}
-			
+
 			// Check if it's a string type
 			if argType == "string" || argType == "char*" || argType == "const char*" {
 				gen.output.WriteString("strlen(")
@@ -3525,7 +3541,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 				gen.output.WriteString(")")
 				return
 			}
-			
+
 			// For unknown types, try to call ->length as fallback
 			gen.output.WriteString("(")
 			gen.generateNode(arg)
@@ -4161,7 +4177,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 			// Regular positional arguments
 			// Check if we have C function parameter type information
 			cParamTypes, hasCParamInfo := gen.cFunctionParamTypes[node.Value]
-			
+
 			for i, arg := range node.Children {
 				if i > 0 {
 					gen.output.WriteString(", ")
@@ -4179,17 +4195,17 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 				// Check if C function parameter is void* or const void* - add & for non-pointer arguments
 				if hasCParamInfo && i < len(cParamTypes) {
 					paramType := cParamTypes[i]
-					if paramType == "void *" || paramType == "const void *" || 
-					   paramType == "void*" || paramType == "const void*" {
+					if paramType == "void *" || paramType == "const void *" ||
+						paramType == "void*" || paramType == "const void*" {
 						argType := gen.inferType(arg)
 						// Only add & if the argument is not already a pointer type
 						// AND the argument is a variable (not a literal, constant, or enum)
-						isLValue := arg.Type == ahoy.NODE_IDENTIFIER && 
-						            !gen.isConstantOrEnum(arg.Value)
-						if isLValue && !strings.HasSuffix(argType, "*") && argType != "array" && 
-						   !strings.HasPrefix(argType, "array[") && argType != "dict" && 
-						   !strings.HasPrefix(argType, "dict[") && argType != "HashMap*" &&
-						   argType != "AhoyArray*" && argType != "string" && argType != "char*" {
+						isLValue := arg.Type == ahoy.NODE_IDENTIFIER &&
+							!gen.isConstantOrEnum(arg.Value)
+						if isLValue && !strings.HasSuffix(argType, "*") && argType != "array" &&
+							!strings.HasPrefix(argType, "array[") && argType != "dict" &&
+							!strings.HasPrefix(argType, "dict[") && argType != "HashMap*" &&
+							argType != "AhoyArray*" && argType != "string" && argType != "char*" {
 							gen.output.WriteString("&")
 						}
 					}
@@ -5699,14 +5715,14 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 				if pipeIdx+1 < len(v) && v[len(v)-1] == '|' {
 					argsStr = v[pipeIdx+1 : len(v)-1]
 				}
-				
+
 				// Handle built-in len/length functions
 				if funcName == "len" || funcName == "length" {
 					argType := "int"
 					if knownType, exists := gen.variables[argsStr]; exists {
 						argType = knownType
 					}
-					
+
 					// Generate appropriate length access
 					if argType == "array" || strings.HasPrefix(argType, "array[") || argType == "AhoyArray*" {
 						gen.output.WriteString(fmt.Sprintf("(%s)->length", argsStr))
@@ -6472,7 +6488,7 @@ func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 			if target.Value == "_" {
 				continue
 			}
-			
+
 			gen.writeIndent()
 			// Check if variable needs to be declared in CURRENT scope
 			// Variables can shadow between scopes (global vs function)
