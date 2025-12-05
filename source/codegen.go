@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"ahoy"
 )
@@ -860,13 +861,54 @@ func (gen *CodeGenerator) scanImports(node *ahoy.ASTNode) {
 		return
 	}
 
-	// Process import statements to populate C type definitions
-	if node.Type == ahoy.NODE_IMPORT_STATEMENT {
-		headerName := node.Value
-		namespace := node.DataType
+	// First, collect all C header imports
+	type headerImport struct {
+		headerName string
+		namespace  string
+		index      int
+	}
+	var headerImports []headerImport
 
-		// Only process .h files
-		if strings.HasSuffix(headerName, ".h") {
+	var collectImports func(n *ahoy.ASTNode)
+	collectImports = func(n *ahoy.ASTNode) {
+		if n == nil {
+			return
+		}
+		if n.Type == ahoy.NODE_IMPORT_STATEMENT && strings.HasSuffix(n.Value, ".h") {
+			headerImports = append(headerImports, headerImport{
+				headerName: n.Value,
+				namespace:  n.DataType,
+				index:      len(headerImports),
+			})
+		}
+		for _, child := range n.Children {
+			collectImports(child)
+		}
+	}
+	collectImports(node)
+
+	if len(headerImports) == 0 {
+		return
+	}
+
+	// Parse headers in parallel with caching
+	type headerResult struct {
+		index      int
+		headerPath string
+		headerInfo *ahoy.CHeaderInfo
+		namespace  string
+	}
+
+	// Results array preserves original order
+	results := make([]*headerResult, len(headerImports))
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	for _, imp := range headerImports {
+		wg.Add(1)
+		go func(headerName, namespace string, idx int) {
+			defer wg.Done()
+
 			// Resolve relative paths to absolute paths
 			resolvedHeaderName := headerName
 			if strings.HasPrefix(headerName, "./") || strings.HasPrefix(headerName, "../") {
@@ -879,7 +921,7 @@ func (gen *CodeGenerator) scanImports(node *ahoy.ASTNode) {
 				}
 			}
 
-			// Try to find and parse the header file
+			// Try to find the header file
 			headerPath := ""
 			if strings.HasPrefix(resolvedHeaderName, "/") {
 				headerPath = resolvedHeaderName
@@ -892,97 +934,123 @@ func (gen *CodeGenerator) scanImports(node *ahoy.ASTNode) {
 					"repos/raylib/src/" + resolvedHeaderName,
 				}
 				for _, loc := range locations {
-					if _, err := ahoy.ParseCHeader(loc); err == nil {
+					if _, err := os.Stat(loc); err == nil {
 						headerPath = loc
 						break
 					}
 				}
 			}
 
-			if headerPath != "" {
-				if headerInfo, err := ahoy.ParseCHeader(headerPath); err == nil {
-					// Track struct/typedef names as known C types and store struct fields
-					for typeName, structInfo := range headerInfo.Structs {
-						gen.cTypeDefinitions[typeName] = true
-						// Also register lowercase version for easier matching
-						gen.cTypeDefinitions[strings.ToLower(typeName)] = true
-						
-						// Store struct fields for member access type inference
-						if gen.cStructFields[typeName] == nil {
-							gen.cStructFields[typeName] = make(map[string]string)
-						}
-						for _, field := range structInfo.Fields {
-							gen.cStructFields[typeName][field.Name] = field.Type
-						}
-						// Also store lowercase version
-						if gen.cStructFields[strings.ToLower(typeName)] == nil {
-							gen.cStructFields[strings.ToLower(typeName)] = make(map[string]string)
-						}
-						for _, field := range structInfo.Fields {
-							gen.cStructFields[strings.ToLower(typeName)][field.Name] = field.Type
-						}
-					}
-
-					// Store typedef aliases
-					for aliasName, typedefInfo := range headerInfo.Typedefs {
-						gen.cTypedefs[aliasName] = typedefInfo.BaseType
-						gen.cTypedefs[strings.ToLower(aliasName)] = typedefInfo.BaseType
-						// Also mark the alias as a known type
-						gen.cTypeDefinitions[aliasName] = true
-						gen.cTypeDefinitions[strings.ToLower(aliasName)] = true
-					}
-
-					// Store function return types and register them as C types if they're structs
-					if namespace != "" {
-						if gen.cNamespaceReturnTypes[namespace] == nil {
-							gen.cNamespaceReturnTypes[namespace] = make(map[string]string)
-						}
-						for cFuncName, funcInfo := range headerInfo.Functions {
-							snakeName := ahoy.PascalToSnake(cFuncName)
-							gen.cNamespaceReturnTypes[namespace][snakeName] = funcInfo.ReturnType
-
-							// Register return type as a known C type if it's a struct
-							if funcInfo.ReturnType != "" && funcInfo.ReturnType != "void" && funcInfo.ReturnType != "int" &&
-								funcInfo.ReturnType != "float" && funcInfo.ReturnType != "double" && funcInfo.ReturnType != "char*" {
-								gen.cTypeDefinitions[funcInfo.ReturnType] = true
-								gen.cTypeDefinitions[strings.ToLower(funcInfo.ReturnType)] = true
-							}
-							
-							// Store function parameter types
-							paramTypes := []string{}
-							for _, param := range funcInfo.Parameters {
-								paramTypes = append(paramTypes, param.Type)
-							}
-							gen.cFunctionParamTypes[snakeName] = paramTypes
-						}
-					} else {
-						for cFuncName, funcInfo := range headerInfo.Functions {
-							snakeName := ahoy.PascalToSnake(cFuncName)
-							gen.cFunctionReturnTypes[snakeName] = funcInfo.ReturnType
-
-							// Register return type as a known C type if it's a struct
-							if funcInfo.ReturnType != "" && funcInfo.ReturnType != "void" && funcInfo.ReturnType != "int" &&
-								funcInfo.ReturnType != "float" && funcInfo.ReturnType != "double" && funcInfo.ReturnType != "char*" {
-								gen.cTypeDefinitions[funcInfo.ReturnType] = true
-								gen.cTypeDefinitions[strings.ToLower(funcInfo.ReturnType)] = true
-							}
-							
-							// Store function parameter types
-							paramTypes := []string{}
-							for _, param := range funcInfo.Parameters {
-								paramTypes = append(paramTypes, param.Type)
-							}
-							gen.cFunctionParamTypes[snakeName] = paramTypes
-						}
-					}
-				}
+			if headerPath == "" {
+				return
 			}
-		}
+
+			// Try to get from cache first
+			cache := GetBuildCache()
+			if cachedInfo, ok := cache.GetCachedCHeader(headerPath); ok {
+				mu.Lock()
+				results[idx] = &headerResult{idx, headerPath, cachedInfo, namespace}
+				mu.Unlock()
+				return
+			}
+
+			// Parse the header
+			if headerInfo, err := ahoy.ParseCHeader(headerPath); err == nil {
+				// Cache the result
+				cache.CacheCHeader(headerPath, headerInfo)
+				mu.Lock()
+				results[idx] = &headerResult{idx, headerPath, headerInfo, namespace}
+				mu.Unlock()
+			}
+		}(imp.headerName, imp.namespace, imp.index)
 	}
 
-	// Recursively scan children
-	for _, child := range node.Children {
-		gen.scanImports(child)
+	// Wait for all goroutines to complete
+	wg.Wait()
+
+	// Process results in original order
+	for _, result := range results {
+		if result == nil || result.headerInfo == nil {
+			continue
+		}
+
+		headerInfo := result.headerInfo
+		namespace := result.namespace
+
+		// Track struct/typedef names as known C types and store struct fields
+		for typeName, structInfo := range headerInfo.Structs {
+			gen.cTypeDefinitions[typeName] = true
+			// Also register lowercase version for easier matching
+			gen.cTypeDefinitions[strings.ToLower(typeName)] = true
+
+			// Store struct fields for member access type inference
+			if gen.cStructFields[typeName] == nil {
+				gen.cStructFields[typeName] = make(map[string]string)
+			}
+			for _, field := range structInfo.Fields {
+				gen.cStructFields[typeName][field.Name] = field.Type
+			}
+			// Also store lowercase version
+			if gen.cStructFields[strings.ToLower(typeName)] == nil {
+				gen.cStructFields[strings.ToLower(typeName)] = make(map[string]string)
+			}
+			for _, field := range structInfo.Fields {
+				gen.cStructFields[strings.ToLower(typeName)][field.Name] = field.Type
+			}
+		}
+
+		// Store typedef aliases
+		for aliasName, typedefInfo := range headerInfo.Typedefs {
+			gen.cTypedefs[aliasName] = typedefInfo.BaseType
+			gen.cTypedefs[strings.ToLower(aliasName)] = typedefInfo.BaseType
+			// Also mark the alias as a known type
+			gen.cTypeDefinitions[aliasName] = true
+			gen.cTypeDefinitions[strings.ToLower(aliasName)] = true
+		}
+
+		// Store function return types and register them as C types if they're structs
+		if namespace != "" {
+			if gen.cNamespaceReturnTypes[namespace] == nil {
+				gen.cNamespaceReturnTypes[namespace] = make(map[string]string)
+			}
+			for cFuncName, funcInfo := range headerInfo.Functions {
+				snakeName := ahoy.PascalToSnake(cFuncName)
+				gen.cNamespaceReturnTypes[namespace][snakeName] = funcInfo.ReturnType
+
+				// Register return type as a known C type if it's a struct
+				if funcInfo.ReturnType != "" && funcInfo.ReturnType != "void" && funcInfo.ReturnType != "int" &&
+					funcInfo.ReturnType != "float" && funcInfo.ReturnType != "double" && funcInfo.ReturnType != "char*" {
+					gen.cTypeDefinitions[funcInfo.ReturnType] = true
+					gen.cTypeDefinitions[strings.ToLower(funcInfo.ReturnType)] = true
+				}
+
+				// Store function parameter types
+				paramTypes := []string{}
+				for _, param := range funcInfo.Parameters {
+					paramTypes = append(paramTypes, param.Type)
+				}
+				gen.cFunctionParamTypes[snakeName] = paramTypes
+			}
+		} else {
+			for cFuncName, funcInfo := range headerInfo.Functions {
+				snakeName := ahoy.PascalToSnake(cFuncName)
+				gen.cFunctionReturnTypes[snakeName] = funcInfo.ReturnType
+
+				// Register return type as a known C type if it's a struct
+				if funcInfo.ReturnType != "" && funcInfo.ReturnType != "void" && funcInfo.ReturnType != "int" &&
+					funcInfo.ReturnType != "float" && funcInfo.ReturnType != "double" && funcInfo.ReturnType != "char*" {
+					gen.cTypeDefinitions[funcInfo.ReturnType] = true
+					gen.cTypeDefinitions[strings.ToLower(funcInfo.ReturnType)] = true
+				}
+
+				// Store function parameter types
+				paramTypes := []string{}
+				for _, param := range funcInfo.Parameters {
+					paramTypes = append(paramTypes, param.Type)
+				}
+				gen.cFunctionParamTypes[snakeName] = paramTypes
+			}
+		}
 	}
 }
 
@@ -3295,7 +3363,7 @@ func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
 					"repos/raylib/src/" + resolvedHeaderName,
 				}
 				for _, loc := range locations {
-					if _, err := ahoy.ParseCHeader(loc); err == nil {
+					if _, err := os.Stat(loc); err == nil {
 						headerPath = loc
 						break
 					}
@@ -3303,13 +3371,27 @@ func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
 			}
 
 			if headerPath != "" {
-				if headerInfo, err := ahoy.ParseCHeader(headerPath); err == nil {
+				// Try to get from cache first
+				cache := GetBuildCache()
+				var headerInfo *ahoy.CHeaderInfo
+				var err error
+
+				if cachedInfo, ok := cache.GetCachedCHeader(headerPath); ok {
+					headerInfo = cachedInfo
+				} else {
+					headerInfo, err = ahoy.ParseCHeader(headerPath)
+					if err == nil {
+						cache.CacheCHeader(headerPath, headerInfo)
+					}
+				}
+
+				if headerInfo != nil {
 					// Track struct/typedef names as known C types and store struct fields
 					for typeName, structInfo := range headerInfo.Structs {
 						gen.cTypeDefinitions[typeName] = true
 						// Also register lowercase version for easier matching
 						gen.cTypeDefinitions[strings.ToLower(typeName)] = true
-						
+
 						// Store struct fields for member access type inference
 						if gen.cStructFields[typeName] == nil {
 							gen.cStructFields[typeName] = make(map[string]string)
@@ -3354,7 +3436,7 @@ func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
 								gen.cTypeDefinitions[funcInfo.ReturnType] = true
 								gen.cTypeDefinitions[strings.ToLower(funcInfo.ReturnType)] = true
 							}
-							
+
 							// Store function parameter types
 							paramTypes := []string{}
 							for _, param := range funcInfo.Parameters {
@@ -3375,7 +3457,7 @@ func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
 								gen.cTypeDefinitions[funcInfo.ReturnType] = true
 								gen.cTypeDefinitions[strings.ToLower(funcInfo.ReturnType)] = true
 							}
-							
+
 							// Store function parameter types
 							paramTypes := []string{}
 							for _, param := range funcInfo.Parameters {

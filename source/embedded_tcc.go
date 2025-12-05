@@ -63,8 +63,8 @@ func getTCCDir() (string, error) {
 func isTCCValid(dir string) bool {
 	switch runtime.GOOS {
 	case "linux":
-		tccBin := filepath.Join(dir, "tcc", "linux", "tcc")
-		libtcc := filepath.Join(dir, "tcc", "linux", "libtcc1.a")
+		tccBin := filepath.Join(dir, "linux", "tcc")
+		libtcc := filepath.Join(dir, "linux", "libtcc1.a")
 		if _, err := os.Stat(tccBin); err != nil {
 			return false
 		}
@@ -73,7 +73,7 @@ func isTCCValid(dir string) bool {
 		}
 		return true
 	case "windows":
-		tccBin := filepath.Join(dir, "tcc", "windows", "tcc.exe")
+		tccBin := filepath.Join(dir, "windows", "tcc.exe")
 		if _, err := os.Stat(tccBin); err != nil {
 			return false
 		}
@@ -90,7 +90,17 @@ func extractTCC(efs embed.FS, targetDir string) error {
 			return err
 		}
 
-		targetPath := filepath.Join(targetDir, path)
+		// Remove the leading "tcc/" from the path since it's already part of targetDir structure
+		// e.g., "tcc/linux/tcc" becomes "linux/tcc"
+		relPath := path
+		if len(path) > 4 && path[:4] == "tcc/" {
+			relPath = path[4:]
+		} else if path == "tcc" {
+			// Skip the root tcc directory itself
+			return nil
+		}
+		
+		targetPath := filepath.Join(targetDir, relPath)
 
 		if d.IsDir() {
 			return os.MkdirAll(targetPath, 0755)
@@ -126,13 +136,13 @@ func GetEmbeddedTCCPath() (string, []string, error) {
 
 	switch runtime.GOOS {
 	case "linux":
-		tccPath := filepath.Join(tccDir, "tcc", "linux", "tcc")
-		tccArgs := []string{"-b" + filepath.Join(tccDir, "tcc", "linux")}
+		tccPath := filepath.Join(tccDir, "linux", "tcc")
+		tccArgs := []string{"-B" + filepath.Join(tccDir, "linux")}
 		return tccPath, tccArgs, nil
 
 	case "windows":
-		tccPath := filepath.Join(tccDir, "tcc", "windows", "tcc.exe")
-		tccArgs := []string{"-b" + filepath.Join(tccDir, "tcc", "windows")}
+		tccPath := filepath.Join(tccDir, "windows", "tcc.exe")
+		tccArgs := []string{"-B" + filepath.Join(tccDir, "windows")}
 		return tccPath, tccArgs, nil
 
 	default:

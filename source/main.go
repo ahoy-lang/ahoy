@@ -30,14 +30,14 @@ func findCompiler(releaseMode bool, executablePath string) (string, []string, bo
 		switch runtime.GOOS {
 		case "linux":
 			tccPath = filepath.Join(ahoyDir, "tcc", "linux", "tcc")
-			tccArgs = []string{"-b" + filepath.Join(ahoyDir, "tcc", "linux")}
+			tccArgs = []string{"-B" + filepath.Join(ahoyDir, "tcc", "linux")}
 		case "windows":
 			if runtime.GOARCH == "386" {
 				tccPath = filepath.Join(ahoyDir, "tcc", "windows", "i386-win32-tcc.exe")
 			} else {
 				tccPath = filepath.Join(ahoyDir, "tcc", "windows", "tcc.exe")
 			}
-			tccArgs = []string{"-b" + filepath.Join(ahoyDir, "tcc", "windows")}
+			tccArgs = []string{"-B" + filepath.Join(ahoyDir, "tcc", "windows")}
 		default:
 			tccPath = ""
 		}
@@ -483,9 +483,14 @@ func main() {
 	lintFlag := flag.Bool("lint", false, "Run linter to check for errors without compiling")
 	releaseFlag := flag.Bool("release", false, "Use optimizing compiler (gcc/clang) for release build")
 	targetFlag := flag.String("target", "", "Cross-compile target: linux, windows, web, macos, or all")
+	incFlag := flag.Bool("inc", false, "Enable incremental builds (cache parsed files)")
 	helpFlag := flag.Bool("h", false, "Show help")
 
 	flag.Parse()
+
+	// Initialize incremental build cache
+	InitBuildCache(*incFlag)
+	defer GetBuildCache().SaveAndClose()
 
 	// Ensure stdlib is in cache (for LSP goto definition support)
 	_ = EnsureStdlibExists()
@@ -667,13 +672,27 @@ func main() {
 	// Calculate total parse time (load + imports + merge)
 	parseTime := loadTime + importsTime + mergeTime
 
+	// Get cache timing
+	cache := GetBuildCache()
+	cacheTime := cache.GetCacheTime()
+
 	if len(pkg.Files) > 1 {
 		fmt.Printf("✓ Compiled package '%s' (%d files) to %s\n", pkg.Name, len(pkg.Files), outputFile)
-		fmt.Printf("  Timing: parse=%s, imports=%s, merge=%s, codegen=%s\n",
-			formatTime(loadTime), formatTime(importsTime), formatTime(mergeTime), formatTime(codegenTime))
+		if cache.Enabled && cacheTime > 0 {
+			fmt.Printf("  Timing: parse=%s, imports=%s, merge=%s, codegen=%s, cache=%s\n",
+				formatTime(loadTime), formatTime(importsTime), formatTime(mergeTime), formatTime(codegenTime), formatTime(cacheTime))
+		} else {
+			fmt.Printf("  Timing: parse=%s, imports=%s, merge=%s, codegen=%s\n",
+				formatTime(loadTime), formatTime(importsTime), formatTime(mergeTime), formatTime(codegenTime))
+		}
 	} else {
-		fmt.Printf("✓ Compiled %s to %s (parse: %s, codegen: %s)\n",
-			sourceFile, outputFile, formatTime(parseTime), formatTime(codegenTime))
+		if cache.Enabled && cacheTime > 0 {
+			fmt.Printf("✓ Compiled %s to %s (parse: %s, codegen: %s, cache: %s)\n",
+				sourceFile, outputFile, formatTime(parseTime), formatTime(codegenTime), formatTime(cacheTime))
+		} else {
+			fmt.Printf("✓ Compiled %s to %s (parse: %s, codegen: %s)\n",
+				sourceFile, outputFile, formatTime(parseTime), formatTime(codegenTime))
+		}
 	}
 
 	// Compile C code if run flag is set
@@ -970,6 +989,7 @@ func showHelp() {
 	fmt.Println("  -target <t>   Cross-compile to target: linux, windows, macos, web, or all")
 	fmt.Println("  -format       Format the source file")
 	fmt.Println("  -lint         Check for syntax errors without compiling")
+	fmt.Println("  -inc          Enable incremental builds (cache parsed files)")
 	fmt.Println("  -h            Show this help message")
 	fmt.Println()
 	fmt.Println("Compilation modes:")
@@ -991,6 +1011,7 @@ func showHelp() {
 	fmt.Println("  ahoy -f main.ahoy                    # Compile to C only")
 	fmt.Println("  ahoy -f main.ahoy -r                 # Compile and run (debug)")
 	fmt.Println("  ahoy -f main.ahoy -r -release        # Compile and run (optimized)")
+	fmt.Println("  ahoy -f main.ahoy -r -inc            # Compile and run with caching")
 	fmt.Println("  ahoy -f main.ahoy -target linux      # Build for Linux")
 	fmt.Println("  ahoy -f main.ahoy -target all        # Build for all platforms")
 	fmt.Println("  ahoy -f main.ahoy -lint              # Check for errors")

@@ -39,8 +39,14 @@ func NewPackageManager(currentDir string) *PackageManager {
 	}
 }
 
-// LoadFile loads and parses a .ahoy file
+// LoadFile loads and parses a .ahoy file, using cache if available
 func (pm *PackageManager) LoadFile(filePath string) (*PackageFile, error) {
+	// Try to get from cache first
+	cache := GetBuildCache()
+	if cachedFile, ok := cache.GetCachedFile(filePath); ok {
+		return cachedFile, nil
+	}
+	
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("error reading file %s: %v", filePath, err)
@@ -79,6 +85,9 @@ func (pm *PackageManager) LoadFile(filePath string) (*PackageFile, error) {
 			pf.ProgramName = firstNode.Value
 		}
 	}
+
+	// Cache the parsed file
+	GetBuildCache().CacheFile(pf)
 
 	return pf, nil
 }
