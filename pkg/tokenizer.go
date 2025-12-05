@@ -121,72 +121,75 @@ type Token struct {
 	Column int
 }
 
+// Keywords map for tokenization
+var keywords = map[string]TokenType{
+	"if":           TOKEN_IF,
+	"else":         TOKEN_ELSE,
+	"elseif":       TOKEN_ELSEIF,
+	"anif":         TOKEN_ANIF,
+	"switch":       TOKEN_SWITCH,
+	"loop":         TOKEN_LOOP,
+	"in":           TOKEN_IN,
+	"to":           TOKEN_TO,
+	"till":         TOKEN_TILL,
+	"return":       TOKEN_RETURN,
+	"import":       TOKEN_IMPORT,
+	"program":      TOKEN_PROGRAM,
+	"when":         TOKEN_WHEN,
+	"ahoy":         TOKEN_AHOY,
+	"print":        TOKEN_PRINT,
+	"log":          TOKEN_LOG,
+	"panic":        TOKEN_PANIC,
+	"is":           TOKEN_IS,
+	"not":          TOKEN_NOT,
+	"or":           TOKEN_OR,
+	"and":          TOKEN_AND,
+	"then":         TOKEN_THEN,
+	"on":           TOKEN_ON,
+	"plus":         TOKEN_PLUS_WORD,
+	"minus":        TOKEN_MINUS_WORD,
+	"times":        TOKEN_TIMES_WORD,
+	"div":          TOKEN_DIV_WORD,
+	"mod":          TOKEN_MOD_WORD,
+	"pow":          TOKEN_POW_WORD,
+	"greater_than": TOKEN_GREATER_WORD,
+	"lesser_than":  TOKEN_LESSER_WORD,
+	"less_than":    TOKEN_LESSER_WORD,
+	"int":          TOKEN_INT_TYPE,
+	"float":        TOKEN_FLOAT_TYPE,
+	"string":       TOKEN_STRING_TYPE,
+	"char":         TOKEN_CHAR_TYPE,
+	"bool":         TOKEN_BOOL_TYPE,
+	"dict":         TOKEN_DICT_TYPE,
+	"array":        TOKEN_ARRAY_TYPE,
+	"true":         TOKEN_TRUE,
+	"false":        TOKEN_FALSE,
+	"enum":         TOKEN_ENUM,
+	"struct":       TOKEN_STRUCT,
+	"type":         TOKEN_TYPE,
+	"alias":        TOKEN_ALIAS,
+	"union":        TOKEN_UNION,
+	"do":           TOKEN_DO,
+	"halt":         TOKEN_HALT,
+	"next":         TOKEN_NEXT,
+	"continue":     TOKEN_NEXT,
+	"assert":       TOKEN_ASSERT,
+	"defer":        TOKEN_DEFER,
+	"infer":        TOKEN_INFER,
+	"void":         TOKEN_VOID,
+	"any":          TOKEN_ANY_TYPE,
+}
+
+// Tokenize converts source code into tokens
 func Tokenize(input string) []Token {
-	var tokens []Token
 	lines := strings.Split(input, "\n")
+	// Pre-allocate tokens slice (~20 tokens per line is a reasonable estimate)
+	tokens := make([]Token, 0, len(lines)*20)
 	indentStack := []int{0}
 
-	keywords := map[string]TokenType{
-		"if":     TOKEN_IF,
-		"else":   TOKEN_ELSE,
-		"elseif": TOKEN_ELSEIF,
-		"anif":   TOKEN_ANIF,
-		"switch": TOKEN_SWITCH,
-		"loop":   TOKEN_LOOP,
-		"in":     TOKEN_IN,
-		"to":     TOKEN_TO,
-		"till":   TOKEN_TILL,
-		// "func" removed - we use :: syntax for functions
-		"return":       TOKEN_RETURN,
-		"import":       TOKEN_IMPORT,
-		"program":      TOKEN_PROGRAM,
-		"when":         TOKEN_WHEN,
-		"ahoy":         TOKEN_AHOY,
-		"print":        TOKEN_PRINT,
-		"log":          TOKEN_LOG,
-		"panic":        TOKEN_PANIC,
-		"is":           TOKEN_IS,
-		"not":          TOKEN_NOT,
-		"or":           TOKEN_OR,
-		"and":          TOKEN_AND,
-		"then":         TOKEN_THEN,
-		"on":           TOKEN_ON,
-		"plus":         TOKEN_PLUS_WORD,
-		"minus":        TOKEN_MINUS_WORD,
-		"times":        TOKEN_TIMES_WORD,
-		"div":          TOKEN_DIV_WORD,
-		"mod":          TOKEN_MOD_WORD,
-		"pow":          TOKEN_POW_WORD,
-		"greater_than": TOKEN_GREATER_WORD,
-		"lesser_than":  TOKEN_LESSER_WORD,
-		"less_than":    TOKEN_LESSER_WORD,
-		"int":          TOKEN_INT_TYPE,
-		"float":        TOKEN_FLOAT_TYPE,
-		"string":       TOKEN_STRING_TYPE,
-		"char":         TOKEN_CHAR_TYPE,
-		"bool":         TOKEN_BOOL_TYPE,
-		"dict":         TOKEN_DICT_TYPE,
-		"array":        TOKEN_ARRAY_TYPE,
-		"true":         TOKEN_TRUE,
-		"false":        TOKEN_FALSE,
-		"enum":         TOKEN_ENUM,
-		"struct":       TOKEN_STRUCT,
-		"type":         TOKEN_TYPE,
-		"alias":        TOKEN_ALIAS,
-		"union":        TOKEN_UNION,
-		"do":           TOKEN_DO,
-		"halt":         TOKEN_HALT,
-		"next":         TOKEN_NEXT,
-		"continue":     TOKEN_NEXT, // alias for next
-		"assert":       TOKEN_ASSERT,
-		"defer":        TOKEN_DEFER,
-		"infer":        TOKEN_INFER,
-		"void":         TOKEN_VOID,
-		"any":          TOKEN_ANY_TYPE,
-	}
-
 	for lineNum, line := range lines {
-		if strings.TrimSpace(line) == "" {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
 			continue
 		}
 
@@ -213,12 +216,11 @@ func Tokenize(input string) []Token {
 		}
 
 		// Tokenize the line content
-		content := strings.TrimSpace(line)
+		content := trimmed
 		i := 0
 
 		// Check if line starts with comment
 		if len(content) > 0 && content[0] == '?' {
-			// Skip this line - it's a comment
 			tokens = append(tokens, Token{Type: TOKEN_NEWLINE, Line: lineNum + 1})
 			continue
 		}
@@ -230,7 +232,7 @@ func Tokenize(input string) []Token {
 				i += 3 // UTF-8 anchor emoji is 3 bytes
 				continue
 			}
-			if unicode.IsSpace(rune(content[i])) {
+			if isSpace(content[i]) {
 				i++
 				continue
 			}
@@ -248,8 +250,10 @@ func Tokenize(input string) []Token {
 			}
 
 			// Numbers (supports underscores for readability like 1_000_000)
+			// ascii version: if isDigit(content[i]) {
 			if unicode.IsDigit(rune(content[i])) {
 				start := i
+				// ascii version for i < len(content) && (isDigit(content[i]) || content[i] == '.' || content[i] == '_') {
 				for i < len(content) && (unicode.IsDigit(rune(content[i])) || content[i] == '.' || content[i] == '_') {
 					i++
 				}
@@ -332,9 +336,10 @@ func Tokenize(input string) []Token {
 			}
 
 			// Identifiers and keywords
+			// ascci version if isLetter(content[i]) || content[i] == '_' {
 			if unicode.IsLetter(rune(content[i])) || content[i] == '_' {
 				start := i
-				for i < len(content) && (unicode.IsLetter(rune(content[i])) || unicode.IsDigit(rune(content[i])) || content[i] == '_') {
+				for i < len(content) && isAlphaNum(content[i]) {
 					i++
 				}
 				word := content[start:i]
@@ -490,4 +495,21 @@ func Tokenize(input string) []Token {
 
 	tokens = append(tokens, Token{Type: TOKEN_EOF})
 	return tokens
+}
+
+// Fast ASCII check functions (avoid unicode package overhead)
+func isSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\r' || c == '\n'
+}
+
+func isDigit(c byte) bool {
+	return c >= '0' && c <= '9'
+}
+
+func isLetter(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+func isAlphaNum(c byte) bool {
+	return isLetter(c) || isDigit(c) || c == '_'
 }
