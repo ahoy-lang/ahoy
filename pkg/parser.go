@@ -1017,7 +1017,7 @@ func (p *Parser) parseStatement() *ASTNode {
 		p.advance()
 		return nil
 	default:
-		return p.parseExpression()
+		return p.parseAssignmentOrExpression()
 	}
 }
 
@@ -2981,7 +2981,7 @@ func (p *Parser) parseWalrusAssignment() *ASTNode {
 	// Track the variable declaration (except for _ placeholder)
 	if p.LintMode && name.Value != "_" {
 		if existingLine, exists := p.declaredVars[name.Value]; exists {
-			errMsg := fmt.Sprintf("Variable '%s' already declared on line %d; use ':' to update variable", name.Value, existingLine)
+			errMsg := fmt.Sprintf("Variable '%s' already declared on line %d; use '=' to update variable", name.Value, existingLine)
 			p.recordErrorAtLine(errMsg, line)
 		} else {
 			p.declaredVars[name.Value] = line
@@ -3165,7 +3165,11 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 						Line:     target.Line,
 					}
 				} else {
-					p.expect(TOKEN_ASSIGN)
+					if p.current().Type == TOKEN_ASSIGN || p.current().Type == TOKEN_EQUALS {
+						p.advance()
+					} else {
+						p.expect(TOKEN_ASSIGN)
+					}
 					value := p.parseExpression()
 
 					return &ASTNode{
@@ -3177,7 +3181,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			}
 		}
 		// If no dot found, check for simple array assignment
-		isAssignment := p.current().Type == TOKEN_ASSIGN
+		isAssignment := p.current().Type == TOKEN_ASSIGN || p.current().Type == TOKEN_EQUALS
 		isCompoundAssignment := p.isCompoundAssignOp(p.current().Type)
 		p.pos = savedPos // restore position
 
@@ -3209,7 +3213,11 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					Line:     target.Line,
 				}
 			} else {
-				p.expect(TOKEN_ASSIGN)
+				if p.current().Type == TOKEN_ASSIGN || p.current().Type == TOKEN_EQUALS {
+					p.advance()
+				} else {
+					p.expect(TOKEN_ASSIGN)
+				}
 				value := p.parseExpression()
 
 				return &ASTNode{
@@ -3244,7 +3252,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				break
 			}
 		}
-		isAssignment := p.current().Type == TOKEN_ASSIGN
+		isAssignment := p.current().Type == TOKEN_ASSIGN || p.current().Type == TOKEN_EQUALS
 		isCompoundAssignment := p.isCompoundAssignOp(p.current().Type)
 		p.pos = savedPos // restore position
 
@@ -3281,7 +3289,11 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					Line:     target.Line,
 				}
 			} else {
-				p.expect(TOKEN_ASSIGN)
+				if p.current().Type == TOKEN_ASSIGN || p.current().Type == TOKEN_EQUALS {
+					p.advance()
+				} else {
+					p.expect(TOKEN_ASSIGN)
+				}
 				value := p.parseExpression()
 
 				// Validate property assignment in lint mode
@@ -3454,7 +3466,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				alreadyDeclared := existsInFunc || existsGlobal
 
 				if !alreadyDeclared && varName != "_" {
-					errMsg := fmt.Sprintf("Cannot assign to undeclared variable '%s'. Use ':' or '%s:type=' for an explicit type", varName, varName)
+					errMsg := fmt.Sprintf("Cannot assign to undeclared variable '%s'. Use '=' or '%s:type=' for an explicit type", varName, varName)
 					p.recordErrorAtLine(errMsg, line)
 				}
 
@@ -6008,7 +6020,7 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 					continue
 				}
 				if existingLine, exists := p.declaredVars[varName]; exists {
-					errMsg := fmt.Sprintf("Variable '%s' already declared on line %d; use ':' to update variable", varName, existingLine)
+					errMsg := fmt.Sprintf("Variable '%s' already declared on line %d; use '=' to update variable", varName, existingLine)
 					p.recordErrorAtLine(errMsg, line)
 				} else {
 					p.declaredVars[varName] = line
