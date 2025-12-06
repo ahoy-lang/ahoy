@@ -6001,6 +6001,7 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 		} else if isWalrus {
 			// := for tuples: smart declare-or-reassign
 			// For each variable, check if it exists, and declare if not
+			// Store existing types for validation later
 			if p.LintMode {
 				for _, idNode := range leftSide.Children {
 					varName := idNode.Value
@@ -6009,29 +6010,44 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 						continue
 					}
 					exists := false
+					var existingType string
 
 					// Check function scope
 					if p.functionScope != nil {
-						if _, ok := p.functionScope[varName]; ok {
+						if vType, ok := p.functionScope[varName]; ok {
 							exists = true
+							existingType = vType
 						}
 					}
 					// Check global scope
 					if !exists {
-						if _, ok := p.variableTypes[varName]; ok {
+						if vType, ok := p.variableTypes[varName]; ok {
 							exists = true
+							existingType = vType
 						}
 					}
 					// Check declaredVars
 					if !exists {
 						if _, ok := p.declaredVars[varName]; ok {
 							exists = true
+							// Try to get type
+							if vType, ok := p.variableTypes[varName]; ok {
+								existingType = vType
+							} else if p.functionScope != nil {
+								if vType, ok := p.functionScope[varName]; ok {
+									existingType = vType
+								}
+							}
 						}
 					}
 
 					// If doesn't exist, declare it
 					if !exists {
 						p.declaredVars[varName] = line
+					}
+					// Store existing type for validation (if reassigning)
+					if exists && existingType != "" {
+						idNode.DataType = existingType
 					}
 				}
 			}
@@ -6088,7 +6104,7 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 				}
 
 				if !exists {
-					errMsg := fmt.Sprintf("Cannot assign to undeclared variable '%s'. Use '=' or '%s:type=' for an explicit type", varName, varName)
+					errMsg := "Cannot assign to undeclared variable; Use '=' for declaration, or Walrus ':=' for smart declare-or-reassign of tuple values."
 					p.recordErrorAtLine(errMsg, line)
 				}
 			}
@@ -7860,13 +7876,18 @@ func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int)
 				break
 			}
 
+			// Skip _ placeholder
+			if leftVar.Value == "_" {
+				continue
+			}
+
 			expectedType := leftVar.DataType
 			actualType := returnTypes[i]
 
-			// If left side has type annotation, validate it matches
+			// If left side has type annotation (from existing variable or explicit type), validate it matches
 			if expectedType != "" && actualType != "" {
 				if !p.checkTypeCompatibility(expectedType, actualType) {
-					errMsg := fmt.Sprintf("Tuple assignment type mismatch at position %d: variable '%s' expects %s but got %s",
+					errMsg := fmt.Sprintf("Tuple assignment type mismatch at position %d: variable '%s' declared as %s cannot be reassigned as %s",
 						i+1, leftVar.Value, expectedType, actualType)
 					p.recordError(errMsg)
 				}
