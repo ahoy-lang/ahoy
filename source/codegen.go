@@ -3128,7 +3128,6 @@ func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
 	// Save old types before registering loop variables
 	oldKeyType, _ := gen.variables[keyVar]
 	oldValType, _ := gen.variables[valueVar]
-
 	// For typed dicts, use the specific type
 	// For untyped dicts (object literals), use intptr_t (can be cast to arrays/dicts/etc)
 	if hasKnownType {

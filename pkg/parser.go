@@ -199,6 +199,7 @@ type Parser struct {
 	Errors              []ParseError
 	variableTypes       map[string]string             // Track variable types
 	constants           map[string]int                // Track constant declarations (name -> line number)
+	declaredVars        map[string]int                // Track variable declarations (name -> line number) for error reporting
 	structs             map[string]*StructDefinition  // Track struct definitions
 	enums               map[string]*EnumDefinition    // Track enum definitions
 	typeAliases         map[string]string             // Track type aliases
@@ -230,6 +231,7 @@ func Parse(tokens []Token) *ASTNode {
 		Errors:              []ParseError{},
 		variableTypes:       make(map[string]string),
 		constants:           make(map[string]int),
+		declaredVars:        make(map[string]int),
 		structs:             make(map[string]*StructDefinition),
 		enums:               make(map[string]*EnumDefinition),
 		typeAliases:         make(map[string]string),
@@ -261,6 +263,7 @@ func ParseWithPath(tokens []Token, sourceFilePath string) *ASTNode {
 		Errors:              []ParseError{},
 		variableTypes:       make(map[string]string),
 		constants:           make(map[string]int),
+		declaredVars:        make(map[string]int),
 		structs:             make(map[string]*StructDefinition),
 		enums:               make(map[string]*EnumDefinition),
 		typeAliases:         make(map[string]string),
@@ -292,6 +295,7 @@ func ParseLint(tokens []Token) (*ASTNode, []ParseError) {
 		Errors:              []ParseError{},
 		variableTypes:       make(map[string]string),
 		constants:           make(map[string]int),
+		declaredVars:        make(map[string]int),
 		structs:             make(map[string]*StructDefinition),
 		enums:               make(map[string]*EnumDefinition),
 		typeAliases:         make(map[string]string),
@@ -324,6 +328,7 @@ func ParseLintWithPath(tokens []Token, sourceFilePath string) (*ASTNode, []Parse
 		Errors:              []ParseError{},
 		variableTypes:       make(map[string]string),
 		constants:           make(map[string]int),
+		declaredVars:        make(map[string]int),
 		structs:             make(map[string]*StructDefinition),
 		enums:               make(map[string]*EnumDefinition),
 		typeAliases:         make(map[string]string),
@@ -3316,12 +3321,101 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			Line:     line,
 		}
 
+		// Compound assignment is a reassignment - check variable exists in lint mode
+		if p.LintMode {
+			if _, exists := p.variableTypes[name.Value]; !exists {
+				errMsg := fmt.Sprintf("Cannot reassign to undeclared variable '%s'. Use '=' or ':=' to declare first", name.Value)
+				p.recordErrorAtLine(errMsg, line)
+			}
+		}
+
 		// Create assignment: identifier: (identifier + value)
 		return &ASTNode{
 			Type:     NODE_ASSIGNMENT,
 			Value:    name.Value,           // Variable name goes in Value field
 			Children: []*ASTNode{binaryOp}, // Binary op is the value being assigned
 			Line:     line,
+		}
+	}
+
+	// NEW SYNTAX: Check for `identifier = value` or `identifier := value` (declaration with type inference)
+	if p.pos+1 < len(p.tokens) && (p.tokens[p.pos+1].Type == TOKEN_EQUALS || p.tokens[p.pos+1].Type == TOKEN_WALRUS) {
+		name := p.expect(TOKEN_IDENTIFIER)
+		line := name.Line
+
+		// Check if the variable name is in SCREAMING_SNAKE_CASE - if so, treat as constant
+		if isScreamingSnakeCase(name.Value) {
+			// Constants can use = or := syntax
+			p.advance() // consume = or :=
+
+			// In lint mode, check if constant is being redeclared
+			if p.LintMode {
+				if existingLine, exists := p.constants[name.Value]; exists {
+					errMsg := fmt.Sprintf("Can't redeclare a constant declared on line %d", existingLine)
+					p.recordError(errMsg)
+				} else {
+					p.constants[name.Value] = line
+				}
+			}
+
+			// Skip newlines before parsing value
+			for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
+				p.advance()
+			}
+
+			value := p.parseExpression()
+
+			// In lint mode, track the constant's type
+			if p.LintMode {
+				inferredType := p.inferType(value)
+				if inferredType != "unknown" {
+					p.variableTypes[name.Value] = inferredType
+				}
+			}
+
+			return &ASTNode{
+				Type:     NODE_CONSTANT_DECLARATION,
+				Value:    name.Value,
+				DataType: "", // No explicit type for = or :=
+				Line:     line,
+				Children: []*ASTNode{value},
+			}
+		}
+
+		// Regular variable declaration with type inference
+		p.advance() // consume = or :=
+
+		// In lint mode, check if variable is being redeclared in same scope
+		if p.LintMode {
+			if existingLine, exists := p.declaredVars[name.Value]; exists {
+				errMsg := fmt.Sprintf("Variable '%s' already declared on line %d", name.Value, existingLine)
+				p.recordErrorAtLine(errMsg, line)
+			} else {
+				p.declaredVars[name.Value] = line
+			}
+		}
+
+		// Skip newlines before parsing value
+		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
+			p.advance()
+		}
+
+		value := p.parseExpression()
+
+		// In lint mode, infer and track the variable's type
+		if p.LintMode {
+			inferredType := p.inferType(value)
+			if inferredType != "unknown" {
+				p.variableTypes[name.Value] = inferredType
+			}
+		}
+
+		return &ASTNode{
+			Type:     NODE_VARIABLE_DECLARATION,
+			Value:    name.Value,
+			DataType: "", // Empty means type is inferred
+			Line:     line,
+			Children: []*ASTNode{value},
 		}
 	}
 
@@ -3400,35 +3494,15 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			p.advance()
 		}
 
-		// Check for type annotation (type=) or inferred type (:=)
+		// NEW SYNTAX: Determine if this is a declaration or reassignment
+		// - If followed by type and =, it's a declaration: var:type=value
+		// - If followed directly by value (no type), it's a reassignment: var: value
 		var explicitType string
-		if p.current().Type == TOKEN_EQUALS {
-			// := syntax (or : = with space) - check if valid
-			p.advance() // consume =
+		isDeclaration := false
 
-			// Check if this is a switch expression - requires explicit type
-			if p.current().Type == TOKEN_SWITCH {
-				errMsg := fmt.Sprintf("Expected type/s between : and = for switch expression (e.g., :string= or :(string,int)=)")
-				if p.LintMode {
-					p.recordErrorAtLine(errMsg, line)
-					// Skip the switch statement to continue parsing
-					for p.current().Type != TOKEN_END && p.current().Type != TOKEN_EOF {
-						p.advance()
-					}
-					return &ASTNode{
-						Type:  NODE_VARIABLE_DECLARATION,
-						Value: name.Value,
-						Line:  line,
-					}
-				} else {
-					panic(errMsg)
-				}
-			}
-			explicitType = "" // Empty means inferred
-		} else if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
+		// Check if next token looks like a type annotation
+		if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 			p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
-			p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
-			p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 			p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 			p.current().Type == TOKEN_IDENTIFIER {
 
@@ -3436,8 +3510,8 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			if (p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 				p.current().Type == TOKEN_CHAR_TYPE || p.current().Type == TOKEN_STRING_TYPE) &&
 				p.peek(1).Type == TOKEN_LPAREN {
-				// This is a cast like int(5), not a type annotation
-				// Fall through to parse it as an expression
+				// This is a cast like int(5), not a type annotation - this is a reassignment
+				isDeclaration = false
 			} else if p.current().Type == TOKEN_IDENTIFIER && p.peek(1).Type == TOKEN_LANGLE {
 				// Check if this is a type annotation (Type<...>) or dict access (var<key>)
 				// Types are capitalized, variables are lowercase
@@ -3456,6 +3530,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					if p.peek(1).Type == TOKEN_EQUALS || p.peek(1).Type == TOKEN_LANGLE {
 						// Non-collection types with = or <
 						explicitType = possibleType
+						isDeclaration = true
 						p.advance() // consume type
 						if p.current().Type == TOKEN_EQUALS {
 							p.advance() // consume =
@@ -3498,6 +3573,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 									possibleType = fmt.Sprintf("%s[%s,%s]", baseType, keyType, valueType)
 								}
 								explicitType = possibleType
+								isDeclaration = true
 								// Expect = after typed collection
 								if p.current().Type == TOKEN_EQUALS {
 									p.advance() // consume =
@@ -3508,6 +3584,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 								p.advance() // consume >=, which acts as both > and =
 								possibleType = fmt.Sprintf("%s<%s,%s>", baseType, keyType, valueType)
 								explicitType = possibleType
+								isDeclaration = true
 								// No need to consume = separately, it was part of >=
 							}
 						}
@@ -3529,6 +3606,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 							p.advance() // consume ]
 							possibleType = fmt.Sprintf("%s[%s]", baseType, elementType)
 							explicitType = possibleType
+							isDeclaration = true
 							// Expect = after typed collection
 							if p.current().Type == TOKEN_EQUALS {
 								p.advance() // consume =
@@ -3539,6 +3617,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				} else if p.peek(1).Type == TOKEN_EQUALS || p.peek(1).Type == TOKEN_LANGLE {
 					// Non-collection types with = or <
 					explicitType = possibleType
+					isDeclaration = true
 					p.advance() // consume type
 					if p.current().Type == TOKEN_EQUALS {
 						p.advance() // consume =
@@ -3606,8 +3685,14 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				}
 			}
 
-			if exists {
-				// Variable already declared - check type compatibility
+			// NEW SYNTAX: Check if this is reassignment without declaration
+			if !isDeclaration && !exists {
+				errMsg := fmt.Sprintf("Cannot reassign to undeclared variable '%s'. Use '=' or ':=' to declare, or '%s:type=' for explicit type", varName, varName)
+				p.recordErrorAtLine(errMsg, line)
+			}
+
+			if !isDeclaration && exists {
+				// Reassignment - check type compatibility
 				inferredType := p.inferType(value)
 
 				// For struct types, normalize the comparison
@@ -3625,12 +3710,18 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 						line, varName, existingType, inferredType)
 					p.recordError(errMsg)
 				}
-			} else {
-				// First declaration - store the type
+			} else if isDeclaration {
+				// Declaration - store the type
 				// If inside a function, store in function scope, otherwise global
 				targetScope := p.variableTypes
 				if p.currentFunctionRet != "" && p.functionScope != nil {
 					targetScope = p.functionScope
+				}
+
+				// Check for redeclaration
+				if exists {
+					errMsg := fmt.Sprintf("Variable '%s' already declared", varName)
+					p.recordErrorAtLine(errMsg, line)
 				}
 
 				if explicitType != "" {
@@ -3713,8 +3804,14 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			}
 		}
 
+		// Return appropriate node type based on whether this is declaration or reassignment
+		nodeType := NODE_ASSIGNMENT
+		if isDeclaration {
+			nodeType = NODE_VARIABLE_DECLARATION
+		}
+
 		return &ASTNode{
-			Type:     NODE_ASSIGNMENT,
+			Type:     nodeType,
 			Value:    name.Value,
 			DataType: explicitType,
 			Children: []*ASTNode{value},
