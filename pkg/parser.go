@@ -392,6 +392,19 @@ func (p *Parser) recordErrorAtLine(message string, line int) {
 	})
 }
 
+func (p *Parser) recordWarning(message string) {
+	// For now, warnings are treated as errors in lint mode
+	// In future, we could add a separate Warnings slice
+	if p.LintMode {
+		token := p.current()
+		p.Errors = append(p.Errors, ParseError{
+			Message: "Warning: " + message,
+			Line:    token.Line,
+			Column:  token.Column,
+		})
+	}
+}
+
 // validateNoGlobalFunctionCalls checks if a statement contains function calls at global scope
 func (p *Parser) validateNoGlobalFunctionCalls(node *ASTNode) {
 	if node == nil {
@@ -2934,6 +2947,12 @@ func (p *Parser) parseWalrusAssignment() *ASTNode {
 	line := name.Line
 	p.expect(TOKEN_WALRUS)
 
+	// ERROR: Walrus with single variable is not allowed (should use = or :type=)
+	if p.LintMode {
+		errMsg := "Can't use walrus ':=' without a type (for single var); use ':type=' for explicit type or '=' to assign or ':' to reassign"
+		p.recordErrorAtLine(errMsg, line)
+	}
+
 	// Check if value is a switch expression - not allowed without explicit type
 	if p.current().Type == TOKEN_SWITCH {
 		errMsg := fmt.Sprintf("Expected type/s between : and = for switch expression (e.g., :string= or :(string,int)=)")
@@ -2958,6 +2977,22 @@ func (p *Parser) parseWalrusAssignment() *ASTNode {
 
 	// Parse the value
 	value := p.parseExpression()
+
+	// Track the variable declaration (except for _ placeholder)
+	if p.LintMode && name.Value != "_" {
+		if existingLine, exists := p.declaredVars[name.Value]; exists {
+			errMsg := fmt.Sprintf("Variable '%s' already declared on line %d; use ':' to update variable", name.Value, existingLine)
+			p.recordErrorAtLine(errMsg, line)
+		} else {
+			p.declaredVars[name.Value] = line
+		}
+
+		// Infer and track the variable's type
+		inferredType := p.inferType(value)
+		if inferredType != "unknown" {
+			p.variableTypes[name.Value] = inferredType
+		}
+	}
 
 	return &ASTNode{
 		Type:     NODE_VARIABLE_DECLARATION,
@@ -3323,7 +3358,23 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 
 		// Compound assignment is a reassignment - check variable exists in lint mode
 		if p.LintMode {
-			if _, exists := p.variableTypes[name.Value]; !exists {
+			exists := false
+			if _, ok := p.variableTypes[name.Value]; ok {
+				exists = true
+			}
+			if !exists {
+				if _, ok := p.declaredVars[name.Value]; ok {
+					exists = true
+				}
+			}
+			if !exists {
+				if p.functionScope != nil {
+					if _, ok := p.functionScope[name.Value]; ok {
+						exists = true
+					}
+				}
+			}
+			if !exists {
 				errMsg := fmt.Sprintf("Cannot reassign to undeclared variable '%s'. Use '=' or ':=' to declare first", name.Value)
 				p.recordErrorAtLine(errMsg, line)
 			}
@@ -3382,13 +3433,22 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			}
 		}
 
+		// Check which operator we're consuming
+		opToken := p.current()
+
 		// Regular variable declaration with type inference
 		p.advance() // consume = or :=
 
+		// Warn/Error if using := for single variable (should use = or :type=)
+		if opToken.Type == TOKEN_WALRUS && p.LintMode {
+			errMsg := "Can't use walrus ':=' without a type (for single var); use ':type=' for explicit type or '=' to assign or ':' to reassign"
+			p.recordErrorAtLine(errMsg, line)
+		}
+
 		// In lint mode, check if variable is being redeclared in same scope
-		if p.LintMode {
+		if p.LintMode && name.Value != "_" {
 			if existingLine, exists := p.declaredVars[name.Value]; exists {
-				errMsg := fmt.Sprintf("Variable '%s' already declared on line %d", name.Value, existingLine)
+				errMsg := fmt.Sprintf("Variable '%s' already declared on line %d; use ':' to update variable", name.Value, existingLine)
 				p.recordErrorAtLine(errMsg, line)
 			} else {
 				p.declaredVars[name.Value] = line
@@ -3402,8 +3462,8 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 
 		value := p.parseExpression()
 
-		// In lint mode, infer and track the variable's type
-		if p.LintMode {
+		// In lint mode, infer and track the variable's type (but not for _ placeholder)
+		if p.LintMode && name.Value != "_" {
 			inferredType := p.inferType(value)
 			if inferredType != "unknown" {
 				p.variableTypes[name.Value] = inferredType
@@ -3684,10 +3744,22 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					exists = true
 				}
 			}
+			// Also check declaredVars (for variables declared with = or :=)
+			if !exists {
+				if _, ok := p.declaredVars[varName]; ok {
+					// Variable was declared, get its type
+					if t, ok := p.variableTypes[varName]; ok {
+						existingType = t
+						exists = true
+					} else {
+						exists = true // Declared but type unknown
+					}
+				}
+			}
 
 			// NEW SYNTAX: Check if this is reassignment without declaration
-			if !isDeclaration && !exists {
-				errMsg := fmt.Sprintf("Cannot reassign to undeclared variable '%s'. Use '=' or ':=' to declare, or '%s:type=' for explicit type", varName, varName)
+			if !isDeclaration && !exists && varName != "_" {
+				errMsg := fmt.Sprintf("Cannot assign to undeclared variable '%s'. Use '=' or '%s:type=' for an explicit type", varName, varName)
 				p.recordErrorAtLine(errMsg, line)
 			}
 
@@ -3718,14 +3790,21 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					targetScope = p.functionScope
 				}
 
-				// Check for redeclaration
-				if exists {
+				// Check for redeclaration (but allow _ placeholder)
+				if exists && varName != "_" {
 					errMsg := fmt.Sprintf("Variable '%s' already declared", varName)
 					p.recordErrorAtLine(errMsg, line)
 				}
 
+				// Track in declaredVars for later reassignment checks (except for _ placeholder)
+				if varName != "_" {
+					p.declaredVars[varName] = line
+				}
+
 				if explicitType != "" {
-					targetScope[varName] = explicitType
+					if varName != "_" {
+						targetScope[varName] = explicitType
+					}
 
 					// Validate bool type - don't allow 0 or 1 literal assignments
 					if explicitType == "bool" && value.Type == NODE_NUMBER {
@@ -3773,9 +3852,9 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 						p.recordErrorAtLine(errMsg, line)
 					}
 
-					// Infer type from value
+					// Infer type from value (except for _ placeholder)
 					inferredType := p.inferType(value)
-					if inferredType != "unknown" {
+					if inferredType != "unknown" && varName != "_" {
 						targetScope[varName] = inferredType
 
 						// Track object literal properties
@@ -5782,7 +5861,7 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 	return fn
 }
 
-// Parse tuple assignment (a, b : c, d)
+// Parse tuple assignment (a, b : c, d) or tuple declaration (a, b = c, d)
 func (p *Parser) parseTupleAssignment() *ASTNode {
 	// Parse left side (identifiers with optional type annotations)
 	leftSide := &ASTNode{Type: NODE_BLOCK}
@@ -5833,11 +5912,16 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 		}
 	}
 
-	p.expect(TOKEN_ASSIGN)
+	// Determine assignment type
+	assignOp := p.current().Type
+	isWalrus := (assignOp == TOKEN_WALRUS)
 
-	// Check for optional tuple type specification: (type, type) =
-	if p.current().Type == TOKEN_LPAREN {
+	// Check for typed tuple declaration: :(type, type)=
+	if assignOp == TOKEN_ASSIGN && p.peek(1).Type == TOKEN_LPAREN {
+		// This is :(type1, type2)= syntax - parse types
+		p.advance() // consume :
 		p.advance() // consume (
+
 		typeIndex := 0
 		for p.current().Type != TOKEN_RPAREN && p.current().Type != TOKEN_EOF {
 			// Parse type
@@ -5846,22 +5930,172 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 				p.current().Type == TOKEN_IDENTIFIER {
 
-				// Apply type to corresponding left-side variable
 				if typeIndex < len(leftSide.Children) {
 					leftSide.Children[typeIndex].DataType = p.current().Value
 				}
-				p.advance()
 				typeIndex++
+				p.advance()
+			}
+
+			if p.current().Type == TOKEN_COMMA {
+				p.advance()
+			}
+		}
+		p.expect(TOKEN_RPAREN)
+
+		// Now expect =
+		if p.current().Type == TOKEN_EQUALS {
+			p.advance()
+		} else {
+			p.recordError(fmt.Sprintf("Expected '=' after type specification at line %d", p.current().Line))
+		}
+
+		// In lint mode, track new variable declarations
+		if p.LintMode {
+			for _, idNode := range leftSide.Children {
+				varName := idNode.Value
+				// Skip _ placeholder - it's not a real variable
+				if varName == "_" {
+					continue
+				}
+				if existingLine, exists := p.declaredVars[varName]; exists {
+					errMsg := fmt.Sprintf("Variable '%s' already declared on line %d; use ':' to update variable", varName, existingLine)
+					p.recordErrorAtLine(errMsg, line)
+				} else {
+					p.declaredVars[varName] = line
+				}
+			}
+		}
+	} else if assignOp == TOKEN_EQUALS || assignOp == TOKEN_WALRUS {
+		p.advance() // consume = or :=
+
+		// Check for typed tuple after = or := (shouldn't happen but handle for completeness)
+		if p.current().Type == TOKEN_LPAREN {
+			// This is :(type1, type2)= syntax - parse types
+			p.advance() // consume (
+			typeIndex := 0
+			for p.current().Type != TOKEN_RPAREN && p.current().Type != TOKEN_EOF {
+				// Parse type
+				if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
+					p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
+					p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
+					p.current().Type == TOKEN_IDENTIFIER {
+
+					if typeIndex < len(leftSide.Children) {
+						leftSide.Children[typeIndex].DataType = p.current().Value
+					}
+					typeIndex++
+					p.advance()
+				}
 
 				if p.current().Type == TOKEN_COMMA {
 					p.advance()
 				}
-			} else {
-				break
+			}
+			p.expect(TOKEN_RPAREN)
+
+			// Now expect =
+			if p.current().Type == TOKEN_EQUALS {
+				p.advance()
+			}
+		} else if isWalrus {
+			// := for tuples: smart declare-or-reassign
+			// For each variable, check if it exists, and declare if not
+			if p.LintMode {
+				for _, idNode := range leftSide.Children {
+					varName := idNode.Value
+					// Skip _ placeholder
+					if varName == "_" {
+						continue
+					}
+					exists := false
+
+					// Check function scope
+					if p.functionScope != nil {
+						if _, ok := p.functionScope[varName]; ok {
+							exists = true
+						}
+					}
+					// Check global scope
+					if !exists {
+						if _, ok := p.variableTypes[varName]; ok {
+							exists = true
+						}
+					}
+					// Check declaredVars
+					if !exists {
+						if _, ok := p.declaredVars[varName]; ok {
+							exists = true
+						}
+					}
+
+					// If doesn't exist, declare it
+					if !exists {
+						p.declaredVars[varName] = line
+					}
+				}
+			}
+		} else {
+			// = for tuples: pure declaration
+			// In lint mode, track new variable declarations
+			if p.LintMode {
+				for _, idNode := range leftSide.Children {
+					varName := idNode.Value
+					// Skip _ placeholder
+					if varName == "_" {
+						continue
+					}
+					if existingLine, exists := p.declaredVars[varName]; exists {
+						errMsg := fmt.Sprintf("Variable '%s' already declared on line %d; use ':' to update variable", varName, existingLine)
+						p.recordErrorAtLine(errMsg, line)
+					} else {
+						p.declaredVars[varName] = line
+					}
+				}
 			}
 		}
-		p.expect(TOKEN_RPAREN)
-		p.expect(TOKEN_EQUALS) // expect =
+	} else if p.current().Type == TOKEN_ASSIGN {
+		// Reassignment with :
+		p.advance() // consume :
+
+		// In lint mode, check that all variables exist
+		if p.LintMode {
+			for _, idNode := range leftSide.Children {
+				varName := idNode.Value
+				// Skip _ placeholder - it's always allowed
+				if varName == "_" {
+					continue
+				}
+				exists := false
+
+				// Check function scope
+				if p.functionScope != nil {
+					if _, ok := p.functionScope[varName]; ok {
+						exists = true
+					}
+				}
+				// Check global scope
+				if !exists {
+					if _, ok := p.variableTypes[varName]; ok {
+						exists = true
+					}
+				}
+				// Check declaredVars
+				if !exists {
+					if _, ok := p.declaredVars[varName]; ok {
+						exists = true
+					}
+				}
+
+				if !exists {
+					errMsg := fmt.Sprintf("Cannot assign to undeclared variable '%s'. Use '=' or '%s:type=' for an explicit type", varName, varName)
+					p.recordErrorAtLine(errMsg, line)
+				}
+			}
+		}
+	} else {
+		p.recordError(fmt.Sprintf("Expected '=', ':=', or ':' in tuple assignment at line %d", line))
+		return nil
 	}
 
 	// Parse right side (expressions)
@@ -5901,7 +6135,7 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 				}
 			}
 			if !hasAllTypes {
-				errMsg := fmt.Sprintf("Tuple assignment from switch requires explicit types: (type, type) at line %d", line)
+				errMsg := fmt.Sprintf("Tuple assignment from switch requires explicit types: :(type, type)= at line %d", line)
 				p.recordError(errMsg)
 			}
 		}
