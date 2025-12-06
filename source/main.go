@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 	"strings"
 	"time"
 
@@ -483,10 +484,38 @@ func main() {
 	lintFlag := flag.Bool("lint", false, "Run linter to check for errors without compiling")
 	releaseFlag := flag.Bool("release", false, "Use optimizing compiler (gcc/clang) for release build")
 	targetFlag := flag.String("target", "", "Cross-compile target: linux, windows, web, macos, or all")
-	incFlag := flag.Bool("inc", false, "Enable incremental builds (cache parsed files)")
+	incFlag := flag.Bool("cache", false, "Enable incremental builds (cache parsed files)")
+	profCompFlag := flag.Bool("profile_compiler", false, "Enable CPU profiling of compiler (creates pprof file)")
 	helpFlag := flag.Bool("h", false, "Show help")
 
 	flag.Parse()
+
+	// Start CPU profiling if requested
+	if *profCompFlag {
+		// Get current working directory name for profile filename
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Printf("Error getting current directory: %v\n", err)
+			os.Exit(1)
+		}
+		dirName := filepath.Base(cwd)
+		profileName := fmt.Sprintf("%s_cpu.pprof", dirName)
+
+		f, err := os.Create(profileName)
+		if err != nil {
+			fmt.Printf("Error creating profile file: %v\n", err)
+			os.Exit(1)
+		}
+		defer f.Close()
+
+		if err := pprof.StartCPUProfile(f); err != nil {
+			fmt.Printf("Error starting CPU profile: %v\n", err)
+			os.Exit(1)
+		}
+		defer pprof.StopCPUProfile()
+
+		fmt.Printf("CPU profiling enabled, writing to %s\n", profileName)
+	}
 
 	// Start total timing
 	totalStart := time.Now()
