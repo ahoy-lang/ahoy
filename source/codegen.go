@@ -5340,6 +5340,24 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 	case ahoy.NODE_ARRAY_ACCESS:
 		// Get the array variable name and look up its element type
 		arrayName := node.Value
+		
+		// Handle nested array access (e.g., grid[row][col])
+		// If arrayName is empty, this is accessing the result of another expression
+		if arrayName == "" && len(node.Children) > 0 {
+			// The first child is the array being accessed (could be another array access)
+			arrayExpr := node.Children[0]
+			// Infer the type of the array expression
+			arrayType := gen.inferType(arrayExpr)
+			
+			// If it's an array type, extract the element type
+			if strings.HasPrefix(arrayType, "array[") {
+				elemType := strings.TrimSuffix(strings.TrimPrefix(arrayType, "array["), "]")
+				return elemType
+			}
+			// Otherwise return the type as-is (might be a struct or other type)
+			return arrayType
+		}
+		
 		if elemType, exists := gen.arrayElementTypes[arrayName]; exists {
 			return elemType
 		}
@@ -5350,6 +5368,13 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		} else if varType, exists := gen.functionVars[arrayName]; exists {
 			arrayType = varType
 		}
+		
+		// Check if the variable has an array type annotation
+		if strings.HasPrefix(arrayType, "array[") {
+			elemType := strings.TrimSuffix(strings.TrimPrefix(arrayType, "array["), "]")
+			return elemType
+		}
+		
 		// If array is generic/any, elements are also generic/any (intptr_t)
 		if arrayType == "generic" || arrayType == "any" {
 			return "any"
@@ -5428,6 +5453,39 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			if fields, exists := gen.cStructFields[lookupType]; exists {
 				if fieldType, found := fields[memberName]; found {
 					return fieldType
+				}
+			}
+			
+			// Check if the object is a local variable and try to infer its actual struct type
+			if objectNode.Type == ahoy.NODE_IDENTIFIER {
+				varName := objectNode.Value
+				var varType string
+				if vt, exists := gen.functionVars[varName]; exists {
+					varType = vt
+				} else if vt, exists := gen.variables[varName]; exists {
+					varType = vt
+				}
+				
+				// If we found a type, look up the struct for it
+				if varType != "" {
+					lookupType = strings.TrimSuffix(varType, "*")
+					lookupType = strings.TrimPrefix(lookupType, "struct:")
+					
+					// Try Ahoy structs again
+					if structInfo, exists := gen.structs[lookupType]; exists {
+						for _, field := range structInfo.Fields {
+							if field.Name == memberName {
+								return field.Type
+							}
+						}
+					}
+					
+					// Try C structs again
+					if fields, exists := gen.cStructFields[lookupType]; exists {
+						if fieldType, found := fields[memberName]; found {
+							return fieldType
+						}
+					}
 				}
 			}
 		}

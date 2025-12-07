@@ -532,6 +532,36 @@ func (p *Parser) inferType(node *ASTNode) string {
 			return varType
 		}
 		return "unknown"
+	case NODE_MEMBER_ACCESS:
+		// Handle struct field access: obj.field
+		if len(node.Children) < 1 {
+			return "unknown"
+		}
+		
+		// Get the type of the object being accessed
+		objectNode := node.Children[0]
+		objectType := p.inferType(objectNode)
+		
+		// Remove "struct:" prefix if present
+		objectType = strings.TrimPrefix(objectType, "struct:")
+		
+		// Look up the struct definition
+		structDef, exists := p.structs[objectType]
+		if !exists {
+			return "unknown"
+		}
+		
+		// Get the field name from the node value
+		fieldName := node.Value
+		
+		// Look up the field type in the struct definition
+		for _, field := range structDef.Fields {
+			if field.Name == fieldName {
+				return field.Type
+			}
+		}
+		
+		return "unknown"
 	default:
 		// For expressions, we could recursively infer but for now return unknown
 		return "unknown"
