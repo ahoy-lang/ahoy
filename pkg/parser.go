@@ -3466,7 +3466,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				alreadyDeclared := existsInFunc || existsGlobal
 
 				if !alreadyDeclared && varName != "_" {
-					errMsg := fmt.Sprintf("Cannot assign to undeclared variable '%s'. Use '=' or '%s:type=' for an explicit type", varName, varName)
+					errMsg := fmt.Sprintf("Cannot assign to undeclared variable '%s'. Use ':' or '%s:type=' for an explicit type", varName, varName)
 					p.recordErrorAtLine(errMsg, line)
 				}
 
@@ -5818,11 +5818,15 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 	var savedFunctionScope map[string]string
 	var savedInFunctionBody bool
 	var savedFunctionName string
+	var savedDeclaredVars map[string]int
 	if p.LintMode {
 		savedFunctionRet = p.currentFunctionRet
 		savedFunctionScope = p.functionScope
 		savedInFunctionBody = p.inFunctionBody
 		savedFunctionName = p.currentFunctionName
+		// Save and clear declaredVars for function scope
+		savedDeclaredVars = p.declaredVars
+		p.declaredVars = make(map[string]int)
 		p.currentFunctionRet = returnType
 		p.currentFunctionName = name.Value // Track current function name for recursion detection
 		p.inFunctionBody = true            // Mark that we're inside function body
@@ -5841,6 +5845,8 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 		p.functionScope = savedFunctionScope
 		p.inFunctionBody = savedInFunctionBody
 		p.currentFunctionName = savedFunctionName
+		// Restore declaredVars
+		p.declaredVars = savedDeclaredVars
 
 		// Register function signature for later validation
 		paramInfos := []ParameterInfo{}

@@ -2008,9 +2008,9 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 
 	needsRedeclare := false
 
-	// If variable was declared in nested scope and current indent is <= declaration indent,
-	// we've exited that scope and are in a sibling or parent block - need to redeclare
-	if isNestedScope && gen.indent <= declIndent {
+	// If variable was declared in nested scope and current indent is < declaration indent,
+	// we've exited that scope and are in a parent block - need to redeclare
+	if isNestedScope && gen.indent < declIndent {
 		needsRedeclare = true
 	}
 
