@@ -1,0 +1,42 @@
+? Test new assignment syntax
+
+@ multiple|name:string, num:int| string, int:
+	return name, num
+$
+
+? Test 1: Simple declaration with :
+x: 5
+print|x|
+
+? Test 2: Reassignment with =
+x = 10
+print|x|
+
+? Test 3: Declaration with explicit type
+y:int= 20
+print|y|
+
+? Test 4: Multiple returns with := (walrus for tuple)
+name, phone := multiple|"Alice", 1234567890|
+print|name, phone|
+
+? Test 5: Underscore placeholder (can be declared multiple times)
+_ , value1 : multiple|"Bob", 111|
+_ , value2 : multiple|"Charlie", 222|
+print|value1, value2|
+
+? Test 6: Test z declaration and reassignment
+z: 15
+z = 20
+print|z|
+
+? Test 7: Test walrus with single var (should be commented out - would error)
+?w := 30
+
+? Test 8: Multiple return with reuse (walrus reassigns existing vars)
+a, b := multiple|"First", 100|
+a, b := multiple|"Second", 200|
+print|a, b|
+
+? Expected output array
+print|["5", "10", "20", "Alice 1234567890", "111 222", "20", "Second 200"]|

@@ -31,7 +31,7 @@ expected.push|"Alice 1234567890"|
 	return name, phone,location,postcode
 $
 
-name, phone,location,postcode : test_generics|"Alice", 1234567890,"madrid",9220|
+name, phone,location,postcode = test_generics|"Alice", 1234567890,"madrid",9220|
 print|name.type,phone.type,location.type,postcode.type|
 expected.push|"string int string int"|;
 
@@ -62,7 +62,7 @@ expected.push|"defer1"|
   return my_nums, my_dictionary
 $
 
-my_nums, my_dictionary : return_typed_dict_and_array||
+my_nums, my_dictionary := return_typed_dict_and_array||
 print|my_nums,my_dictionary|
 expected.push|"Data processed"|
 expected.push|"[1, 2, 3]"|

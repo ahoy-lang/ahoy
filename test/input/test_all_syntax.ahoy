@@ -1,0 +1,26 @@
+program test_all_syntax
+
+? Test 1: Valid declaration
+w: 30
+print|w|
+
+? Test 2: Valid declaration  
+undeclared: 10
+print|undeclared|
+
+? Test 3: redeclaration removed (would error)
+x: 5
+print|x|
+
+? Test 4: Valid cases
+y: 20
+print|y|
+y = 25
+print|y|
+
+z:int= 30
+print|z|
+z = 35
+print|z|
+
+print|["30", "10", "5", "20", "25", "30", "35"]|

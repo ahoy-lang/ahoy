@@ -1,0 +1,5 @@
+program test_walrus_error
+
+x: 10
+print|x|
+print|["10"]|

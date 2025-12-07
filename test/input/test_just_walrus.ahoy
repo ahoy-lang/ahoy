@@ -1,0 +1,4 @@
+program test_just_walrus
+w: 30
+print|w|
+print|["30"]|

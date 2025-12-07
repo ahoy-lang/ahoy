@@ -34,8 +34,8 @@ expected.push|"Good"|
 
 
 ? Switch with multiple return values
-grade: 'A'
-quality, quality_grade: (string, int) = switch grade:
+grade= 'A'
+quality, quality_grade := (string, int) = switch grade:
   on 'A': "EXCELLENT", 1
   on 'B': "Good",2
   on 'C': "OK",2
@@ -45,15 +45,15 @@ print|quality,quality_grade| ?"excellant",1
 expected.push|"EXCELLENT 1"|
 
 ? testing if else if chain with anif
-grade: 'B'
+grade= 'B'
 if grade is 'A' then print|"You did great!"| expected.push|"You did great!"|
 anif grade is 'B' then print|"You did good!"| expected.push|"You did good!"|
 else print|"Keep trying!"| expected.push|"Keep trying!"|
 $
 
 ? test dfault case
-grade: 'F'
-quality :string= switch grade:
+grade= 'F'
+quality = switch grade:
     on 'A', 'B': "Good"
     on 'C': "OK"
     _: "Poor"
@@ -63,7 +63,7 @@ expected.push|"Poor"|
 
 
 ? test calling print
-grade: 'F'
+grade= 'F'
 switch grade:
   on 'A', 'B': print|"Good"| expected.push|"Good"|
   on 'C': print|"OK"| expected.push|"OK"|
@@ -103,7 +103,10 @@ expected.push|"1"|
 
 ? test compound operators in switch
 num:5
-switch num: on 5: num += 10 _: num: 0 $
+switch num:
+	on 5: num += 10;
+	_: num= 0;
+$
 print|num|
 expected.push|"15"|
 ? Print expected values for test validation
@@ -151,7 +154,7 @@ switch rotation:
 $
 expected.push|"LEFT"|
 
-rotation: 2
+rotation= 2
 switch rotation:
 		on direction.UP: print|"UP"|;
 		on direction.RIGHT: print|"RIGHT"|;
@@ -183,7 +186,7 @@ switch rotation:
 $
 expected.push|"DOWN"|;
 
-rotation: 3;
+rotation= 3;
 switch rotation:
 		on .UP: print|"UP"|;
 		on .RIGHT: print|"RIGHT"|;
