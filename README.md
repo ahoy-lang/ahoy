@@ -108,6 +108,47 @@ API_KEY::string= "secret"
 TIMEOUT:: 30  ? Inferred as int
 ```
 
+### Assignment Operators
+
+Ahoy has three assignment operators with distinct purposes:
+
+```ahoy
+? Declaration with `:` (colon)
+? - Creates a new variable
+? - Can be used for both initial value and type annotation
+x: 42
+name: "Alice"
+score:int= 100
+
+? Reassignment with `=` (equals)
+? - Updates an existing variable
+? - Cannot create new variables
+x = 50
+name = "Bob"
+
+? Walrus operator `:=` (declare-or-assign)
+? - Smart operator that declares OR assigns
+? - Useful for tuple unpacking and multiple returns
+? - Automatically handles function returns with multiple values
+a, b := function_returning_two_values||
+x, y := 10, 20
+
+? Examples showing the difference
+counter: 0        ? Declaration
+counter = counter + 1    ? Reassignment
+counter = 10      ? Reassignment
+
+? Multiple assignment with walrus
+result, error := parse_int|"42"|
+x, y, z := 1, 2, 3
+```
+
+**Key Rules:**
+- Use `:` for declaring new variables
+- Use `=` for updating existing variables  
+- Use `:=` for tuple unpacking or when you want smart declare-or-assign behavior
+- Constants use `::` and cannot be reassigned
+
 ### Print Statements & F-Strings
 
 ```ahoy
