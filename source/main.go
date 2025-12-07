@@ -584,13 +584,60 @@ func main() {
 			os.Exit(1)
 		}
 
-		// Check if file has C header imports
+		// Check if this is a multi-file program and validate for duplicates
+		programName := ""
 		hasCImports := false
 		if ast != nil {
 			for _, child := range ast.Children {
+				if child.Type == ahoy.NODE_PROGRAM_DECLARATION {
+					programName = child.Value
+				}
 				if child.Type == ahoy.NODE_IMPORT_STATEMENT && strings.HasSuffix(child.Value, ".h") {
 					hasCImports = true
-					break
+				}
+			}
+		}
+
+		// If this is a multi-file program, check for duplicate functions across files
+		if programName != "" {
+			absPath, _ := filepath.Abs(sourceFile)
+			pm := NewPackageManager(filepath.Dir(absPath))
+			pkg, err := pm.LoadPackageFromFile(absPath)
+			if err == nil && len(pkg.Files) > 1 {
+				// Track function definitions across files
+				functionDefs := make(map[string]struct {
+					file string
+					line int
+				})
+				duplicateErrors := []string{}
+
+				for _, file := range pkg.Files {
+					if file.AST == nil {
+						continue
+					}
+					for _, child := range file.AST.Children {
+						if child.Type == ahoy.NODE_FUNCTION {
+							funcName := child.Value
+							if existing, exists := functionDefs[funcName]; exists {
+								duplicateErrors = append(duplicateErrors,
+									fmt.Sprintf("Function '%s' is already declared in %s (line %d); Ahoy doesn't support function overloading",
+										funcName, filepath.Base(existing.file), existing.line))
+							} else {
+								functionDefs[funcName] = struct {
+									file string
+									line int
+								}{file: file.Path, line: child.Line}
+							}
+						}
+					}
+				}
+
+				if len(duplicateErrors) > 0 {
+					fmt.Printf("Found %d error(s) in package '%s' (%d files):\n", len(duplicateErrors), programName, len(pkg.Files))
+					for _, errMsg := range duplicateErrors {
+						fmt.Printf("  %s\n", errMsg)
+					}
+					os.Exit(1)
 				}
 			}
 		}

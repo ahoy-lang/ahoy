@@ -3847,7 +3847,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				// Declaration - store the type
 				// If inside a function, store in function scope, otherwise global
 				targetScope := p.variableTypes
-				if p.currentFunctionRet != "" && p.functionScope != nil {
+				if p.inFunctionBody && p.functionScope != nil {
 					targetScope = p.functionScope
 				}
 
@@ -5830,7 +5830,19 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 		p.currentFunctionRet = returnType
 		p.currentFunctionName = name.Value // Track current function name for recursion detection
 		p.inFunctionBody = true            // Mark that we're inside function body
-		// Function scope already set up with parameters above
+		// Create a COMPLETELY NEW function scope (don't copy from old one)
+		// Parameters have already been added to functionScope before we get here,
+		// so we need to extract just the current function's parameters and create a new scope
+		currentParams := make(map[string]string)
+		if params != nil {
+			for _, paramNode := range params.Children {
+				if paramNode != nil {
+					currentParams[paramNode.Value] = paramNode.DataType
+				}
+			}
+		}
+		// Create new scope with only current function's parameters
+		p.functionScope = currentParams
 	}
 
 	// Parse body (function with :: syntax always uses '$')
@@ -7736,7 +7748,7 @@ func (p *Parser) parseLambdaBody() *ASTNode {
 // lookupVariableType looks up the type of a variable in the current scope
 func (p *Parser) lookupVariableType(varName string) string {
 	// Check function scope first if we're in a function
-	if p.currentFunctionRet != "" && p.functionScope != nil {
+	if p.inFunctionBody && p.functionScope != nil {
 		if varType, ok := p.functionScope[varName]; ok {
 			return varType
 		}
@@ -7809,7 +7821,7 @@ func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int)
 				}
 				if varType != "" {
 					targetScope := p.variableTypes
-					if p.currentFunctionRet != "" && p.functionScope != nil {
+					if p.inFunctionBody && p.functionScope != nil {
 						targetScope = p.functionScope
 					}
 					targetScope[leftVar.Value] = varType
@@ -7880,7 +7892,7 @@ func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int)
 		for _, leftVar := range leftSide.Children {
 			if leftVar.DataType != "" {
 				targetScope := p.variableTypes
-				if p.currentFunctionRet != "" && p.functionScope != nil {
+				if p.inFunctionBody && p.functionScope != nil {
 					targetScope = p.functionScope
 				}
 				targetScope[leftVar.Value] = leftVar.DataType
@@ -7900,7 +7912,7 @@ func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int)
 			// Function not found, try to register variables anyway
 			for _, leftVar := range leftSide.Children {
 				targetScope := p.variableTypes
-				if p.currentFunctionRet != "" && p.functionScope != nil {
+				if p.inFunctionBody && p.functionScope != nil {
 					targetScope = p.functionScope
 				}
 				if leftVar.DataType != "" {
@@ -7966,7 +7978,7 @@ func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int)
 
 			// Store in appropriate scope
 			targetScope := p.variableTypes
-			if p.currentFunctionRet != "" && p.functionScope != nil {
+			if p.inFunctionBody && p.functionScope != nil {
 				targetScope = p.functionScope
 			}
 			targetScope[leftVar.Value] = varType
