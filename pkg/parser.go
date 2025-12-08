@@ -201,6 +201,7 @@ type Parser struct {
 	constants           map[string]int                // Track constant declarations (name -> line number)
 	declaredVars        map[string]int                // Track variable declarations (name -> line number) for error reporting
 	scopeStack          []map[string]int              // Stack of scopes for conditional blocks (each map is varName -> line)
+	functionScopeStack  []map[string]string           // Stack of function scopes for conditional blocks
 	inConditionalScope  bool                          // Track if we're inside a conditional branch
 	structs             map[string]*StructDefinition  // Track struct definitions
 	enums               map[string]*EnumDefinition    // Track enum definitions
@@ -234,6 +235,9 @@ func Parse(tokens []Token) *ASTNode {
 		variableTypes:       make(map[string]string),
 		constants:           make(map[string]int),
 		declaredVars:        make(map[string]int),
+		scopeStack:          make([]map[string]int, 0),
+		functionScopeStack:  make([]map[string]string, 0),
+		inConditionalScope:  false,
 		structs:             make(map[string]*StructDefinition),
 		enums:               make(map[string]*EnumDefinition),
 		typeAliases:         make(map[string]string),
@@ -266,6 +270,9 @@ func ParseWithPath(tokens []Token, sourceFilePath string) *ASTNode {
 		variableTypes:       make(map[string]string),
 		constants:           make(map[string]int),
 		declaredVars:        make(map[string]int),
+		scopeStack:          make([]map[string]int, 0),
+		functionScopeStack:  make([]map[string]string, 0),
+		inConditionalScope:  false,
 		structs:             make(map[string]*StructDefinition),
 		enums:               make(map[string]*EnumDefinition),
 		typeAliases:         make(map[string]string),
@@ -298,6 +305,9 @@ func ParseLint(tokens []Token) (*ASTNode, []ParseError) {
 		variableTypes:       make(map[string]string),
 		constants:           make(map[string]int),
 		declaredVars:        make(map[string]int),
+		scopeStack:          make([]map[string]int, 0),
+		functionScopeStack:  make([]map[string]string, 0),
+		inConditionalScope:  false,
 		structs:             make(map[string]*StructDefinition),
 		enums:               make(map[string]*EnumDefinition),
 		typeAliases:         make(map[string]string),
@@ -331,6 +341,9 @@ func ParseLintWithPath(tokens []Token, sourceFilePath string) (*ASTNode, []Parse
 		variableTypes:       make(map[string]string),
 		constants:           make(map[string]int),
 		declaredVars:        make(map[string]int),
+		scopeStack:          make([]map[string]int, 0),
+		functionScopeStack:  make([]map[string]string, 0),
+		inConditionalScope:  false,
 		structs:             make(map[string]*StructDefinition),
 		enums:               make(map[string]*EnumDefinition),
 		typeAliases:         make(map[string]string),
@@ -793,6 +806,47 @@ func (p *Parser) advance() {
 	}
 }
 
+// pushScope creates a new scope for conditional blocks (if/else/switch)
+// Variables declared in this scope won't conflict with parallel branches
+func (p *Parser) pushScope() {
+	// Save the CURRENT declaredVars to the stack (this is the parent scope)
+	// Then create a COPY for the new branch scope
+	savedScope := make(map[string]int)
+	for k, v := range p.declaredVars {
+		savedScope[k] = v
+	}
+	
+	// Only save parent scope once per conditional (first branch)
+	// Subsequent branches should restore the same parent scope
+	if len(p.scopeStack) == 0 || !p.inConditionalScope {
+		p.scopeStack = append(p.scopeStack, savedScope)
+	}
+	
+	// Create a fresh copy for this branch (inherits from parent but modifications won't affect siblings)
+	// Always use the FIRST saved scope (the parent before any branches)
+	parentScope := p.scopeStack[len(p.scopeStack)-1]
+	branchScope := make(map[string]int)
+	for k, v := range parentScope {
+		branchScope[k] = v
+	}
+	p.declaredVars = branchScope
+	p.inConditionalScope = true
+}
+
+// popScope restores the previous scope, discarding variables declared in the conditional branch
+func (p *Parser) popScope() {
+	if len(p.scopeStack) > 0 {
+		// Restore the parent scope (the one saved before the branch)
+		p.declaredVars = p.scopeStack[len(p.scopeStack)-1]
+		p.scopeStack = p.scopeStack[:len(p.scopeStack)-1]
+		
+		// If no more scopes, we're not in conditional scope
+		if len(p.scopeStack) == 0 {
+			p.inConditionalScope = false
+		}
+	}
+}
+
 // isCompoundAssignOp checks if a token type is a compound assignment operator
 func (p *Parser) isCompoundAssignOp(tokenType TokenType) bool {
 	return tokenType == TOKEN_PLUS_ASSIGN ||
@@ -1251,9 +1305,61 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		p.advance()
 	}
 
+	// Save parent scope ONCE for entire if/else statement
+	// IMPORTANT: Must make a COPY since maps are reference types
+	var parentScope map[string]int
+	var parentFunctionScope map[string]string
+	if p.LintMode {
+		parentScope = make(map[string]int)
+		for k, v := range p.declaredVars {
+			parentScope[k] = v
+		}
+		// Also save functionScope
+		if p.functionScope != nil {
+			parentFunctionScope = make(map[string]string)
+			for k, v := range p.functionScope {
+				parentFunctionScope[k] = v
+			}
+		}
+	}
+
 	p.skipWhitespace()
 	p.blockDepth++ // Opening a block (inline or multiline)
+	
+	// Create branch scope for if (copy of parent)
+	if p.LintMode {
+		branchScope := make(map[string]int)
+		for k, v := range parentScope {
+			branchScope[k] = v
+		}
+		p.declaredVars = branchScope
+		
+		// Also create branch function scope
+		if parentFunctionScope != nil {
+			branchFunctionScope := make(map[string]string)
+			for k, v := range parentFunctionScope {
+				branchFunctionScope[k] = v
+			}
+			p.functionScope = branchFunctionScope
+		}
+	}
 	ifBody := p.parseBlockUntilEnd("if", startLine)
+	
+	// Restore parent scope after if branch (before checking for elseif/else)
+	// Make a COPY since maps are reference types
+	if p.LintMode {
+		p.declaredVars = make(map[string]int)
+		for k, v := range parentScope {
+			p.declaredVars[k] = v
+		}
+		// Also restore functionScope
+		if parentFunctionScope != nil {
+			p.functionScope = make(map[string]string)
+			for k, v := range parentFunctionScope {
+				p.functionScope[k] = v
+			}
+		}
+	}
 
 	ifStmt := &ASTNode{
 		Type:     NODE_IF_STATEMENT,
@@ -1292,7 +1398,38 @@ func (p *Parser) parseIfStatement() *ASTNode {
 
 		p.skipWhitespace()
 		p.blockDepth++ // Opening a block (inline or multiline)
+		
+		// Create branch scope for elseif (copy of parent)
+		if p.LintMode {
+			branchScope := make(map[string]int)
+			for k, v := range parentScope {
+				branchScope[k] = v
+			}
+			p.declaredVars = branchScope
+			
+			if parentFunctionScope != nil {
+				branchFunctionScope := make(map[string]string)
+				for k, v := range parentFunctionScope {
+					branchFunctionScope[k] = v
+				}
+				p.functionScope = branchFunctionScope
+			}
+		}
 		elseifBody := p.parseBlockUntilEnd("anif", startLine)
+		
+		// Restore parent scope after elseif branch (make a copy)
+		if p.LintMode {
+			p.declaredVars = make(map[string]int)
+			for k, v := range parentScope {
+				p.declaredVars[k] = v
+			}
+			if parentFunctionScope != nil {
+				p.functionScope = make(map[string]string)
+				for k, v := range parentFunctionScope {
+					p.functionScope[k] = v
+				}
+			}
+		}
 
 		// Add elseif as another condition-body pair
 		ifStmt.Children = append(ifStmt.Children, elseifCondition, elseifBody)
@@ -1320,10 +1457,32 @@ func (p *Parser) parseIfStatement() *ASTNode {
 
 		p.skipWhitespace()
 		p.blockDepth++ // Opening a block (inline or multiline)
+		
+		// Create branch scope for else (copy of parent)
+		if p.LintMode {
+			branchScope := make(map[string]int)
+			for k, v := range parentScope {
+				branchScope[k] = v
+			}
+			p.declaredVars = branchScope
+			
+			if parentFunctionScope != nil {
+				branchFunctionScope := make(map[string]string)
+				for k, v := range parentFunctionScope {
+					branchFunctionScope[k] = v
+				}
+				p.functionScope = branchFunctionScope
+			}
+		}
 		elseBody := p.parseBlockUntilEnd("else", startLine)
+		
 		ifStmt.Children = append(ifStmt.Children, elseBody)
 	}
 
+	// Restore parent scope after all branches
+	if p.LintMode {
+		p.declaredVars = parentScope
+	}
 	// Note: parseBlockUntilEnd already consumes the $ and decrements blockDepth
 
 	return ifStmt
@@ -1355,6 +1514,22 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 	switchStmt := &ASTNode{
 		Type:     NODE_SWITCH_STATEMENT,
 		Children: []*ASTNode{expr}, // First child is the switch expression
+	}
+
+	// Save parent scope for all switch cases
+	var switchParentScope map[string]int
+	var switchParentFunctionScope map[string]string
+	if p.LintMode {
+		switchParentScope = make(map[string]int)
+		for k, v := range p.declaredVars {
+			switchParentScope[k] = v
+		}
+		if p.functionScope != nil {
+			switchParentFunctionScope = make(map[string]string)
+			for k, v := range p.functionScope {
+				switchParentFunctionScope[k] = v
+			}
+		}
 	}
 
 	// Parse cases: each case starts with 'on' keyword (except default case with '_')
@@ -1570,6 +1745,23 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 		// Parse case body - could be multiple statements or single expression
 		var caseBody *ASTNode
 
+		// Create case scope (copy of parent) - allows same variable names in parallel cases
+		if p.LintMode {
+			caseScope := make(map[string]int)
+			for k, v := range switchParentScope {
+				caseScope[k] = v
+			}
+			p.declaredVars = caseScope
+			
+			if switchParentFunctionScope != nil {
+				caseFunctionScope := make(map[string]string)
+				for k, v := range switchParentFunctionScope {
+					caseFunctionScope[k] = v
+				}
+				p.functionScope = caseFunctionScope
+			}
+		}
+
 		// Check if we're starting a new case immediately (empty case)
 		if p.current().Type == TOKEN_ON || (p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "_") ||
 			p.current().Type == TOKEN_END || p.current().Type == TOKEN_DEDENT {
@@ -1649,6 +1841,20 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 				caseBody = statements[0]
 			} else {
 				caseBody = &ASTNode{Type: NODE_BLOCK}
+			}
+		}
+
+		// Restore parent scope after case body (for next case)
+		if p.LintMode {
+			p.declaredVars = make(map[string]int)
+			for k, v := range switchParentScope {
+				p.declaredVars[k] = v
+			}
+			if switchParentFunctionScope != nil {
+				p.functionScope = make(map[string]string)
+				for k, v := range switchParentFunctionScope {
+					p.functionScope[k] = v
+				}
 			}
 		}
 
@@ -3839,6 +4045,9 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			// Also check declaredVars (for variables declared with = or :=)
 			if !exists {
 				if _, ok := p.declaredVars[varName]; ok {
+					for k, v := range p.declaredVars {
+						fmt.Printf("  - %s at line %d\n", k, v)
+					}
 					// Variable was declared, get its type
 					if t, ok := p.variableTypes[varName]; ok {
 						existingType = t
