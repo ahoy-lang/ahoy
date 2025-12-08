@@ -65,14 +65,14 @@ expected.push|"Value: 4"|
 number:2
 loop till number <= 5:
     ahoy|f"Count {number}"|
-    number: number + 1
+    number= number + 1
 $
 expected.push|"Count 2"|
 expected.push|"Count 3"|
 expected.push|"Count 4"|
 expected.push|"Count 5"|
 
-values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+values= [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 loop val:0 to values.length do
     print|f"Value: {val}"|
 $
@@ -110,7 +110,7 @@ expected.push|"Count 0"|
 expected.push|"Count 1"|
 
 ? Array iteration
-values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+values= [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 loop val in values do
     print|f"Value: {val}"|
 $
@@ -141,7 +141,7 @@ $
 print|my_numbers|
 expected.push|"[11, 21, 31]"|
 
-i:0
+i=0
 loop till i <= 5 do
     ahoy|f"Count {i}"|
     i+=1
@@ -153,7 +153,7 @@ expected.push|"Count 3"|
 expected.push|"Count 4"|
 expected.push|"Count 5"|
 
-i:0
+i=0
 loop till i >= -5 do
     ahoy|f"Count {i}"|
     i-=1

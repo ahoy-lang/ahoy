@@ -4094,8 +4094,14 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 
 				// Check for redeclaration (but allow _ placeholder)
 				if exists && varName != "_" {
-					errMsg := fmt.Sprintf("Variable '%s' already declared", varName)
-					p.recordErrorAtLine(errMsg, line)
+					// Try to get the line where it was originally declared
+					if existingLine, hasLine := p.declaredVars[varName]; hasLine {
+						errMsg := fmt.Sprintf("Variable '%s' already declared on line %d; use '=' to update variable", varName, existingLine)
+						p.recordErrorAtLine(errMsg, line)
+					} else {
+						errMsg := fmt.Sprintf("Variable '%s' already declared; use '=' to update variable", varName)
+						p.recordErrorAtLine(errMsg, line)
+					}
 				}
 
 				// Track in declaredVars for later reassignment checks (except for _ placeholder)
