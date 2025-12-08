@@ -486,6 +486,7 @@ func main() {
 	targetFlag := flag.String("target", "", "Cross-compile target: linux, windows, web, macos, or all")
 	incFlag := flag.Bool("cache", false, "Enable incremental builds (cache parsed files)")
 	profCompFlag := flag.Bool("profile_compiler", false, "Enable CPU profiling of compiler (creates pprof file)")
+	genStdlibFlag := flag.Bool("gen_stdlib_docs", false, "Generate stdlib documentation as .ahoy file")
 	helpFlag := flag.Bool("h", false, "Show help")
 
 	flag.Parse()
@@ -525,6 +526,39 @@ func main() {
 	InitBuildCache(*incFlag)
 	defer GetBuildCache().SaveAndClose()
 	cacheTime := time.Since(cacheStart)
+
+	// Generate stdlib documentation if requested
+	if *genStdlibFlag {
+		output := GenerateStdlibAhoyFile()
+		
+		// Get cache directory
+		cacheDir, err := os.UserCacheDir()
+		if err != nil {
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				fmt.Printf("Error getting home directory: %v\n", err)
+				os.Exit(1)
+			}
+			cacheDir = filepath.Join(homeDir, ".cache")
+		}
+		
+		// Create ahoy cache directory
+		ahoyCacheDir := filepath.Join(cacheDir, "ahoy")
+		if err := os.MkdirAll(ahoyCacheDir, 0755); err != nil {
+			fmt.Printf("Error creating cache directory: %v\n", err)
+			os.Exit(1)
+		}
+		
+		// Write to cache directory
+		filename := filepath.Join(ahoyCacheDir, "ahoy_stdlib.ahoy")
+		err = os.WriteFile(filename, []byte(output), 0644)
+		if err != nil {
+			fmt.Printf("Error writing stdlib documentation: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✓ Generated stdlib documentation: %s\n", filename)
+		return
+	}
 
 	// tokenize
 	tokenStart := time.Now()
@@ -1098,6 +1132,7 @@ func showHelp() {
 	fmt.Println("  -target <t>   Cross-compile to target: linux, windows, macos, web, or all")
 	fmt.Println("  -format       Format the source file")
 	fmt.Println("  -lint         Check for syntax errors without compiling")
+	fmt.Println("  -gen_stdlib_docs   Generate stdlib API reference as .ahoy file")
 	fmt.Println("  -inc          Enable incremental builds (cache parsed files)")
 	fmt.Println("  -h            Show this help message")
 	fmt.Println()

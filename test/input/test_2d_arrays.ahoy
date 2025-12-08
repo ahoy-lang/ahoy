@@ -31,7 +31,7 @@ card_row1: [card8, card9, card10]
 card_row2: [cardQ, cardK, cardA]
 
 ? Create grid (2D array)
-grid: [row0, row1, row2]
+grid= [row0, row1, row2]
 
 ? Test initial values are 0
 print|grid[0][0]|
@@ -58,6 +58,7 @@ expected.push|"Clubs"|
 card_grid[0][1].suit : "Hearts"
 print|card_grid[0][1].suit|
 expected.push|"Hearts"|
+
 ? Set some values (1 = X, 2 = O)
 grid[0][0]: 1  ? X in corner
 grid[1][1]: 2  ? O in center

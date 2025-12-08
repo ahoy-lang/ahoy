@@ -17,7 +17,7 @@ var (
 )
 
 // GetStdlibPath returns the path to the ahoy_stdlib.c file in cache
-// Creates or updates the file if it doesn't exist or is outdated
+// DEPRECATED: This is kept for backward compatibility but no longer generates the file
 func GetStdlibPath() (string, error) {
 	stdlibExtractOnce.Do(func() {
 		cacheDir, err := os.UserCacheDir()
@@ -32,31 +32,8 @@ func GetStdlibPath() (string, error) {
 
 		ahoyDir := filepath.Join(cacheDir, "ahoy")
 		stdlibPath = filepath.Join(ahoyDir, "ahoy_stdlib.c")
-
-		// Generate the content first to calculate checksum
-		content := generateStdlibCFile()
-		newChecksum := md5.Sum([]byte(content))
-
-		// Check if file exists and has same content
-		if existingContent, err := os.ReadFile(stdlibPath); err == nil {
-			existingChecksum := md5.Sum(existingContent)
-			if existingChecksum == newChecksum {
-				// File exists with same content, no update needed
-				return
-			}
-		}
-
-		// Create ahoy cache directory
-		if err := os.MkdirAll(ahoyDir, 0755); err != nil {
-			stdlibErr = fmt.Errorf("failed to create ahoy cache directory: %w", err)
-			return
-		}
-
-		// Generate and write stdlib file
-		if err := os.WriteFile(stdlibPath, []byte(content), 0644); err != nil {
-			stdlibErr = fmt.Errorf("failed to write stdlib file: %w", err)
-			return
-		}
+		
+		// No longer generate .c file - only .ahoy file is used
 	})
 
 	return stdlibPath, stdlibErr
@@ -218,7 +195,41 @@ func writeCMethodDoc(sb *strings.Builder, method StdlibFunc) {
 // This should be called during compiler initialization
 func EnsureStdlibExists() error {
 	_, err := GetStdlibPath()
-	return err
+	if err != nil {
+		return err
+	}
+	
+	// Also generate the .ahoy file for LSP
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		cacheDir = filepath.Join(homeDir, ".cache")
+	}
+	
+	ahoyDir := filepath.Join(cacheDir, "ahoy")
+	ahoyFilePath := filepath.Join(ahoyDir, "ahoy_stdlib.ahoy")
+	
+	// Generate .ahoy content
+	ahoyContent := GenerateStdlibAhoyFile()
+	newChecksum := md5.Sum([]byte(ahoyContent))
+	
+	// Check if file exists with same content
+	if existingContent, err := os.ReadFile(ahoyFilePath); err == nil {
+		existingChecksum := md5.Sum(existingContent)
+		if existingChecksum == newChecksum {
+			return nil // Already up to date
+		}
+	}
+	
+	// Write the .ahoy file
+	if err := os.WriteFile(ahoyFilePath, []byte(ahoyContent), 0644); err != nil {
+		return fmt.Errorf("failed to write stdlib .ahoy file: %w", err)
+	}
+	
+	return nil
 }
 
 // GetStdlibChecksum returns the MD5 checksum of the current stdlib content

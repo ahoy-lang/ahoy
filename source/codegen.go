@@ -1886,8 +1886,8 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 
 				if isStruct {
 					gen.writeIndent()
-					// Generate: ((StructType*)((AhoyArray*)inner_access)->data[outer_idx])->member = value
-					gen.output.WriteString(fmt.Sprintf("((%s*)((AhoyArray*)", cType))
+					// Generate: ((StructType*)(intptr_t)((AhoyArray*)inner_access)->data[outer_idx])->member = value
+					gen.output.WriteString(fmt.Sprintf("((%s*)(intptr_t)((AhoyArray*)", cType))
 					gen.generateNode(innerAccess)
 					gen.output.WriteString(")->data[")
 					gen.generateNode(outerIndex)
@@ -5354,8 +5354,19 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 				elemType := strings.TrimSuffix(strings.TrimPrefix(arrayType, "array["), "]")
 				return elemType
 			}
+			// Check if the inner array is a 2D array - return its element type
+			if arrayExpr.Type == ahoy.NODE_ARRAY_ACCESS && arrayExpr.Value != "" {
+				if elemType, exists := gen.array2DElementTypes[arrayExpr.Value]; exists {
+					return elemType
+				}
+			}
 			// Otherwise return the type as-is (might be a struct or other type)
 			return arrayType
+		}
+		
+		// Check if this is a 2D array - return array[elementType] for first dimension access
+		if inner2DType, exists := gen.array2DElementTypes[arrayName]; exists {
+			return "array[" + inner2DType + "]"
 		}
 		
 		if elemType, exists := gen.arrayElementTypes[arrayName]; exists {

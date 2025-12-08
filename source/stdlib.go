@@ -251,3 +251,83 @@ func GetAllStdlibFuncs() []StdlibFunc {
 	}
 	return all
 }
+
+// GenerateStdlibAhoyFile generates a .ahoy file documenting all stdlib functions
+func GenerateStdlibAhoyFile() string {
+	output := "? Ahoy Standard Library Reference\n"
+	output += "? This file documents all built-in functions and methods\n"
+	output += "? Generated automatically from stdlib definitions\n\n"
+	
+	// Group by category
+	categories := map[string][]StdlibFunc{
+		"array":  {},
+		"dict":   {},
+		"string": {},
+		"builtin": {},
+	}
+	
+	for _, f := range ArrayMethods {
+		categories["array"] = append(categories["array"], f)
+	}
+	for _, f := range DictMethods {
+		categories["dict"] = append(categories["dict"], f)
+	}
+	for _, f := range StringMethods {
+		categories["string"] = append(categories["string"], f)
+	}
+	for _, f := range BuiltinFuncs {
+		categories["builtin"] = append(categories["builtin"], f)
+	}
+	
+	// Generate API list
+	output += "? ========================================\n"
+	output += "? API REFERENCE\n"
+	output += "? ========================================\n\n"
+	
+	output += "? Arrays\n"
+	for _, f := range categories["array"] {
+		output += "array." + f.MethodName + "|" + f.Params + "| ? -> " + f.ReturnType + "\n"
+	}
+	output += "\n"
+	
+	output += "? Dictionaries\n"
+	for _, f := range categories["dict"] {
+		output += "dict." + f.MethodName + "|" + f.Params + "| ? -> " + f.ReturnType + "\n"
+	}
+	output += "\n"
+	
+	output += "? Strings\n"
+	for _, f := range categories["string"] {
+		output += "string." + f.MethodName + "|" + f.Params + "| ? -> " + f.ReturnType + "\n"
+	}
+	output += "\n"
+	
+	output += "? Built-in Functions\n"
+	for _, f := range categories["builtin"] {
+		output += f.Name + "|" + f.Params + "| ? -> " + f.ReturnType + "\n"
+	}
+	output += "\n"
+	
+	// Generate detailed documentation with C implementations
+	output += "? ========================================\n"
+	output += "? IMPLEMENTATIONS\n"
+	output += "? ========================================\n\n"
+	
+	for categoryName, funcs := range categories {
+		if len(funcs) == 0 {
+			continue
+		}
+		output += "? " + categoryName + " methods\n"
+		output += "? ----------------------------------------\n\n"
+		
+		for _, f := range funcs {
+			output += "? " + f.MethodName + " - " + f.Doc + "\n"
+			output += "? Parameters: " + f.Params + "\n"
+			output += "? Returns: " + f.ReturnType + "\n"
+			output += "? C Implementation:\n"
+			output += "`\n" + f.Code + "`\n\n"
+		}
+	}
+	
+	return output
+}
