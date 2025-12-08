@@ -200,6 +200,8 @@ type Parser struct {
 	variableTypes       map[string]string             // Track variable types
 	constants           map[string]int                // Track constant declarations (name -> line number)
 	declaredVars        map[string]int                // Track variable declarations (name -> line number) for error reporting
+	scopeStack          []map[string]int              // Stack of scopes for conditional blocks (each map is varName -> line)
+	inConditionalScope  bool                          // Track if we're inside a conditional branch
 	structs             map[string]*StructDefinition  // Track struct definitions
 	enums               map[string]*EnumDefinition    // Track enum definitions
 	typeAliases         map[string]string             // Track type aliases
@@ -537,30 +539,30 @@ func (p *Parser) inferType(node *ASTNode) string {
 		if len(node.Children) < 1 {
 			return "unknown"
 		}
-		
+
 		// Get the type of the object being accessed
 		objectNode := node.Children[0]
 		objectType := p.inferType(objectNode)
-		
+
 		// Remove "struct:" prefix if present
 		objectType = strings.TrimPrefix(objectType, "struct:")
-		
+
 		// Look up the struct definition
 		structDef, exists := p.structs[objectType]
 		if !exists {
 			return "unknown"
 		}
-		
+
 		// Get the field name from the node value
 		fieldName := node.Value
-		
+
 		// Look up the field type in the struct definition
 		for _, field := range structDef.Fields {
 			if field.Name == fieldName {
 				return field.Type
 			}
 		}
-		
+
 		return "unknown"
 	default:
 		// For expressions, we could recursively infer but for now return unknown
@@ -4206,8 +4208,17 @@ func (p *Parser) parseTernaryExpression() *ASTNode {
 		}
 		p.advance() // consume :
 
-		// Parse the false branch
-		falseBranch := p.parseTernaryExpression() // Allow nested ternaries
+		// Parse the false branch (do NOT allow nested ternaries)
+		falseBranch := p.parseOrExpression()
+
+		// Check for nested/daisy-chained ternary (second ?? in false branch)
+		if p.current().Type == TOKEN_TERNARY {
+			if !p.LintMode {
+				panic(fmt.Sprintf("Daisy chained/nested ternaries are not allowed in ahoy at line %d ; use inline switch e.g (row:int=switch rot:on 0: -1; on 2: 1; _: 0;$)", p.current().Line))
+			}
+			p.recordError("Daisy chained/nested ternaries are not allowed in ahoy; consider inline switch (row:int=switch rot:on 0: -1; on 2: 1; _: 0;$) ")
+			return condition
+		}
 
 		return &ASTNode{
 			Type:     NODE_TERNARY,
