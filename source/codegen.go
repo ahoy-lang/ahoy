@@ -153,6 +153,7 @@ type CodeGenerator struct {
 	enumMemberTypes               map[string]string            // "enumName.memberName" -> type
 	enumTypes                     map[string]string            // enum name -> enum type (int, string, etc.)
 	userFunctions                 map[string]bool              // user-defined function names (keep snake_case)
+	calledFunctions               map[string]bool              // functions that are actually called in the program
 	hasError                      bool                         // Track if error occurred
 	arrayImpls                    bool                         // Track if we've added array implementation
 	arrayMethods                  map[string]bool              // Track which array methods are used
@@ -222,6 +223,7 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		enumMemberTypes:       make(map[string]string),
 		enumTypes:             make(map[string]string),
 		userFunctions:         make(map[string]bool),
+		calledFunctions:       make(map[string]bool),
 		hasError:              false,
 		arrayImpls:            false,
 		arrayMethods:          make(map[string]bool),
@@ -300,6 +302,9 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 
 	// Sixth pass: scan for method calls to determine which helper functions we need
 	gen.scanForMethodCalls(ast)
+
+	// Sixth-and-a-half pass: scan for function calls to track which functions are actually used
+	gen.scanForFunctionCalls(ast)
 
 	// Seventh pass: Generate all type declarations (enums, structs) first
 	gen.generateTypeDeclarations(ast)
@@ -1206,6 +1211,27 @@ func (gen *CodeGenerator) scanForMethodCalls(node *ahoy.ASTNode) {
 	}
 }
 
+// scanForFunctionCalls scans the AST to track which user-defined functions are actually called
+func (gen *CodeGenerator) scanForFunctionCalls(node *ahoy.ASTNode) {
+	if node == nil {
+		return
+	}
+
+	// Check for function calls to user-defined functions
+	if node.Type == ahoy.NODE_CALL {
+		funcName := node.Value
+		// Mark this function as called if it's a user-defined function
+		if gen.userFunctions[funcName] {
+			gen.calledFunctions[funcName] = true
+		}
+	}
+
+	// Recursively scan children
+	for _, child := range node.Children {
+		gen.scanForFunctionCalls(child)
+	}
+}
+
 // inferAllFunctionReturnTypes pre-processes all functions with infer return type
 func (gen *CodeGenerator) inferAllFunctionReturnTypes(node *ahoy.ASTNode) {
 	if node == nil {
@@ -1459,6 +1485,30 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 
 	// Track this as a user-defined function (keep snake_case)
 	gen.userFunctions[funcName] = true
+
+	// Check if this function should be generated
+	// Skip if: (1) never called AND (2) has untyped params or inferred return type
+	// This prevents type inference errors in unused functions
+	if !gen.calledFunctions[funcName] && funcName != "main" {
+		// Check if function has untyped parameters
+		hasUntypedParams := false
+		params := node.Children[0]
+		for _, param := range params.Children {
+			if param.DataType == "" || param.DataType == "any" || param.DataType == "generic" {
+				hasUntypedParams = true
+				break
+			}
+		}
+
+		// Check if function has inferred return type or void/no return type
+		hasInferredReturn := node.DataType == "" || node.DataType == "infer"
+
+		// Skip generation if both conditions are met
+		if hasUntypedParams || hasInferredReturn {
+			// Don't generate this function - it's never called and would cause type inference issues
+			return
+		}
+	}
 
 	returnType := "void"
 	returnTypes := []string{}
