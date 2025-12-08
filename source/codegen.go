@@ -4141,6 +4141,50 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 		// Check if we have parameter type information for this function
 		paramTypes, hasParamInfo := gen.functionParamTypes[node.Value]
 
+		// Check for implicit named arguments (all args are identifiers matching param names)
+		paramNames, hasParamNames := gen.functionParamNames[node.Value]
+		if hasParamNames && hasParamInfo && len(node.Children) == len(paramNames) {
+			allArgsAreIdentifiers := true
+			allMatchParamNames := true
+			
+			for _, arg := range node.Children {
+				if arg.Type != ahoy.NODE_IDENTIFIER {
+					allArgsAreIdentifiers = false
+					break
+				}
+			}
+			
+			if allArgsAreIdentifiers {
+				// Check if all argument names match parameter names (in any order)
+				argNamesMap := make(map[string]bool)
+				for _, arg := range node.Children {
+					argNamesMap[arg.Value] = true
+				}
+				
+				for _, paramName := range paramNames {
+					if !argNamesMap[paramName] {
+						allMatchParamNames = false
+						break
+					}
+				}
+				
+				// If all arguments are identifiers matching parameter names, reorder them
+				if allMatchParamNames {
+					reorderedChildren := make([]*ahoy.ASTNode, len(paramNames))
+					for i, paramName := range paramNames {
+						// Find the argument with this parameter name
+						for _, arg := range node.Children {
+							if arg.Value == paramName {
+								reorderedChildren[i] = arg
+								break
+							}
+						}
+					}
+					node.Children = reorderedChildren
+				}
+			}
+		}
+
 		// Check if any arguments are named (node.Value == "named_arg")
 		hasNamedArgs := false
 		for _, arg := range node.Children {

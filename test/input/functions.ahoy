@@ -8,16 +8,15 @@ expected.push|"15"|;
 
 
 
-@ multiple |name:string,phone:int| string,int:
-	return name, phone
-$
 
 name, phone: multiple|"Alice", 1234567890|
 print|name,phone|
 expected.push|"Alice 1234567890"|
 
+@ multiple |name:string,phone:int| string,int:
+	return name, phone
+$
 
-? multiple infer
 @ multiple_infer |name:string,phone| infer:
 	return name, phone
 $
@@ -31,7 +30,7 @@ expected.push|"Alice 1234567890"|
 	return name, phone,location,postcode
 $
 
-name, phone,location,postcode = test_generics|"Alice", 1234567890,"madrid",9220|
+name, phone,location,postcode := test_generics|"Alice", 1234567890,"madrid",9220|
 print|name.type,phone.type,location.type,postcode.type|
 expected.push|"string int string int"|;
 
@@ -106,6 +105,20 @@ x:10,
 y:20,
 z:30
 |
+
+screen_height:1080
+screen_width:1920
+? test param name same and arg name same so should become named argument
+@ implicit_named_args |screen_height:int,screen_width:int,expected| infer:
+	print|screen_height, screen_width|
+	expected.push|f"1080 1920"|
+$
+@ explicit_named_args |screen_height:int,screen_width:int,expected| infer:
+	print|screen_height, screen_width|
+	expected.push|f"1080 1920"|
+$
+explicit_named_args|screen_width:screen_width,expected:expected,screen_height:screen_height|
+implicit_named_args|screen_width,screen_height,expected|
 
 ? Print expected values for test validation
 print|expected|

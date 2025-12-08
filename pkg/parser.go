@@ -5938,6 +5938,7 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 	// Parameters
 	params := &ASTNode{Type: NODE_BLOCK}
 	hasDefaultParam := false // Track if we've seen a default parameter
+	localParamNames := make(map[string]int) // Track params in THIS function only (name -> line)
 
 	for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
 		// Safety check: if current token is not an identifier, break to avoid infinite loop
@@ -5997,8 +5998,17 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 		}
 		params.Children = append(params.Children, param)
 
-		// In lint mode, register parameters in function scope
+		// In lint mode, check for duplicate parameter names within THIS function
 		if p.LintMode {
+			// Check for duplicate in this function's parameter list
+			if _, exists := localParamNames[paramName.Value]; exists {
+				errMsg := fmt.Sprintf("parameter name '%s' declared twice; rename one of them", paramName.Value)
+				p.recordErrorAtLine(errMsg, paramName.Line)
+			} else {
+				localParamNames[paramName.Value] = paramName.Line
+			}
+			
+			// Also register in functionScope for type tracking
 			if p.functionScope == nil {
 				p.functionScope = make(map[string]string)
 			}
@@ -6186,6 +6196,12 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 	fn.Children = append(fn.Children, params)
 	fn.Children = append(fn.Children, body)
 	fn.DataType = returnType
+
+	// Clear function scope after parsing function to prevent parameter names
+	// from leaking into global scope
+	if p.LintMode {
+		p.functionScope = nil
+	}
 
 	return fn
 }
