@@ -204,6 +204,17 @@ enum enum_with_same_member:
 $
 
 
+? inline switch test
+grade='C'
+test_in_line_switch :string= switch grade: on 'A', 'B': "Good"; on 'C': "OK"; _: "Poor"; $
+print|test_in_line_switch|
+expected.push|"OK"|
 
+? TODO: Add proper goto/label test with conditional exit
+? label my_label:
+? 	"Start"
+? $
+? 
+? goto my_label
 
 print|expected|

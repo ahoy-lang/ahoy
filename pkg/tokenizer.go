@@ -91,6 +91,8 @@ const (
 	TOKEN_DO
 	TOKEN_HALT            // halt (break from loop)
 	TOKEN_NEXT            // next (continue to next iteration)
+	TOKEN_GOTO            // goto (unconditional jump to label)
+	TOKEN_LABEL           // label (label declaration)
 	TOKEN_ASSERT          // assert (runtime assertion)
 	TOKEN_DEFER           // defer (deferred execution)
 	TOKEN_DOUBLE_COLON    // ::
@@ -173,6 +175,7 @@ var keywords = map[string]TokenType{
 	"halt":         TOKEN_HALT,
 	"next":         TOKEN_NEXT,
 	"continue":     TOKEN_NEXT,
+	"goto":         TOKEN_GOTO,
 	"assert":       TOKEN_ASSERT,
 	"defer":        TOKEN_DEFER,
 	"infer":        TOKEN_INFER,

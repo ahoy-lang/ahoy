@@ -1391,7 +1391,10 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 		gen.output.WriteString(node.Value)
 
 	case ahoy.NODE_STRING:
-		gen.output.WriteString(fmt.Sprintf("\"%s\"", node.Value))
+		// If used as a statement (isStatement == true), ignore it (no side effects)
+		if !isStatement {
+			gen.output.WriteString(fmt.Sprintf("\"%s\"", node.Value))
+		}
 
 	case ahoy.NODE_RAW_STRING:
 		// Raw strings preserve newlines and don't interpret escape sequences
@@ -1468,6 +1471,10 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 	case ahoy.NODE_NEXT:
 		gen.writeIndent()
 		gen.output.WriteString("continue;\n")
+	case ahoy.NODE_GOTO_STATEMENT:
+		gen.generateGotoStatement(node)
+	case ahoy.NODE_LABEL_DECLARATION:
+		gen.generateLabelDeclaration(node)
 	case ahoy.NODE_ASSERT_STATEMENT:
 		gen.generateAssertStatement(node)
 	case ahoy.NODE_DEFER_STATEMENT:
@@ -3304,6 +3311,24 @@ func (gen *CodeGenerator) generateAssertStatement(node *ahoy.ASTNode) {
 		gen.generateNode(node.Children[0])
 	}
 	gen.output.WriteString(");\n")
+}
+
+func (gen *CodeGenerator) generateGotoStatement(node *ahoy.ASTNode) {
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("goto %s;\n", node.Value))
+}
+
+func (gen *CodeGenerator) generateLabelDeclaration(node *ahoy.ASTNode) {
+	// Generate the label (C requires a statement after a label, so we'll add one if needed)
+	gen.writeIndent()
+	gen.output.WriteString(fmt.Sprintf("%s:;\n", node.Value)) // Note the ; after : for empty label
+	
+	// Generate the block body if present
+	if len(node.Children) > 0 && node.Children[0].Type == ahoy.NODE_BLOCK {
+		for _, stmt := range node.Children[0].Children {
+			gen.generateNodeInternal(stmt, true)
+		}
+	}
 }
 
 func (gen *CodeGenerator) generateDeferStatement(node *ahoy.ASTNode) {

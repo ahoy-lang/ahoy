@@ -58,6 +58,8 @@ const (
 	NODE_STATIC_MEMBER_ACCESS // StructType.#static_field access
 	NODE_HALT
 	NODE_NEXT
+	NODE_GOTO_STATEMENT
+	NODE_LABEL_DECLARATION
 	NODE_LAMBDA
 	NODE_TERNARY
 	NODE_ASSERT_STATEMENT
@@ -1020,6 +1022,8 @@ func (p *Parser) parseStatement() *ASTNode {
 	case TOKEN_NEXT:
 		p.advance()
 		return &ASTNode{Type: NODE_NEXT, Line: p.current().Line}
+	case TOKEN_GOTO:
+		return p.parseGotoStatement()
 	case TOKEN_END:
 		// Handle $ block terminator
 		token := p.current()
@@ -1089,6 +1093,17 @@ func (p *Parser) parseStatement() *ASTNode {
 		// Check for tuple assignment (name, name :)
 		if nextType == TOKEN_COMMA {
 			return p.parseTupleAssignment()
+		}
+		// Check for label declaration (name: followed by newline/indent)
+		if nextType == TOKEN_ASSIGN {
+			nextToken := p.peek(1)
+			if nextToken.Value == ":" {
+				// Check if followed by newline/indent (label) or expression (ternary/assignment)
+				afterColon := p.peek(2).Type
+				if afterColon == TOKEN_NEWLINE || afterColon == TOKEN_INDENT {
+					return p.parseLabelDeclaration()
+				}
+			}
 		}
 		stmt := p.parseAssignmentOrExpression()
 		// Validate no function calls at global scope when program is declared
@@ -2891,6 +2906,80 @@ func (p *Parser) parseAssertStatement() *ASTNode {
 		Type:     NODE_ASSERT_STATEMENT,
 		Line:     assertToken.Line,
 		Children: []*ASTNode{condition},
+	}
+}
+
+func (p *Parser) parseGotoStatement() *ASTNode {
+	gotoToken := p.expect(TOKEN_GOTO)
+	line := gotoToken.Line
+	
+	// Expect a label name (identifier)
+	if p.current().Type != TOKEN_IDENTIFIER {
+		p.Errors = append(p.Errors, ParseError{
+			Message: "expected label name after 'goto'",
+			Line:    line,
+			Column:  p.current().Column,
+		})
+		return &ASTNode{Type: NODE_GOTO_STATEMENT, Line: line}
+	}
+	
+	labelName := p.current().Value
+	p.advance()
+	
+	return &ASTNode{
+		Type:  NODE_GOTO_STATEMENT,
+		Value: labelName,
+		Line:  line,
+	}
+}
+
+func (p *Parser) parseLabelDeclaration() *ASTNode {
+	// Label syntax: my_label: (current token is identifier)
+	labelName := p.current().Value
+	line := p.current().Line
+	p.advance()
+	
+	// Expect a colon
+	if p.current().Type != TOKEN_ASSIGN || p.current().Value != ":" {
+		p.Errors = append(p.Errors, ParseError{
+			Message: "expected ':' after label name",
+			Line:    line,
+			Column:  p.current().Column,
+		})
+		return &ASTNode{Type: NODE_LABEL_DECLARATION, Value: labelName, Line: line}
+	}
+	p.advance()
+	
+	// Skip newline/indent after colon
+	for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT {
+		p.advance()
+	}
+	
+	// Parse the block body
+	p.blockDepth++
+	block := &ASTNode{Type: NODE_BLOCK, Line: line}
+	for p.current().Type != TOKEN_END && p.current().Type != TOKEN_EOF {
+		if p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_SEMICOLON || 
+		   p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
+			p.advance()
+			continue
+		}
+		stmt := p.parseStatement()
+		if stmt != nil {
+			block.Children = append(block.Children, stmt)
+		}
+	}
+	
+	if p.current().Type == TOKEN_END {
+		p.advance() // Consume $
+		p.blockDepth--
+	}
+	
+	return &ASTNode{
+		Type:     NODE_LABEL_DECLARATION,
+		Value:    labelName,
+		Line:     line,
+		Children: []*ASTNode{block},
 	}
 }
 
