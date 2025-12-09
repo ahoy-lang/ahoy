@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
 
 	"ahoy"
 )
@@ -3048,6 +3049,7 @@ func (gen *CodeGenerator) generateForInArrayLoop(node *ahoy.ASTNode) {
 		// Determine element type
 		elementType := "int"
 		cElementType := "int"
+		isStructValue := false
 
 		// Check if we know the element type for this array
 		if iterableExpr.Type == ahoy.NODE_IDENTIFIER {
@@ -3056,18 +3058,33 @@ func (gen *CodeGenerator) generateForInArrayLoop(node *ahoy.ASTNode) {
 				elementType = elemType
 				cElementType = gen.mapType(elemType)
 
-				// For struct types, ensure we use pointers
-				if _, isStruct := gen.structs[elemType]; isStruct {
-					if !strings.HasSuffix(cElementType, "*") {
-						cElementType += "*"
-					}
+				// For struct types stored by value (not pointer), we need special handling
+				// Check if it's a known struct OR if it looks like a struct type (external C structs)
+				_, isDefinedStruct := gen.structs[elementType]
+				isExternalStruct := !strings.HasSuffix(cElementType, "*") && 
+					cElementType != "int" && 
+					cElementType != "double" && 
+					cElementType != "char*" && 
+					cElementType != "void" &&
+					cElementType != "bool" &&
+					len(cElementType) > 0 &&
+					unicode.IsUpper(rune(cElementType[0]))
+				
+				if isDefinedStruct || isExternalStruct {
+					isStructValue = true
+					// Don't add * here - we'll handle it in the cast
 				}
 			}
 		}
 
 		// Generate appropriate cast based on element type
-		if gen.isHeapAllocatedType(elementType) || strings.Contains(cElementType, "*") {
-			// For pointers (structs, strings, etc.), cast through intptr_t to pointer
+		if isStructValue {
+			// For struct values: cast to pointer, then dereference
+			// struct values are stored as pointers internally
+			gen.output.WriteString(fmt.Sprintf("%s %s = *(%s*)(intptr_t)%s->data[%s];\n",
+				cElementType, elementVar, cElementType, arrayName, loopVar))
+		} else if gen.isHeapAllocatedType(elementType) || strings.Contains(cElementType, "*") {
+			// For pointers (strings, etc.), cast through intptr_t to pointer
 			gen.output.WriteString(fmt.Sprintf("%s %s = (%s)(intptr_t)%s->data[%s];\n",
 				cElementType, elementVar, cElementType, arrayName, loopVar))
 		} else {
@@ -5771,6 +5788,7 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 	fstring := node.Value
 	var formatStr strings.Builder
 	var vars []string
+	var formatSpecs []string
 
 	i := 0
 	for i < len(fstring) {
@@ -5810,12 +5828,13 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 				if varType == "string" || varType == "char*" || varType == "intptr_t" ||
 					varType == "dict" || varType == "HashMap*" {
 					formatSpec = "%s"
-				} else if varType == "float" {
+				} else if varType == "float" || varType == "double" {
 					formatSpec = "%f"
 				} else if varType == "char" {
 					formatSpec = "%c"
 				}
 
+				formatSpecs = append(formatSpecs, formatSpec)
 				formatStr.WriteString(formatSpec)
 				i = j + 1
 			} else {
@@ -5850,8 +5869,31 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 		gen.writeIndent()
 		gen.output.WriteString(fmt.Sprintf("sprintf(%s, \"%s\"", bufferVar, formatStr.String()))
 
-		for _, v := range vars {
+		for idx, v := range vars {
 			gen.output.WriteString(", ")
+			
+			// Get the format spec for this variable
+			formatSpec := "%d"
+			if idx < len(formatSpecs) {
+				formatSpec = formatSpecs[idx]
+			}
+			
+			// Wrap the variable expression in a casting expression if needed
+			needsCast := false
+			castType := ""
+			if formatSpec == "%d" {
+				// Cast to int for %d
+				needsCast = true
+				castType = "(int)"
+			} else if formatSpec == "%f" {
+				// Cast to double for %f
+				needsCast = true
+				castType = "(double)"
+			}
+			
+			if needsCast {
+				gen.output.WriteString(castType)
+			}
 
 			// Check if this is a member access expression (contains a dot)
 			if strings.Contains(v, ".") {

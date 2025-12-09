@@ -530,7 +530,7 @@ func main() {
 	// Generate stdlib documentation if requested
 	if *genStdlibFlag {
 		output := GenerateStdlibAhoyFile()
-		
+
 		// Get cache directory
 		cacheDir, err := os.UserCacheDir()
 		if err != nil {
@@ -541,14 +541,14 @@ func main() {
 			}
 			cacheDir = filepath.Join(homeDir, ".cache")
 		}
-		
+
 		// Create ahoy cache directory
 		ahoyCacheDir := filepath.Join(cacheDir, "ahoy")
 		if err := os.MkdirAll(ahoyCacheDir, 0755); err != nil {
 			fmt.Printf("Error creating cache directory: %v\n", err)
 			os.Exit(1)
 		}
-		
+
 		// Write to cache directory
 		filename := filepath.Join(ahoyCacheDir, "ahoy_stdlib.ahoy")
 		err = os.WriteFile(filename, []byte(output), 0644)

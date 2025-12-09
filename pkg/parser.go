@@ -815,13 +815,13 @@ func (p *Parser) pushScope() {
 	for k, v := range p.declaredVars {
 		savedScope[k] = v
 	}
-	
+
 	// Only save parent scope once per conditional (first branch)
 	// Subsequent branches should restore the same parent scope
 	if len(p.scopeStack) == 0 || !p.inConditionalScope {
 		p.scopeStack = append(p.scopeStack, savedScope)
 	}
-	
+
 	// Create a fresh copy for this branch (inherits from parent but modifications won't affect siblings)
 	// Always use the FIRST saved scope (the parent before any branches)
 	parentScope := p.scopeStack[len(p.scopeStack)-1]
@@ -839,7 +839,7 @@ func (p *Parser) popScope() {
 		// Restore the parent scope (the one saved before the branch)
 		p.declaredVars = p.scopeStack[len(p.scopeStack)-1]
 		p.scopeStack = p.scopeStack[:len(p.scopeStack)-1]
-		
+
 		// If no more scopes, we're not in conditional scope
 		if len(p.scopeStack) == 0 {
 			p.inConditionalScope = false
@@ -1325,7 +1325,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 
 	p.skipWhitespace()
 	p.blockDepth++ // Opening a block (inline or multiline)
-	
+
 	// Create branch scope for if (copy of parent)
 	if p.LintMode {
 		branchScope := make(map[string]int)
@@ -1333,7 +1333,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 			branchScope[k] = v
 		}
 		p.declaredVars = branchScope
-		
+
 		// Also create branch function scope
 		if parentFunctionScope != nil {
 			branchFunctionScope := make(map[string]string)
@@ -1344,7 +1344,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		}
 	}
 	ifBody := p.parseBlockUntilEnd("if", startLine)
-	
+
 	// Restore parent scope after if branch (before checking for elseif/else)
 	// Make a COPY since maps are reference types
 	if p.LintMode {
@@ -1398,7 +1398,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 
 		p.skipWhitespace()
 		p.blockDepth++ // Opening a block (inline or multiline)
-		
+
 		// Create branch scope for elseif (copy of parent)
 		if p.LintMode {
 			branchScope := make(map[string]int)
@@ -1406,7 +1406,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 				branchScope[k] = v
 			}
 			p.declaredVars = branchScope
-			
+
 			if parentFunctionScope != nil {
 				branchFunctionScope := make(map[string]string)
 				for k, v := range parentFunctionScope {
@@ -1416,7 +1416,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 			}
 		}
 		elseifBody := p.parseBlockUntilEnd("anif", startLine)
-		
+
 		// Restore parent scope after elseif branch (make a copy)
 		if p.LintMode {
 			p.declaredVars = make(map[string]int)
@@ -1457,7 +1457,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 
 		p.skipWhitespace()
 		p.blockDepth++ // Opening a block (inline or multiline)
-		
+
 		// Create branch scope for else (copy of parent)
 		if p.LintMode {
 			branchScope := make(map[string]int)
@@ -1465,7 +1465,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 				branchScope[k] = v
 			}
 			p.declaredVars = branchScope
-			
+
 			if parentFunctionScope != nil {
 				branchFunctionScope := make(map[string]string)
 				for k, v := range parentFunctionScope {
@@ -1475,7 +1475,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 			}
 		}
 		elseBody := p.parseBlockUntilEnd("else", startLine)
-		
+
 		ifStmt.Children = append(ifStmt.Children, elseBody)
 	}
 
@@ -1752,7 +1752,7 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 				caseScope[k] = v
 			}
 			p.declaredVars = caseScope
-			
+
 			if switchParentFunctionScope != nil {
 				caseFunctionScope := make(map[string]string)
 				for k, v := range switchParentFunctionScope {
@@ -4206,31 +4206,6 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 		}
 	}
 
-	// Check for property assignment: identifier.property: value (DUPLICATE - already handled above at line 1277)
-	// This code can be removed as it's redundant
-	/*
-		/*
-		if p.pos+1 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_DOT {
-			// This is redundant - already handled at line 1277
-			target := p.parsePrimaryExpression()
-
-			if p.current().Type == TOKEN_ASSIGN {
-				p.expect(TOKEN_ASSIGN)
-				value := p.parseExpression()
-
-				if p.LintMode && target.Type == NODE_MEMBER_ACCESS {
-					p.validatePropertyAssignment(target, value, target.Line)
-				}
-
-				return &ASTNode{
-					Type:     NODE_ASSIGNMENT,
-					Children: []*ASTNode{target, value},
-					Line:     target.Line,
-				}
-			}
-		}
-	*/
-
 	return p.parseExpression()
 }
 
@@ -5943,7 +5918,7 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 
 	// Parameters
 	params := &ASTNode{Type: NODE_BLOCK}
-	hasDefaultParam := false // Track if we've seen a default parameter
+	hasDefaultParam := false                // Track if we've seen a default parameter
 	localParamNames := make(map[string]int) // Track params in THIS function only (name -> line)
 
 	for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
@@ -6013,7 +5988,7 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 			} else {
 				localParamNames[paramName.Value] = paramName.Line
 			}
-			
+
 			// Also register in functionScope for type tracking
 			if p.functionScope == nil {
 				p.functionScope = make(map[string]string)
