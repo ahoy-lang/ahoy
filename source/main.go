@@ -16,7 +16,7 @@ import (
 
 // findCompiler finds the appropriate C compiler based on mode and OS
 // Returns: compiler path, args, isOptimized, error
-func findCompiler(releaseMode bool, executablePath string) (string, []string, bool, error) {
+func findCompiler(releaseMode bool, debugMode bool, executablePath string) (string, []string, bool, error) {
 	// Try embedded TCC first
 	tccPath, tccArgs, err := GetEmbeddedTCCPath()
 	if err != nil {
@@ -48,19 +48,33 @@ func findCompiler(releaseMode bool, executablePath string) (string, []string, bo
 		// Try to find gcc or clang for optimized builds
 		gccPath, err := exec.LookPath("gcc")
 		if err == nil {
-			return gccPath, []string{"-O3"}, true, nil
+			args := []string{"-O3"}
+			if debugMode {
+				// Release mode with debug: use address sanitizer
+				args = []string{"-g", "-fsanitize=address"}
+			}
+			return gccPath, args, true, nil
 		}
 
 		clangPath, err := exec.LookPath("clang")
 		if err == nil {
-			return clangPath, []string{"-O3"}, true, nil
+			args := []string{"-O3"}
+			if debugMode {
+				// Release mode with debug: use address sanitizer
+				args = []string{"-g", "-fsanitize=address"}
+			}
+			return clangPath, args, true, nil
 		}
 
 		// On Windows, also try MSVC (cl.exe)
 		if runtime.GOOS == "windows" {
 			clPath, err := exec.LookPath("cl")
 			if err == nil {
-				return clPath, []string{"/O2"}, true, nil
+				args := []string{"/O2"}
+				if debugMode {
+					args = []string{"/Zi", "/RTC1"}
+				}
+				return clPath, args, true, nil
 			}
 		}
 
@@ -69,7 +83,13 @@ func findCompiler(releaseMode bool, executablePath string) (string, []string, bo
 			if _, err := os.Stat(tccPath); err == nil {
 				fmt.Println("⚠ Warning: gcc/clang not found, using TCC (code may not be optimized)")
 				fmt.Println("  Install gcc or clang for optimized release builds")
-				return tccPath, tccArgs, false, nil
+				args := tccArgs
+				if debugMode {
+					// TCC debug mode: -g (generate debug info)
+					// Note: -b (bounds checker) requires libtcc1.a which may not be available
+					args = append(args, "-g")
+				}
+				return tccPath, args, false, nil
 			}
 		}
 
@@ -79,19 +99,33 @@ func findCompiler(releaseMode bool, executablePath string) (string, []string, bo
 	// Debug mode - prefer TCC for fast compilation
 	if tccPath != "" {
 		if _, err := os.Stat(tccPath); err == nil {
-			return tccPath, tccArgs, false, nil
+			args := tccArgs
+			if debugMode {
+				// TCC debug mode: -g (generate debug info)
+				// Note: -b (bounds checker) requires libtcc1.a which may not be available
+				args = append(args, "-g")
+			}
+			return tccPath, args, false, nil
 		}
 	}
 
 	// TCC not available, try system compilers
 	gccPath, err := exec.LookPath("gcc")
 	if err == nil {
-		return gccPath, []string{"-O0"}, false, nil
+		args := []string{"-O0"}
+		if debugMode {
+			args = []string{"-g", "-fsanitize=address"}
+		}
+		return gccPath, args, false, nil
 	}
 
 	clangPath, err := exec.LookPath("clang")
 	if err == nil {
-		return clangPath, []string{"-O0"}, false, nil
+		args := []string{"-O0"}
+		if debugMode {
+			args = []string{"-g", "-fsanitize=address"}
+		}
+		return clangPath, args, false, nil
 	}
 
 	// On Windows, also try MSVC (cl.exe)
@@ -128,7 +162,7 @@ func findCrossCompiler(target string, ahoyDir string) (*CrossCompileTarget, erro
 	case "linux":
 		if runtime.GOOS == "linux" {
 			// Native compilation
-			compiler, args, _, err := findCompiler(true, "")
+			compiler, args, _, err := findCompiler(true, false, "")
 			if err != nil {
 				return nil, err
 			}
@@ -156,7 +190,7 @@ func findCrossCompiler(target string, ahoyDir string) (*CrossCompileTarget, erro
 	case "windows":
 		if runtime.GOOS == "windows" {
 			// Native compilation
-			compiler, args, _, err := findCompiler(true, "")
+			compiler, args, _, err := findCompiler(true, false, "")
 			if err != nil {
 				return nil, err
 			}
@@ -184,7 +218,7 @@ func findCrossCompiler(target string, ahoyDir string) (*CrossCompileTarget, erro
 	case "macos":
 		if runtime.GOOS == "darwin" {
 			// Native compilation
-			compiler, args, _, err := findCompiler(true, "")
+			compiler, args, _, err := findCompiler(true, false, "")
 			if err != nil {
 				return nil, err
 			}
@@ -483,6 +517,7 @@ func main() {
 	formatFlag := flag.Bool("format", false, "Format the source file")
 	lintFlag := flag.Bool("lint", false, "Run linter to check for errors without compiling")
 	releaseFlag := flag.Bool("release", false, "Use optimizing compiler (gcc/clang) for release build")
+	debugFlag := flag.Bool("sanitize", false, "Enable debug mode with runtime checks (tcc: -g, gcc: -fsanitize=address)")
 	targetFlag := flag.String("target", "", "Cross-compile target: linux, windows, web, macos, or all")
 	incFlag := flag.Bool("cache", false, "Enable incremental builds (cache parsed files)")
 	profCompFlag := flag.Bool("profile_compiler", false, "Enable CPU profiling of compiler (creates pprof file)")
@@ -815,7 +850,7 @@ func main() {
 		cCompileStart := time.Now()
 
 		// Find the appropriate C compiler
-		compiler, baseArgs, isOptimized, err := findCompiler(*releaseFlag, executable)
+		compiler, baseArgs, isOptimized, err := findCompiler(*releaseFlag, *debugFlag, executable)
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
 			os.Exit(1)
