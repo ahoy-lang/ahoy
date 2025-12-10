@@ -123,6 +123,7 @@ type StructField struct {
 	DefaultValue string // C code for default value (if any)
 	IsStatic     bool   // Static field (shared across instances)
 	IsConst      bool   // Const field (SCREAMING_SNAKE_CASE - immutable)
+	IsWeak       bool   // Weak reference (for ARC cycle breaking)
 }
 
 type StructInfo struct {
@@ -206,6 +207,11 @@ type CodeGenerator struct {
 	cFunctionParamTypes           map[string][]string          // C function name (snake_case) -> parameter types
 	parsedCHeaders                map[string]*ahoy.CHeaderInfo // In-memory cache for parsed C headers (path -> info)
 	parsedCHeadersMu              sync.Mutex                   // Mutex for parsedCHeaders
+	enableARC                     bool                         // Enable Automatic Reference Counting
+	arcStructs                    map[string]bool              // Structs that use ARC (have reference counting)
+	weakFields                    map[string]map[string]bool   // struct name -> (field name -> isWeak)
+	parentChildRelations          map[string]map[string]bool   // parent struct -> (child field names)
+	refCountedVars                map[string]bool              // Track variables that need retain/release
 }
 
 // GenerateC generates C code from an AST (exported for testing)
@@ -271,6 +277,11 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		cTypedefs:             make(map[string]string),
 		cFunctionParamTypes:   make(map[string][]string),
 		parsedCHeaders:        make(map[string]*ahoy.CHeaderInfo),
+		enableARC:             true, // Enable ARC by default
+		arcStructs:            make(map[string]bool),
+		weakFields:            make(map[string]map[string]bool),
+		parentChildRelations:  make(map[string]map[string]bool),
+		refCountedVars:        make(map[string]bool),
 	}
 
 	// Add standard includes
@@ -342,6 +353,9 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 
 	// Generate struct print helper functions
 	gen.writeStructHelperFunctions()
+
+	// Generate ARC helper functions if ARC is enabled
+	gen.writeARCHelperFunctions()
 
 	// Generate vector2 and color constructors
 	gen.writeTypeConstructors()
@@ -1289,6 +1303,29 @@ func (gen *CodeGenerator) isHeapAllocatedType(varType string) bool {
 	if varType == "AhoyJSON*" {
 		return true
 	}
+	return false
+}
+
+// hasCircularDependency checks if structA has a field of type structB
+// and structB has a field of type structA (circular dependency)
+func (gen *CodeGenerator) hasCircularDependency(parentStruct, childStruct string) bool {
+	// Check if childStruct has any fields that reference parentStruct
+	childInfo, exists := gen.structs[childStruct]
+	if !exists {
+		return false
+	}
+	
+	for _, field := range childInfo.Fields {
+		// Direct reference back to parent
+		if field.Type == parentStruct || field.Type == capitalizeFirst(parentStruct) {
+			return true
+		}
+		// Pointer reference back to parent
+		if field.Type == parentStruct+"*" || field.Type == capitalizeFirst(parentStruct)+"*" {
+			return true
+		}
+	}
+	
 	return false
 }
 
@@ -3744,6 +3781,16 @@ func (gen *CodeGenerator) exitScope() string {
 
 // generateFreeCodeForVar generates the appropriate free() code for a variable based on its type
 func (gen *CodeGenerator) generateFreeCodeForVar(varName string, varType string) string {
+	// Check if this is an ARC-enabled struct - use release instead of free
+	if gen.enableARC {
+		// Remove pointer suffix to get base type
+		baseType := strings.TrimSuffix(varType, "*")
+		if gen.arcStructs[baseType] || gen.arcStructs[strings.ToLower(baseType)] {
+			funcName := toCFuncName(strings.ToLower(baseType))
+			return fmt.Sprintf("    ahoy_release_%s(%s);\n", funcName, varName)
+		}
+	}
+	
 	if strings.HasPrefix(varType, "array") || varType == "AhoyArray*" {
 		// For arrays, need to free the array structure and possibly contents
 		// Check if array contains heap-allocated Ahoy structs (not C structs from imports)
@@ -7357,8 +7404,42 @@ func (gen *CodeGenerator) generateStruct(node *ahoy.ASTNode) {
 
 	gen.structDecls.WriteString(fmt.Sprintf("typedef struct {\n"))
 
+	// Add ARC reference count field if enabled
+	if gen.enableARC {
+		gen.structDecls.WriteString("    int __arc_refcount;\n")
+		gen.arcStructs[structName] = true
+		gen.arcStructs[cStructName] = true
+	}
+
 	// Track static fields separately - they will be generated as global variables
 	var staticFields []*ahoy.ASTNode
+	
+	// First pass: detect parent-child relationships for weak references
+	if gen.enableARC {
+		for _, field := range baseFields {
+			if field.IsStatic {
+				continue
+			}
+			fieldType := field.DataType
+			// Check if this field is a struct type (potential child relationship)
+			if _, isStruct := gen.structs[fieldType]; isStruct {
+				// Check if the field type has fields that reference this struct (circular dependency)
+				if gen.hasCircularDependency(structName, fieldType) {
+					// Mark this field as weak to break the cycle
+					if gen.weakFields[structName] == nil {
+						gen.weakFields[structName] = make(map[string]bool)
+					}
+					gen.weakFields[structName][field.Value] = true
+					
+					// Track parent-child relationship
+					if gen.parentChildRelations[structName] == nil {
+						gen.parentChildRelations[structName] = make(map[string]bool)
+					}
+					gen.parentChildRelations[structName][field.Value] = true
+				}
+			}
+		}
+	}
 
 	for _, field := range baseFields {
 		// Skip static fields - they are not part of the struct
@@ -7372,12 +7453,14 @@ func (gen *CodeGenerator) generateStruct(node *ahoy.ASTNode) {
 
 		// Track field info with default value
 		defaultValue := gen.generateDefaultValue(field.DefaultValue)
+		isWeak := gen.enableARC && gen.weakFields[structName] != nil && gen.weakFields[structName][field.Value]
 		structInfo.Fields = append(structInfo.Fields, StructField{
 			Name:         field.Value,
 			Type:         fieldType,
 			DefaultValue: defaultValue,
 			IsStatic:     false,
 			IsConst:      field.IsConst,
+			IsWeak:       isWeak,
 		})
 	}
 
@@ -8879,6 +8962,87 @@ func (gen *CodeGenerator) writeStructHelperFunctions() {
 	}
 }
 
+// writeARCHelperFunctions generates retain/release functions for ARC-enabled structs
+func (gen *CodeGenerator) writeARCHelperFunctions() {
+	if !gen.enableARC || len(gen.arcStructs) == 0 {
+		return
+	}
+
+	// Track which structs we've processed to avoid duplicates
+	processed := make(map[string]bool)
+
+	// Sort struct names for deterministic output
+	structNames := make([]string, 0, len(gen.structs))
+	for name := range gen.structs {
+		if gen.arcStructs[name] {
+			structNames = append(structNames, name)
+		}
+	}
+	sort.Strings(structNames)
+
+	gen.funcDecls.WriteString("\n// ===== ARC (Automatic Reference Counting) Helper Functions =====\n\n")
+
+	for _, name := range structNames {
+		structInfo := gen.structs[name]
+		if processed[structInfo.Name] {
+			continue
+		}
+		// Skip JSON structs
+		if gen.jsonStructs[structInfo.Name] {
+			continue
+		}
+		processed[structInfo.Name] = true
+
+		cStructName := toCStructName(structInfo.Name)
+		funcName := toCFuncName(structInfo.Name)
+
+		// Generate retain function
+		gen.funcDecls.WriteString(fmt.Sprintf("// Retain (increment reference count) for %s\n", structInfo.Name))
+		gen.funcDecls.WriteString(fmt.Sprintf("%s* ahoy_retain_%s(%s* obj) {\n", cStructName, funcName, cStructName))
+		gen.funcDecls.WriteString("    if (obj == NULL) return NULL;\n")
+		gen.funcDecls.WriteString("    obj->__arc_refcount++;\n")
+		gen.funcDecls.WriteString("    return obj;\n")
+		gen.funcDecls.WriteString("}\n\n")
+
+		// Generate release function
+		gen.funcDecls.WriteString(fmt.Sprintf("// Release (decrement reference count and free if zero) for %s\n", structInfo.Name))
+		gen.funcDecls.WriteString(fmt.Sprintf("void ahoy_release_%s(%s* obj) {\n", funcName, cStructName))
+		gen.funcDecls.WriteString("    if (obj == NULL) return;\n")
+		gen.funcDecls.WriteString("    obj->__arc_refcount--;\n")
+		gen.funcDecls.WriteString("    if (obj->__arc_refcount <= 0) {\n")
+
+		// Release nested ARC objects (non-weak references, only pointers)
+		for _, field := range structInfo.Fields {
+			if field.IsWeak {
+				continue // Skip weak references - don't release them
+			}
+			
+			// Only release if it's a pointer field
+			if !strings.HasSuffix(field.Type, "*") {
+				continue
+			}
+			
+			// Check if field is an ARC struct pointer
+			fieldBaseName := strings.TrimSuffix(field.Type, "*")
+			if gen.arcStructs[fieldBaseName] || gen.arcStructs[strings.ToLower(fieldBaseName)] {
+				fieldFuncName := toCFuncName(strings.ToLower(fieldBaseName))
+				gen.funcDecls.WriteString(fmt.Sprintf("        ahoy_release_%s(obj->%s);\n", fieldFuncName, field.Name))
+			}
+		}
+
+		gen.funcDecls.WriteString("        free(obj);\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("}\n\n")
+
+		// Generate autorelease function (for use with auto-defer)
+		gen.funcDecls.WriteString(fmt.Sprintf("// Autorelease (defer release) for %s\n", structInfo.Name))
+		gen.funcDecls.WriteString(fmt.Sprintf("%s* ahoy_autorelease_%s(%s* obj) {\n", cStructName, funcName, cStructName))
+		gen.funcDecls.WriteString("    // Will be released at end of scope via defer\n")
+		gen.funcDecls.WriteString("    return obj;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+}
+
 func (gen *CodeGenerator) writeStringHelperFunctions() {
 	if len(gen.stringMethods) == 0 {
 		return
@@ -9274,6 +9438,14 @@ func (gen *CodeGenerator) generateObjectLiteral(node *ahoy.ASTNode) {
 				}
 			}
 			first = false
+		}
+		
+		// Initialize ARC refcount if enabled for this struct
+		if gen.enableARC && gen.arcStructs[node.Value] {
+			if !first {
+				gen.output.WriteString(", ")
+			}
+			gen.output.WriteString(".__arc_refcount = 1")
 		}
 	} else {
 		// No struct info, just output explicit properties
