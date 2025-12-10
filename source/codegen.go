@@ -266,6 +266,7 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		escapingVars:          make(map[string]bool),
 		manuallyFreedVars:     make(map[string]bool),
 		autoFreedVars:         make(map[string]bool),
+		loopScopeStack:        make([]int, 0),
 		cStructFields:         make(map[string]map[string]string),
 		cTypedefs:             make(map[string]string),
 		cFunctionParamTypes:   make(map[string][]string),
@@ -384,7 +385,8 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 	result.WriteString("    AHOY_TYPE_INT,\n")
 	result.WriteString("    AHOY_TYPE_STRING,\n")
 	result.WriteString("    AHOY_TYPE_FLOAT,\n")
-	result.WriteString("    AHOY_TYPE_CHAR\n")
+	result.WriteString("    AHOY_TYPE_CHAR,\n")
+	result.WriteString("    AHOY_TYPE_STRUCT\n")
 	result.WriteString("} AhoyValueType;\n\n")
 
 	// Write AhoyArray struct definition if arrays are used (must come after AhoyValueType)
@@ -1472,9 +1474,21 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 	case ahoy.NODE_STATIC_MEMBER_ACCESS:
 		gen.generateStaticMemberAccess(node)
 	case ahoy.NODE_HALT:
+		// Generate cleanup for variables in nested scopes before breaking
+		// Note: generateEarlyExitCleanup returns code WITH indentation/newlines
+		cleanup := gen.generateEarlyExitCleanup(false)
+		if cleanup != "" {
+			gen.output.WriteString(cleanup)
+		}
 		gen.writeIndent()
 		gen.output.WriteString("break;\n")
 	case ahoy.NODE_NEXT:
+		// Generate cleanup for variables in nested scopes before continuing
+		// Note: generateEarlyExitCleanup returns code WITH indentation/newlines
+		cleanup := gen.generateEarlyExitCleanup(false)
+		if cleanup != "" {
+			gen.output.WriteString(cleanup)
+		}
 		gen.writeIndent()
 		gen.output.WriteString("continue;\n")
 	case ahoy.NODE_GOTO_STATEMENT:
@@ -2052,7 +2066,17 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 
 		gen.generateNode(node.Children[0])
 		gen.output.WriteString(" = ")
-		gen.generateNode(node.Children[1])
+		
+		// Check if RHS is an f-string - if so, wrap in strdup to avoid use-after-free
+		// F-strings use static buffers that get overwritten, so struct fields need ownership
+		if node.Children[1].Type == ahoy.NODE_F_STRING {
+			gen.output.WriteString("strdup(")
+			gen.generateNode(node.Children[1])
+			gen.output.WriteString(")")
+		} else {
+			gen.generateNode(node.Children[1])
+		}
+		
 		gen.output.WriteString(";\n")
 		return
 	}
@@ -2274,6 +2298,22 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 						if nestedElemType, exists := gen.arrayElementTypes[firstChild.Value]; exists {
 							gen.array2DElementTypes[node.Value] = nestedElemType
 						}
+					}
+				}
+			}
+
+			// For any variable with array type (from inference or explicit type), track element type
+			// This handles cases like: new_texts: execute_combat_phase|...| where return type is array[FloatingText]
+			if strings.HasPrefix(varType, "array[") && strings.HasSuffix(varType, "]") {
+				elemType := strings.TrimSuffix(strings.TrimPrefix(varType, "array["), "]")
+				// Only set if not already set by array literal handling above
+				if _, exists := gen.arrayElementTypes[node.Value]; !exists {
+					gen.arrayElementTypes[node.Value] = elemType
+
+					// For 2D arrays (array[array[type]]), also extract inner element type
+					if strings.HasPrefix(elemType, "array[") {
+						nestedElemType := strings.TrimSuffix(strings.TrimPrefix(elemType, "array["), "]")
+						gen.array2DElementTypes[node.Value] = nestedElemType
 					}
 				}
 			}
@@ -2866,6 +2906,7 @@ func (gen *CodeGenerator) generateWhileLoop(node *ahoy.ASTNode) {
 
 	gen.indent++
 	gen.enterScope()
+	gen.enterLoopScope() // Mark this as a loop boundary for break/continue
 	gen.generateNodeInternal(bodyNode, false)
 
 	// Increment loop variable if present
@@ -2874,6 +2915,7 @@ func (gen *CodeGenerator) generateWhileLoop(node *ahoy.ASTNode) {
 		gen.output.WriteString(fmt.Sprintf("%s++;\n", loopVar))
 	}
 
+	gen.exitLoopScope()
 	cleanup := gen.exitScope()
 	if cleanup != "" {
 		gen.output.WriteString(cleanup)
@@ -2917,7 +2959,9 @@ func (gen *CodeGenerator) generateForRangeLoop(node *ahoy.ASTNode) {
 
 		gen.indent++
 		gen.enterScope()
+		gen.enterLoopScope()
 		gen.generateNodeInternal(node.Children[3], false)
+		gen.exitLoopScope()
 		cleanup := gen.exitScope()
 		if cleanup != "" {
 			gen.output.WriteString(cleanup)
@@ -2941,7 +2985,9 @@ func (gen *CodeGenerator) generateForRangeLoop(node *ahoy.ASTNode) {
 
 			gen.indent++
 			gen.enterScope()
+			gen.enterLoopScope()
 			gen.generateNodeInternal(node.Children[0], false)
+			gen.exitLoopScope()
 			cleanup := gen.exitScope()
 			if cleanup != "" {
 				gen.output.WriteString(cleanup)
@@ -2957,7 +3003,9 @@ func (gen *CodeGenerator) generateForRangeLoop(node *ahoy.ASTNode) {
 
 			gen.indent++
 			gen.enterScope()
+			gen.enterLoopScope()
 			gen.generateNodeInternal(node.Children[2], false)
+			gen.exitLoopScope()
 			cleanup := gen.exitScope()
 			if cleanup != "" {
 				gen.output.WriteString(cleanup)
@@ -3004,7 +3052,9 @@ func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 
 		gen.indent++
 		gen.enterScope()
+		gen.enterLoopScope()
 		gen.generateNodeInternal(node.Children[2], false)
+		gen.exitLoopScope()
 		cleanup := gen.exitScope()
 		if cleanup != "" {
 			gen.output.WriteString(cleanup)
@@ -3037,7 +3087,9 @@ func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 
 		gen.indent++
 		gen.enterScope()
+		gen.enterLoopScope()
 		gen.generateNodeInternal(node.Children[1], false)
+		gen.exitLoopScope()
 		cleanup := gen.exitScope()
 		if cleanup != "" {
 			gen.output.WriteString(cleanup)
@@ -3060,7 +3112,9 @@ func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 
 		gen.indent++
 		gen.enterScope()
+		gen.enterLoopScope()
 		gen.generateNodeInternal(node.Children[0], false)
+		gen.exitLoopScope()
 		cleanup := gen.exitScope()
 		if cleanup != "" {
 			gen.output.WriteString(cleanup)
@@ -3088,7 +3142,9 @@ func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 
 		gen.indent++
 		gen.enterScope()
+		gen.enterLoopScope()
 		gen.generateNodeInternal(node.Children[3], false)
+		gen.exitLoopScope()
 		cleanup := gen.exitScope()
 		if cleanup != "" {
 			gen.output.WriteString(cleanup)
@@ -3145,6 +3201,7 @@ func (gen *CodeGenerator) generateForInArrayLoop(node *ahoy.ASTNode) {
 
 		gen.indent++
 		gen.enterScope()
+		gen.enterLoopScope()
 		gen.writeIndent()
 
 		gen.output.WriteString(fmt.Sprintf("char %s = %s[%s];\n",
@@ -3163,6 +3220,7 @@ func (gen *CodeGenerator) generateForInArrayLoop(node *ahoy.ASTNode) {
 			delete(gen.variables, elementVar)
 		}
 
+		gen.exitLoopScope()
 		cleanup := gen.exitScope()
 		if cleanup != "" {
 			gen.output.WriteString(cleanup)
@@ -3184,6 +3242,7 @@ func (gen *CodeGenerator) generateForInArrayLoop(node *ahoy.ASTNode) {
 
 		gen.indent++
 		gen.enterScope()
+		gen.enterLoopScope()
 		gen.writeIndent()
 
 		// Determine element type
@@ -3213,6 +3272,29 @@ func (gen *CodeGenerator) generateForInArrayLoop(node *ahoy.ASTNode) {
 				if isDefinedStruct || isExternalStruct {
 					isStructValue = true
 					// Don't add * here - we'll handle it in the cast
+				}
+			} else {
+				// Try to infer from variable type (e.g., array[FloatingText])
+				varType := gen.inferType(iterableExpr)
+				if strings.HasPrefix(varType, "array[") && strings.HasSuffix(varType, "]") {
+					elemType := varType[6 : len(varType)-1]
+					elementType = elemType
+					cElementType = gen.mapType(elemType)
+					
+					// Check if it's a struct type
+					_, isDefinedStruct := gen.structs[elementType]
+					isExternalStruct := !strings.HasSuffix(cElementType, "*") && 
+						cElementType != "int" && 
+						cElementType != "double" && 
+						cElementType != "char*" && 
+						cElementType != "void" &&
+						cElementType != "bool" &&
+						len(cElementType) > 0 &&
+						unicode.IsUpper(rune(cElementType[0]))
+					
+					if isDefinedStruct || isExternalStruct {
+						isStructValue = true
+					}
 				}
 			}
 		}
@@ -3251,6 +3333,7 @@ func (gen *CodeGenerator) generateForInArrayLoop(node *ahoy.ASTNode) {
 			delete(gen.variables, elementVar)
 		}
 
+		gen.exitLoopScope()
 		cleanup := gen.exitScope()
 		if cleanup != "" {
 			gen.output.WriteString(cleanup)
@@ -3294,6 +3377,7 @@ func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
 
 	gen.indent++
 	gen.enterScope()
+	gen.enterLoopScope()
 	gen.writeIndent()
 	gen.output.WriteString(fmt.Sprintf("HashMapEntry* %s = %s->buckets[%s];\n",
 		entryVar, dictRef, bucketVar))
@@ -3303,6 +3387,7 @@ func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
 
 	gen.indent++
 	gen.enterScope()
+	gen.enterLoopScope() // Inner loop for entry traversal
 	gen.writeIndent()
 	gen.output.WriteString(fmt.Sprintf("const char* %s = %s->key;\n", keyVar, entryVar))
 
@@ -3377,6 +3462,7 @@ func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
 	gen.writeIndent()
 	gen.output.WriteString(fmt.Sprintf("%s = %s->next;\n", entryVar, entryVar))
 	
+	gen.exitLoopScope() // Exit inner loop scope
 	innerCleanup := gen.exitScope()
 	if innerCleanup != "" {
 		gen.output.WriteString(innerCleanup)
@@ -3386,6 +3472,7 @@ func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
 	gen.writeIndent()
 	gen.output.WriteString("}\n")
 	
+	gen.exitLoopScope() // Exit outer loop scope
 	outerCleanup := gen.exitScope()
 	if outerCleanup != "" {
 		gen.output.WriteString(outerCleanup)
@@ -3545,6 +3632,73 @@ func (gen *CodeGenerator) registerHeapAllocation(varName string, varType string)
 // enterScope increments scope depth for tracking nested allocations
 func (gen *CodeGenerator) enterScope() {
 	gen.scopeDepth++
+}
+
+// enterLoopScope marks the current scope as a loop boundary for break/continue handling
+func (gen *CodeGenerator) enterLoopScope() {
+	gen.loopScopeStack = append(gen.loopScopeStack, gen.scopeDepth)
+}
+
+// exitLoopScope removes the loop boundary marker
+func (gen *CodeGenerator) exitLoopScope() {
+	if len(gen.loopScopeStack) > 0 {
+		gen.loopScopeStack = gen.loopScopeStack[:len(gen.loopScopeStack)-1]
+	}
+}
+
+// generateEarlyExitCleanup generates cleanup code for variables from current scope down to loop scope
+// Used for break/continue/return statements
+func (gen *CodeGenerator) generateEarlyExitCleanup(includeLoopScope bool) string {
+	var cleanup strings.Builder
+	
+	// Determine the target depth (where to stop cleaning up)
+	targetDepth := 0
+	if len(gen.loopScopeStack) > 0 {
+		loopScope := gen.loopScopeStack[len(gen.loopScopeStack)-1]
+		if includeLoopScope {
+			// Clean including the loop scope
+			targetDepth = loopScope
+		} else {
+			// Clean down to but not including the loop scope
+			// This means clean the loop scope but not outer scopes
+			targetDepth = loopScope
+		}
+	}
+	
+	// Clean up from current depth down to target depth (inclusive)
+	for depth := gen.scopeDepth; depth >= targetDepth; depth-- {
+		if varsAtScope, exists := gen.scopeAllocations[depth]; exists {
+			// Sort for deterministic output
+			sortedVars := make([]string, len(varsAtScope))
+			copy(sortedVars, varsAtScope)
+			sort.Strings(sortedVars)
+			
+			// Generate cleanup in reverse order (LIFO)
+			for i := len(sortedVars) - 1; i >= 0; i-- {
+				varName := sortedVars[i]
+				
+				// Skip if escaping or manually freed
+				// NOTE: Don't skip if already auto-freed, since this is conditional cleanup
+				if gen.escapingVars[varName] || gen.manuallyFreedVars[varName] {
+					continue
+				}
+				
+				varType := gen.heapVarTypes[varName]
+				if varType == "" {
+					continue
+				}
+				
+				freeCode := gen.generateFreeCodeForVar(varName, varType)
+				if freeCode != "" {
+					cleanup.WriteString(freeCode)
+					// DON'T mark as autoFreedVars - this cleanup is conditional (inside if/break/etc)
+					// The normal exitScope() will still generate cleanup for non-early-exit paths
+				}
+			}
+		}
+	}
+	
+	return cleanup.String()
 }
 
 // exitScope generates cleanup code for variables allocated in the current scope
@@ -5709,9 +5863,8 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			if strings.HasPrefix(varType, "dict<") || strings.HasPrefix(varType, "dict[") {
 				return "dict"
 			}
-			if strings.HasPrefix(varType, "array[") {
-				return "array"
-			}
+			// Return full array type including element type for proper iteration
+			// DON'T normalize array[ElementType] to just "array"
 			return varType
 		}
 		if varType, exists := gen.functionVars[node.Value]; exists {
@@ -5719,9 +5872,7 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			if strings.HasPrefix(varType, "dict<") || strings.HasPrefix(varType, "dict[") {
 				return "dict"
 			}
-			if strings.HasPrefix(varType, "array[") {
-				return "array"
-			}
+			// Return full array type including element type
 			return varType
 		}
 		return "int"
@@ -7599,6 +7750,7 @@ func (gen *CodeGenerator) generateMemberAccess(node *ahoy.ASTNode) {
 
 	// Check if object is a pointer type (array or struct pointer)
 	if objectType == "AhoyArray*" || objectType == "array" ||
+		strings.HasPrefix(objectType, "array[") ||
 		strings.HasSuffix(objectType, "*") {
 		gen.output.WriteString("->")
 	} else {
@@ -7731,6 +7883,7 @@ func (gen *CodeGenerator) writeTypeEnumToStringHelper() {
 	gen.funcDecls.WriteString("        case AHOY_TYPE_STRING: return \"string\";\n")
 	gen.funcDecls.WriteString("        case AHOY_TYPE_FLOAT: return \"float\";\n")
 	gen.funcDecls.WriteString("        case AHOY_TYPE_CHAR: return \"char\";\n")
+	gen.funcDecls.WriteString("        case AHOY_TYPE_STRUCT: return \"struct\";\n")
 	gen.funcDecls.WriteString("        default: return \"unknown\";\n")
 	gen.funcDecls.WriteString("    }\n")
 	gen.funcDecls.WriteString("}\n\n")
@@ -8402,6 +8555,18 @@ func (gen *CodeGenerator) getValueType(node *ahoy.ASTNode) string {
 		return "array"
 	case ahoy.NODE_DICT_LITERAL:
 		return "dict"
+	case ahoy.NODE_OBJECT_LITERAL:
+		// Struct literal - use the struct type
+		if node.Value != "" {
+			return node.Value
+		}
+		return "int"
+	case ahoy.NODE_IDENTIFIER:
+		// Check if identifier is a variable with a known type
+		if varType, exists := gen.variables[node.Value]; exists {
+			return varType
+		}
+		return "int"
 	default:
 		return "int"
 	}
@@ -8412,13 +8577,28 @@ func (gen *CodeGenerator) getAhoyTypeEnum(typeName string) string {
 	switch typeName {
 	case "int", "bool":
 		return "AHOY_TYPE_INT"
-	case "float":
+	case "float", "double":
 		return "AHOY_TYPE_FLOAT"
-	case "string":
+	case "string", "char*":
 		return "AHOY_TYPE_STRING"
 	case "char":
 		return "AHOY_TYPE_CHAR"
 	default:
+		// Check if it's a known struct type
+		if _, isStruct := gen.structs[typeName]; isStruct {
+			return "AHOY_TYPE_STRUCT"
+		}
+		// Check if the mapped C type is a struct
+		cType := gen.mapType(typeName)
+		if _, isStruct := gen.structs[cType]; isStruct {
+			return "AHOY_TYPE_STRUCT"
+		}
+		// Check if it's a C struct (defined in cTypeDefinitions)
+		if gen.cTypeDefinitions[cType] && !strings.HasSuffix(cType, "*") &&
+			cType != "int" && cType != "double" && cType != "char*" && cType != "bool" {
+			return "AHOY_TYPE_STRUCT"
+		}
+		// For unknown types, treat as int (pointer stored as intptr_t)
 		return "AHOY_TYPE_INT"
 	}
 }
@@ -9069,7 +9249,16 @@ func (gen *CodeGenerator) generateObjectLiteral(node *ahoy.ASTNode) {
 			fieldSet := false
 			for _, prop := range node.Children {
 				if prop.Type == ahoy.NODE_OBJECT_PROPERTY && prop.Value == field.Name {
-					gen.generateNodeInternal(prop.Children[0], false)
+					// If the value is an f-string, wrap in strdup (f-strings use static buffers)
+					// This is critical for struct literals that escape or are stored
+					valueNode := prop.Children[0]
+					if valueNode.Type == ahoy.NODE_F_STRING {
+						gen.output.WriteString("strdup(")
+						gen.generateNodeInternal(valueNode, false)
+						gen.output.WriteString(")")
+					} else {
+						gen.generateNodeInternal(valueNode, false)
+					}
 					fieldSet = true
 					break
 				}
@@ -9096,7 +9285,22 @@ func (gen *CodeGenerator) generateObjectLiteral(node *ahoy.ASTNode) {
 				gen.output.WriteString(".")
 				gen.output.WriteString(prop.Value)
 				gen.output.WriteString(" = ")
-				gen.generateNodeInternal(prop.Children[0], false)
+				
+				// If the value is an f-string, wrap in strdup (for string fields)
+				// This is a heuristic - we assume text/name/message fields are strings
+				propertyName := strings.ToLower(prop.Value)
+				isLikelyString := strings.Contains(propertyName, "text") || 
+					strings.Contains(propertyName, "name") || 
+					strings.Contains(propertyName, "message") ||
+					strings.Contains(propertyName, "str")
+				
+				if isLikelyString && prop.Children[0].Type == ahoy.NODE_F_STRING {
+					gen.output.WriteString("strdup(")
+					gen.generateNodeInternal(prop.Children[0], false)
+					gen.output.WriteString(")")
+				} else {
+					gen.generateNodeInternal(prop.Children[0], false)
+				}
 				first = false
 			}
 		}
