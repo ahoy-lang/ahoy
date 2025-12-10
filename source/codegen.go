@@ -192,9 +192,15 @@ type CodeGenerator struct {
 	skipBoundsCheck               bool                         // Temporarily skip bounds check (for lvalue contexts)
 	sourceFilename                string                       // Source filename for error messages
 	heapAllocatedVars             map[string]bool              // Track heap-allocated variables in current function
+	heapVarScopes                 map[string]int               // Track scope depth where each heap var was allocated
+	heapVarTypes                  map[string]string            // Track type of each heap-allocated variable for proper freeing
+	scopeDepth                    int                          // Current scope depth (incremented for loops/ifs/blocks)
+	scopeAllocations              map[int][]string             // scope depth -> list of variables allocated at that scope
+	loopScopeStack                []int                        // Stack of scope depths where loops begin (for break/continue cleanup)
 	escapingVars                  map[string]bool              // Track variables that escape the function (returned or stored)
 	manuallyFreedVars             map[string]bool              // Track variables with manual defer free
 	autoFreedVars                 map[string]bool              // Track variables with automatic defer free
+	functionParameters            map[string]bool              // Track function parameters (never auto-free)
 	cStructFields                 map[string]map[string]string // C struct name -> (field name -> field type)
 	cTypedefs                     map[string]string            // typedef alias -> base type
 	cFunctionParamTypes           map[string][]string          // C function name (snake_case) -> parameter types
@@ -1659,9 +1665,19 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	// Initialize deferred statements stack for this function
 	gen.deferredStatements = []string{}
 	gen.heapAllocatedVars = make(map[string]bool)
+	gen.heapVarScopes = make(map[string]int)
+	gen.heapVarTypes = make(map[string]string)
+	gen.scopeDepth = 0
+	gen.scopeAllocations = make(map[int][]string)
 	gen.escapingVars = make(map[string]bool)
 	gen.manuallyFreedVars = make(map[string]bool)
 	gen.autoFreedVars = make(map[string]bool)
+	gen.functionParameters = make(map[string]bool)
+	
+	// Mark function parameters so we never auto-free them
+	for _, param := range params.Children {
+		gen.functionParameters[param.Value] = true
+	}
 
 	gen.generateNodeInternal(body, false)
 
@@ -2085,6 +2101,30 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 		// Just assignment - mark RHS variables as escaping if being assigned to existing var
 		gen.markEscapingVariables(node.Children[0])
 
+		// Check if we're reassigning a heap-allocated variable - need to free old value first
+		// Only do this for function-level variables (indent == 1)
+		varName := node.Value
+		if gen.currentFunction != "" && gen.indent == 1 && gen.heapAllocatedVars[varName] && !gen.functionParameters[varName] && !gen.autoFreedVars[varName] {
+			// Get the variable type
+			varType := gen.heapVarTypes[varName]
+			if varType == "" {
+				if t, exists := gen.functionVars[varName]; exists {
+					varType = t
+				}
+			}
+			
+			// Generate free code before reassignment
+			if varType != "" {
+				freeCode := gen.generateFreeCodeForVar(varName, varType)
+				if freeCode != "" {
+					gen.writeIndent()
+					gen.output.WriteString(freeCode)
+					// Mark as already freed so we don't free again at function end
+					gen.autoFreedVars[varName] = true
+				}
+			}
+		}
+
 		if valueNode.Type == ahoy.NODE_SWITCH_STATEMENT {
 			// Generate switch as expression (assign in each case)
 			gen.generateSwitchExpression(valueNode, node.Value)
@@ -2092,6 +2132,19 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			gen.output.WriteString(fmt.Sprintf("%s = ", node.Value))
 			gen.generateNode(node.Children[0])
 			gen.output.WriteString(";\n")
+		}
+		
+		// After reassignment, track the new value if it's also heap-allocated
+		// Only for function-level variables
+		if gen.currentFunction != "" && gen.indent == 1 {
+			valueType := gen.inferType(valueNode)
+			if gen.isHeapAllocatedType(valueType) {
+				if valueNode.Type == ahoy.NODE_CALL || valueNode.Type != ahoy.NODE_IDENTIFIER {
+					// Clear the autoFreed flag since we have a new allocation
+					delete(gen.autoFreedVars, varName)
+					gen.registerHeapAllocation(varName, valueType)
+				}
+			}
 		}
 	} else {
 		// Type inference and declaration
@@ -2246,17 +2299,17 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				}
 			}
 
-			// Track heap-allocated variables in function scope
+			// Track heap-allocated variables in function scope at any scope level
+			// Variables will be freed when their scope exits
 			// Only track if the value is actually allocating new memory, not just aliasing
-			// And only at function level (not in nested scopes like if/loop)
-			if gen.currentFunction != "" && gen.indent == 1 && gen.isHeapAllocatedType(varType) {
+			if gen.currentFunction != "" && gen.isHeapAllocatedType(varType) {
 				// Check if valueNode is creating new memory (literal or function call) vs just aliasing (identifier)
 				if valueNode.Type == ahoy.NODE_CALL {
 					// Function call that returns heap-allocated type - track it
-					gen.heapAllocatedVars[node.Value] = true
+					gen.registerHeapAllocation(node.Value, varType)
 				} else if valueNode.Type != ahoy.NODE_IDENTIFIER {
 					// Literal (array, dict, object) - track it
-					gen.heapAllocatedVars[node.Value] = true
+					gen.registerHeapAllocation(node.Value, varType)
 				}
 			}
 
@@ -2273,7 +2326,12 @@ func (gen *CodeGenerator) generateIfStatement(node *ahoy.ASTNode) {
 	gen.output.WriteString(") {\n")
 
 	gen.indent++
+	gen.enterScope()
 	gen.generateNodeInternal(node.Children[1], false)
+	cleanup := gen.exitScope()
+	if cleanup != "" {
+		gen.output.WriteString(cleanup)
+	}
 	gen.indent--
 
 	gen.writeIndent()
@@ -2287,7 +2345,12 @@ func (gen *CodeGenerator) generateIfStatement(node *ahoy.ASTNode) {
 			// Last child is else body
 			gen.output.WriteString(" else {\n")
 			gen.indent++
+			gen.enterScope()
 			gen.generateNodeInternal(node.Children[i], false)
+			cleanup := gen.exitScope()
+			if cleanup != "" {
+				gen.output.WriteString(cleanup)
+			}
 			gen.indent--
 			gen.writeIndent()
 			gen.output.WriteString("}")
@@ -2298,7 +2361,12 @@ func (gen *CodeGenerator) generateIfStatement(node *ahoy.ASTNode) {
 			gen.generateNode(node.Children[i])
 			gen.output.WriteString(") {\n")
 			gen.indent++
+			gen.enterScope()
 			gen.generateNodeInternal(node.Children[i+1], false)
+			cleanup := gen.exitScope()
+			if cleanup != "" {
+				gen.output.WriteString(cleanup)
+			}
 			gen.indent--
 			gen.writeIndent()
 			gen.output.WriteString("}")
@@ -2749,6 +2817,7 @@ func (gen *CodeGenerator) generateWhileLoop(node *ahoy.ASTNode) {
 	var loopVar string
 	var conditionNode *ahoy.ASTNode
 	var bodyNode *ahoy.ASTNode
+	var outerScopeStarted bool
 
 	if len(node.Children) == 4 && node.Children[0].Type == ahoy.NODE_IDENTIFIER {
 		// Pattern 1 or 2: loop i:start till condition or loop i till condition
@@ -2760,6 +2829,8 @@ func (gen *CodeGenerator) generateWhileLoop(node *ahoy.ASTNode) {
 		// Create block scope for loop variable
 		gen.output.WriteString("{\n")
 		gen.indent++
+		gen.enterScope()
+		outerScopeStarted = true
 		gen.writeIndent()
 
 		// Initialize loop variable with start value
@@ -2776,6 +2847,8 @@ func (gen *CodeGenerator) generateWhileLoop(node *ahoy.ASTNode) {
 		// Create block scope for loop variable
 		gen.output.WriteString("{\n")
 		gen.indent++
+		gen.enterScope()
+		outerScopeStarted = true
 		gen.writeIndent()
 
 		// Initialize loop variable to 0
@@ -2792,6 +2865,7 @@ func (gen *CodeGenerator) generateWhileLoop(node *ahoy.ASTNode) {
 	gen.output.WriteString(") {\n")
 
 	gen.indent++
+	gen.enterScope()
 	gen.generateNodeInternal(bodyNode, false)
 
 	// Increment loop variable if present
@@ -2800,13 +2874,21 @@ func (gen *CodeGenerator) generateWhileLoop(node *ahoy.ASTNode) {
 		gen.output.WriteString(fmt.Sprintf("%s++;\n", loopVar))
 	}
 
+	cleanup := gen.exitScope()
+	if cleanup != "" {
+		gen.output.WriteString(cleanup)
+	}
 	gen.indent--
 
 	gen.writeIndent()
 	gen.output.WriteString("}\n")
 
 	// Close block scope if we created one
-	if loopVar != "" {
+	if outerScopeStarted {
+		outerCleanup := gen.exitScope()
+		if outerCleanup != "" {
+			gen.output.WriteString(outerCleanup)
+		}
 		gen.indent--
 		gen.writeIndent()
 		gen.output.WriteString("}\n")
@@ -2834,7 +2916,12 @@ func (gen *CodeGenerator) generateForRangeLoop(node *ahoy.ASTNode) {
 		gen.output.WriteString(fmt.Sprintf("; %s++) {\n", loopVar))
 
 		gen.indent++
+		gen.enterScope()
 		gen.generateNodeInternal(node.Children[3], false)
+		cleanup := gen.exitScope()
+		if cleanup != "" {
+			gen.output.WriteString(cleanup)
+		}
 		gen.indent--
 	} else {
 		// Old patterns - generate anonymous loop variable
@@ -2853,7 +2940,12 @@ func (gen *CodeGenerator) generateForRangeLoop(node *ahoy.ASTNode) {
 				loopVar, startVal, loopVar, endVal, loopVar))
 
 			gen.indent++
+			gen.enterScope()
 			gen.generateNodeInternal(node.Children[0], false)
+			cleanup := gen.exitScope()
+			if cleanup != "" {
+				gen.output.WriteString(cleanup)
+			}
 			gen.indent--
 		} else {
 			// Pattern 2: Variable range (loop:start to end)
@@ -2864,7 +2956,12 @@ func (gen *CodeGenerator) generateForRangeLoop(node *ahoy.ASTNode) {
 			gen.output.WriteString(fmt.Sprintf("; %s++) {\n", loopVar))
 
 			gen.indent++
+			gen.enterScope()
 			gen.generateNodeInternal(node.Children[2], false)
+			cleanup := gen.exitScope()
+			if cleanup != "" {
+				gen.output.WriteString(cleanup)
+			}
 			gen.indent--
 		}
 
@@ -2896,6 +2993,7 @@ func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 		// Use block scope to avoid variable redeclaration
 		gen.output.WriteString("{\n")
 		gen.indent++
+		gen.enterScope()
 		gen.writeIndent()
 
 		gen.output.WriteString(fmt.Sprintf("int %s = ", loopVar))
@@ -2905,12 +3003,21 @@ func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 		gen.output.WriteString(fmt.Sprintf("for (; ; %s++) {\n", loopVar))
 
 		gen.indent++
+		gen.enterScope()
 		gen.generateNodeInternal(node.Children[2], false)
+		cleanup := gen.exitScope()
+		if cleanup != "" {
+			gen.output.WriteString(cleanup)
+		}
 		gen.indent--
 
 		gen.writeIndent()
 		gen.output.WriteString("}\n")
 
+		outerCleanup := gen.exitScope()
+		if outerCleanup != "" {
+			gen.output.WriteString(outerCleanup)
+		}
 		gen.indent--
 		gen.writeIndent()
 		gen.output.WriteString("}\n")
@@ -2921,6 +3028,7 @@ func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 		// Use block scope to avoid variable redeclaration
 		gen.output.WriteString("{\n")
 		gen.indent++
+		gen.enterScope()
 		gen.writeIndent()
 
 		gen.output.WriteString(fmt.Sprintf("int %s = 0;\n", loopVar))
@@ -2928,12 +3036,21 @@ func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 		gen.output.WriteString(fmt.Sprintf("for (; ; %s++) {\n", loopVar))
 
 		gen.indent++
+		gen.enterScope()
 		gen.generateNodeInternal(node.Children[1], false)
+		cleanup := gen.exitScope()
+		if cleanup != "" {
+			gen.output.WriteString(cleanup)
+		}
 		gen.indent--
 
 		gen.writeIndent()
 		gen.output.WriteString("}\n")
 
+		outerCleanup := gen.exitScope()
+		if outerCleanup != "" {
+			gen.output.WriteString(outerCleanup)
+		}
 		gen.indent--
 		gen.writeIndent()
 		gen.output.WriteString("}\n")
@@ -2942,7 +3059,12 @@ func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 		gen.output.WriteString("for (;;) {\n")
 
 		gen.indent++
+		gen.enterScope()
 		gen.generateNodeInternal(node.Children[0], false)
+		cleanup := gen.exitScope()
+		if cleanup != "" {
+			gen.output.WriteString(cleanup)
+		}
 		gen.indent--
 
 		gen.writeIndent()
@@ -2965,7 +3087,12 @@ func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 		gen.output.WriteString(") {\n")
 
 		gen.indent++
+		gen.enterScope()
 		gen.generateNodeInternal(node.Children[3], false)
+		cleanup := gen.exitScope()
+		if cleanup != "" {
+			gen.output.WriteString(cleanup)
+		}
 		gen.indent--
 
 		gen.writeIndent()
@@ -3017,6 +3144,7 @@ func (gen *CodeGenerator) generateForInArrayLoop(node *ahoy.ASTNode) {
 			loopVar, iterableName, loopVar, loopVar))
 
 		gen.indent++
+		gen.enterScope()
 		gen.writeIndent()
 
 		gen.output.WriteString(fmt.Sprintf("char %s = %s[%s];\n",
@@ -3035,6 +3163,10 @@ func (gen *CodeGenerator) generateForInArrayLoop(node *ahoy.ASTNode) {
 			delete(gen.variables, elementVar)
 		}
 
+		cleanup := gen.exitScope()
+		if cleanup != "" {
+			gen.output.WriteString(cleanup)
+		}
 		gen.indent--
 
 		gen.writeIndent()
@@ -3051,6 +3183,7 @@ func (gen *CodeGenerator) generateForInArrayLoop(node *ahoy.ASTNode) {
 			loopVar, loopVar, arrayName, loopVar))
 
 		gen.indent++
+		gen.enterScope()
 		gen.writeIndent()
 
 		// Determine element type
@@ -3118,6 +3251,10 @@ func (gen *CodeGenerator) generateForInArrayLoop(node *ahoy.ASTNode) {
 			delete(gen.variables, elementVar)
 		}
 
+		cleanup := gen.exitScope()
+		if cleanup != "" {
+			gen.output.WriteString(cleanup)
+		}
 		gen.indent--
 
 		gen.writeIndent()
@@ -3156,6 +3293,7 @@ func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
 		bucketVar, bucketVar, dictRef, bucketVar))
 
 	gen.indent++
+	gen.enterScope()
 	gen.writeIndent()
 	gen.output.WriteString(fmt.Sprintf("HashMapEntry* %s = %s->buckets[%s];\n",
 		entryVar, dictRef, bucketVar))
@@ -3164,6 +3302,7 @@ func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
 	gen.output.WriteString(fmt.Sprintf("while (%s != NULL) {\n", entryVar))
 
 	gen.indent++
+	gen.enterScope()
 	gen.writeIndent()
 	gen.output.WriteString(fmt.Sprintf("const char* %s = %s->key;\n", keyVar, entryVar))
 
@@ -3237,10 +3376,20 @@ func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
 
 	gen.writeIndent()
 	gen.output.WriteString(fmt.Sprintf("%s = %s->next;\n", entryVar, entryVar))
+	
+	innerCleanup := gen.exitScope()
+	if innerCleanup != "" {
+		gen.output.WriteString(innerCleanup)
+	}
 	gen.indent--
 
 	gen.writeIndent()
 	gen.output.WriteString("}\n")
+	
+	outerCleanup := gen.exitScope()
+	if outerCleanup != "" {
+		gen.output.WriteString(outerCleanup)
+	}
 	gen.indent--
 
 	gen.writeIndent()
@@ -3380,12 +3529,111 @@ func (gen *CodeGenerator) markEscapingVariables(node *ahoy.ASTNode) {
 	}
 }
 
+// registerHeapAllocation tracks a heap-allocated variable for automatic freeing
+func (gen *CodeGenerator) registerHeapAllocation(varName string, varType string) {
+	// Skip if it's a function parameter
+	if gen.functionParameters[varName] {
+		return
+	}
+	
+	gen.heapAllocatedVars[varName] = true
+	gen.heapVarScopes[varName] = gen.scopeDepth
+	gen.heapVarTypes[varName] = varType
+	gen.scopeAllocations[gen.scopeDepth] = append(gen.scopeAllocations[gen.scopeDepth], varName)
+}
+
+// enterScope increments scope depth for tracking nested allocations
+func (gen *CodeGenerator) enterScope() {
+	gen.scopeDepth++
+}
+
+// exitScope generates cleanup code for variables allocated in the current scope
+// and decrements scope depth. Returns the cleanup code to be inserted before '}'
+func (gen *CodeGenerator) exitScope() string {
+	var cleanup strings.Builder
+	
+	// Get variables allocated at current scope
+	if varsAtScope, exists := gen.scopeAllocations[gen.scopeDepth]; exists {
+		// Sort for deterministic output
+		sortedVars := make([]string, len(varsAtScope))
+		copy(sortedVars, varsAtScope)
+		sort.Strings(sortedVars)
+		
+		// Generate cleanup in reverse order (LIFO)
+		for i := len(sortedVars) - 1; i >= 0; i-- {
+			varName := sortedVars[i]
+			
+			// Skip if escaping or manually freed
+			if gen.escapingVars[varName] || gen.manuallyFreedVars[varName] || gen.autoFreedVars[varName] {
+				continue
+			}
+			
+			varType := gen.heapVarTypes[varName]
+			if varType == "" {
+				continue
+			}
+			
+			freeCode := gen.generateFreeCodeForVar(varName, varType)
+			if freeCode != "" {
+				cleanup.WriteString(freeCode)
+				gen.autoFreedVars[varName] = true
+			}
+		}
+		
+		// Clear the scope allocations
+		delete(gen.scopeAllocations, gen.scopeDepth)
+	}
+	
+	gen.scopeDepth--
+	return cleanup.String()
+}
+
+// generateFreeCodeForVar generates the appropriate free() code for a variable based on its type
+func (gen *CodeGenerator) generateFreeCodeForVar(varName string, varType string) string {
+	if strings.HasPrefix(varType, "array") || varType == "AhoyArray*" {
+		// For arrays, need to free the array structure and possibly contents
+		// Check if array contains heap-allocated Ahoy structs (not C structs from imports)
+		hasAhoyStructElements := false
+		if strings.HasPrefix(varType, "array[") {
+			elemType := strings.TrimSuffix(strings.TrimPrefix(varType, "array["), "]")
+			// Only free elements if they're Ahoy-defined structs (not C library structs)
+			if gen.structs[elemType] != nil {
+				hasAhoyStructElements = true
+			}
+		}
+		
+		if hasAhoyStructElements {
+			// Free Ahoy struct elements first, then array structure
+			return fmt.Sprintf("    if (%s) { for(int __i=0; __i<%s->length; __i++) { if(%s->data[__i]) free((void*)%s->data[__i]); } free(%s->data); free(%s->types); free(%s); }\n",
+				varName, varName, varName, varName, varName, varName, varName)
+		} else {
+			// Just free array structure (elements are either primitives or managed elsewhere)
+			return fmt.Sprintf("    if (%s) { free(%s->data); free(%s->types); free(%s); }\n",
+				varName, varName, varName, varName)
+		}
+	} else if strings.HasPrefix(varType, "dict") || varType == "HashMap*" {
+		// For dicts/HashMaps, use the dict cleanup function
+		return fmt.Sprintf("    if (%s) { freeHashMap(%s); }\n", varName, varName)
+	} else if varType == "AhoyJSON*" {
+		// For JSON objects  
+		return fmt.Sprintf("    if (%s) { free(%s); }\n", varName, varName)
+	} else if varType == "char*" || varType == "string" {
+		// For heap-allocated strings
+		return fmt.Sprintf("    if (%s) { free(%s); }\n", varName, varName)
+	} else if strings.Contains(varType, "*") || gen.structs[varType] != nil || gen.cTypeDefinitions[varType] {
+		// For struct pointers or other pointer types
+		return fmt.Sprintf("    if (%s) { free(%s); }\n", varName, varName)
+	}
+	return ""
+}
+
 func (gen *CodeGenerator) addAutomaticDeferFrees() {
-	// Add automatic defer free for heap-allocated variables that:
-	// 1. Are heap-allocated
+	// Add automatic defer free for heap-allocated variables at scope 0 that:
+	// 1. Are heap-allocated at function scope (scope 0)
 	// 2. Don't escape the function (not returned or stored globally)
 	// 3. Aren't manually freed
 	// 4. Aren't function parameters
+	// 5. Haven't already been freed by exitScope (nested scope vars)
 
 	// Sort heap allocated vars for deterministic output
 	heapVars := make([]string, 0, len(gen.heapAllocatedVars))
@@ -3395,6 +3643,11 @@ func (gen *CodeGenerator) addAutomaticDeferFrees() {
 	sort.Strings(heapVars)
 
 	for _, varName := range heapVars {
+		// Skip if not at function scope (scope 0) - nested scopes handled by exitScope
+		if gen.heapVarScopes[varName] != 0 {
+			continue
+		}
+		
 		// Skip if variable escapes
 		if gen.escapingVars[varName] {
 			continue
@@ -3406,19 +3659,24 @@ func (gen *CodeGenerator) addAutomaticDeferFrees() {
 		}
 
 		// Skip if it's a function parameter
-		if gen.functionVars[varName] != "" {
-			// Check if it's a parameter by checking if it was declared in the function vars
-			// Parameters are added to functionVars before processing the function body
-			// We need to distinguish between parameters and locally declared variables
-			// For now, we'll be conservative and only auto-free variables we explicitly track
+		if gen.functionParameters[varName] {
+			continue
+		}
+		
+		// Skip if already auto-freed (by exitScope)
+		if gen.autoFreedVars[varName] {
+			continue
 		}
 
-		// Get the variable type to determine the free function
-		varType := ""
-		if t, exists := gen.functionVars[varName]; exists {
-			varType = t
-		} else if t, exists := gen.variables[varName]; exists {
-			varType = t
+		// Get the variable type
+		varType := gen.heapVarTypes[varName]
+		if varType == "" {
+			// Fallback to checking function/global vars
+			if t, exists := gen.functionVars[varName]; exists {
+				varType = t
+			} else if t, exists := gen.variables[varName]; exists {
+				varType = t
+			}
 		}
 
 		if varType == "" {
@@ -3426,23 +3684,7 @@ func (gen *CodeGenerator) addAutomaticDeferFrees() {
 		}
 
 		// Generate the appropriate free call based on type
-		freeCode := ""
-		if strings.HasPrefix(varType, "array") || varType == "AhoyArray*" {
-			// For arrays, need to free the array structure
-			freeCode = fmt.Sprintf("    if (%s) { free(%s->data); free(%s->types); free(%s); }\n",
-				varName, varName, varName, varName)
-		} else if strings.HasPrefix(varType, "dict") || varType == "HashMap*" {
-			// For dicts/HashMaps, use the dict cleanup function
-			freeCode = fmt.Sprintf("    if (%s) { /* TODO: proper HashMap cleanup */ free(%s); }\n",
-				varName, varName)
-		} else if varType == "AhoyJSON*" {
-			// For JSON objects
-			freeCode = fmt.Sprintf("    if (%s) { /* TODO: proper JSON cleanup */ free(%s); }\n",
-				varName, varName)
-		} else if varType == "char*" || varType == "string" {
-			// For heap-allocated strings
-			freeCode = fmt.Sprintf("    if (%s) { free(%s); }\n", varName, varName)
-		}
+		freeCode := gen.generateFreeCodeForVar(varName, varType)
 
 		if freeCode != "" {
 			gen.deferredStatements = append(gen.deferredStatements, freeCode)
@@ -4675,6 +4917,11 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 		// Special handling for push with multiple arguments - generate multiple calls
 		if methodName == "push" && len(args.Children) > 1 {
 			for i, arg := range args.Children {
+				// Mark heap-allocated variables as escaping when pushed to arrays
+				if arg.Type == ahoy.NODE_IDENTIFIER && gen.heapAllocatedVars[arg.Value] {
+					gen.escapingVars[arg.Value] = true
+				}
+				
 				if i > 0 {
 					gen.output.WriteString("; ")
 				}
@@ -4741,6 +4988,11 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 				}
 				// For array methods like push, cast to intptr_t
 				if methodName == "push" || methodName == "has" || methodName == "fill" {
+					// Mark heap-allocated variables as escaping when pushed to arrays
+					if methodName == "push" && arg.Type == ahoy.NODE_IDENTIFIER && gen.heapAllocatedVars[arg.Value] {
+						gen.escapingVars[arg.Value] = true
+					}
+					
 					gen.output.WriteString("(intptr_t)")
 
 					// Check if we're pushing a struct value (needs heap allocation)
