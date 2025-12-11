@@ -517,7 +517,8 @@ func main() {
 	formatFlag := flag.Bool("format", false, "Format the source file")
 	lintFlag := flag.Bool("lint", false, "Run linter to check for errors without compiling")
 	releaseFlag := flag.Bool("release", false, "Use optimizing compiler (gcc/clang) for release build")
-	debugFlag := flag.Bool("sanitize", false, "Enable debug mode with runtime checks (tcc: -g, gcc: -fsanitize=address)")
+	debugFlag := flag.Bool("show_leaks", false, "Enable memory leak detection with AddressSanitizer (gcc: -fsanitize=address)")
+	arcFlag := flag.Bool("arc", true, "Enable Automatic Reference Counting (ARC) for memory management")
 	targetFlag := flag.String("target", "", "Cross-compile target: linux, windows, web, macos, or all")
 	incFlag := flag.Bool("cache", false, "Enable incremental builds (cache parsed files)")
 	profCompFlag := flag.Bool("profile_compiler", false, "Enable CPU profiling of compiler (creates pprof file)")
@@ -787,7 +788,7 @@ func main() {
 	codegenStart := time.Now()
 
 	// Generate C code with source filename for better error messages
-	cCode := generateC(ast, sourceFile)
+	cCode := generateC(ast, sourceFile, *arcFlag)
 
 	codegenTime := time.Since(codegenStart)
 
@@ -1164,11 +1165,13 @@ func showHelp() {
 	fmt.Println("  -f <file>     Input .ahoy source file (required)")
 	fmt.Println("  -r            Run the compiled C program")
 	fmt.Println("  -release      Use optimizing compiler (gcc/clang -O3) for release build")
+	fmt.Println("  -show_leaks   Enable memory leak detection with AddressSanitizer")
+	fmt.Println("  -arc=<bool>   Enable/disable Automatic Reference Counting (default: true)")
 	fmt.Println("  -target <t>   Cross-compile to target: linux, windows, macos, web, or all")
 	fmt.Println("  -format       Format the source file")
 	fmt.Println("  -lint         Check for syntax errors without compiling")
 	fmt.Println("  -gen_stdlib_docs   Generate stdlib API reference as .ahoy file")
-	fmt.Println("  -inc          Enable incremental builds (cache parsed files)")
+	fmt.Println("  -cache        Enable incremental builds (cache parsed files)")
 	fmt.Println("  -h            Show this help message")
 	fmt.Println()
 	fmt.Println("Compilation modes:")

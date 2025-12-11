@@ -216,15 +216,15 @@ type CodeGenerator struct {
 
 // GenerateC generates C code from an AST (exported for testing)
 func GenerateC(ast *ahoy.ASTNode) string {
-	return generateC(ast, "<source>")
+	return generateC(ast, "<source>", true) // ARC enabled by default for tests
 }
 
 // GenerateCWithFilename generates C code from an AST with a source filename
 func GenerateCWithFilename(ast *ahoy.ASTNode, filename string) string {
-	return generateC(ast, filename)
+	return generateC(ast, filename, true) // ARC enabled by default
 }
 
-func generateC(ast *ahoy.ASTNode, filename string) string {
+func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 	gen := &CodeGenerator{
 		includes:              make(map[string]bool),
 		orderedIncludes:       make([]string, 0),
@@ -277,7 +277,7 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		cTypedefs:             make(map[string]string),
 		cFunctionParamTypes:   make(map[string][]string),
 		parsedCHeaders:        make(map[string]*ahoy.CHeaderInfo),
-		enableARC:             true, // Enable ARC by default
+		enableARC:             enableARC, // Use parameter value
 		arcStructs:            make(map[string]bool),
 		weakFields:            make(map[string]map[string]bool),
 		parentChildRelations:  make(map[string]map[string]bool),
@@ -702,6 +702,10 @@ void freeHashMap(HashMap* map) {
             HashMapEntry* temp = entry;
             entry = entry->next;
             free(temp->key);
+            // Free value if it's a heap-allocated float (double*)
+            if (temp->valueType == AHOY_TYPE_FLOAT && temp->value != NULL) {
+                free(temp->value);
+            }
             free(temp);
         }
     }
