@@ -1,0 +1,32 @@
+? Test ARC (Automatic Reference Counting) with simple structs
+
+struct Person:
+    name: string,
+    age: int
+$
+
+struct Team:
+    leader: Person,
+    members: array[Person]
+$
+
+@ test_arc || void:
+    ? Create person
+    person: Person = Person{name: "Alice", age: 30}
+    
+    ? Create team
+    team: Team = Team{leader: person, members: []}
+    
+    ? Print values
+    print|f"Person name: {person.name}, age: {person.age}"|
+    print|f"Leader name: {team.leader.name}"|
+    
+    ? When function exits, ARC will automatically call release
+    ? on any heap-allocated objects due to auto-defer
+$
+
+@ main || void:
+    print|"Testing ARC with auto-defer"|
+    test_arc||
+    print|"ARC test completed - memory should be freed"|
+$

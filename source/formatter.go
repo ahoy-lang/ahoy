@@ -291,6 +291,10 @@ func formatOperators(line string) string {
 	// Simple pattern - add space around +/- when not in quotes and not part of += or -=
 	line = formatOperatorOutsideStrings(line, '+')
 	line = formatOperatorOutsideStrings(line, '-')
+
+	// Format = operator for variable declarations (but not inside function calls/strings)
+	line = formatEqualsOperator(line)
+
 	return line
 }
 
@@ -336,7 +340,7 @@ func formatOperatorOutsideStrings(s string, op byte) string {
 					continue
 				}
 			}
-			
+
 			// Add spaces around operator
 			// Check if there's already a space before
 			if result.Len() > 0 {
@@ -358,6 +362,115 @@ func formatOperatorOutsideStrings(s string, op byte) string {
 		}
 
 		result.WriteByte(ch)
+	}
+
+	return result.String()
+}
+
+// formatEqualsOperator adds spaces around = operator for variable declarations
+func formatEqualsOperator(line string) string {
+	// Skip comments
+	if strings.HasPrefix(line, "?") {
+		return line
+	}
+
+	// Skip function definitions
+	if strings.Contains(line, "::") {
+		return line
+	}
+
+	var result strings.Builder
+	inString := false
+	inFunctionCall := false
+	escapeNext := false
+	pipeDepth := 0
+
+	for i := 0; i < len(line); i++ {
+		ch := line[i]
+
+		if escapeNext {
+			result.WriteByte(ch)
+			escapeNext = false
+			continue
+		}
+
+		if ch == '\\' {
+			result.WriteByte(ch)
+			escapeNext = true
+			continue
+		}
+
+		if ch == '"' {
+			inString = !inString
+			result.WriteByte(ch)
+			continue
+		}
+
+		// Track function calls with pipes (don't format = inside function calls)
+		if !inString {
+			if ch == '|' {
+				if pipeDepth == 0 {
+					inFunctionCall = true
+				}
+				pipeDepth++
+			}
+		}
+
+		// Format = operator (but not :=, ==, !=, <=, >=)
+		if ch == '=' && !inString && !inFunctionCall {
+			// Check what's before (skip back past any spaces)
+			prevIdx := i - 1
+			for prevIdx >= 0 && line[prevIdx] == ' ' {
+				prevIdx--
+			}
+
+			// Skip if this is part of :=, ==, !=, <=, >=
+			if prevIdx >= 0 {
+				prevCh := line[prevIdx]
+				if prevCh == ':' || prevCh == '=' || prevCh == '!' || prevCh == '<' || prevCh == '>' {
+					result.WriteByte(ch)
+					continue
+				}
+			}
+
+			// Check what's after
+			nextIdx := i + 1
+			for nextIdx < len(line) && line[nextIdx] == ' ' {
+				nextIdx++
+			}
+			if nextIdx < len(line) && line[nextIdx] == '=' {
+				// This is == operator, don't format
+				result.WriteByte(ch)
+				continue
+			}
+
+			// Add space before = if not already there
+			if result.Len() > 0 {
+				resultStr := result.String()
+				lastByte := resultStr[result.Len()-1]
+				if lastByte != ' ' {
+					result.WriteByte(' ')
+				}
+			}
+			result.WriteByte(ch)
+			// Skip any existing spaces after
+			for i+1 < len(line) && line[i+1] == ' ' {
+				i++
+			}
+			// Add space after
+			result.WriteByte(' ')
+			continue
+		}
+
+		result.WriteByte(ch)
+
+		// Track closing pipe
+		if !inString && ch == '|' && pipeDepth > 0 {
+			pipeDepth--
+			if pipeDepth == 0 {
+				inFunctionCall = false
+			}
+		}
 	}
 
 	return result.String()
@@ -385,8 +498,12 @@ func formatTypeAnnotations(line string) string {
 
 	// For variable declarations: name:type or name : type
 	// But NOT for the final : in function defs or case labels
-	// Pattern: word followed by : followed by word (type)
-	line = regexp.MustCompile(`(\w+)\s*:\s*(\w+)`).ReplaceAllString(line, "$1 : $2")
+	// Pattern: word or underscore followed by : followed by word (type)
+	// Match identifiers including _ (underscore)
+	line = regexp.MustCompile(`([a-zA-Z_]\w*)\s*:\s*(\w+)`).ReplaceAllString(line, "$1 : $2")
+
+	// Also handle bare underscore (for tuple assignments like _ , _:)
+	line = regexp.MustCompile(`(_)\s*:\s*([a-zA-Z_])`).ReplaceAllString(line, "$1 : $2")
 
 	return line
 }

@@ -201,6 +201,8 @@ type Parser struct {
 	Errors              []ParseError
 	variableTypes       map[string]string             // Track variable types
 	constants           map[string]int                // Track constant declarations (name -> line number)
+	constantsInMain     map[string]bool               // Track constants declared in main function
+	constantUsages      map[string][]int              // Track where identifiers are used (name -> list of line numbers)
 	declaredVars        map[string]int                // Track variable declarations (name -> line number) for error reporting
 	scopeStack          []map[string]int              // Stack of scopes for conditional blocks (each map is varName -> line)
 	functionScopeStack  []map[string]string           // Stack of function scopes for conditional blocks
@@ -236,6 +238,8 @@ func Parse(tokens []Token) *ASTNode {
 		Errors:              []ParseError{},
 		variableTypes:       make(map[string]string),
 		constants:           make(map[string]int),
+		constantsInMain:     make(map[string]bool),
+		constantUsages:      make(map[string][]int),
 		declaredVars:        make(map[string]int),
 		scopeStack:          make([]map[string]int, 0),
 		functionScopeStack:  make([]map[string]string, 0),
@@ -271,6 +275,8 @@ func ParseWithPath(tokens []Token, sourceFilePath string) *ASTNode {
 		Errors:              []ParseError{},
 		variableTypes:       make(map[string]string),
 		constants:           make(map[string]int),
+		constantsInMain:     make(map[string]bool),
+		constantUsages:      make(map[string][]int),
 		declaredVars:        make(map[string]int),
 		scopeStack:          make([]map[string]int, 0),
 		functionScopeStack:  make([]map[string]string, 0),
@@ -306,6 +312,8 @@ func ParseLint(tokens []Token) (*ASTNode, []ParseError) {
 		Errors:              []ParseError{},
 		variableTypes:       make(map[string]string),
 		constants:           make(map[string]int),
+		constantsInMain:     make(map[string]bool),
+		constantUsages:      make(map[string][]int),
 		declaredVars:        make(map[string]int),
 		scopeStack:          make([]map[string]int, 0),
 		functionScopeStack:  make([]map[string]string, 0),
@@ -342,6 +350,8 @@ func ParseLintWithPath(tokens []Token, sourceFilePath string) (*ASTNode, []Parse
 		Errors:              []ParseError{},
 		variableTypes:       make(map[string]string),
 		constants:           make(map[string]int),
+		constantsInMain:     make(map[string]bool),
+		constantUsages:      make(map[string][]int),
 		declaredVars:        make(map[string]int),
 		scopeStack:          make([]map[string]int, 0),
 		functionScopeStack:  make([]map[string]string, 0),
@@ -3746,6 +3756,20 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					p.recordError(errMsg)
 				} else {
 					p.constants[name.Value] = line
+					// Track if constant is declared in main function
+					if p.currentFunctionName == "main" {
+						p.constantsInMain[name.Value] = true
+						
+						// Check if this constant was used earlier in main
+						if usageLines, wasUsed := p.constantUsages[name.Value]; wasUsed {
+							for _, usageLine := range usageLines {
+								if usageLine < line {
+									errMsg := fmt.Sprintf("use of const '%s' before its declared on line %d", name.Value, line)
+									p.recordErrorAtLine(errMsg, usageLine)
+								}
+							}
+						}
+					}
 				}
 			}
 
@@ -3885,6 +3909,20 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				} else {
 					// Register this constant
 					p.constants[name.Value] = line
+					// Track if constant is declared in main function
+					if p.currentFunctionName == "main" {
+						p.constantsInMain[name.Value] = true
+						
+						// Check if this constant was used earlier in main
+						if usageLines, wasUsed := p.constantUsages[name.Value]; wasUsed {
+							for _, usageLine := range usageLines {
+								if usageLine < line {
+									errMsg := fmt.Sprintf("use of const '%s' before its declared on line %d", name.Value, line)
+									p.recordErrorAtLine(errMsg, usageLine)
+								}
+							}
+						}
+					}
 				}
 			}
 
@@ -5175,6 +5213,12 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			}
 		}
 
+		// In lint mode, track identifier usage in main function for later validation
+		// We only care about forward references within the same scope (main)
+		if p.LintMode && p.inFunctionBody && p.currentFunctionName == "main" {
+			p.constantUsages[token.Value] = append(p.constantUsages[token.Value], token.Line)
+		}
+
 		return &ASTNode{
 			Type:  NODE_IDENTIFIER,
 			Value: token.Value,
@@ -5920,6 +5964,20 @@ func (p *Parser) parseConstantDeclaration() *ASTNode {
 		} else {
 			// Register this constant
 			p.constants[varName] = line
+			// Track if constant is declared in main function
+			if p.currentFunctionName == "main" {
+				p.constantsInMain[varName] = true
+				
+				// Check if this constant was used earlier in main
+				if usageLines, wasUsed := p.constantUsages[varName]; wasUsed {
+					for _, usageLine := range usageLines {
+						if usageLine < line {
+							errMsg := fmt.Sprintf("use of const '%s' before its declared on line %d", varName, line)
+							p.recordErrorAtLine(errMsg, usageLine)
+						}
+					}
+				}
+			}
 		}
 	}
 

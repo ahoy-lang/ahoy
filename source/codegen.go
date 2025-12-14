@@ -4984,6 +4984,8 @@ func (gen *CodeGenerator) generateConstant(node *ahoy.ASTNode) {
 	gen.constants[constName] = ahoyType
 
 	// Constants at global scope (not in a function) should go into constantDecls
+	// Constants in main function that might be accessed by other functions should also be global
+	// but need special handling if they're initialized with function calls
 	if gen.currentFunction == "" {
 		savedOutput := gen.output
 		gen.output = strings.Builder{}
@@ -4994,12 +4996,67 @@ func (gen *CodeGenerator) generateConstant(node *ahoy.ASTNode) {
 
 		gen.constantDecls.WriteString(gen.output.String())
 		gen.output = savedOutput
+	} else if gen.currentFunction == "main" || gen.currentFunction == "ahoy_main" {
+		// Constants in main: declare as static global (can be accessed by all functions)
+		// If it's a function call or complex expression, we declare it as non-const static variable
+		// and initialize it in main
+		isSimpleValue := gen.isSimpleConstantValue(node.Children[0])
+		
+		if isSimpleValue {
+			// Simple constant value - can be declared at global scope
+			savedOutput := gen.output
+			gen.output = strings.Builder{}
+
+			gen.output.WriteString(fmt.Sprintf("const %s %s = ", constType, constName))
+			gen.generateNode(node.Children[0])
+			gen.output.WriteString(";\n")
+
+			gen.constantDecls.WriteString(gen.output.String())
+			gen.output = savedOutput
+		} else {
+			// Complex value (function call) - declare as static variable at global scope
+			// and initialize it in main
+			
+			// Add global declaration (uninitialized)
+			gen.constantDecls.WriteString(fmt.Sprintf("static %s %s;\n", constType, constName))
+			
+			// Generate initialization in main
+			gen.writeIndent()
+			gen.output.WriteString(fmt.Sprintf("%s = ", constName))
+			gen.generateNode(node.Children[0])
+			gen.output.WriteString(";\n")
+		}
 	} else {
-		// Local constants in functions
+		// Local constants in other functions
 		gen.writeIndent()
 		gen.output.WriteString(fmt.Sprintf("const %s %s = ", constType, constName))
 		gen.generateNode(node.Children[0])
 		gen.output.WriteString(";\n")
+	}
+}
+
+// isSimpleConstantValue checks if a node represents a simple constant value
+// that can be initialized at global scope (literals, not function calls)
+func (gen *CodeGenerator) isSimpleConstantValue(node *ahoy.ASTNode) bool {
+	if node == nil {
+		return false
+	}
+	
+	switch node.Type {
+	case ahoy.NODE_NUMBER, ahoy.NODE_STRING, ahoy.NODE_CHAR, ahoy.NODE_BOOLEAN:
+		return true
+	case ahoy.NODE_BINARY_OP:
+		// Binary operations on simple values are simple
+		return gen.isSimpleConstantValue(node.Children[0]) && gen.isSimpleConstantValue(node.Children[1])
+	case ahoy.NODE_UNARY_OP:
+		return gen.isSimpleConstantValue(node.Children[0])
+	case ahoy.NODE_IDENTIFIER:
+		// References to other constants are simple
+		_, isConst := gen.constants[node.Value]
+		return isConst
+	default:
+		// Everything else (function calls, method calls, etc.) is not simple
+		return false
 	}
 }
 

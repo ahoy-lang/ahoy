@@ -3,16 +3,16 @@
   return x + y, x
 $
 x_input : 10; y_input : 20
-_ , _: add|x_input, y_input|
+_ , _ := add|x_input, y_input|
 
 @ greet :: |name:string, world:string| string:
-	return "Hello " + name
+  return "Hello " + name
 $
-greeted: greet|"Alice", "World"|
+greeted : greet|"Alice", "World"|
 
 
 @ no_return :: || void:
-	print|"no return"|
+    print|"no return"|
 $
 
 ? because it has no return and takes no parameters we can call it like this:
