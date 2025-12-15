@@ -514,6 +514,112 @@ func (p *Parser) validateNoNestedFunctionCalls(arg *ASTNode, outerFuncName strin
 	}
 }
 
+// checkDuplicateArguments checks for duplicate argument values in a function call
+func (p *Parser) checkDuplicateArguments(call *ASTNode, funcName string) {
+	if !p.LintMode || call == nil || len(call.Children) < 2 {
+		return
+	}
+
+	// Helper function to get a comparable string representation of an argument
+	// Only returns non-empty for variables (identifiers that aren't constants)
+	argToString := func(arg *ASTNode) string {
+		if arg == nil {
+			return ""
+		}
+		switch arg.Type {
+		case NODE_IDENTIFIER:
+			// Check if this identifier is a constant - if so, skip it
+			if _, isConstant := p.constants[arg.Value]; isConstant {
+				return ""
+			}
+			return "var:" + arg.Value
+		case NODE_NUMBER, NODE_STRING, NODE_BOOLEAN:
+			// Skip primitives - we don't flag duplicate primitive values
+			return ""
+		default:
+			// For complex expressions, we can't easily compare
+			return ""
+		}
+	}
+
+	// Track seen arguments and their positions
+	seenArgs := make(map[string]int) // value -> position index
+	argStrings := make([]string, len(call.Children))
+
+	// First pass: build string representations
+	for i, arg := range call.Children {
+		// Skip named arguments (they have NODE_BINARY_OP with "named_arg")
+		if arg.Type == NODE_BINARY_OP && arg.Value == "named_arg" {
+			if len(arg.Children) >= 2 {
+				argStrings[i] = argToString(arg.Children[1])
+			}
+		} else {
+			argStrings[i] = argToString(arg)
+		}
+	}
+
+	// Get parameter names if available for better error messages
+	paramNames := []string{}
+	if funcSig, exists := p.functions[funcName]; exists {
+		for _, param := range funcSig.Parameters {
+			paramNames = append(paramNames, param.Name)
+		}
+	}
+	// Also check C headers for parameter names
+	if p.cHeaderGlobal != nil {
+		if cFunc, exists := p.cHeaderGlobal.Functions[funcName]; exists {
+			for _, param := range cFunc.Parameters {
+				paramNames = append(paramNames, param.Name)
+			}
+		}
+	}
+	for _, headerInfo := range p.cHeaders {
+		if cFunc, exists := headerInfo.Functions[funcName]; exists {
+			for _, param := range cFunc.Parameters {
+				paramNames = append(paramNames, param.Name)
+			}
+		}
+	}
+
+	// Second pass: check for duplicates
+	for i, argStr := range argStrings {
+		if argStr == "" {
+			continue // Skip complex expressions
+		}
+
+		if firstPos, exists := seenArgs[argStr]; exists {
+			// Found a duplicate!
+			arg := call.Children[i]
+			
+			// Extract the actual value for error message
+			actualValue := ""
+			if arg.Type == NODE_BINARY_OP && arg.Value == "named_arg" && len(arg.Children) >= 2 {
+				actualValue = arg.Children[1].Value
+			} else {
+				actualValue = arg.Value
+			}
+
+			// Build error message
+			errorMsg := fmt.Sprintf("duplicate argument '%s' in function call", actualValue)
+			
+			// Add parameter name info if available
+			if len(paramNames) > i && len(paramNames) > firstPos {
+				expectedParam := paramNames[i]
+				errorMsg = fmt.Sprintf("duplicate argument '%s'; expected parameter '%s' at position %d", 
+					actualValue, expectedParam, i+1)
+			}
+
+			p.Errors = append(p.Errors, ParseError{
+				Message: errorMsg,
+				Line:    arg.Line,
+				Column:  arg.Column,
+			})
+		} else {
+			seenArgs[argStr] = i
+		}
+	}
+}
+
 // inferType infers the type from an AST node
 func (p *Parser) inferType(node *ASTNode) string {
 	if node == nil {
@@ -5164,6 +5270,11 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 							break
 						}
 					}
+				}
+
+				// Check for duplicate arguments in lint mode
+				if p.LintMode && len(call.Children) > 1 {
+					p.checkDuplicateArguments(call, token.Value)
 				}
 
 				// Consume closing pipe

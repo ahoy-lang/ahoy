@@ -4762,6 +4762,26 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 
 					// Check if this parameter was provided as named argument
 					if argNode, exists := namedArgs[paramName]; exists {
+						// Automatic numeric type casting for user-defined function parameters
+						if hasParamInfo && i < len(paramTypes) {
+							paramType := strings.TrimSpace(paramTypes[i])
+							argType := gen.inferType(argNode)
+							
+							isIntParam := paramType == "int"
+							isFloatParam := paramType == "float" || paramType == "double"
+							isIntArg := argType == "int"
+							isFloatArg := argType == "float" || argType == "double"
+							
+							// Cast int to float/double when needed
+							if isFloatParam && isIntArg {
+								gen.output.WriteString(fmt.Sprintf("(%s)", paramType))
+							}
+							// Cast float/double to int when needed
+							if isIntParam && isFloatArg {
+								gen.output.WriteString(fmt.Sprintf("(%s)", paramType))
+							}
+						}
+						
 						if hasParamInfo && i < len(paramTypes) && (paramTypes[i] == "generic" || paramTypes[i] == "any") {
 							argType := gen.inferType(argNode)
 							// Cast all pointer types to intptr_t for generic/any parameters
@@ -4777,6 +4797,27 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 						// Use positional argument
 						argNode := positionalArgs[positionalIndex]
 						positionalIndex++
+						
+						// Automatic numeric type casting for user-defined function parameters
+						if hasParamInfo && i < len(paramTypes) {
+							paramType := strings.TrimSpace(paramTypes[i])
+							argType := gen.inferType(argNode)
+							
+							isIntParam := paramType == "int"
+							isFloatParam := paramType == "float" || paramType == "double"
+							isIntArg := argType == "int"
+							isFloatArg := argType == "float" || argType == "double"
+							
+							// Cast int to float/double when needed
+							if isFloatParam && isIntArg {
+								gen.output.WriteString(fmt.Sprintf("(%s)", paramType))
+							}
+							// Cast float/double to int when needed
+							if isIntParam && isFloatArg {
+								gen.output.WriteString(fmt.Sprintf("(%s)", paramType))
+							}
+						}
+						
 						if hasParamInfo && i < len(paramTypes) && (paramTypes[i] == "generic" || paramTypes[i] == "any") {
 							argType := gen.inferType(argNode)
 							// Cast all pointer types to intptr_t for generic/any parameters
@@ -4849,6 +4890,68 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 							argType != "AhoyArray*" && argType != "string" && argType != "char*" {
 							gen.output.WriteString("&")
 						}
+					}
+				}
+
+				// Automatic numeric type casting for C function parameters
+				if hasCParamInfo && i < len(cParamTypes) {
+					paramType := strings.TrimSpace(cParamTypes[i])
+					argType := gen.inferType(arg)
+					
+					// Map C types to their normalized forms
+					normalizeType := func(t string) string {
+						t = strings.TrimSpace(t)
+						t = strings.TrimPrefix(t, "const ")
+						t = strings.TrimSpace(t)
+						return t
+					}
+					
+					paramType = normalizeType(paramType)
+					argType = normalizeType(argType)
+					
+					isIntParam := paramType == "int" || paramType == "int32_t" || 
+						paramType == "int16_t" || paramType == "int8_t" || 
+						paramType == "uint32_t" || paramType == "uint16_t" || 
+						paramType == "uint8_t" || paramType == "unsigned int" || 
+						paramType == "short" || paramType == "unsigned short" ||
+						paramType == "long" || paramType == "unsigned long"
+					
+					isFloatParam := paramType == "float" || paramType == "double"
+					
+					isIntArg := argType == "int" || argType == "int32_t" || 
+						argType == "int16_t" || argType == "int8_t" ||
+						argType == "uint32_t" || argType == "uint16_t" || 
+						argType == "uint8_t"
+					
+					isFloatArg := argType == "float" || argType == "double"
+					
+					// Cast int to float/double when needed
+					if isFloatParam && isIntArg {
+						gen.output.WriteString(fmt.Sprintf("(%s)", paramType))
+					}
+					// Cast float/double to int when needed
+					if isIntParam && isFloatArg {
+						gen.output.WriteString(fmt.Sprintf("(%s)", paramType))
+					}
+				}
+				
+				// Automatic numeric type casting for user-defined function parameters
+				if hasParamInfo && i < len(paramTypes) {
+					paramType := strings.TrimSpace(paramTypes[i])
+					argType := gen.inferType(arg)
+					
+					isIntParam := paramType == "int"
+					isFloatParam := paramType == "float" || paramType == "double"
+					isIntArg := argType == "int"
+					isFloatArg := argType == "float" || argType == "double"
+					
+					// Cast int to float/double when needed
+					if isFloatParam && isIntArg {
+						gen.output.WriteString(fmt.Sprintf("(%s)", paramType))
+					}
+					// Cast float/double to int when needed
+					if isIntParam && isFloatArg {
+						gen.output.WriteString(fmt.Sprintf("(%s)", paramType))
 					}
 				}
 
