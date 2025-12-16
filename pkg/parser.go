@@ -520,6 +520,20 @@ func (p *Parser) checkDuplicateArguments(call *ASTNode, funcName string) {
 		return
 	}
 
+	// Helper to check if identifier follows constant naming convention
+	isConstantName := func(name string) bool {
+		if name == "" {
+			return false
+		}
+		// Constants are all uppercase with underscores (e.g., CELL_SIZE, MAX_VALUE)
+		for _, ch := range name {
+			if ch != '_' && (ch < 'A' || ch > 'Z') && (ch < '0' || ch > '9') {
+				return false
+			}
+		}
+		return true
+	}
+
 	// Helper function to get a comparable string representation of an argument
 	// Only returns non-empty for variables (identifiers that aren't constants)
 	argToString := func(arg *ASTNode) string {
@@ -528,8 +542,12 @@ func (p *Parser) checkDuplicateArguments(call *ASTNode, funcName string) {
 		}
 		switch arg.Type {
 		case NODE_IDENTIFIER:
-			// Check if this identifier is a constant - if so, skip it
+			// Check if this identifier is a constant in current file
 			if _, isConstant := p.constants[arg.Value]; isConstant {
+				return ""
+			}
+			// Check if it follows constant naming convention (for cross-file constants)
+			if isConstantName(arg.Value) {
 				return ""
 			}
 			return "var:" + arg.Value
