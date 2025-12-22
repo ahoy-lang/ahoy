@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"ahoy"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 // findCompiler finds the appropriate C compiler based on mode and OS
@@ -523,9 +525,30 @@ func main() {
 	incFlag := flag.Bool("cache", false, "Enable incremental builds (cache parsed files)")
 	profCompFlag := flag.Bool("profile_compiler", false, "Enable CPU profiling of compiler (creates pprof file)")
 	genStdlibFlag := flag.Bool("gen_stdlib_docs", false, "Generate stdlib documentation as .ahoy file")
+	hotReloadFlag := flag.Bool("hotreload", false, "Enable hot code reloading (keeps window open, reloads on file changes) - development only")
+	coldReloadFlag := flag.Bool("coldreload", false, "Enable cold reload (auto-recompile and restart on file changes) - development only")
 	helpFlag := flag.Bool("h", false, "Show help")
 
 	flag.Parse()
+
+	// Check for conflicting flags
+	if *hotReloadFlag && *releaseFlag {
+		fmt.Println("Error: -hotreload cannot be used with -release flag")
+		fmt.Println("Hot reload is for development only. Remove -release flag.")
+		os.Exit(1)
+	}
+
+	if *coldReloadFlag && *releaseFlag {
+		fmt.Println("Error: -coldreload cannot be used with -release flag")
+		fmt.Println("Cold reload is for development only. Remove -release flag.")
+		os.Exit(1)
+	}
+
+	if *hotReloadFlag && *coldReloadFlag {
+		fmt.Println("Error: Cannot use both -hotreload and -coldreload")
+		fmt.Println("Choose one reload mode.")
+		os.Exit(1)
+	}
 
 	// Start CPU profiling if requested
 	if *profCompFlag {
@@ -798,6 +821,36 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Determine if using raylib (needed for hot reload and compilation)
+	hasRaylib := false
+	raylibPath := ""
+	for _, file := range pkg.Files {
+		if file.AST != nil {
+			for _, child := range file.AST.Children {
+				if child.Type == ahoy.NODE_IMPORT_STATEMENT && strings.Contains(child.Value, "raylib.h") {
+					hasRaylib = true
+					raylibPath = filepath.Dir(child.Value)
+					break
+				}
+			}
+		}
+		if hasRaylib {
+			break
+		}
+	}
+
+	// Hot reload mode - generate shared library and host
+	if *hotReloadFlag {
+		handleHotReload(sourceFile, ast, absPath, *arcFlag, hasRaylib, raylibPath)
+		return // Hot reload runs indefinitely
+	}
+
+	// Cold reload mode - watch and auto-recompile
+	if *coldReloadFlag {
+		handleColdReload(sourceFile, absPath, *arcFlag)
+		return // Cold reload runs indefinitely
+	}
+
 	// Determine output file name
 	baseName := filepath.Base(sourceFile)
 	baseName = strings.TrimSuffix(baseName, filepath.Ext(baseName))
@@ -860,25 +913,7 @@ func main() {
 		// Build compilation arguments
 		compileArgs := append(baseArgs, "-o", executable, outputFile)
 
-		// Check if raylib is imported
-		hasRaylib := false
-		raylibPath := ""
-		for _, file := range pkg.Files {
-			if file.AST != nil {
-				for _, child := range file.AST.Children {
-					if child.Type == ahoy.NODE_IMPORT_STATEMENT && strings.Contains(child.Value, "raylib.h") {
-						hasRaylib = true
-						raylibPath = filepath.Dir(child.Value)
-						break
-					}
-				}
-			}
-			if hasRaylib {
-				break
-			}
-		}
-
-		// Add raylib linking flags if needed
+		// Add raylib linking flags if needed (already determined above)
 		if hasRaylib {
 			if raylibPath != "" {
 				compileArgs = append(compileArgs, "-L"+raylibPath)
@@ -1172,11 +1207,18 @@ func showHelp() {
 	fmt.Println("  -lint         Check for syntax errors without compiling")
 	fmt.Println("  -gen_stdlib_docs   Generate stdlib API reference as .ahoy file")
 	fmt.Println("  -cache        Enable incremental builds (cache parsed files)")
+	fmt.Println("  -hotreload    Enable hot code reloading (development only, keeps window open)")
+	fmt.Println("  -coldreload   Enable cold reload (development only, auto-recompile and restart)")
 	fmt.Println("  -h            Show this help message")
 	fmt.Println()
 	fmt.Println("Compilation modes:")
 	fmt.Println("  Default (debug): Uses TCC for fast compilation (~5ms)")
 	fmt.Println("  Release (-release): Uses gcc/clang with -O3 optimization")
+	fmt.Println()
+	fmt.Println("Development modes:")
+	fmt.Println("  Hot Reload (-hotreload):  Keeps window open, reloads code on save (Raylib games)")
+	fmt.Println("  Cold Reload (-coldreload): Auto-recompile and restart on save (any program)")
+	fmt.Println("  Note: Both use TCC for instant compilation and cannot be used with -release")
 	fmt.Println()
 	fmt.Println("Cross-compilation targets:")
 	fmt.Println("  linux    - Linux x86_64 (uses zig cc for cross-compilation)")
@@ -1193,8 +1235,464 @@ func showHelp() {
 	fmt.Println("  ahoy -f main.ahoy                    # Compile to C only")
 	fmt.Println("  ahoy -f main.ahoy -r                 # Compile and run (debug)")
 	fmt.Println("  ahoy -f main.ahoy -r -release        # Compile and run (optimized)")
-	fmt.Println("  ahoy -f main.ahoy -r -inc            # Compile and run with caching")
+	fmt.Println("  ahoy -f main.ahoy -hotreload         # Hot reload development mode")
+	fmt.Println("  ahoy -f main.ahoy -coldreload        # Cold reload development mode")
 	fmt.Println("  ahoy -f main.ahoy -target linux      # Build for Linux")
 	fmt.Println("  ahoy -f main.ahoy -target all        # Build for all platforms")
 	fmt.Println("  ahoy -f main.ahoy -lint              # Check for errors")
+}
+
+// handleHotReload compiles the program in hot reload mode
+// This keeps the window open and reloads code on file changes
+func handleHotReload(sourceFile string, ast *ahoy.ASTNode, absPath string, arcFlag bool, hasRaylib bool, raylibPath string) {
+	outputDir := "output"
+	sourceDir := filepath.Dir(absPath)
+
+	// Generate library and host code
+	fmt.Println("🔥 Hot Reload Mode - Generating code...")
+	libraryCode, hostCode := GenerateCWithHotReload(ast, sourceFile, arcFlag, hasRaylib, raylibPath)
+
+	// Write files
+	os.MkdirAll(outputDir, 0755)
+
+	libSourceFile := filepath.Join(outputDir, "libgame.c")
+	hostSourceFile := filepath.Join(outputDir, "hotreload_host.c")
+	libFile := filepath.Join(outputDir, "libgame.so")
+	hostBinary := filepath.Join(outputDir, "hotreload_host")
+
+	err := os.WriteFile(libSourceFile, []byte(libraryCode), 0644)
+	if err != nil {
+		fmt.Printf("Error writing library source: %v\n", err)
+		os.Exit(1)
+	}
+
+	err = os.WriteFile(hostSourceFile, []byte(hostCode), 0644)
+	if err != nil {
+		fmt.Printf("Error writing host source: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Compile library with TCC for fast iteration
+	fmt.Println("⚡ Compiling game library with TCC...")
+
+	tccPath := findTCCCompiler()
+	var compiler string
+	var libArgs []string
+
+	if tccPath != "" {
+		compiler = tccPath
+		libArgs = []string{"-shared", "-o", libFile, libSourceFile}
+
+		if hasRaylib {
+			if raylibPath != "" {
+				libArgs = append(libArgs, "-I"+raylibPath, "-L"+raylibPath)
+			}
+			libArgs = append(libArgs, "-lraylib", "-lm", "-lpthread", "-ldl")
+		} else {
+			libArgs = append(libArgs, "-lm")
+		}
+	} else {
+		fmt.Println("⚠️  TCC not found, falling back to GCC...")
+		compiler = "gcc"
+		libArgs = []string{"-shared", "-fPIC", "-o", libFile, libSourceFile, "-O0", "-g"}
+
+		if hasRaylib {
+			if raylibPath != "" {
+				libArgs = append(libArgs, "-I"+raylibPath, "-L"+raylibPath)
+			}
+			libArgs = append(libArgs, "-lraylib", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
+		} else {
+			libArgs = append(libArgs, "-lm")
+		}
+	}
+
+	cmd := exec.Command(compiler, libArgs...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("Error compiling library:\n%s\n", output)
+		os.Exit(1)
+	}
+
+	fmt.Printf("✓ Compiled library: %s\n", libFile)
+
+	// Compile host with TCC (only once, doesn't change)
+	fmt.Println("⚡ Compiling hot reload host...")
+
+	var hostCompiler string
+	var hostArgs []string
+
+	if tccPath != "" {
+		hostCompiler = tccPath
+		hostArgs = []string{"-o", hostBinary, hostSourceFile, "-ldl", "-lpthread", "-lm"}
+	} else {
+		hostCompiler = "gcc"
+		hostArgs = []string{"-o", hostBinary, hostSourceFile, "-ldl", "-lpthread", "-lm"}
+	}
+
+	cmd = exec.Command(hostCompiler, hostArgs...)
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("Error compiling host:\n%s\n", output)
+		os.Exit(1)
+	}
+
+	fmt.Printf("✓ Compiled host: %s\n", hostBinary)
+
+	// Start the host in background
+	fmt.Println()
+	hostCmd := exec.Command(hostBinary)
+	hostCmd.Stdout = os.Stdout
+	hostCmd.Stderr = os.Stderr
+	hostCmd.Dir = sourceDir
+
+	// Start host but don't exit when it stops - let the watcher continue
+	go func() {
+		err := hostCmd.Run()
+		if err != nil {
+			fmt.Printf("Host exited: %v\n", err)
+		} else {
+			fmt.Println("\n\033[32m[Hot Reload]\033[0m Host exited normally")
+		}
+		// Don't call os.Exit() - let the watcher continue running
+	}()
+
+	// Give the host time to start
+	time.Sleep(500 * time.Millisecond)
+
+	// Watch for file changes and recompile
+	watchAndRecompileHot(sourceFile, sourceDir, arcFlag, libSourceFile, libFile, hasRaylib, raylibPath)
+}
+
+// handleColdReload watches files and auto-recompiles (restarts program)
+func handleColdReload(sourceFile string, absPath string, arcFlag bool) {
+	fmt.Println("\n❄️  Cold Reload Mode - Auto-recompile enabled")
+	fmt.Println("📝 Edit and save to auto-recompile and restart")
+	fmt.Println("⚡ Using fast compilation")
+	fmt.Println("🛑 Press Ctrl+C to stop\n")
+
+	sourceDir := filepath.Dir(absPath)
+
+	// Do initial compilation and run
+	compileAndRunCold(sourceFile, arcFlag, true)
+
+	// Watch for changes
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		fmt.Printf("Error creating watcher: %v\n", err)
+		return
+	}
+	defer watcher.Close()
+
+	err = watcher.Add(sourceDir)
+	if err != nil {
+		fmt.Printf("Error watching directory: %v\n", err)
+		return
+	}
+
+	var debounceTimer *time.Timer
+
+	for {
+		select {
+		case event := <-watcher.Events:
+			if !strings.HasSuffix(event.Name, ".ahoy") {
+				continue
+			}
+
+			if event.Op&fsnotify.Write == fsnotify.Write {
+				if debounceTimer != nil {
+					debounceTimer.Stop()
+				}
+
+				debounceTimer = time.AfterFunc(10*time.Millisecond, func() {
+					fmt.Println("\n📝 Change detected, recompiling...")
+					compileAndRunCold(sourceFile, arcFlag, false)
+				})
+			}
+
+		case err := <-watcher.Errors:
+			fmt.Printf("Watcher error: %v\n", err)
+		}
+	}
+}
+
+// watchAndRecompileHot watches for file changes and recompiles the library for hot reload
+func watchAndRecompileHot(sourceFile, sourceDir string, arcFlag bool, libSourceFile, libFile string, hasRaylib bool, raylibPath string) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		fmt.Printf("Error creating watcher: %v\n", err)
+		return
+	}
+	defer watcher.Close()
+
+	err = watcher.Add(sourceDir)
+	if err != nil {
+		fmt.Printf("Error watching directory: %v\n", err)
+		return
+	}
+
+	var debounceTimer *time.Timer
+
+	for {
+		select {
+		case event := <-watcher.Events:
+			if !strings.HasSuffix(event.Name, ".ahoy") {
+				continue
+			}
+
+			if event.Op&fsnotify.Write == fsnotify.Write {
+				if debounceTimer != nil {
+					debounceTimer.Stop()
+				}
+
+				debounceTimer = time.AfterFunc(10*time.Millisecond, func() {
+					recompileLibraryHot(sourceFile, libSourceFile, libFile, arcFlag, hasRaylib, raylibPath)
+				})
+			}
+
+		case err := <-watcher.Errors:
+			fmt.Printf("Watcher error: %v\n", err)
+		}
+	}
+}
+
+// recompileLibraryHot recompiles the game library for hot reload
+func recompileLibraryHot(sourceFile, libSourceFile, libFile string, arcFlag bool, hasRaylib bool, raylibPath string) {
+	fmt.Println("\n🔄 Change detected, recompiling...")
+	start := time.Now()
+
+	// Get absolute path
+	absPath, err := filepath.Abs(sourceFile)
+	if err != nil {
+		fmt.Printf("❌ Error resolving file path: %v\n", err)
+		return
+	}
+
+	// Load the full package (handles multi-file programs)
+	pm := NewPackageManager(filepath.Dir(absPath))
+	pkg, err := pm.LoadPackageFromFile(absPath)
+	if err != nil {
+		fmt.Printf("❌ Error loading package: %v\n", err)
+		return
+	}
+
+	// Resolve imports
+	imports, err := resolveImports(pkg, pm, absPath)
+	if err != nil {
+		fmt.Printf("❌ Error resolving imports: %v\n", err)
+		return
+	}
+
+	// Merge package with imports
+	ast := MergeWithImports(pkg, imports)
+
+	// Regenerate C code
+	libraryCode, _ := GenerateCWithHotReload(ast, sourceFile, arcFlag, hasRaylib, raylibPath)
+
+	err = os.WriteFile(libSourceFile, []byte(libraryCode), 0644)
+	if err != nil {
+		fmt.Printf("❌ Error writing library source: %v\n", err)
+		return
+	}
+
+	// Recompile library with TCC for fast iteration
+	tccPath := findTCCCompiler()
+	var compiler string
+	var libArgs []string
+
+	if tccPath != "" {
+		compiler = tccPath
+		libArgs = []string{"-shared", "-o", libFile, libSourceFile}
+
+		if hasRaylib {
+			if raylibPath != "" {
+				libArgs = append(libArgs, "-I"+raylibPath, "-L"+raylibPath)
+			}
+			libArgs = append(libArgs, "-lraylib", "-lm", "-lpthread", "-ldl")
+		} else {
+			libArgs = append(libArgs, "-lm")
+		}
+	} else {
+		compiler = "gcc"
+		libArgs = []string{"-shared", "-fPIC", "-o", libFile, libSourceFile, "-O0", "-g"}
+
+		if hasRaylib {
+			if raylibPath != "" {
+				libArgs = append(libArgs, "-I"+raylibPath, "-L"+raylibPath)
+			}
+			libArgs = append(libArgs, "-lraylib", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
+		} else {
+			libArgs = append(libArgs, "-lm")
+		}
+	}
+
+	cmd := exec.Command(compiler, libArgs...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("❌ Compilation failed:\n%s\n", output)
+		return
+	}
+
+	elapsed := time.Since(start)
+	fmt.Printf("✅ Recompiled in %v (library will auto-reload)\n", elapsed)
+}
+
+// compileAndRunCold compiles and runs for cold reload mode
+func compileAndRunCold(sourceFile string, arcFlag bool, isInitial bool) {
+	start := time.Now()
+
+	// Get absolute path
+	absPath, err := filepath.Abs(sourceFile)
+	if err != nil {
+		fmt.Printf("❌ Error resolving file path: %v\n", err)
+		return
+	}
+
+	// Load the full package (handles multi-file programs)
+	pm := NewPackageManager(filepath.Dir(absPath))
+	pkg, err := pm.LoadPackageFromFile(absPath)
+	if err != nil {
+		fmt.Printf("❌ Error loading package: %v\n", err)
+		return
+	}
+
+	// Resolve imports
+	imports, err := resolveImports(pkg, pm, absPath)
+	if err != nil {
+		fmt.Printf("❌ Error resolving imports: %v\n", err)
+		return
+	}
+
+	// Merge package with imports
+	ast := MergeWithImports(pkg, imports)
+
+	// Generate C code
+	cCode := generateC(ast, sourceFile, arcFlag)
+	if cCode == "" {
+		fmt.Println("❌ Code generation failed")
+		return
+	}
+
+	// Write C file
+	outputDir := "output"
+	os.MkdirAll(outputDir, 0755)
+
+	baseName := filepath.Base(sourceFile)
+	baseName = strings.TrimSuffix(baseName, filepath.Ext(baseName))
+	outputFile := filepath.Join(outputDir, baseName+".c")
+	executable := filepath.Join(outputDir, baseName)
+
+	err = os.WriteFile(outputFile, []byte(cCode), 0644)
+	if err != nil {
+		fmt.Printf("❌ Error writing C file: %v\n", err)
+		return
+	}
+
+	// Check for raylib from the full package
+	hasRaylib := false
+	raylibPath := ""
+	for _, file := range pkg.Files {
+		if file.AST != nil {
+			for _, child := range file.AST.Children {
+				if child.Type == ahoy.NODE_IMPORT_STATEMENT && strings.Contains(child.Value, "raylib.h") {
+					hasRaylib = true
+					raylibPath = filepath.Dir(child.Value)
+					break
+				}
+			}
+		}
+		if hasRaylib {
+			break
+		}
+	}
+
+	var compiler string
+	var compileArgs []string
+
+	// Use TCC for fast compilation in cold reload mode
+	if !isInitial {
+		fmt.Println("⚡ Recompiling with TCC...")
+	}
+
+	tccPath := findTCCCompiler()
+	if tccPath == "" {
+		fmt.Println("❌ TCC compiler not found, falling back to GCC")
+		compiler = "gcc"
+		compileArgs = []string{"-o", executable, outputFile, "-O0", "-g"}
+
+		if hasRaylib {
+			if raylibPath != "" {
+				compileArgs = append(compileArgs, "-I"+raylibPath, "-L"+raylibPath)
+			}
+			compileArgs = append(compileArgs, "-lraylib", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
+		} else {
+			compileArgs = append(compileArgs, "-lm")
+		}
+	} else {
+		compiler = tccPath
+		compileArgs = []string{"-o", executable, outputFile}
+
+		if hasRaylib {
+			if raylibPath != "" {
+				compileArgs = append(compileArgs, "-I"+raylibPath, "-L"+raylibPath)
+			}
+			compileArgs = append(compileArgs, "-lraylib", "-lm", "-lpthread", "-ldl")
+		} else {
+			compileArgs = append(compileArgs, "-lm")
+		}
+	}
+
+	cmd := exec.Command(compiler, compileArgs...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("❌ Compilation failed:\n%s\n", output)
+		return
+	}
+
+	elapsed := time.Since(start)
+	fmt.Printf("✅ Compiled in %v\n", elapsed)
+
+	// Run the program
+	if isInitial {
+		fmt.Println("🚀 Running program...")
+	} else {
+		fmt.Println("🔄 Restarting program...")
+	}
+	fmt.Println("==================")
+
+	runCmd := exec.Command(executable)
+	runCmd.Stdout = os.Stdout
+	runCmd.Stderr = os.Stderr
+	err = runCmd.Run()
+
+	fmt.Println("==================")
+	if err != nil {
+		fmt.Printf("⚠️  Program exited with error: %v\n", err)
+	} else {
+		fmt.Println("✅ Program exited successfully")
+	}
+	fmt.Println("📝 Watching for changes...")
+}
+
+// findTCCCompiler finds the TCC compiler
+func findTCCCompiler() string {
+	// Try system PATH first
+	if path, err := exec.LookPath("tcc"); err == nil {
+		return path
+	}
+
+	// Try local tcc directory
+	localPaths := []string{
+		"./tcc/tcc",
+		"../tcc/tcc",
+		"../../tcc/tcc",
+	}
+
+	for _, path := range localPaths {
+		if _, err := os.Stat(path); err == nil {
+			absPath, _ := filepath.Abs(path)
+			return absPath
+		}
+	}
+
+	return ""
 }

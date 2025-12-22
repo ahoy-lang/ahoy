@@ -368,6 +368,11 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 	// Build final output
 	var result strings.Builder
 
+	// Fix raylib/raymath include order - raylib.h must come before raymath.h
+	// to avoid duplicate Vector2/Vector3/Vector4/Matrix definitions
+	// raylib.h defines RL_VECTOR2_TYPE which raymath.h checks before defining types
+	gen.reorderRaylibIncludes()
+
 	// Write includes
 	for _, include := range gen.orderedIncludes {
 		// Use angle brackets for system includes, quotes for local .h files
@@ -811,9 +816,9 @@ func (gen *CodeGenerator) inferParameterTypesFromCalls(node *ahoy.ASTNode) {
 	}
 
 	// First collect all function definitions and their parameter names
-	functionParams := make(map[string][]string) // function name -> parameter names
+	functionParams := make(map[string][]string)             // function name -> parameter names
 	functionLocalVars := make(map[string]map[string]string) // function name -> (var name -> type)
-	
+
 	var collectFuncs func(*ahoy.ASTNode)
 	collectFuncs = func(n *ahoy.ASTNode) {
 		if n == nil {
@@ -830,7 +835,7 @@ func (gen *CodeGenerator) inferParameterTypesFromCalls(node *ahoy.ASTNode) {
 					}
 				}
 				functionParams[funcName] = paramNames
-				
+
 				// Scan for local variable declarations in this function
 				localVars := make(map[string]string)
 				if len(n.Children) > 1 {
@@ -872,18 +877,18 @@ func (gen *CodeGenerator) inferParameterTypesFromCalls(node *ahoy.ASTNode) {
 
 	// Now scan for function calls and infer parameter types from arguments
 	paramTypeInferences := make(map[string]map[int]string) // function name -> param index -> inferred type
-	
+
 	var analyzeCalls func(*ahoy.ASTNode, string) // node, current function name
 	analyzeCalls = func(n *ahoy.ASTNode, currentFunc string) {
 		if n == nil {
 			return
 		}
-		
+
 		// Track when we enter a new function
 		if n.Type == ahoy.NODE_FUNCTION {
 			currentFunc = n.Value
 		}
-		
+
 		if n.Type == ahoy.NODE_CALL {
 			funcName := n.Value
 			if paramNames, exists := functionParams[funcName]; exists {
@@ -903,9 +908,9 @@ func (gen *CodeGenerator) inferParameterTypesFromCalls(node *ahoy.ASTNode) {
 								gen.functionVars = localVars
 							}
 						}
-						
+
 						argType := gen.inferType(arg)
-						
+
 						// Restore functionVars
 						gen.functionVars = savedFuncVars
 
@@ -1245,7 +1250,7 @@ func (gen *CodeGenerator) scanTypeDeclarations(node *ahoy.ASTNode) {
 		}
 		// Store constant type
 		gen.constants[constName] = constType
-		
+
 		// Try to evaluate the constant expression at compile-time
 		if len(node.Children) > 0 {
 			if value, ok := gen.evaluateConstantExpression(node.Children[0]); ok {
@@ -4847,12 +4852,12 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 						if hasParamInfo && i < len(paramTypes) {
 							paramType := strings.TrimSpace(paramTypes[i])
 							argType := gen.inferType(argNode)
-							
+
 							isIntParam := paramType == "int"
 							isFloatParam := paramType == "float" || paramType == "double"
 							isIntArg := argType == "int"
 							isFloatArg := argType == "float" || argType == "double"
-							
+
 							// Cast int to float/double when needed
 							if isFloatParam && isIntArg {
 								gen.output.WriteString(fmt.Sprintf("(%s)", paramType))
@@ -4862,7 +4867,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 								gen.output.WriteString(fmt.Sprintf("(%s)", paramType))
 							}
 						}
-						
+
 						if hasParamInfo && i < len(paramTypes) && (paramTypes[i] == "generic" || paramTypes[i] == "any") {
 							argType := gen.inferType(argNode)
 							// Cast all pointer types to intptr_t for generic/any parameters
@@ -4878,17 +4883,17 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 						// Use positional argument
 						argNode := positionalArgs[positionalIndex]
 						positionalIndex++
-						
+
 						// Automatic numeric type casting for user-defined function parameters
 						if hasParamInfo && i < len(paramTypes) {
 							paramType := strings.TrimSpace(paramTypes[i])
 							argType := gen.inferType(argNode)
-							
+
 							isIntParam := paramType == "int"
 							isFloatParam := paramType == "float" || paramType == "double"
 							isIntArg := argType == "int"
 							isFloatArg := argType == "float" || argType == "double"
-							
+
 							// Cast int to float/double when needed
 							if isFloatParam && isIntArg {
 								gen.output.WriteString(fmt.Sprintf("(%s)", paramType))
@@ -4898,7 +4903,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 								gen.output.WriteString(fmt.Sprintf("(%s)", paramType))
 							}
 						}
-						
+
 						if hasParamInfo && i < len(paramTypes) && (paramTypes[i] == "generic" || paramTypes[i] == "any") {
 							argType := gen.inferType(argNode)
 							// Cast all pointer types to intptr_t for generic/any parameters
@@ -4978,7 +4983,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 				if hasCParamInfo && i < len(cParamTypes) {
 					paramType := strings.TrimSpace(cParamTypes[i])
 					argType := gen.inferType(arg)
-					
+
 					// Map C types to their normalized forms
 					normalizeType := func(t string) string {
 						t = strings.TrimSpace(t)
@@ -4986,26 +4991,26 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 						t = strings.TrimSpace(t)
 						return t
 					}
-					
+
 					paramType = normalizeType(paramType)
 					argType = normalizeType(argType)
-					
-					isIntParam := paramType == "int" || paramType == "int32_t" || 
-						paramType == "int16_t" || paramType == "int8_t" || 
-						paramType == "uint32_t" || paramType == "uint16_t" || 
-						paramType == "uint8_t" || paramType == "unsigned int" || 
+
+					isIntParam := paramType == "int" || paramType == "int32_t" ||
+						paramType == "int16_t" || paramType == "int8_t" ||
+						paramType == "uint32_t" || paramType == "uint16_t" ||
+						paramType == "uint8_t" || paramType == "unsigned int" ||
 						paramType == "short" || paramType == "unsigned short" ||
 						paramType == "long" || paramType == "unsigned long"
-					
+
 					isFloatParam := paramType == "float" || paramType == "double"
-					
-					isIntArg := argType == "int" || argType == "int32_t" || 
+
+					isIntArg := argType == "int" || argType == "int32_t" ||
 						argType == "int16_t" || argType == "int8_t" ||
-						argType == "uint32_t" || argType == "uint16_t" || 
+						argType == "uint32_t" || argType == "uint16_t" ||
 						argType == "uint8_t"
-					
+
 					isFloatArg := argType == "float" || argType == "double"
-					
+
 					// Cast int to float/double when needed
 					if isFloatParam && isIntArg {
 						gen.output.WriteString(fmt.Sprintf("(%s)", paramType))
@@ -5015,17 +5020,17 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 						gen.output.WriteString(fmt.Sprintf("(%s)", paramType))
 					}
 				}
-				
+
 				// Automatic numeric type casting for user-defined function parameters
 				if hasParamInfo && i < len(paramTypes) {
 					paramType := strings.TrimSpace(paramTypes[i])
 					argType := gen.inferType(arg)
-					
+
 					isIntParam := paramType == "int"
 					isFloatParam := paramType == "float" || paramType == "double"
 					isIntArg := argType == "int"
 					isFloatArg := argType == "float" || argType == "double"
-					
+
 					// Cast int to float/double when needed
 					if isFloatParam && isIntArg {
 						gen.output.WriteString(fmt.Sprintf("(%s)", paramType))
@@ -5312,7 +5317,7 @@ func (gen *CodeGenerator) generateConstant(node *ahoy.ASTNode) {
 		gen.output = strings.Builder{}
 
 		gen.output.WriteString(fmt.Sprintf("const %s %s = ", constType, constName))
-		
+
 		// If we can compute the value, use the computed literal instead of the expression
 		if canCompute {
 			gen.writeComputedValue(computedValue, ahoyType)
@@ -5327,14 +5332,14 @@ func (gen *CodeGenerator) generateConstant(node *ahoy.ASTNode) {
 		// Constants in main: declare as static global (can be accessed by all functions)
 		// If we can compute the value or it's simple, declare at global scope with const
 		isSimpleValue := gen.isSimpleConstantValue(node.Children[0])
-		
+
 		if isSimpleValue || canCompute {
 			// Simple constant value or computed value - can be declared at global scope
 			savedOutput := gen.output
 			gen.output = strings.Builder{}
 
 			gen.output.WriteString(fmt.Sprintf("const %s %s = ", constType, constName))
-			
+
 			if canCompute {
 				gen.writeComputedValue(computedValue, ahoyType)
 			} else {
@@ -5347,10 +5352,10 @@ func (gen *CodeGenerator) generateConstant(node *ahoy.ASTNode) {
 		} else {
 			// Complex value (function call) - declare as static variable at global scope
 			// and initialize it in main
-			
+
 			// Add global declaration (uninitialized)
 			gen.constantDecls.WriteString(fmt.Sprintf("static %s %s;\n", constType, constName))
-			
+
 			// Generate initialization in main
 			gen.writeIndent()
 			gen.output.WriteString(fmt.Sprintf("%s = ", constName))
@@ -5361,7 +5366,7 @@ func (gen *CodeGenerator) generateConstant(node *ahoy.ASTNode) {
 		// Local constants in other functions
 		gen.writeIndent()
 		gen.output.WriteString(fmt.Sprintf("const %s %s = ", constType, constName))
-		
+
 		if canCompute {
 			gen.writeComputedValue(computedValue, ahoyType)
 		} else {
@@ -5395,7 +5400,7 @@ func (gen *CodeGenerator) isSimpleConstantValue(node *ahoy.ASTNode) bool {
 	if node == nil {
 		return false
 	}
-	
+
 	switch node.Type {
 	case ahoy.NODE_NUMBER, ahoy.NODE_STRING, ahoy.NODE_CHAR, ahoy.NODE_BOOLEAN:
 		return true
@@ -6711,6 +6716,28 @@ func (gen *CodeGenerator) inferSwitchCaseType(body *ahoy.ASTNode) string {
 func (gen *CodeGenerator) isEnumType(name string) bool {
 	_, exists := gen.enums[name]
 	return exists
+}
+
+// reorderRaylibIncludes ensures raylib.h comes before raymath.h to avoid duplicate type definitions
+// raylib.h defines RL_VECTOR2_TYPE, RL_VECTOR3_TYPE, etc. which raymath.h checks
+func (gen *CodeGenerator) reorderRaylibIncludes() {
+	var raylibIdx, raymathIdx int = -1, -1
+
+	// Find indices of raylib.h and raymath.h
+	for i, include := range gen.orderedIncludes {
+		if strings.Contains(include, "raylib.h") {
+			raylibIdx = i
+		}
+		if strings.Contains(include, "raymath.h") {
+			raymathIdx = i
+		}
+	}
+
+	// If both are present and raymath comes before raylib, swap them
+	if raylibIdx != -1 && raymathIdx != -1 && raymathIdx < raylibIdx {
+		gen.orderedIncludes[raylibIdx], gen.orderedIncludes[raymathIdx] =
+			gen.orderedIncludes[raymathIdx], gen.orderedIncludes[raylibIdx]
+	}
 }
 
 // isConstantOrEnum checks if a name is a constant (Ahoy constant, C #define, or enum value)
