@@ -212,6 +212,7 @@ type CodeGenerator struct {
 	weakFields                    map[string]map[string]bool   // struct name -> (field name -> isWeak)
 	parentChildRelations          map[string]map[string]bool   // parent struct -> (child field names)
 	refCountedVars                map[string]bool              // Track variables that need retain/release
+	constantValues                map[string]interface{}       // constant name -> computed value (for const expressions)
 }
 
 // GenerateC generates C code from an AST (exported for testing)
@@ -282,6 +283,7 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 		weakFields:            make(map[string]map[string]bool),
 		parentChildRelations:  make(map[string]map[string]bool),
 		refCountedVars:        make(map[string]bool),
+		constantValues:        make(map[string]interface{}),
 	}
 
 	// Add standard includes
@@ -310,14 +312,14 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 	// Third pass: check if there's a main function and collect function signatures
 	gen.checkForMainFunction(ast)
 
-	// Fourth pass: scan variable declarations to populate type information
+	// Fourth pass: infer return types for all functions with infer keyword
+	gen.inferAllFunctionReturnTypes(ast)
+
+	// Fifth pass: scan variable declarations to populate type information
 	gen.scanVariableTypes(ast)
 
-	// Fourth pass: infer parameter types from function call sites
+	// Sixth pass: infer parameter types from function call sites
 	gen.inferParameterTypesFromCalls(ast)
-
-	// Fifth pass: infer return types for all functions with infer keyword
-	gen.inferAllFunctionReturnTypes(ast)
 
 	// Sixth pass: scan for method calls to determine which helper functions we need
 	gen.scanForMethodCalls(ast)
@@ -760,6 +762,25 @@ func (gen *CodeGenerator) scanVariableTypes(node *ahoy.ASTNode) {
 		return
 	}
 
+	// First pass: collect function return types from explicit annotations
+	if node.Type == ahoy.NODE_FUNCTION {
+		funcName := node.Value
+		if node.DataType != "" && node.DataType != "infer" {
+			// Store return type - check if it's a multi-return (contains comma)
+			if strings.Contains(node.DataType, ",") {
+				// Multi-return function
+				types := strings.Split(node.DataType, ",")
+				for i := range types {
+					types[i] = strings.TrimSpace(types[i])
+				}
+				gen.functionReturnTypes[funcName] = types
+			} else {
+				// Single return
+				gen.functionReturnTypes[funcName] = []string{node.DataType}
+			}
+		}
+	}
+
 	// Scan for variable declarations and track their types
 	if node.Type == ahoy.NODE_VARIABLE_DECLARATION || node.Type == ahoy.NODE_ASSIGNMENT {
 		varName := node.Value
@@ -791,6 +812,8 @@ func (gen *CodeGenerator) inferParameterTypesFromCalls(node *ahoy.ASTNode) {
 
 	// First collect all function definitions and their parameter names
 	functionParams := make(map[string][]string) // function name -> parameter names
+	functionLocalVars := make(map[string]map[string]string) // function name -> (var name -> type)
+	
 	var collectFuncs func(*ahoy.ASTNode)
 	collectFuncs = func(n *ahoy.ASTNode) {
 		if n == nil {
@@ -807,6 +830,38 @@ func (gen *CodeGenerator) inferParameterTypesFromCalls(node *ahoy.ASTNode) {
 					}
 				}
 				functionParams[funcName] = paramNames
+				
+				// Scan for local variable declarations in this function
+				localVars := make(map[string]string)
+				if len(n.Children) > 1 {
+					var scanVarsInFunc func(*ahoy.ASTNode)
+					scanVarsInFunc = func(node *ahoy.ASTNode) {
+						if node == nil {
+							return
+						}
+						if node.Type == ahoy.NODE_VARIABLE_DECLARATION || node.Type == ahoy.NODE_ASSIGNMENT {
+							varName := node.Value
+							if len(node.Children) > 0 {
+								if node.DataType != "" && node.DataType != "generic" && node.DataType != "any" {
+									localVars[varName] = node.DataType
+								} else {
+									// Try to infer from the right-hand side
+									valueType := gen.inferType(node.Children[0])
+									if valueType != "unknown" && valueType != "generic" && valueType != "any" {
+										localVars[varName] = valueType
+									}
+								}
+							}
+						}
+						for _, child := range node.Children {
+							scanVarsInFunc(child)
+						}
+					}
+					for i := 1; i < len(n.Children); i++ {
+						scanVarsInFunc(n.Children[i])
+					}
+				}
+				functionLocalVars[funcName] = localVars
 			}
 		}
 		for _, child := range n.Children {
@@ -817,11 +872,18 @@ func (gen *CodeGenerator) inferParameterTypesFromCalls(node *ahoy.ASTNode) {
 
 	// Now scan for function calls and infer parameter types from arguments
 	paramTypeInferences := make(map[string]map[int]string) // function name -> param index -> inferred type
-	var analyzeCalls func(*ahoy.ASTNode)
-	analyzeCalls = func(n *ahoy.ASTNode) {
+	
+	var analyzeCalls func(*ahoy.ASTNode, string) // node, current function name
+	analyzeCalls = func(n *ahoy.ASTNode, currentFunc string) {
 		if n == nil {
 			return
 		}
+		
+		// Track when we enter a new function
+		if n.Type == ahoy.NODE_FUNCTION {
+			currentFunc = n.Value
+		}
+		
 		if n.Type == ahoy.NODE_CALL {
 			funcName := n.Value
 			if paramNames, exists := functionParams[funcName]; exists {
@@ -833,11 +895,23 @@ func (gen *CodeGenerator) inferParameterTypesFromCalls(node *ahoy.ASTNode) {
 				// Infer types from arguments
 				for i, arg := range n.Children {
 					if i < len(paramNames) {
+						// Temporarily set functionVars to the local vars of current function
+						// so inferType can resolve local variables
+						savedFuncVars := gen.functionVars
+						if currentFunc != "" {
+							if localVars, ok := functionLocalVars[currentFunc]; ok {
+								gen.functionVars = localVars
+							}
+						}
+						
 						argType := gen.inferType(arg)
+						
+						// Restore functionVars
+						gen.functionVars = savedFuncVars
 
 						// If we already have an inferred type for this parameter, check consistency
 						if existingType, hasType := paramTypeInferences[funcName][i]; hasType {
-							// If types differ and one is more specific (not generic/any), prefer the specific one
+							// If types differ and one is more specific (not generic/any/int), prefer the specific one
 							if existingType != argType {
 								if existingType == "int" || existingType == "generic" || existingType == "any" {
 									paramTypeInferences[funcName][i] = argType
@@ -852,10 +926,10 @@ func (gen *CodeGenerator) inferParameterTypesFromCalls(node *ahoy.ASTNode) {
 			}
 		}
 		for _, child := range n.Children {
-			analyzeCalls(child)
+			analyzeCalls(child, currentFunc)
 		}
 	}
-	analyzeCalls(node)
+	analyzeCalls(node, "")
 
 	// Apply inferred types to function parameters in the AST
 	var applyTypes func(*ahoy.ASTNode)
@@ -1171,6 +1245,13 @@ func (gen *CodeGenerator) scanTypeDeclarations(node *ahoy.ASTNode) {
 		}
 		// Store constant type
 		gen.constants[constName] = constType
+		
+		// Try to evaluate the constant expression at compile-time
+		if len(node.Children) > 0 {
+			if value, ok := gen.evaluateConstantExpression(node.Children[0]); ok {
+				gen.constantValues[constName] = value
+			}
+		}
 	}
 
 	// Recursively scan children
@@ -5056,6 +5137,133 @@ func (gen *CodeGenerator) generateBinaryOp(node *ahoy.ASTNode) {
 	}
 }
 
+// evaluateConstantExpression evaluates a constant expression at compile-time
+// Returns the computed value and true if successful, or 0 and false if not computable
+func (gen *CodeGenerator) evaluateConstantExpression(node *ahoy.ASTNode) (interface{}, bool) {
+	if node == nil {
+		return nil, false
+	}
+
+	switch node.Type {
+	case ahoy.NODE_NUMBER:
+		// Parse number - check if it's float or int
+		if strings.Contains(node.Value, ".") {
+			if val, err := strconv.ParseFloat(node.Value, 64); err == nil {
+				return val, true
+			}
+		} else {
+			if val, err := strconv.ParseInt(node.Value, 10, 64); err == nil {
+				return val, true
+			}
+		}
+		return nil, false
+
+	case ahoy.NODE_IDENTIFIER:
+		// Look up constant value
+		if val, exists := gen.constantValues[node.Value]; exists {
+			return val, true
+		}
+		return nil, false
+
+	case ahoy.NODE_BINARY_OP:
+		// Evaluate binary operations
+		if len(node.Children) < 2 {
+			return nil, false
+		}
+
+		left, leftOk := gen.evaluateConstantExpression(node.Children[0])
+		if !leftOk {
+			return nil, false
+		}
+
+		right, rightOk := gen.evaluateConstantExpression(node.Children[1])
+		if !rightOk {
+			return nil, false
+		}
+
+		// Convert to float64 for operations, track if both were integers
+		var leftFloat, rightFloat float64
+		leftIsInt := false
+		rightIsInt := false
+
+		switch v := left.(type) {
+		case int64:
+			leftFloat = float64(v)
+			leftIsInt = true
+		case float64:
+			leftFloat = v
+		default:
+			return nil, false
+		}
+
+		switch v := right.(type) {
+		case int64:
+			rightFloat = float64(v)
+			rightIsInt = true
+		case float64:
+			rightFloat = v
+		default:
+			return nil, false
+		}
+
+		var result float64
+		switch node.Value {
+		case "+":
+			result = leftFloat + rightFloat
+		case "-":
+			result = leftFloat - rightFloat
+		case "*":
+			result = leftFloat * rightFloat
+		case "/":
+			if rightFloat == 0 {
+				return nil, false
+			}
+			result = leftFloat / rightFloat
+		case "%":
+			// Modulo only works on integers
+			if !leftIsInt || !rightIsInt {
+				return nil, false
+			}
+			result = float64(int64(leftFloat) % int64(rightFloat))
+		default:
+			return nil, false
+		}
+
+		// If both operands were integers and operation preserves integers, return int
+		if leftIsInt && rightIsInt && (node.Value == "+" || node.Value == "-" || node.Value == "*" || node.Value == "%") {
+			return int64(result), true
+		}
+
+		return result, true
+
+	case ahoy.NODE_UNARY_OP:
+		if len(node.Children) < 1 {
+			return nil, false
+		}
+
+		operand, ok := gen.evaluateConstantExpression(node.Children[0])
+		if !ok {
+			return nil, false
+		}
+
+		switch node.Value {
+		case "-":
+			switch v := operand.(type) {
+			case int64:
+				return -v, true
+			case float64:
+				return -v, true
+			}
+		case "+":
+			return operand, true
+		}
+		return nil, false
+
+	default:
+		return nil, false
+	}
+}
+
 func (gen *CodeGenerator) generateConstant(node *ahoy.ASTNode) {
 	constName := node.Value
 
@@ -5070,6 +5278,13 @@ func (gen *CodeGenerator) generateConstant(node *ahoy.ASTNode) {
 
 	// Mark constant as declared
 	gen.declaredConstants[constName] = true
+
+	// Try to evaluate the constant expression at compile-time
+	if len(node.Children) > 0 {
+		if value, ok := gen.evaluateConstantExpression(node.Children[0]); ok {
+			gen.constantValues[constName] = value
+		}
+	}
 
 	// Determine the constant type - use explicit type if provided, otherwise infer
 	var constType string
@@ -5086,6 +5301,9 @@ func (gen *CodeGenerator) generateConstant(node *ahoy.ASTNode) {
 	// Update constant type for inference (may have been set in scan pass)
 	gen.constants[constName] = ahoyType
 
+	// Check if we can compute the constant value at compile-time
+	computedValue, canCompute := gen.evaluateConstantExpression(node.Children[0])
+
 	// Constants at global scope (not in a function) should go into constantDecls
 	// Constants in main function that might be accessed by other functions should also be global
 	// but need special handling if they're initialized with function calls
@@ -5094,24 +5312,34 @@ func (gen *CodeGenerator) generateConstant(node *ahoy.ASTNode) {
 		gen.output = strings.Builder{}
 
 		gen.output.WriteString(fmt.Sprintf("const %s %s = ", constType, constName))
-		gen.generateNode(node.Children[0])
+		
+		// If we can compute the value, use the computed literal instead of the expression
+		if canCompute {
+			gen.writeComputedValue(computedValue, ahoyType)
+		} else {
+			gen.generateNode(node.Children[0])
+		}
 		gen.output.WriteString(";\n")
 
 		gen.constantDecls.WriteString(gen.output.String())
 		gen.output = savedOutput
 	} else if gen.currentFunction == "main" || gen.currentFunction == "ahoy_main" {
 		// Constants in main: declare as static global (can be accessed by all functions)
-		// If it's a function call or complex expression, we declare it as non-const static variable
-		// and initialize it in main
+		// If we can compute the value or it's simple, declare at global scope with const
 		isSimpleValue := gen.isSimpleConstantValue(node.Children[0])
 		
-		if isSimpleValue {
-			// Simple constant value - can be declared at global scope
+		if isSimpleValue || canCompute {
+			// Simple constant value or computed value - can be declared at global scope
 			savedOutput := gen.output
 			gen.output = strings.Builder{}
 
 			gen.output.WriteString(fmt.Sprintf("const %s %s = ", constType, constName))
-			gen.generateNode(node.Children[0])
+			
+			if canCompute {
+				gen.writeComputedValue(computedValue, ahoyType)
+			} else {
+				gen.generateNode(node.Children[0])
+			}
 			gen.output.WriteString(";\n")
 
 			gen.constantDecls.WriteString(gen.output.String())
@@ -5133,8 +5361,31 @@ func (gen *CodeGenerator) generateConstant(node *ahoy.ASTNode) {
 		// Local constants in other functions
 		gen.writeIndent()
 		gen.output.WriteString(fmt.Sprintf("const %s %s = ", constType, constName))
-		gen.generateNode(node.Children[0])
+		
+		if canCompute {
+			gen.writeComputedValue(computedValue, ahoyType)
+		} else {
+			gen.generateNode(node.Children[0])
+		}
 		gen.output.WriteString(";\n")
+	}
+}
+
+// writeComputedValue writes a computed constant value to the output
+func (gen *CodeGenerator) writeComputedValue(value interface{}, ahoyType string) {
+	switch v := value.(type) {
+	case int64:
+		// If the target type is float, write as float
+		if ahoyType == "float" || ahoyType == "double" || ahoyType == "f32" || ahoyType == "f64" {
+			gen.output.WriteString(fmt.Sprintf("%g", float64(v)))
+		} else {
+			gen.output.WriteString(fmt.Sprintf("%d", v))
+		}
+	case float64:
+		gen.output.WriteString(fmt.Sprintf("%g", v))
+	default:
+		// Fallback - shouldn't happen
+		gen.output.WriteString(fmt.Sprintf("%v", v))
 	}
 }
 
@@ -5951,8 +6202,15 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 	case ahoy.NODE_DICT_LITERAL:
 		return "dict"
 	case ahoy.NODE_ARRAY_LITERAL:
-		// Don't infer element type from contents - only use explicit type annotations
-		// Untyped arrays are just "array"
+		// Try to infer element type from array literal contents
+		if len(node.Children) > 0 {
+			// Get the type of the first element
+			firstElemType := gen.inferType(node.Children[0])
+			if firstElemType != "unknown" {
+				return "array[" + firstElemType + "]"
+			}
+		}
+		// Fallback: untyped arrays are just "array"
 		return "array"
 	case ahoy.NODE_OBJECT_LITERAL:
 		// Check if it's a typed object literal
@@ -6137,6 +6395,15 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			// Return full array type including element type
 			return varType
 		}
+		// Check if this variable is sourced from a dict access
+		if dictName, exists := gen.dictSourcedVars[node.Value]; exists {
+			// It's sourced from a dict, so we need to check the dict access type
+			// For now, return int as a safe default for dict values
+			// In the future, we could track the value types more precisely
+			_ = dictName // avoid unused variable error
+			return "int"
+		}
+		// Fallback: return int as default (could be untyped identifier)
 		return "int"
 	case ahoy.NODE_ARRAY_ACCESS:
 		// Get the array variable name and look up its element type

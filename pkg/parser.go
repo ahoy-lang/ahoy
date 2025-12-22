@@ -658,6 +658,10 @@ func (p *Parser) inferType(node *ASTNode) string {
 	case NODE_BOOLEAN:
 		return "bool"
 	case NODE_ARRAY_LITERAL:
+		// Check if the array literal has an inferred element type
+		if node.DataType != "" && node.DataType != "array" {
+			return node.DataType
+		}
 		return "array"
 	case NODE_DICT_LITERAL:
 		return "dict"
@@ -712,6 +716,43 @@ func (p *Parser) inferType(node *ASTNode) string {
 			}
 		}
 
+		return "unknown"
+	case NODE_CALL:
+		// Handle function calls - infer return type from function signature
+		funcName := node.Value
+		
+		// First check C headers (global namespace)
+		if p.cHeaderGlobal != nil {
+			if cFunc, exists := p.cHeaderGlobal.Functions[funcName]; exists {
+				return cFunc.ReturnType
+			}
+		}
+		
+		// Check C headers (namespaced)
+		for _, cHeader := range p.cHeaders {
+			if cFunc, exists := cHeader.Functions[funcName]; exists {
+				return cFunc.ReturnType
+			}
+		}
+		
+		// Check Ahoy function signatures
+		if funcSig, exists := p.functions[funcName]; exists {
+			if len(funcSig.ReturnTypes) > 0 {
+				returnType := funcSig.ReturnTypes[0]
+				
+				// If the return type is "infer", try to infer it from the function body
+				if returnType == "infer" && funcSig.FunctionNode != nil {
+					// Infer the actual return types
+					inferredTypes := p.inferReturnTypesFromFunction(funcSig, []string{})
+					if len(inferredTypes) > 0 {
+						return inferredTypes[0]
+					}
+				}
+				
+				return returnType
+			}
+		}
+		
 		return "unknown"
 	default:
 		// For expressions, we could recursively infer but for now return unknown
@@ -1273,7 +1314,22 @@ func (p *Parser) parseFunction() *ASTNode {
 		// Old syntax: func name |param1 type1, param2 type2| then
 		p.advance()
 
+		// Skip any newlines after opening pipe
+		for p.current().Type == TOKEN_NEWLINE {
+			p.advance()
+		}
+
 		for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
+			// Skip newlines between parameters
+			for p.current().Type == TOKEN_NEWLINE {
+				p.advance()
+			}
+			
+			// Check if we've reached the closing pipe
+			if p.current().Type == TOKEN_PIPE {
+				break
+			}
+			
 			paramName := p.expect(TOKEN_IDENTIFIER)
 			var paramType string
 
@@ -1291,8 +1347,17 @@ func (p *Parser) parseFunction() *ASTNode {
 			}
 			params.Children = append(params.Children, param)
 
+			// Skip any newlines before comma or closing pipe
+			for p.current().Type == TOKEN_NEWLINE {
+				p.advance()
+			}
+
 			if p.current().Type == TOKEN_COMMA {
 				p.advance()
+				// Skip any newlines after comma
+				for p.current().Type == TOKEN_NEWLINE {
+					p.advance()
+				}
 			}
 		}
 		p.expect(TOKEN_PIPE)
@@ -2554,6 +2619,20 @@ func (p *Parser) parseLoop() *ASTNode {
 			p.recordError("Expected 'do' after 'in' expression")
 		}
 
+		// Infer element type from collection
+		loopScope := make(map[string]string)
+		collectionType := p.inferType(collectionExpr)
+		
+		// If it's an array type like "array[string]", extract the element type
+		if strings.HasPrefix(collectionType, "array[") && strings.HasSuffix(collectionType, "]") {
+			elementType := collectionType[6 : len(collectionType)-1] // Extract type between [ and ]
+			loopScope[loopVar.Value] = elementType
+		} else {
+			// Default to unknown for non-typed arrays or other collections
+			loopScope[loopVar.Value] = "unknown"
+		}
+		p.loopVarScopes = append(p.loopVarScopes, loopScope)
+
 		// Both inline and multiline now require $ to close
 		for p.current().Type == TOKEN_NEWLINE {
 			p.advance()
@@ -2561,6 +2640,11 @@ func (p *Parser) parseLoop() *ASTNode {
 		p.skipWhitespace()
 		p.blockDepth++
 		body := p.parseBlockUntilEnd("loop", startLine)
+
+		// Pop loop variable scope
+		if len(p.loopVarScopes) > 0 {
+			p.loopVarScopes = p.loopVarScopes[:len(p.loopVarScopes)-1]
+		}
 
 		elementNode := &ASTNode{
 			Type:   NODE_IDENTIFIER,
@@ -5549,6 +5633,24 @@ func (p *Parser) parseArrayLiteral() *ASTNode {
 	p.inArrayLiteral = false
 	p.expect(TOKEN_RANGLE)
 
+	// Infer element type from array contents if all elements have the same type
+	if len(array.Children) > 0 {
+		firstType := p.inferType(array.Children[0])
+		allSameType := true
+		
+		for i := 1; i < len(array.Children); i++ {
+			elemType := p.inferType(array.Children[i])
+			if elemType != firstType {
+				allSameType = false
+				break
+			}
+		}
+		
+		if allSameType && firstType != "" && firstType != "unknown" {
+			array.DataType = "array[" + firstType + "]"
+		}
+	}
+
 	// Check for member access after array literal
 	if p.current().Type == TOKEN_DOT {
 		return p.parseMemberAccessChain(array)
@@ -6197,7 +6299,22 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 	hasDefaultParam := false                // Track if we've seen a default parameter
 	localParamNames := make(map[string]int) // Track params in THIS function only (name -> line)
 
+	// Skip any newlines after opening pipe
+	for p.current().Type == TOKEN_NEWLINE {
+		p.advance()
+	}
+
 	for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
+		// Skip newlines between parameters
+		for p.current().Type == TOKEN_NEWLINE {
+			p.advance()
+		}
+		
+		// Check if we've reached the closing pipe
+		if p.current().Type == TOKEN_PIPE {
+			break
+		}
+		
 		// Safety check: if current token is not an identifier, break to avoid infinite loop
 		if p.current().Type != TOKEN_IDENTIFIER {
 			break
@@ -6272,8 +6389,17 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 			p.functionScope[paramName.Value] = paramType
 		}
 
+		// Skip any newlines before comma or closing pipe
+		for p.current().Type == TOKEN_NEWLINE {
+			p.advance()
+		}
+
 		if p.current().Type == TOKEN_COMMA {
 			p.advance()
+			// Skip any newlines after comma
+			for p.current().Type == TOKEN_NEWLINE {
+				p.advance()
+			}
 		} else if p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
 			// If we're not at a comma, pipe, or EOF, something is wrong - break to avoid infinite loop
 			break
@@ -8154,6 +8280,24 @@ func (p *Parser) parseArrayLiteralBracket() *ASTNode {
 	p.inArrayLiteral = false
 	p.expect(TOKEN_RBRACKET)
 
+	// Infer element type from array contents if all elements have the same type
+	if len(array.Children) > 0 {
+		firstType := p.inferType(array.Children[0])
+		allSameType := true
+		
+		for i := 1; i < len(array.Children); i++ {
+			elemType := p.inferType(array.Children[i])
+			if elemType != firstType {
+				allSameType = false
+				break
+			}
+		}
+		
+		if allSameType && firstType != "" && firstType != "unknown" {
+			array.DataType = "array[" + firstType + "]"
+		}
+	}
+
 	// Check for member access after array literal
 	if p.current().Type == TOKEN_DOT {
 		return p.parseMemberAccessChain(array)
@@ -8463,9 +8607,35 @@ func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int)
 		}
 
 		// Validate count matches
-		if len(leftSide.Children) != len(returnTypes) {
-			errMsg := fmt.Sprintf("Tuple assignment mismatch: expected %d values but function returns %d",
-				len(leftSide.Children), len(returnTypes))
+		expectedCount := len(leftSide.Children)
+		actualCount := len(returnTypes)
+		
+		// If function signature is found but returnTypes is empty, determine actual count
+		if actualCount == 0 && funcSig != nil && !funcSig.IsInfer {
+			// Check the function's DataType to see if it's void or single return
+			// If the function node exists, check its DataType
+			if funcSig.FunctionNode != nil {
+				funcReturnType := funcSig.FunctionNode.DataType
+				if funcReturnType == "void" || funcReturnType == "" {
+					// Void function - returns 0 values
+					actualCount = 0
+				} else {
+					// Single return function
+					actualCount = 1
+				}
+			} else {
+				// Fallback: assume single return if not void
+				actualCount = 1
+			}
+		}
+		
+		if expectedCount != actualCount {
+			var errMsg string
+			if actualCount == 0 {
+				errMsg = fmt.Sprintf("returning more return values than expected; expected void got %d return value(s)", expectedCount)
+			} else {
+				errMsg = fmt.Sprintf("expected %d return value(s) got %d value(s)", actualCount, expectedCount)
+			}
 			p.recordError(errMsg)
 			return
 		}
