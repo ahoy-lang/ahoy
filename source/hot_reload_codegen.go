@@ -61,6 +61,14 @@ int ahoy_check_reload(void);
 		"while (!WindowShouldClose())",
 		"while (!WindowShouldClose() && !ahoy_check_reload())")
 
+	// Wrap InitWindow to skip on reload
+	modifiedCode = strings.ReplaceAll(modifiedCode, 
+		"InitWindow(", 
+		"ahoy_init_window(")
+
+	// Remove CloseWindow() calls - the host manages window lifecycle
+	modifiedCode = strings.ReplaceAll(modifiedCode, "CloseWindow();", "/* CloseWindow(); - managed by hot reload host */")
+
 	// Make ahoy_game_main exported
 	modifiedCode = strings.ReplaceAll(modifiedCode,
 		"int ahoy_game_main(int argc, char** argv)",
@@ -74,6 +82,7 @@ int ahoy_check_reload(void);
 /* Hot Reload State Management */
 typedef struct AhoyHotReloadState {
     int initialized;
+    int window_initialized;  /* Track if Raylib window is open */
     void* user_data;
 } AhoyHotReloadState;
 
@@ -85,10 +94,30 @@ int ahoy_check_reload(void) {
     return g_ahoy_should_reload;
 }
 
+/* Wrapper for InitWindow that skips if already initialized */
+void ahoy_init_window(int width, int height, const char* title) {
+    if (g_hot_reload_state && g_hot_reload_state->window_initialized) {
+        /* Window already open from previous load, skip initialization */
+        return;
+    }
+    
+    InitWindow(width, height, title);
+    
+    if (g_hot_reload_state) {
+        g_hot_reload_state->window_initialized = 1;
+    }
+}
+
 /* Called by host to request reload */
 __attribute__((visibility("default")))
 void ahoy_request_reload(void) {
     g_ahoy_should_reload = 1;
+}
+
+/* Called by host to clear reload flag */
+__attribute__((visibility("default")))
+void ahoy_clear_reload(void) {
+    g_ahoy_should_reload = 0;
 }
 
 /* Called by host to set state pointer */
@@ -148,6 +177,7 @@ func generateHotReloadHost(hasRaylib bool, raylibPath string, sourceFile string)
 /* Hot Reload State Management */
 typedef struct AhoyHotReloadState {
     int initialized;
+    int window_initialized;
     void* user_data;
 } AhoyHotReloadState;
 
@@ -156,9 +186,10 @@ typedef struct {
     int (*game_main)(int, char**);
     void (*on_reload)(void);
     void (*request_reload)(void);
+    void (*clear_reload)(void);
     void (*set_state)(AhoyHotReloadState*);
     AhoyHotReloadState* (*get_state)(void);
-    const char** version;
+    const char* version;
     time_t last_modified;
 } GameLibrary;
 
@@ -167,6 +198,50 @@ static AhoyHotReloadState g_state = {0};
 static pthread_mutex_t g_reload_mutex = PTHREAD_MUTEX_INITIALIZER;
 static volatile int g_reload_requested = 0;
 static volatile int g_running = 1;
+static void* g_raylib_handle = NULL;
+
+/* Initialize raylib library for hot reload */
+int init_raylib_library(void) {`)
+	
+	// Add raylib initialization based on whether raylib is needed
+	if hasRaylib {
+		code.WriteString(`
+    /* Preload raylib so symbols are available for libgame.so */
+    const char* raylib_paths[] = {`)
+		
+		if raylibPath != "" {
+			code.WriteString(fmt.Sprintf(`
+        "%s/libraylib.so",`, raylibPath))
+		}
+		
+		code.WriteString(`
+        "libraylib.so",
+        "/usr/local/lib/libraylib.so",
+        "/usr/lib/libraylib.so",
+        "/usr/lib/x86_64-linux-gnu/libraylib.so",
+        NULL
+    };
+    
+    for (int i = 0; raylib_paths[i] != NULL; i++) {
+        g_raylib_handle = dlopen(raylib_paths[i], RTLD_NOW | RTLD_GLOBAL);
+        if (g_raylib_handle) {
+            printf("\033[32m[Hot Reload]\033[0m Loaded raylib from: %s\n", raylib_paths[i]);
+            return 1;
+        }
+    }
+    
+    fprintf(stderr, "\033[33m[Hot Reload]\033[0m Warning: Could not preload raylib\n");
+    fprintf(stderr, "\033[33m[Hot Reload]\033[0m This may cause symbol resolution issues\n");
+    return 0;
+`)
+	} else {
+		code.WriteString(`
+    /* No raylib needed */
+    return 1;
+`)
+	}
+	
+	code.WriteString(`}
 
 /* Get file modification time */
 time_t get_file_mtime(const char* path) {
@@ -187,6 +262,9 @@ int load_game_library(const char* lib_path, int is_reload) {
 
     pthread_mutex_lock(&g_reload_mutex);
 
+    /* Save old handle in case new load fails */
+    void* old_handle = NULL;
+
     if (is_reload && g_lib.handle) {
         printf("\n\033[33m[Hot Reload]\033[0m Detected library change, reloading...\n");
 
@@ -198,19 +276,41 @@ int load_game_library(const char* lib_path, int is_reload) {
             }
         }
 
-        dlclose(g_lib.handle);
+        old_handle = g_lib.handle;
         g_lib.handle = NULL;
 
-        /* Wait for file to be fully written */
-        usleep(150000); /* 150ms */
+        /* Wait for file to be fully written and flushed */
+        usleep(250000); /* 250ms */
     }
 
-    /* Load the library */
-    void* handle = dlopen(lib_path, RTLD_NOW | RTLD_LOCAL);
-    if (!handle) {
-        fprintf(stderr, "\033[31m[Hot Reload]\033[0m Error loading library: %s\n", dlerror());
-        pthread_mutex_unlock(&g_reload_mutex);
-        return -1;
+    /* Try loading the library with retries */
+    void* handle = NULL;
+    int attempts = 0;
+    const int max_attempts = 3;
+    
+    while (attempts < max_attempts && !handle) {
+        if (attempts > 0) {
+            usleep(100000 * attempts); /* Exponential backoff: 100ms, 200ms */
+        }
+        
+        handle = dlopen(lib_path, RTLD_NOW | RTLD_LOCAL);
+        if (!handle) {
+            attempts++;
+            if (attempts < max_attempts) {
+                /* Wait and retry */
+                continue;
+            }
+            fprintf(stderr, "\033[31m[Hot Reload]\033[0m Error loading library after %d attempts: %s\n", 
+                    max_attempts, dlerror());
+            
+            /* Restore old handle if we had one */
+            if (old_handle) {
+                fprintf(stderr, "\033[33m[Hot Reload]\033[0m Keeping previous library version\n");
+                g_lib.handle = old_handle;
+            }
+            pthread_mutex_unlock(&g_reload_mutex);
+            return -1;
+        }
     }
 
     /* Clear any existing error */
@@ -220,23 +320,36 @@ int load_game_library(const char* lib_path, int is_reload) {
     int (*game_main)(int, char**) = dlsym(handle, "ahoy_game_main");
     void (*on_reload)(void) = dlsym(handle, "ahoy_on_reload");
     void (*request_reload)(void) = dlsym(handle, "ahoy_request_reload");
+    void (*clear_reload)(void) = dlsym(handle, "ahoy_clear_reload");
     void (*set_state)(AhoyHotReloadState*) = dlsym(handle, "ahoy_set_state");
     AhoyHotReloadState* (*get_state)(void) = dlsym(handle, "ahoy_get_state");
-    const char** version = (const char**)dlsym(handle, "ahoy_version");
+    const char* version = (const char*)dlsym(handle, "ahoy_version");
 
     const char* dl_error = dlerror();
     if (dl_error || !game_main) {
         fprintf(stderr, "\033[31m[Hot Reload]\033[0m Error: ahoy_game_main not found: %s\n",
                 dl_error ? dl_error : "symbol not found");
         dlclose(handle);
+        
+        /* Restore old handle if we had one */
+        if (old_handle) {
+            fprintf(stderr, "\033[33m[Hot Reload]\033[0m Keeping previous library version\n");
+            g_lib.handle = old_handle;
+        }
         pthread_mutex_unlock(&g_reload_mutex);
         return -1;
+    }
+
+    /* New library loaded successfully - close old one */
+    if (old_handle) {
+        dlclose(old_handle);
     }
 
     g_lib.handle = handle;
     g_lib.game_main = game_main;
     g_lib.on_reload = on_reload;
     g_lib.request_reload = request_reload;
+    g_lib.clear_reload = clear_reload;
     g_lib.set_state = set_state;
     g_lib.get_state = get_state;
     g_lib.version = version;
@@ -247,14 +360,19 @@ int load_game_library(const char* lib_path, int is_reload) {
         g_lib.set_state(&g_state);
     }
 
+    /* Clear the reload flag in the new library */
+    if (g_lib.clear_reload) {
+        g_lib.clear_reload();
+    }
+
     if (is_reload && g_lib.on_reload) {
         g_lib.on_reload();
     }
 
     if (!is_reload) {
         printf("\033[32m[Hot Reload]\033[0m Initial library loaded\n");
-        if (g_lib.version && *g_lib.version) {
-            printf("\033[32m[Hot Reload]\033[0m Version: %s\n", *g_lib.version);
+        if (g_lib.version) {
+            printf("\033[32m[Hot Reload]\033[0m Version: %s\n", g_lib.version);
         }
     } else {
         printf("\033[32m[Hot Reload]\033[0m ✓ Reload complete\n");
@@ -317,6 +435,9 @@ int main(int argc, char** argv) {
     printf("\033[32m[Hot Reload]\033[0m Edit your code and save to see changes!\n");
     printf("\033[32m[Hot Reload]\033[0m Press Ctrl+C to exit\n\n");
 
+    /* Initialize raylib library */
+    init_raylib_library();
+
     /* Initial load */
     if (load_game_library(lib_path, 0) < 0) {
         fprintf(stderr, "Failed to load initial library\n");
@@ -365,6 +486,22 @@ int main(int argc, char** argv) {
         dlclose(g_lib.handle);
     }
 
+    /* Close the Raylib window if it's still open */
+    if (g_raylib_handle) {
+        /* Get CloseWindow function from raylib */
+        typedef int (*IsWindowReadyFunc)(void);
+        typedef void (*CloseWindowFunc)(void);
+        
+        IsWindowReadyFunc IsWindowReady = (IsWindowReadyFunc)dlsym(g_raylib_handle, "IsWindowReady");
+        CloseWindowFunc CloseWindow = (CloseWindowFunc)dlsym(g_raylib_handle, "CloseWindow");
+        
+        if (IsWindowReady && CloseWindow && IsWindowReady()) {
+            CloseWindow();
+        }
+        
+        dlclose(g_raylib_handle);
+    }
+
     printf("\n\033[32m[Hot Reload]\033[0m Shutdown complete\n");
     return 0;
 }
@@ -382,6 +519,9 @@ int main(int argc, char** argv) {
     printf("\033[1;36m╔════════════════════════════════════════╗\033[0m\n");
     printf("\033[1;36m║     Ahoy Hot Reload Development      ║\033[0m\n");
     printf("\033[1;36m╚════════════════════════════════════════╝\033[0m\n");
+
+    /* Initialize raylib library */
+    init_raylib_library();
 
     /* Initial load */
     if (load_game_library(lib_path, 0) < 0) {
@@ -410,6 +550,10 @@ int main(int argc, char** argv) {
 
     if (g_lib.handle) {
         dlclose(g_lib.handle);
+    }
+
+    if (g_raylib_handle) {
+        dlclose(g_raylib_handle);
     }
 
     return 0;

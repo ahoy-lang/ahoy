@@ -1424,10 +1424,25 @@ func watchAndRecompileHot(sourceFile, sourceDir string, arcFlag bool, libSourceF
 	}
 	defer watcher.Close()
 
+	// Watch the source directory
 	err = watcher.Add(sourceDir)
 	if err != nil {
 		fmt.Printf("Error watching directory: %v\n", err)
 		return
+	}
+
+	// Also watch common shader directories if they exist
+	shaderDirs := []string{
+		filepath.Join(sourceDir, "shaders"),
+		filepath.Join(sourceDir, "shader"),
+		filepath.Join(sourceDir, "glsl"),
+	}
+	for _, dir := range shaderDirs {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			if err := watcher.Add(dir); err == nil {
+				fmt.Printf("👁️  Also watching: %s\n", filepath.Base(dir))
+			}
+		}
 	}
 
 	var debounceTimer *time.Timer
@@ -1435,7 +1450,12 @@ func watchAndRecompileHot(sourceFile, sourceDir string, arcFlag bool, libSourceF
 	for {
 		select {
 		case event := <-watcher.Events:
-			if !strings.HasSuffix(event.Name, ".ahoy") {
+			// Watch for .ahoy, .vs (vertex shader), and .fs (fragment shader) files
+			isWatchedFile := strings.HasSuffix(event.Name, ".ahoy") ||
+				strings.HasSuffix(event.Name, ".vs") ||
+				strings.HasSuffix(event.Name, ".fs")
+
+			if !isWatchedFile {
 				continue
 			}
 
@@ -1444,7 +1464,15 @@ func watchAndRecompileHot(sourceFile, sourceDir string, arcFlag bool, libSourceF
 					debounceTimer.Stop()
 				}
 
-				debounceTimer = time.AfterFunc(10*time.Millisecond, func() {
+				// Show which file triggered the reload
+				fileName := filepath.Base(event.Name)
+				fileType := "code"
+				if strings.HasSuffix(event.Name, ".vs") || strings.HasSuffix(event.Name, ".fs") {
+					fileType = "shader"
+				}
+
+				debounceTimer = time.AfterFunc(300*time.Millisecond, func() {
+					fmt.Printf("\n📝 %s file changed: %s\n", fileType, fileName)
 					recompileLibraryHot(sourceFile, libSourceFile, libFile, arcFlag, hasRaylib, raylibPath)
 				})
 			}
@@ -1495,13 +1523,16 @@ func recompileLibraryHot(sourceFile, libSourceFile, libFile string, arcFlag bool
 	}
 
 	// Recompile library with TCC for fast iteration
+	// Use temporary file to avoid corrupting the working library on compilation errors
+	tempLibFile := libFile + ".tmp"
+	
 	tccPath := findTCCCompiler()
 	var compiler string
 	var libArgs []string
 
 	if tccPath != "" {
 		compiler = tccPath
-		libArgs = []string{"-shared", "-o", libFile, libSourceFile}
+		libArgs = []string{"-shared", "-o", tempLibFile, libSourceFile}
 
 		if hasRaylib {
 			if raylibPath != "" {
@@ -1513,7 +1544,7 @@ func recompileLibraryHot(sourceFile, libSourceFile, libFile string, arcFlag bool
 		}
 	} else {
 		compiler = "gcc"
-		libArgs = []string{"-shared", "-fPIC", "-o", libFile, libSourceFile, "-O0", "-g"}
+		libArgs = []string{"-shared", "-fPIC", "-o", tempLibFile, libSourceFile, "-O0", "-g"}
 
 		if hasRaylib {
 			if raylibPath != "" {
@@ -1529,6 +1560,16 @@ func recompileLibraryHot(sourceFile, libSourceFile, libFile string, arcFlag bool
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		fmt.Printf("❌ Compilation failed:\n%s\n", output)
+		// Remove temp file if it exists
+		os.Remove(tempLibFile)
+		return
+	}
+
+	// Only replace the real library if compilation succeeded
+	err = os.Rename(tempLibFile, libFile)
+	if err != nil {
+		fmt.Printf("❌ Error updating library: %v\n", err)
+		os.Remove(tempLibFile)
 		return
 	}
 
