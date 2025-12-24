@@ -6718,12 +6718,13 @@ func (gen *CodeGenerator) isEnumType(name string) bool {
 	return exists
 }
 
-// reorderRaylibIncludes ensures raylib.h comes before raymath.h to avoid duplicate type definitions
+// reorderRaylibIncludes ensures raylib.h comes before raymath.h and raygui.h to avoid duplicate type definitions
 // raylib.h defines RL_VECTOR2_TYPE, RL_VECTOR3_TYPE, etc. which raymath.h checks
+// raygui.h also depends on raylib.h being included first
 func (gen *CodeGenerator) reorderRaylibIncludes() {
-	var raylibIdx, raymathIdx int = -1, -1
+	var raylibIdx, raymathIdx, rayguiIdx int = -1, -1, -1
 
-	// Find indices of raylib.h and raymath.h
+	// Find indices of raylib.h, raymath.h, and raygui.h
 	for i, include := range gen.orderedIncludes {
 		if strings.Contains(include, "raylib.h") {
 			raylibIdx = i
@@ -6731,12 +6732,26 @@ func (gen *CodeGenerator) reorderRaylibIncludes() {
 		if strings.Contains(include, "raymath.h") {
 			raymathIdx = i
 		}
+		if strings.Contains(include, "raygui.h") {
+			rayguiIdx = i
+		}
 	}
 
-	// If both are present and raymath comes before raylib, swap them
-	if raylibIdx != -1 && raymathIdx != -1 && raymathIdx < raylibIdx {
-		gen.orderedIncludes[raylibIdx], gen.orderedIncludes[raymathIdx] =
-			gen.orderedIncludes[raymathIdx], gen.orderedIncludes[raylibIdx]
+	// If raylib.h exists, ensure it comes before raymath.h and raygui.h
+	if raylibIdx != -1 {
+		// If raymath comes before raylib, swap them
+		if raymathIdx != -1 && raymathIdx < raylibIdx {
+			gen.orderedIncludes[raylibIdx], gen.orderedIncludes[raymathIdx] =
+				gen.orderedIncludes[raymathIdx], gen.orderedIncludes[raylibIdx]
+			// Update raylibIdx after swap
+			raylibIdx, raymathIdx = raymathIdx, raylibIdx
+		}
+		
+		// If raygui comes before raylib, swap them
+		if rayguiIdx != -1 && rayguiIdx < raylibIdx {
+			gen.orderedIncludes[raylibIdx], gen.orderedIncludes[rayguiIdx] =
+				gen.orderedIncludes[rayguiIdx], gen.orderedIncludes[raylibIdx]
+		}
 	}
 }
 

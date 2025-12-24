@@ -913,10 +913,10 @@ func main() {
 		// Build compilation arguments
 		compileArgs := append(baseArgs, "-o", executable, outputFile)
 
-		// Add raylib linking flags if needed (already determined above)
+		// Add raylib include and linking flags if needed (already determined above)
 		if hasRaylib {
 			if raylibPath != "" {
-				compileArgs = append(compileArgs, "-L"+raylibPath)
+				compileArgs = append(compileArgs, "-I"+raylibPath, "-L"+raylibPath)
 			}
 			compileArgs = append(compileArgs, "-lraylib", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
 		} else {
@@ -1471,7 +1471,7 @@ func watchAndRecompileHot(sourceFile, sourceDir string, arcFlag bool, libSourceF
 					fileType = "shader"
 				}
 
-				debounceTimer = time.AfterFunc(300*time.Millisecond, func() {
+				debounceTimer = time.AfterFunc(10*time.Millisecond, func() {
 					fmt.Printf("\n📝 %s file changed: %s\n", fileType, fileName)
 					recompileLibraryHot(sourceFile, libSourceFile, libFile, arcFlag, hasRaylib, raylibPath)
 				})
@@ -1525,7 +1525,7 @@ func recompileLibraryHot(sourceFile, libSourceFile, libFile string, arcFlag bool
 	// Recompile library with TCC for fast iteration
 	// Use temporary file to avoid corrupting the working library on compilation errors
 	tempLibFile := libFile + ".tmp"
-	
+
 	tccPath := findTCCCompiler()
 	var compiler string
 	var libArgs []string
