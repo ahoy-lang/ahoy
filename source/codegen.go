@@ -213,6 +213,16 @@ type CodeGenerator struct {
 	parentChildRelations          map[string]map[string]bool   // parent struct -> (child field names)
 	refCountedVars                map[string]bool              // Track variables that need retain/release
 	constantValues                map[string]interface{}       // constant name -> computed value (for const expressions)
+	globalConstantGetters         map[string]ConstantInfo      // constant name -> getter function info for hot reload
+}
+
+type ConstantInfo struct {
+	Name       string
+	CType      string
+	AhoyType   string
+	InitValue  string // The initialization expression
+	IsComputed bool
+	Value      interface{} // Computed value if available
 }
 
 // GenerateC generates C code from an AST (exported for testing)
@@ -284,6 +294,7 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 		parentChildRelations:  make(map[string]map[string]bool),
 		refCountedVars:        make(map[string]bool),
 		constantValues:        make(map[string]interface{}),
+		globalConstantGetters: make(map[string]ConstantInfo),
 	}
 
 	// Add standard includes
@@ -471,6 +482,33 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 		result.WriteString("// User function forward declarations\n")
 		result.WriteString(gen.funcForwardDecls.String())
 		result.WriteString("\n")
+	}
+
+	// Write constant getter functions for hot reload
+	if len(gen.globalConstantGetters) > 0 {
+		result.WriteString("// Hot-reloadable constant getters\n")
+		result.WriteString("// These allow constants to update during hot reload\n\n")
+		
+		// Generate static storage for constant values
+		result.WriteString("// Internal storage for constant values\n")
+		for name, info := range gen.globalConstantGetters {
+			result.WriteString(fmt.Sprintf("static %s _const_%s = %s;\n", info.CType, name, info.InitValue))
+		}
+		result.WriteString("\n")
+		
+		// Generate getter functions
+		result.WriteString("// Getter functions for constants\n")
+		for name, info := range gen.globalConstantGetters {
+			result.WriteString(fmt.Sprintf("static inline %s get_%s(void) { return _const_%s; }\n", info.CType, name, name))
+		}
+		
+		// Generate update function for hot reload
+		result.WriteString("\n// Update function for hot reload\n")
+		result.WriteString("void ahoy_update_constants(void) {\n")
+		for name, info := range gen.globalConstantGetters {
+			result.WriteString(fmt.Sprintf("    _const_%s = %s;\n", name, info.InitValue))
+		}
+		result.WriteString("}\n\n")
 	}
 
 	// Write global constants before functions
@@ -1252,9 +1290,27 @@ func (gen *CodeGenerator) scanTypeDeclarations(node *ahoy.ASTNode) {
 		gen.constants[constName] = constType
 
 		// Try to evaluate the constant expression at compile-time
+		computedValue, canCompute := interface{}(nil), false
 		if len(node.Children) > 0 {
 			if value, ok := gen.evaluateConstantExpression(node.Children[0]); ok {
 				gen.constantValues[constName] = value
+				computedValue = value
+				canCompute = true
+			}
+		}
+		
+		// All global and main-scope constants should use getters for hot reload
+		// We can't check gen.currentFunction during scan, so we check the init expression
+		// If it's simple or can be computed, make it a getter
+		isSimpleValue := len(node.Children) > 0 && gen.isSimpleConstantValue(node.Children[0])
+		if isSimpleValue || canCompute {
+			gen.globalConstantGetters[constName] = ConstantInfo{
+				Name:       constName,
+				CType:      gen.mapType(constType),
+				AhoyType:   constType,
+				IsComputed: canCompute,
+				Value:      computedValue,
+				InitValue:  "", // Will be filled during code generation
 			}
 		}
 	}
@@ -1510,9 +1566,12 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 		if node.Value == "__loop_counter" && len(gen.loopCounters) > 0 {
 			gen.output.WriteString(gen.loopCounters[len(gen.loopCounters)-1])
 		} else {
-			// Check if this identifier might be an enum member (for switch cases)
-			// Try to resolve it to a fully qualified enum member name
-			if resolvedName := gen.tryResolveEnumMember(node.Value); resolvedName != "" {
+			// Check if this is a global constant with a getter function
+			if _, isGlobalConst := gen.globalConstantGetters[node.Value]; isGlobalConst {
+				// Use getter function for hot reload support
+				gen.output.WriteString(fmt.Sprintf("get_%s()", node.Value))
+			} else if resolvedName := gen.tryResolveEnumMember(node.Value); resolvedName != "" {
+				// Check if this identifier might be an enum member (for switch cases)
 				gen.output.WriteString(resolvedName)
 			} else {
 				// Check if it's a known constant/macro from raylib or other C libraries
@@ -5316,38 +5375,59 @@ func (gen *CodeGenerator) generateConstant(node *ahoy.ASTNode) {
 		savedOutput := gen.output
 		gen.output = strings.Builder{}
 
-		gen.output.WriteString(fmt.Sprintf("const %s %s = ", constType, constName))
+		// For hot reload: generate getter function instead of const global
+		// Store the constant info for later generation
+		gen.globalConstantGetters[constName] = ConstantInfo{
+			Name:       constName,
+			CType:      constType,
+			AhoyType:   ahoyType,
+			IsComputed: canCompute,
+			Value:      computedValue,
+		}
 
-		// If we can compute the value, use the computed literal instead of the expression
+		// Capture the initialization expression
 		if canCompute {
 			gen.writeComputedValue(computedValue, ahoyType)
 		} else {
 			gen.generateNode(node.Children[0])
 		}
-		gen.output.WriteString(";\n")
+		initExpr := gen.output.String()
+		
+		info := gen.globalConstantGetters[constName]
+		info.InitValue = initExpr
+		gen.globalConstantGetters[constName] = info
 
-		gen.constantDecls.WriteString(gen.output.String())
 		gen.output = savedOutput
 	} else if gen.currentFunction == "main" || gen.currentFunction == "ahoy_main" {
 		// Constants in main: declare as static global (can be accessed by all functions)
-		// If we can compute the value or it's simple, declare at global scope with const
+		// If we can compute the value or it's simple, declare at global scope
 		isSimpleValue := gen.isSimpleConstantValue(node.Children[0])
 
 		if isSimpleValue || canCompute {
-			// Simple constant value or computed value - can be declared at global scope
+			// For hot reload: generate getter function instead of const global
 			savedOutput := gen.output
 			gen.output = strings.Builder{}
 
-			gen.output.WriteString(fmt.Sprintf("const %s %s = ", constType, constName))
+			gen.globalConstantGetters[constName] = ConstantInfo{
+				Name:       constName,
+				CType:      constType,
+				AhoyType:   ahoyType,
+				IsComputed: canCompute,
+				Value:      computedValue,
+			}
 
+			// Capture the initialization expression
 			if canCompute {
 				gen.writeComputedValue(computedValue, ahoyType)
 			} else {
 				gen.generateNode(node.Children[0])
 			}
-			gen.output.WriteString(";\n")
+			initExpr := gen.output.String()
+			
+			info := gen.globalConstantGetters[constName]
+			info.InitValue = initExpr
+			gen.globalConstantGetters[constName] = info
 
-			gen.constantDecls.WriteString(gen.output.String())
 			gen.output = savedOutput
 		} else {
 			// Complex value (function call) - declare as static variable at global scope
@@ -6877,21 +6957,12 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 				formatSpec = formatSpecs[idx]
 			}
 
-			// Wrap the variable expression in a casting expression if needed
-			needsCast := false
+			// Determine cast type if needed
 			castType := ""
 			if formatSpec == "%d" {
-				// Cast to int for %d
-				needsCast = true
 				castType = "(int)"
 			} else if formatSpec == "%f" {
-				// Cast to double for %f
-				needsCast = true
 				castType = "(double)"
-			}
-
-			if needsCast {
-				gen.output.WriteString(castType)
 			}
 
 			// Check if this is a member access expression (contains a dot)
@@ -6908,6 +6979,11 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 						objectType = knownType
 					}
 
+					// Apply cast if needed
+					if castType != "" {
+						gen.output.WriteString(castType)
+					}
+
 					// Use -> for pointer types
 					if strings.HasSuffix(objectType, "*") {
 						gen.output.WriteString(fmt.Sprintf("%s->%s", objectName, memberName))
@@ -6915,6 +6991,9 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 						gen.output.WriteString(v)
 					}
 				} else {
+					if castType != "" {
+						gen.output.WriteString(castType)
+					}
 					gen.output.WriteString(v)
 				}
 			} else if strings.Contains(v, "|") {
@@ -6955,9 +7034,29 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 				if knownType, exists := gen.variables[v]; exists {
 					varType = knownType
 				}
-				if varType == "intptr_t" {
+				
+				// Also check constants map for type
+				if constType, exists := gen.constants[v]; exists && varType == "int" {
+					varType = constType
+				}
+				
+				// Check if this is a global constant that needs getter
+				if _, isConst := gen.globalConstantGetters[v]; isConst {
+					// Apply cast if needed, then use getter function
+					if varType == "intptr_t" {
+						gen.output.WriteString(fmt.Sprintf("(char*)get_%s()", v))
+					} else if castType != "" {
+						gen.output.WriteString(fmt.Sprintf("%sget_%s()", castType, v))
+					} else {
+						gen.output.WriteString(fmt.Sprintf("get_%s()", v))
+					}
+				} else if varType == "intptr_t" {
 					gen.output.WriteString(fmt.Sprintf("(char*)%s", v))
 				} else {
+					// Apply cast if needed
+					if castType != "" {
+						gen.output.WriteString(castType)
+					}
 					gen.output.WriteString(v)
 				}
 			}
