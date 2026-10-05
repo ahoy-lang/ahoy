@@ -305,6 +305,22 @@ func copyAssets(sourceDir, destDir string) error {
 	})
 }
 
+// raylibStaticLinkArg returns the raylib linker argument for a normal build.
+// When the static archive is present it is passed by path: plain "-lraylib"
+// lets the linker prefer a libraylib.so sitting next to it (a shared build
+// kept around for hot reload), and the produced binary would then need that
+// shared library at run time. extraLibPath reports whether "-L<dir>" is still
+// needed, i.e. whether we fell back to "-lraylib".
+func raylibStaticLinkArg(raylibPath string) (arg string, extraLibPath bool) {
+	if raylibPath == "" {
+		return "-lraylib", false
+	}
+	if _, err := os.Stat(filepath.Join(raylibPath, "libraylib.a")); err == nil {
+		return filepath.Join(raylibPath, "libraylib.a"), false
+	}
+	return "-lraylib", true
+}
+
 // getRaylibFlags returns the appropriate raylib linker flags for each target platform
 func getRaylibFlags(target *CrossCompileTarget, raylibPath string, sourceDir string) ([]string, error) {
 	var flags []string
@@ -371,9 +387,11 @@ func getRaylibFlags(target *CrossCompileTarget, raylibPath string, sourceDir str
 
 	// Find the raylib library for this platform
 	var foundLibPath string
+	var foundLibFile string
 	for _, libPath := range libSearchPaths {
 		if _, err := os.Stat(libPath); err == nil {
 			foundLibPath = filepath.Dir(libPath)
+			foundLibFile = libPath
 			break
 		}
 	}
@@ -422,18 +440,26 @@ func getRaylibFlags(target *CrossCompileTarget, raylibPath string, sourceDir str
 		flags = append(flags, "-I"+effectivePath)
 	}
 
+	// Native builds link the static archive by path when one was found, so a
+	// libraylib.so kept next to it (for hot reload) is not silently picked
+	// instead and baked into the binary as a runtime dependency.
+	raylibLinkArg := "-lraylib"
+	if isNativeBuild && foundLibFile != "" {
+		raylibLinkArg = foundLibFile
+	}
+
 	switch target.Name {
 	case "linux":
 		// Linux uses X11 and standard Unix libraries
-		flags = append(flags, "-lraylib", "-lGL", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
+		flags = append(flags, raylibLinkArg, "-lGL", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
 
 	case "windows":
 		// Windows uses different system libraries
-		flags = append(flags, "-lraylib", "-lopengl32", "-lgdi32", "-lwinmm", "-lm")
+		flags = append(flags, raylibLinkArg, "-lopengl32", "-lgdi32", "-lwinmm", "-lm")
 
 	case "macos":
 		// macOS uses frameworks instead of libraries
-		flags = append(flags, "-lraylib")
+		flags = append(flags, raylibLinkArg)
 		flags = append(flags, "-framework", "IOKit")
 		flags = append(flags, "-framework", "Cocoa")
 		flags = append(flags, "-framework", "OpenGL")
@@ -894,9 +920,13 @@ func main() {
 		// Add raylib include and linking flags if needed (already determined above)
 		if hasRaylib {
 			if raylibPath != "" {
-				compileArgs = append(compileArgs, "-I"+raylibPath, "-L"+raylibPath)
+				compileArgs = append(compileArgs, "-I"+raylibPath)
 			}
-			compileArgs = append(compileArgs, "-lraylib", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
+			raylibArg, needsLibPath := raylibStaticLinkArg(raylibPath)
+			if needsLibPath && raylibPath != "" {
+				compileArgs = append(compileArgs, "-L"+raylibPath)
+			}
+			compileArgs = append(compileArgs, raylibArg, "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
 		} else {
 			compileArgs = append(compileArgs, "-lm")
 		}
@@ -1814,9 +1844,13 @@ func compileAndRunCold(sourceFile string, arcFlag bool, isInitial bool) {
 
 		if hasRaylib {
 			if raylibPath != "" {
-				compileArgs = append(compileArgs, "-I"+raylibPath, "-L"+raylibPath)
+				compileArgs = append(compileArgs, "-I"+raylibPath)
 			}
-			compileArgs = append(compileArgs, "-lraylib", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
+			raylibArg, needsLibPath := raylibStaticLinkArg(raylibPath)
+			if needsLibPath && raylibPath != "" {
+				compileArgs = append(compileArgs, "-L"+raylibPath)
+			}
+			compileArgs = append(compileArgs, raylibArg, "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
 		} else {
 			compileArgs = append(compileArgs, "-lm")
 		}
@@ -1826,9 +1860,13 @@ func compileAndRunCold(sourceFile string, arcFlag bool, isInitial bool) {
 
 		if hasRaylib {
 			if raylibPath != "" {
-				compileArgs = append(compileArgs, "-I"+raylibPath, "-L"+raylibPath)
+				compileArgs = append(compileArgs, "-I"+raylibPath)
 			}
-			compileArgs = append(compileArgs, "-lraylib", "-lm", "-lpthread", "-ldl")
+			raylibArg, needsLibPath := raylibStaticLinkArg(raylibPath)
+			if needsLibPath && raylibPath != "" {
+				compileArgs = append(compileArgs, "-L"+raylibPath)
+			}
+			compileArgs = append(compileArgs, raylibArg, "-lm", "-lpthread", "-ldl")
 		} else {
 			compileArgs = append(compileArgs, "-lm")
 		}
