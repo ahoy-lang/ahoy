@@ -47,12 +47,12 @@ func init() {
 
 	// Handled directly by the code generator rather than by stdlib.go.
 	for _, name := range []string{
-		"ahoy",      // alias for print
-		"sprintf",   // C
-		"malloc",    // C
-		"char",      // cast
-		"string",    // cast
-		"map",       // collection pipeline
+		"ahoy",    // alias for print
+		"sprintf", // C
+		"malloc",  // C
+		"char",    // cast
+		"string",  // cast
+		"map",     // collection pipeline
 		"filter",
 		"each",
 		"reduce",
@@ -65,7 +65,7 @@ func init() {
 		"insert",
 		"erase",
 		"join",
-		"type",       // value.type property
+		"type",        // value.type property
 		"dump_struct", // debug helper
 	} {
 		builtinCallNames[name] = true

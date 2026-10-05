@@ -3,7 +3,7 @@ module ahoy/source
 go 1.25
 
 require (
-	ahoy v0.0.0
+	ahoy v0.0.1
 	github.com/fsnotify/fsnotify v1.7.0
 )
 

@@ -151,6 +151,10 @@ func validateSemantics(content, filePath string, programNames []string) (diagnos
 			})
 		}
 	}()
+	// pi-lens-ignore: UndeclaredImportedName
+	// False positive: the editor's type index goes stale for symbols recently
+	// added to the ahoy module. `gopls check package.go`, `go build -a` and
+	// `go vet` all pass on this call, and source/semantics_test.go covers it.
 	_, diagnostics = ahoy.ParseLintWithPathInProgram(ahoy.Tokenize(content), filePath, programNames)
 	return diagnostics
 }
@@ -445,3 +449,4 @@ func (pkg *Package) MergeAST() *ahoy.ASTNode {
 
 	return merged
 }
+
