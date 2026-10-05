@@ -6901,7 +6901,15 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 				}
 				if knownType, exists := gen.variables[simpleVarName]; exists {
 					varType = knownType
+				} else if knownType, exists := gen.functionVars[simpleVarName]; exists {
+					// Parameters and function locals live in functionVars. Locals also
+					// get picked up by the scanVariableTypes pre-pass, but parameters
+					// are not declarations and are only visible here.
+					varType = knownType
 				}
+
+				// dict<string,int> / dict[string,int] are all printed via the dict helper
+				varType = normalizeCollectionType(varType)
 
 				formatSpec := "%d"
 				if varType == "string" || varType == "char*" || varType == "intptr_t" ||
@@ -9212,12 +9220,30 @@ func (gen *CodeGenerator) getNodeType(node *ahoy.ASTNode) string {
 	case ahoy.NODE_IDENTIFIER:
 		// Look up in variables map
 		if varType, ok := gen.variables[node.Value]; ok {
-			return varType
+			return normalizeCollectionType(varType)
+		}
+		// Parameters are not declarations, so the scanVariableTypes pre-pass
+		// misses them; they only appear in functionVars.
+		if varType, ok := gen.functionVars[node.Value]; ok {
+			return normalizeCollectionType(varType)
 		}
 		return "int" // Default
 	default:
 		return "int" // Default
 	}
+}
+
+// normalizeCollectionType collapses a precise collection type to the base kind
+// that print/format handling understands: "array[int]" -> "array",
+// "dict<string,int>" -> "dict". Non-collection types pass through unchanged.
+func normalizeCollectionType(typeName string) string {
+	if strings.HasPrefix(typeName, "array") {
+		return "array"
+	}
+	if strings.HasPrefix(typeName, "dict") {
+		return "dict"
+	}
+	return typeName
 }
 
 // Get C format specifier for a type
@@ -9270,6 +9296,11 @@ func (gen *CodeGenerator) getValueType(node *ahoy.ASTNode) string {
 	case ahoy.NODE_IDENTIFIER:
 		// Check if identifier is a variable with a known type
 		if varType, exists := gen.variables[node.Value]; exists {
+			return varType
+		}
+		// Parameters are not declarations, so the scanVariableTypes pre-pass
+		// misses them; they only appear in functionVars.
+		if varType, exists := gen.functionVars[node.Value]; exists {
 			return varType
 		}
 		return "int"
