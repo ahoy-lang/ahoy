@@ -1477,7 +1477,13 @@ func handleHotReload(sourceFile string, ast *ahoy.ASTNode, absPath string, arcFl
 
 	// Start the host in background
 	fmt.Println()
-	hostCmd := exec.Command(hostBinary)
+	// The host runs with cwd = source dir, so hand it the absolute library
+	// path instead of making it guess a relative "output/" location.
+	absLibFile, absErr := filepath.Abs(libFile)
+	if absErr != nil {
+		absLibFile = libFile
+	}
+	hostCmd := exec.Command(hostBinary, absLibFile)
 	hostCmd.Stdout = os.Stdout
 	hostCmd.Stderr = os.Stderr
 	hostCmd.Dir = sourceDir
@@ -1536,7 +1542,11 @@ func handleColdReload(sourceFile string, absPath string, arcFlag bool) {
 				continue
 			}
 
-			if event.Op&fsnotify.Write == fsnotify.Write {
+			// A save is not always a plain write: editors (and `sed -i`) often
+			// replace the file by writing a temp file and renaming it over the
+			// original, which fsnotify reports as Create/Rename on the watched
+			// directory rather than Write. Treat any of them as a change.
+			if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) != 0 {
 				if debounceTimer != nil {
 					debounceTimer.Stop()
 				}
@@ -1597,7 +1607,11 @@ func watchAndRecompileHot(sourceFile, sourceDir string, arcFlag bool, libSourceF
 				continue
 			}
 
-			if event.Op&fsnotify.Write == fsnotify.Write {
+			// A save is not always a plain write: editors (and `sed -i`) often
+			// replace the file by writing a temp file and renaming it over the
+			// original, which fsnotify reports as Create/Rename on the watched
+			// directory rather than Write. Treat any of them as a change.
+			if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) != 0 {
 				if debounceTimer != nil {
 					debounceTimer.Stop()
 				}
