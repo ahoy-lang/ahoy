@@ -1,10 +1,12 @@
-expected: []
+program block_scope_redeclare
+
 ? Two sibling blocks may each declare the same name. Ahoy is block scoped,
 ? so the first declaration is out of scope in the second block and the code
 ? generator has to emit a declaration there too. It used to emit a plain
 ? assignment instead, which C rejected with "'a' undeclared".
 
 @ main ||:
+	expected: []
 	if true then
 		a: 1
 		print|a|
