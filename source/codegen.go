@@ -171,6 +171,7 @@ type CodeGenerator struct {
 	currentFunctionHasMultiReturn bool                         // Whether current function has multiple returns
 	hasMainFunc                   bool                         // Whether there's an Ahoy main function
 	arrayElementTypes             map[string]string            // array variable name -> element type
+	dictLoopValueExpr             map[string]string            // dict-loop value var -> C expression that formats it by its runtime type
 	array2DElementTypes           map[string]string            // 2D array variable name -> nested element type (element type of inner arrays)
 	structs                       map[string]*StructInfo       // struct name -> struct info
 	currentTypeContext            string                       // Current type annotation context (e.g., "array[int]")
@@ -264,6 +265,7 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 		functionParamNames:    make(map[string][]string),
 		functionParamDefaults: make(map[string][]*ahoy.ASTNode),
 		dictSourcedVars:       make(map[string]string),
+		dictLoopValueExpr:     make(map[string]string),
 		dictSourcedKeys:       make(map[string]string),
 		nestedScopeVars:       make(map[string]bool),
 		varDeclIndent:         make(map[string]int),
@@ -1894,6 +1896,7 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	gen.functionVars = make(map[string]string)
 	gen.dictSourcedVars = make(map[string]string)
 	gen.dictSourcedKeys = make(map[string]string)
+	gen.dictLoopValueExpr = make(map[string]string)
 	gen.nestedScopeVars = make(map[string]bool)
 	gen.varDeclIndent = make(map[string]int)
 
@@ -3702,9 +3705,15 @@ func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
 		gen.writeIndent()
 		gen.output.WriteString(fmt.Sprintf("intptr_t %s = (intptr_t)%s->value;\n", valueVar, entryVar))
 
-		// Register loop variables
+			// Register loop variables
 		gen.variables[keyVar] = "char*"
 		gen.variables[valueVar] = "intptr_t"
+
+		// An untyped dict value has no static type: it may hold an integer or a
+		// pointer. Formatting it as a string would dereference an integer and
+		// crash, so remember an expression that consults the entry's runtime type
+		// instead. The key is a variable here, not a literal.
+		gen.dictLoopValueExpr[valueVar] = fmt.Sprintf("format_dict_value(%s, %s)", dictName, keyVar)
 	}
 
 	gen.generateNodeInternal(node.Children[3], false)
@@ -3720,6 +3729,7 @@ func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
 	} else {
 		delete(gen.variables, valueVar)
 	}
+	delete(gen.dictLoopValueExpr, valueVar)
 
 	gen.writeIndent()
 	gen.output.WriteString(fmt.Sprintf("%s = %s->next;\n", entryVar, entryVar))
@@ -6828,6 +6838,7 @@ func (gen *CodeGenerator) inferReturnTypes(funcNode *ahoy.ASTNode) []string {
 	gen.functionVars = make(map[string]string)
 	gen.dictSourcedVars = make(map[string]string)
 	gen.dictSourcedKeys = make(map[string]string)
+	gen.dictLoopValueExpr = make(map[string]string)
 	gen.nestedScopeVars = make(map[string]bool)
 	gen.varDeclIndent = make(map[string]int)
 	for _, param := range params.Children {
@@ -7021,6 +7032,9 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 	var formatStr strings.Builder
 	var vars []string
 	var formatSpecs []string
+	// dictExprs[i] is a ready-made C expression for argument i, used when the
+	// value comes from an untyped dict and must be formatted at run time.
+	var dictExprs []string
 
 	i := 0
 	for i < len(fstring) {
@@ -7063,6 +7077,19 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 
 				// dict<string,int> / dict[string,int] are all printed via the dict helper
 				varType = normalizeCollectionType(varType)
+
+				// A value read from an untyped dict is formatted through the helper that
+				// switches on the entry's runtime type, exactly as a dict access is.
+				dictExpr := ""
+				if expr, isDictLoopValue := gen.dictLoopValueExpr[simpleVarName]; isDictLoopValue {
+					dictExpr = expr
+					formatSpecs = append(formatSpecs, "%s")
+					dictExprs = append(dictExprs, dictExpr)
+					formatStr.WriteString("%s")
+					i = j + 1
+					continue
+				}
+				dictExprs = append(dictExprs, "")
 
 				formatSpec := "%d"
 				if varType == "string" || varType == "char*" || varType == "intptr_t" ||
@@ -7111,6 +7138,12 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 
 		for idx, v := range vars {
 			gen.output.WriteString(", ")
+
+			// A dict value is formatted by its runtime type.
+			if idx < len(dictExprs) && dictExprs[idx] != "" {
+				gen.output.WriteString(dictExprs[idx])
+				continue
+			}
 
 			// Get the format spec for this variable
 			formatSpec := "%d"

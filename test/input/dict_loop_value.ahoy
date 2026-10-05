@@ -1,0 +1,29 @@
+program dict_loop_value
+
+? A value read from an untyped dict has no static type, so interpolating it
+? into an f-string has to consult the entry's runtime type. It used to be
+? assumed to be a string, which dereferenced an integer value and crashed:
+?   sprintf(buf, "val=%s", (char*)v)   with v holding 10
+? Single-entry dicts are used so the output does not depend on iteration order.
+
+@ main ||:
+	expected: []
+
+	numbers: {"x": 10}
+	loop k, v in numbers do
+		print|f"{k}={v}"|
+	$
+
+	words: {"a": "hello"}
+	loop k, v in words do
+		print|f"{k}={v}"|
+	$
+
+	decimals: {"f": 1.5}
+	loop k, v in decimals do
+		print|f"{k}={v}"|
+	$
+
+	expected.push|"x=10", "a=hello", "f=1.5"|
+	print|expected|
+$
