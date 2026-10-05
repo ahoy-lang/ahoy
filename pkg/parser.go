@@ -809,6 +809,81 @@ func (p *Parser) checkTypeCompatibility(expectedType, actualType string) bool {
 	return expectedType == actualType
 }
 
+// splitCollectionType splits a collection type annotation into its base kind and
+// its argument list. "array[int]" -> ("array", "int"),
+// "dict<string,int>" -> ("dict", "string,int"), "array" -> ("array", "").
+func splitCollectionType(typeName string) (string, string) {
+	open := strings.IndexAny(typeName, "[<")
+	if open < 0 {
+		return typeName, ""
+	}
+	last := typeName[len(typeName)-1]
+	if last != ']' && last != '>' {
+		return typeName, ""
+	}
+	return typeName[:open], typeName[open+1 : len(typeName)-1]
+}
+
+// splitTypeArgs splits a collection argument list on top-level commas, so
+// "string,int" -> ["string", "int"] and "string,array[int]" ->
+// ["string", "array[int]"].
+func splitTypeArgs(args string) []string {
+	var parts []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case '[', '<':
+			depth++
+		case ']', '>':
+			depth--
+		case ',':
+			if depth == 0 {
+				parts = append(parts, strings.TrimSpace(args[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	parts = append(parts, strings.TrimSpace(args[start:]))
+	return parts
+}
+
+// collectionTypeMatches reports whether a value of type actualType can be
+// assigned to a collection annotated as expectedType. The base kinds must
+// agree, and element/key/value types are compared when the value carries them.
+// A literal with no element information (empty or mixed, e.g. "array") is
+// accepted: the annotation is what pins its element type down.
+func (p *Parser) collectionTypeMatches(expectedType, actualType string) bool {
+	if actualType == "unknown" {
+		return true
+	}
+
+	expectedBase, expectedArgs := splitCollectionType(expectedType)
+	actualBase, actualArgs := splitCollectionType(actualType)
+
+	// dict[...] and dict<...> are the same base kind.
+	if expectedBase != actualBase {
+		return false
+	}
+
+	// The literal carries no element type - the annotation supplies it.
+	if actualArgs == "" {
+		return true
+	}
+
+	expectedParts := splitTypeArgs(expectedArgs)
+	actualParts := splitTypeArgs(actualArgs)
+	if len(expectedParts) != len(actualParts) {
+		return false
+	}
+	for i := range expectedParts {
+		if !p.checkTypeCompatibility(expectedParts[i], actualParts[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 // trackArrayMethodLength tracks array length after method calls
 func (p *Parser) trackArrayMethodLength(varName string, methodCall *ASTNode) {
 	if len(methodCall.Children) == 0 {
@@ -4473,19 +4548,9 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					if strings.HasPrefix(explicitType, "array[") || strings.HasPrefix(explicitType, "dict[") ||
 						strings.HasPrefix(explicitType, "dict<") {
 						inferredType := p.inferType(value)
-						// For explicitly typed collections, we validate the base type matches
-						// array[string] should have inferredType "array", dict[string,int] or dict<string,int> should have inferredType "dict"
-						// The explicit type annotation provides the full type information
-						if strings.HasPrefix(explicitType, "array[") {
-							if inferredType != "array" && inferredType != "unknown" {
-								errMsg := fmt.Sprintf("Type mismatch (line %d): expected %s but got %s", line, explicitType, inferredType)
-								p.recordError(errMsg)
-							}
-						} else if strings.HasPrefix(explicitType, "dict[") || strings.HasPrefix(explicitType, "dict<") {
-							if inferredType != "dict" && inferredType != "unknown" {
-								errMsg := fmt.Sprintf("Type mismatch (line %d): expected %s but got %s", line, explicitType, inferredType)
-								p.recordError(errMsg)
-							}
+						if !p.collectionTypeMatches(explicitType, inferredType) {
+							errMsg := fmt.Sprintf("Type mismatch (line %d): expected %s but got %s", line, explicitType, inferredType)
+							p.recordError(errMsg)
 						}
 					}
 				} else {
