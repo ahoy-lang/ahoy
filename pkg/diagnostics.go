@@ -38,3 +38,20 @@ func stampErrorFiles(errors []ParseError, sourceFilePath string) {
 		}
 	}
 }
+
+// stampNodeFiles records the source file on every top-level node. Code
+// generation needs it to emit #line directives, so that C compiler errors,
+// sanitizer reports and stack traces name the .ahoy file rather than a line in
+// the generated C. Nodes nested inside a function or block inherit their file
+// from the enclosing top-level node, which is sufficient because a whole
+// function always comes from a single file.
+func stampNodeFiles(ast *ASTNode, sourceFilePath string) {
+	if ast == nil {
+		return
+	}
+	for _, child := range ast.Children {
+		if child.File == "" {
+			child.File = sourceFilePath
+		}
+	}
+}

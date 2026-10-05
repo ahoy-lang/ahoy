@@ -77,6 +77,7 @@ type ASTNode struct {
 	DataType     string
 	Line         int
 	Column       int      // Column position in source
+	File         string   // Source file; set on top-level nodes only (see stampNodeFiles)
 	DefaultValue *ASTNode // For default parameter values
 	EnumType     string   // Type of enum (int, string, color, etc.) or "" for mixed
 	IsMutable    bool     // For enum members marked as mutable
@@ -261,7 +262,9 @@ func Parse(tokens []Token) *ASTNode {
 		sourceFilePath:      "",
 		zeroArgFunctions:    make(map[string]bool),
 	}
-	return parser.parseProgram()
+	ast := parser.parseProgram()
+	stampNodeFiles(ast, "")
+	return ast
 }
 
 func ParseWithPath(tokens []Token, sourceFilePath string) *ASTNode {
@@ -298,7 +301,9 @@ func ParseWithPath(tokens []Token, sourceFilePath string) *ASTNode {
 		sourceFilePath:      sourceFilePath,
 		zeroArgFunctions:    make(map[string]bool),
 	}
-	return parser.parseProgram()
+	ast := parser.parseProgram()
+	stampNodeFiles(ast, sourceFilePath)
+	return ast
 }
 
 func ParseLint(tokens []Token) (*ASTNode, []ParseError) {
@@ -337,6 +342,7 @@ func ParseLint(tokens []Token) (*ASTNode, []ParseError) {
 	}
 	ast := parser.parseProgram()
 	stampErrorFiles(parser.Errors, "")
+	stampNodeFiles(ast, "")
 	return ast, parser.Errors
 }
 
@@ -376,6 +382,7 @@ func ParseLintWithPath(tokens []Token, sourceFilePath string) (*ASTNode, []Parse
 	}
 	ast := parser.parseProgram()
 	stampErrorFiles(parser.Errors, sourceFilePath)
+	stampNodeFiles(ast, sourceFilePath)
 	return ast, parser.Errors
 }
 

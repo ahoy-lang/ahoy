@@ -72,7 +72,10 @@ func (pm *PackageManager) LoadFile(filePath string) (*PackageFile, error) {
 				parseErr = fmt.Errorf("parse error in %s: %v", filePath, r)
 			}
 		}()
-		ast = ahoy.Parse(tokens)
+		// ParseWithPath rather than Parse: the path is needed to resolve relative
+		// imports, and it is what lets code generation emit #line directives
+		// pointing back at this file.
+		ast = ahoy.ParseWithPath(tokens, filePath)
 	}()
 
 	if parseErr != nil {

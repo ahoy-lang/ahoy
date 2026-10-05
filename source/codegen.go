@@ -165,6 +165,7 @@ type CodeGenerator struct {
 	jsonVariables                 map[string]bool              // Track which variables hold JSON data
 	jsonStructs                   map[string]bool              // Track which structs are JSON schemas (not real C structs)
 	loopCounters                  []string                     // Stack of loop counter variable names
+	currentFile                   string                       // Source file of the top-level node being generated
 	currentFunction               string                       // Current function being generated
 	currentFunctionReturnType     string                       // Return type of current function
 	currentFunctionHasMultiReturn bool                         // Whether current function has multiple returns
@@ -522,9 +523,12 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 	result.WriteString(gen.funcDecls.String())
 	result.WriteString("\n")
 
-	// Write main program
+	// Write main program. This scaffolding is not user code, so point the
+	// diagnostic location back at the generated file rather than leaving it on
+	// whichever source line happened to be emitted last.
 	if gen.hasMainFunc {
 		// If there's an Ahoy main function, just call it
+		result.WriteString("#line 1 \"<ahoy-generated>\"\n")
 		result.WriteString("int main() {\n")
 		if gen.enableSignalHandler {
 			result.WriteString("    ahoy_setup_signal_handlers();\n")
@@ -534,6 +538,7 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 		result.WriteString("}\n")
 	} else {
 		// Legacy: no main function, use global scope code
+		result.WriteString("#line 1 \"<ahoy-generated>\"\n")
 		result.WriteString("int main() {\n")
 		if gen.enableSignalHandler {
 			result.WriteString("    ahoy_setup_signal_handlers();\n")
@@ -1436,6 +1441,36 @@ func (gen *CodeGenerator) writeIndent() {
 	}
 }
 
+// emitLineDirective writes a C #line directive so that anything reported about
+// the generated code - compiler errors, sanitizer output, stack traces - names
+// the .ahoy file and line instead of a line in output/*.c.
+//
+// Directives are emitted per statement rather than per node: statements are
+// what carry meaningful line numbers, and expressions inside a statement would
+// only add noise. A statement that generates several lines of C leaves the
+// following generated lines attributed to consecutive Ahoy lines, which is
+// close enough to be useful.
+func (gen *CodeGenerator) emitLineDirective(node *ahoy.ASTNode) {
+	if node == nil || node.Line <= 0 {
+		return
+	}
+	file := node.File
+	if file == "" {
+		// Nested statements inherit the file of the top-level node they sit in.
+		file = gen.currentFile
+	}
+	if file == "" {
+		return
+	}
+	gen.output.WriteString(fmt.Sprintf("#line %d \"%s\"\n", node.Line, escapeCFilename(file)))
+}
+
+// escapeCFilename escapes a path for use inside a C string literal.
+func escapeCFilename(path string) string {
+	path = strings.ReplaceAll(path, "\\", "\\\\")
+	return strings.ReplaceAll(path, "\"", "\\\"")
+}
+
 func (gen *CodeGenerator) isHeapAllocatedType(varType string) bool {
 	// Check if a type requires heap allocation
 	if strings.HasPrefix(varType, "array") || varType == "AhoyArray*" {
@@ -1488,9 +1523,21 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 		return
 	}
 
+	// Statements carry a #line directive so that anything the C compiler,
+	// sanitizers or a debugger report points at the .ahoy source rather than at
+	// the generated C.
+	if isStatement {
+		gen.emitLineDirective(node)
+	}
+
 	switch node.Type {
 	case ahoy.NODE_PROGRAM:
 		for _, child := range node.Children {
+			// Top-level nodes are the only ones that know their file; statements
+			// nested inside them inherit it through gen.currentFile.
+			if child.File != "" {
+				gen.currentFile = child.File
+			}
 			gen.generateNodeInternal(child, true)
 		}
 
@@ -1823,7 +1870,12 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 
 	// Write forward declaration
 	gen.funcForwardDecls.WriteString(fmt.Sprintf("%s %s(%s);\n", returnType, cFuncName, paramList))
-	// Write function implementation
+	// Write function implementation. A signature error (an unknown parameter or
+	// return type) must be attributed to this function, not to whatever was
+	// generated before it, so name the source line here too.
+	if node.File != "" {
+		gen.funcDecls.WriteString(fmt.Sprintf("#line %d \"%s\"\n", node.Line, escapeCFilename(node.File)))
+	}
 	gen.funcDecls.WriteString(fmt.Sprintf("%s %s(%s) {\n", returnType, cFuncName, paramList))
 
 	// Function body
