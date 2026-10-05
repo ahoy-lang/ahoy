@@ -10,9 +10,9 @@ struct particle:
   velocity: vector2,
   rotation: float
   type smoke_particle:
-	  10 size: float, ? initial value set to 10.0
-		1.0 alpha: float, ? initial value set to 1.0
-	 	1 life: float, ? initial value set to 1.0
+	  size: float = 10.0, ? initial value set to 10.0
+		alpha: float = 1.0, ? initial value set to 1.0
+	 	life: float = 1.0, ? initial value set to 1.0
 		max_life: float, ? initial value set to 0.0
 		name: string, ? initial value set to ""
 		color: color

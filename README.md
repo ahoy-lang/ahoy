@@ -377,11 +377,11 @@ value: person{key}
 struct Point:
   x: float ? initialized to 0 by default
   y: float
-  10 default_value:int ? Field with default value initilized to 10
+  default_value:int = 10 ? Field with default value initilized to 10
   #my_static_value:int ? Static field accessable with Point.#my_static_value
-  42 CONST_VALUE:int ? Constant field
+  CONST_VALUE:int = 42 ? Constant field
   type Polygon: ? struct type inherits properties from Point; to create object Point.Polygon{}
-    3 sides:int
+    sides:int = 3
 $
 
 ? Typed object instantiation
@@ -406,10 +406,10 @@ struct color:
 $
 ? color with initial values
 struct color_with_init_values:
-  255 r: int,
-  200 g: int,
-  200 b: int,
-  0   a: int
+  r: int = 255,
+  g: int = 200,
+  b: int = 200,
+  a: int = 0
 $
 position: vector2{x: 100.0, y: 200.0}
 red: color{r: 255, g: 0, b: 0, a: 255}

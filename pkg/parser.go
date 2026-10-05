@@ -7128,8 +7128,11 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 
 	// Parse struct fields
 	for p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_TYPE ||
-		p.current().Type == TOKEN_NUMBER || p.current().Type == TOKEN_MINUS || p.current().Type == TOKEN_LANGLE ||
-		p.current().Type == TOKEN_TRUE || p.current().Type == TOKEN_FALSE || p.current().Type == TOKEN_HASH {
+		p.current().Type == TOKEN_HASH ||
+		p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
+		p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_CHAR_TYPE ||
+		p.current().Type == TOKEN_BOOL_TYPE || p.current().Type == TOKEN_DICT_TYPE ||
+		p.current().Type == TOKEN_ARRAY_TYPE {
 		if p.current().Type == TOKEN_TYPE {
 			// Nested type (e.g., "type smoke_particle:")
 			p.advance() // consume 'type'
@@ -7158,10 +7161,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 					if p.current().Type == TOKEN_DEDENT {
 						p.advance()
 						// If next token is not a field starter, we're done with this type
-						if p.current().Type != TOKEN_IDENTIFIER && p.current().Type != TOKEN_NUMBER &&
-							p.current().Type != TOKEN_LANGLE && p.current().Type != TOKEN_STRING &&
-							p.current().Type != TOKEN_TRUE && p.current().Type != TOKEN_FALSE &&
-							p.current().Type != TOKEN_LBRACKET && p.current().Type != TOKEN_LBRACE &&
+						if p.current().Type != TOKEN_IDENTIFIER &&
 							p.current().Type != TOKEN_INT_TYPE && p.current().Type != TOKEN_FLOAT_TYPE &&
 							p.current().Type != TOKEN_STRING_TYPE && p.current().Type != TOKEN_CHAR_TYPE &&
 							p.current().Type != TOKEN_BOOL_TYPE && p.current().Type != TOKEN_DICT_TYPE &&
@@ -7176,82 +7176,12 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 						break
 					}
 
-					if p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_NUMBER ||
-						p.current().Type == TOKEN_MINUS || p.current().Type == TOKEN_LANGLE || p.current().Type == TOKEN_STRING ||
-						p.current().Type == TOKEN_TRUE || p.current().Type == TOKEN_FALSE ||
-						p.current().Type == TOKEN_LBRACKET || p.current().Type == TOKEN_LBRACE ||
+					if p.current().Type == TOKEN_IDENTIFIER ||
 						p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 						p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_CHAR_TYPE ||
 						p.current().Type == TOKEN_BOOL_TYPE || p.current().Type == TOKEN_DICT_TYPE ||
 						p.current().Type == TOKEN_ARRAY_TYPE {
-						// Check for default value syntax: "value field: type"
-						var defaultValue *ASTNode
-
-						// Check if this might be a default value (number, vector2 literal, etc.)
-						if p.current().Type == TOKEN_NUMBER {
-							defaultValue = &ASTNode{
-								Type:  NODE_NUMBER,
-								Value: p.current().Value,
-								Line:  p.current().Line,
-							}
-							p.advance()
-						} else if p.current().Type == TOKEN_TRUE || p.current().Type == TOKEN_FALSE {
-							// Handle boolean defaults
-							defaultValue = &ASTNode{
-								Type:  NODE_BOOLEAN,
-								Value: p.current().Value,
-								Line:  p.current().Line,
-							}
-							p.advance()
-						} else if p.current().Type == TOKEN_MINUS && p.peek(1).Type == TOKEN_NUMBER {
-							// Handle negative numbers
-							line := p.current().Line
-							p.advance() // consume minus
-							defaultValue = &ASTNode{
-								Type:  NODE_NUMBER,
-								Value: "-" + p.current().Value,
-								Line:  line,
-							}
-							p.advance()
-						} else if p.current().Type == TOKEN_IDENTIFIER &&
-							p.peek(1).Type == TOKEN_LBRACE {
-							// Parse object literal default value: Type{...}
-							typeName := p.current().Value
-							p.advance() // consume type name
-							p.advance() // consume {
-							defaultValue = p.parseObjectLiteral()
-							defaultValue.Value = typeName
-						} else if p.current().Type == TOKEN_LBRACE {
-							// Parse object literal without type prefix: {...}
-							// Type will be inferred from field declaration
-							p.advance() // consume {
-							defaultValue = p.parseObjectLiteral()
-							// Leave Value empty - will be set from field type
-						} else if p.current().Type == TOKEN_LANGLE {
-							// Parse dict literal default value
-							defaultValue = p.parseDictLiteral()
-						} else if p.current().Type == TOKEN_STRING {
-							defaultValue = &ASTNode{
-								Type:  NODE_STRING,
-								Value: p.current().Value,
-								Line:  p.current().Line,
-							}
-							p.advance()
-						} else if p.current().Type == TOKEN_TRUE || p.current().Type == TOKEN_FALSE {
-							defaultValue = &ASTNode{
-								Type:  NODE_BOOLEAN,
-								Value: p.current().Value,
-								Line:  p.current().Line,
-							}
-							p.advance()
-						} else if p.current().Type == TOKEN_LBRACKET {
-							// Parse array literal default value
-							defaultValue = p.parseArrayLiteralBracket()
-						} else if p.current().Type == TOKEN_LBRACE {
-							// Parse dict literal default value
-							defaultValue = p.parseDictLiteral()
-						}
-
+						
 						// Get field name (could be identifier or type keyword used as name)
 						var fieldName Token
 						if p.current().Type == TOKEN_IDENTIFIER ||
@@ -7265,8 +7195,10 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 							fieldName = p.expect(TOKEN_IDENTIFIER)
 						}
 
-						// Check if type is provided (field: type) or inferred from default value
+						// Check if type is provided (field: type) or use default type
 						fieldType := ""
+						var defaultValue *ASTNode
+						
 						if p.current().Type == TOKEN_ASSIGN {
 							p.advance() // consume :
 
@@ -7306,34 +7238,61 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 									p.advance()
 								}
 							}
-
-							// If defaultValue is an object literal without a type, set it from fieldType
-							if defaultValue != nil && defaultValue.Type == NODE_OBJECT_LITERAL && defaultValue.Value == "" {
-								defaultValue.Value = fieldType
+							
+							// Check for = and default value
+							if p.current().Type == TOKEN_EQUALS {
+								p.advance() // consume =
+								
+								// Parse default value
+								if p.current().Type == TOKEN_NUMBER {
+									defaultValue = &ASTNode{
+										Type:  NODE_NUMBER,
+										Value: p.current().Value,
+										Line:  p.current().Line,
+									}
+									p.advance()
+								} else if p.current().Type == TOKEN_TRUE || p.current().Type == TOKEN_FALSE {
+									defaultValue = &ASTNode{
+										Type:  NODE_BOOLEAN,
+										Value: p.current().Value,
+										Line:  p.current().Line,
+									}
+									p.advance()
+								} else if p.current().Type == TOKEN_MINUS && p.peek(1).Type == TOKEN_NUMBER {
+									line := p.current().Line
+									p.advance() // consume minus
+									defaultValue = &ASTNode{
+										Type:  NODE_NUMBER,
+										Value: "-" + p.current().Value,
+										Line:  line,
+									}
+									p.advance()
+								} else if p.current().Type == TOKEN_IDENTIFIER && p.peek(1).Type == TOKEN_LBRACE {
+									typeName := p.current().Value
+									p.advance() // consume type name
+									p.advance() // consume {
+									defaultValue = p.parseObjectLiteral()
+									defaultValue.Value = typeName
+								} else if p.current().Type == TOKEN_LBRACE {
+									p.advance() // consume {
+									defaultValue = p.parseObjectLiteral()
+									defaultValue.Value = fieldType
+								} else if p.current().Type == TOKEN_LANGLE {
+									defaultValue = p.parseDictLiteral()
+								} else if p.current().Type == TOKEN_STRING {
+									defaultValue = &ASTNode{
+										Type:  NODE_STRING,
+										Value: p.current().Value,
+										Line:  p.current().Line,
+									}
+									p.advance()
+								} else if p.current().Type == TOKEN_LBRACKET {
+									defaultValue = p.parseArrayLiteralBracket()
+								}
 							}
 						} else {
-							// No explicit type - infer from default value
-							if defaultValue != nil {
-								switch defaultValue.Type {
-								case NODE_NUMBER:
-									// Check if it's a float or int
-									if strings.Contains(defaultValue.Value, ".") {
-										fieldType = "float"
-									} else {
-										fieldType = "int"
-									}
-								case NODE_STRING:
-									fieldType = "string"
-								case NODE_BOOLEAN:
-									fieldType = "bool"
-								case NODE_OBJECT_LITERAL:
-									fieldType = defaultValue.Value
-								default:
-									fieldType = "int" // default fallback
-								}
-							} else {
-								fieldType = "int" // default when no default value and no type
-							}
+							// No type specified - default to int
+							fieldType = "int"
 						}
 
 						field := &ASTNode{
@@ -7358,68 +7317,10 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 
 			struc.Children = append(struc.Children, nestedType)
 		} else {
-			// Regular field - check for default value syntax and optional # prefix (static property)
-			var defaultValue *ASTNode
+			// Regular field - check for optional # prefix (static property) before field name
 			isStatic := false
-
-			// Check if this might be a default value (number, vector2 literal, etc.)
-			if p.current().Type == TOKEN_NUMBER {
-				defaultValue = &ASTNode{
-					Type:  NODE_NUMBER,
-					Value: p.current().Value,
-					Line:  p.current().Line,
-				}
-				p.advance()
-			} else if p.current().Type == TOKEN_MINUS && p.peek(1).Type == TOKEN_NUMBER {
-				// Handle negative numbers
-				line := p.current().Line
-				p.advance() // consume minus
-				defaultValue = &ASTNode{
-					Type:  NODE_NUMBER,
-					Value: "-" + p.current().Value,
-					Line:  line,
-				}
-				p.advance()
-			} else if p.current().Type == TOKEN_IDENTIFIER &&
-				p.peek(1).Type == TOKEN_LBRACE {
-				// Parse object literal default value: Type{...}
-				typeName := p.current().Value
-				p.advance() // consume type name
-				p.advance() // consume {
-				defaultValue = p.parseObjectLiteral()
-				defaultValue.Value = typeName
-			} else if p.current().Type == TOKEN_LBRACE {
-				// Parse object literal without type prefix: {...}
-				// Type will be inferred from field declaration
-				p.advance() // consume {
-				defaultValue = p.parseObjectLiteral()
-				// Leave Value empty - will be set from field type
-			} else if p.current().Type == TOKEN_LANGLE {
-				// Parse dict literal default value
-				defaultValue = p.parseDictLiteral()
-			} else if p.current().Type == TOKEN_STRING {
-				defaultValue = &ASTNode{
-					Type:  NODE_STRING,
-					Value: p.current().Value,
-					Line:  p.current().Line,
-				}
-				p.advance()
-			} else if p.current().Type == TOKEN_TRUE || p.current().Type == TOKEN_FALSE {
-				defaultValue = &ASTNode{
-					Type:  NODE_BOOLEAN,
-					Value: p.current().Value,
-					Line:  p.current().Line,
-				}
-				p.advance()
-			} else if p.current().Type == TOKEN_LBRACKET {
-				// Parse array literal default value
-				defaultValue = p.parseArrayLiteralBracket()
-			} else if p.current().Type == TOKEN_LBRACE {
-				// Parse dict literal default value
-				defaultValue = p.parseDictLiteral()
-			}
-
-			// Check for # prefix (static property) after default value but before field name
+			
+			// Check for # prefix (static property) before field name
 			if p.current().Type == TOKEN_HASH {
 				isStatic = true
 				p.advance() // consume #
@@ -7438,8 +7339,10 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 				fieldName = p.expect(TOKEN_IDENTIFIER)
 			}
 
-			// Check if type is provided (field: type) or inferred from default value
+			// Check if type is provided (field: type) or use default type
 			fieldType := ""
+			var defaultValue *ASTNode
+			
 			if p.current().Type == TOKEN_ASSIGN {
 				p.advance() // consume :
 
@@ -7479,34 +7382,61 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 						p.advance()
 					}
 				}
-
-				// If defaultValue is an object literal without a type, set it from fieldType
-				if defaultValue != nil && defaultValue.Type == NODE_OBJECT_LITERAL && defaultValue.Value == "" {
-					defaultValue.Value = fieldType
+				
+				// Check for = and default value
+				if p.current().Type == TOKEN_EQUALS {
+					p.advance() // consume =
+					
+					// Parse default value
+					if p.current().Type == TOKEN_NUMBER {
+						defaultValue = &ASTNode{
+							Type:  NODE_NUMBER,
+							Value: p.current().Value,
+							Line:  p.current().Line,
+						}
+						p.advance()
+					} else if p.current().Type == TOKEN_TRUE || p.current().Type == TOKEN_FALSE {
+						defaultValue = &ASTNode{
+							Type:  NODE_BOOLEAN,
+							Value: p.current().Value,
+							Line:  p.current().Line,
+						}
+						p.advance()
+					} else if p.current().Type == TOKEN_MINUS && p.peek(1).Type == TOKEN_NUMBER {
+						line := p.current().Line
+						p.advance() // consume minus
+						defaultValue = &ASTNode{
+							Type:  NODE_NUMBER,
+							Value: "-" + p.current().Value,
+							Line:  line,
+						}
+						p.advance()
+					} else if p.current().Type == TOKEN_IDENTIFIER && p.peek(1).Type == TOKEN_LBRACE {
+						typeName := p.current().Value
+						p.advance() // consume type name
+						p.advance() // consume {
+						defaultValue = p.parseObjectLiteral()
+						defaultValue.Value = typeName
+					} else if p.current().Type == TOKEN_LBRACE {
+						p.advance() // consume {
+						defaultValue = p.parseObjectLiteral()
+						defaultValue.Value = fieldType
+					} else if p.current().Type == TOKEN_LANGLE {
+						defaultValue = p.parseDictLiteral()
+					} else if p.current().Type == TOKEN_STRING {
+						defaultValue = &ASTNode{
+							Type:  NODE_STRING,
+							Value: p.current().Value,
+							Line:  p.current().Line,
+						}
+						p.advance()
+					} else if p.current().Type == TOKEN_LBRACKET {
+						defaultValue = p.parseArrayLiteralBracket()
+					}
 				}
 			} else {
-				// No explicit type - infer from default value
-				if defaultValue != nil {
-					switch defaultValue.Type {
-					case NODE_NUMBER:
-						// Check if it's a float or int
-						if strings.Contains(defaultValue.Value, ".") {
-							fieldType = "float"
-						} else {
-							fieldType = "int"
-						}
-					case NODE_STRING:
-						fieldType = "string"
-					case NODE_BOOLEAN:
-						fieldType = "bool"
-					case NODE_OBJECT_LITERAL:
-						fieldType = defaultValue.Value
-					default:
-						fieldType = "int" // default fallback
-					}
-				} else {
-					fieldType = "int" // default when no default value and no type
-				}
+				// No type specified - default to int
+				fieldType = "int"
 			}
 
 			// Check if field name is SCREAMING_SNAKE_CASE (const property)
