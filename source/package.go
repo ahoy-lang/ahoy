@@ -53,7 +53,7 @@ func (pm *PackageManager) LoadFile(filePath string) (*PackageFile, error) {
 	if cachedFile, ok := cache.GetCachedFile(filePath); ok {
 		return cachedFile, nil
 	}
-	
+
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("error reading file %s: %v", filePath, err)
@@ -82,11 +82,13 @@ func (pm *PackageManager) LoadFile(filePath string) (*PackageFile, error) {
 		return nil, parseErr
 	}
 
+	// Semantic validation is deliberately not run here: a file's diagnostics can
+	// depend on names declared in the program's other files, which are not known
+	// until the whole package is loaded. validateProgram runs it afterwards.
 	pf := &PackageFile{
-		Path:           filePath,
-		AST:            ast,
-		Content:        formattedContent,
-		SemanticErrors: validateSemantics(tokens, filePath),
+		Path:    filePath,
+		AST:     ast,
+		Content: formattedContent,
 	}
 
 	// Check if first statement is a program declaration
@@ -103,11 +105,39 @@ func (pm *PackageManager) LoadFile(filePath string) (*PackageFile, error) {
 	return pf, nil
 }
 
-// validateSemantics runs the semantic pass over an already-tokenized file and
+// validateProgram runs the semantic checks over every file of a program and
+// records the diagnostics on each file.
+//
+// This happens once the whole program is known rather than while each file is
+// loaded, so that a function used in one file and declared in another is not
+// reported as undefined.
+func (pm *PackageManager) validateProgram(pkg *Package) {
+	if pkg == nil || len(pkg.Files) == 0 {
+		return
+	}
+
+	declared := map[string]bool{}
+	for _, file := range pkg.Files {
+		for _, name := range ahoy.DeclaredNames(file.AST) {
+			declared[name] = true
+		}
+	}
+	programNames := make([]string, 0, len(declared))
+	for name := range declared {
+		programNames = append(programNames, name)
+	}
+
+	for i := range pkg.Files {
+		file := &pkg.Files[i]
+		file.SemanticErrors = validateSemantics(file.Content, file.Path, programNames)
+	}
+}
+
+// validateSemantics runs the semantic pass over one file of a program and
 // returns its diagnostics. The parser's semantic checks live behind LintMode,
 // which the code-generation path does not use, so this is the only place they
 // run during a normal build.
-func validateSemantics(tokens []ahoy.Token, filePath string) (diagnostics []ahoy.ParseError) {
+func validateSemantics(content, filePath string, programNames []string) (diagnostics []ahoy.ParseError) {
 	defer func() {
 		if r := recover(); r != nil {
 			// A crash in the validator must not take down compilation; report it
@@ -121,7 +151,7 @@ func validateSemantics(tokens []ahoy.Token, filePath string) (diagnostics []ahoy
 			})
 		}
 	}()
-	_, diagnostics = ahoy.ParseLintWithPath(tokens, filePath)
+	_, diagnostics = ahoy.ParseLintWithPathInProgram(ahoy.Tokenize(content), filePath, programNames)
 	return diagnostics
 }
 
@@ -139,6 +169,7 @@ func (pm *PackageManager) LoadPackageFromFile(mainFilePath string) (*Package, er
 			Name:  filepath.Base(mainFilePath),
 			Files: []PackageFile{*mainFile},
 		}
+		pm.validateProgram(pkg)
 		return pkg, nil
 	}
 
@@ -207,6 +238,7 @@ func (pm *PackageManager) LoadPackageFromFile(mainFilePath string) (*Package, er
 		}
 	}
 
+	pm.validateProgram(pkg)
 	pm.Packages[pkg.Name] = pkg
 	return pkg, nil
 }
@@ -300,6 +332,7 @@ func (pm *PackageManager) LoadPackageFromDirectory(dirPath string) (*Package, er
 				Name:  name,
 				Files: files,
 			}
+			pm.validateProgram(pkg)
 			pm.Packages[name] = pkg
 			return pkg, nil
 		}

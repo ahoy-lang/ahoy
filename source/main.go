@@ -684,13 +684,15 @@ func main() {
 			}
 		}
 
-		// Multi-file programs: validate the sibling files as well and report
-		// definitions that collide across the program.
+		// Multi-file programs: validate the whole program. This pass knows the
+		// names the sibling files declare, so it supersedes the single-file pass
+		// above - otherwise a function declared in another file of the same
+		// program would be reported as undefined.
 		if programName != "" {
 			if absPath, absErr := filepath.Abs(sourceFile); absErr == nil {
 				pm := NewPackageManager(filepath.Dir(absPath))
 				if pkg, pkgErr := pm.LoadPackageFromFile(absPath); pkgErr == nil {
-					diagnostics = append(diagnostics, diagnosticsFromPackage(pkg)...)
+					diagnostics = diagnosticsFromPackage(pkg)
 					for _, file := range pkg.Files {
 						sources[file.Path] = file.Content
 					}

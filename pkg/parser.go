@@ -228,163 +228,8 @@ type Parser struct {
 	zeroArgFunctions    map[string]bool               // O(1) lookup for zero-argument functions (snake_case name -> true)
 }
 
-func Parse(tokens []Token) *ASTNode {
-	parser := &Parser{
-		tokens:              tokens,
-		pos:                 0,
-		LintMode:            false,
-		Errors:              []ParseError{},
-		variableTypes:       make(map[string]string),
-		constants:           make(map[string]int),
-		constantsInMain:     make(map[string]bool),
-		constantUsages:      make(map[string][]int),
-		declaredVars:        make(map[string]int),
-		scopeStack:          make([]map[string]int, 0),
-		functionScopeStack:  make([]map[string]string, 0),
-		inConditionalScope:  false,
-		structs:             make(map[string]*StructDefinition),
-		enums:               make(map[string]*EnumDefinition),
-		typeAliases:         make(map[string]string),
-		unionTypes:          make(map[string][]string),
-		objectLiterals:      make(map[string]map[string]bool),
-		currentFunctionRet:  "",
-		currentFunctionName: "",
-		functionScope:       make(map[string]string),
-		functions:           make(map[string]*FunctionSignature),
-		arrayLengths:        make(map[string]ArrayInfo),
-		cHeaders:            make(map[string]*CHeaderInfo),
-		cHeaderGlobal:       &CHeaderInfo{Functions: make(map[string]*CFunction), Enums: make(map[string]*CEnum), Defines: make(map[string]*CDefine), Structs: make(map[string]*CStruct)},
-		blockDepth:          0,
-		loopVarScopes:       make([]map[string]string, 0),
-		functionDepth:       0,
-		hasProgramDecl:      false,
-		inFunctionBody:      false,
-		sourceFilePath:      "",
-		zeroArgFunctions:    make(map[string]bool),
-	}
-	ast := parser.parseProgram()
-	stampNodeFiles(ast, "")
-	return ast
-}
-
-func ParseWithPath(tokens []Token, sourceFilePath string) *ASTNode {
-	parser := &Parser{
-		tokens:              tokens,
-		pos:                 0,
-		LintMode:            false,
-		Errors:              []ParseError{},
-		variableTypes:       make(map[string]string),
-		constants:           make(map[string]int),
-		constantsInMain:     make(map[string]bool),
-		constantUsages:      make(map[string][]int),
-		declaredVars:        make(map[string]int),
-		scopeStack:          make([]map[string]int, 0),
-		functionScopeStack:  make([]map[string]string, 0),
-		inConditionalScope:  false,
-		structs:             make(map[string]*StructDefinition),
-		enums:               make(map[string]*EnumDefinition),
-		typeAliases:         make(map[string]string),
-		unionTypes:          make(map[string][]string),
-		objectLiterals:      make(map[string]map[string]bool),
-		currentFunctionRet:  "",
-		currentFunctionName: "",
-		functionScope:       make(map[string]string),
-		functions:           make(map[string]*FunctionSignature),
-		arrayLengths:        make(map[string]ArrayInfo),
-		cHeaders:            make(map[string]*CHeaderInfo),
-		cHeaderGlobal:       &CHeaderInfo{Functions: make(map[string]*CFunction), Enums: make(map[string]*CEnum), Defines: make(map[string]*CDefine), Structs: make(map[string]*CStruct)},
-		blockDepth:          0,
-		loopVarScopes:       make([]map[string]string, 0),
-		functionDepth:       0,
-		hasProgramDecl:      false,
-		inFunctionBody:      false,
-		sourceFilePath:      sourceFilePath,
-		zeroArgFunctions:    make(map[string]bool),
-	}
-	ast := parser.parseProgram()
-	stampNodeFiles(ast, sourceFilePath)
-	return ast
-}
-
-func ParseLint(tokens []Token) (*ASTNode, []ParseError) {
-	parser := &Parser{
-		tokens:              tokens,
-		pos:                 0,
-		LintMode:            true,
-		Errors:              []ParseError{},
-		variableTypes:       make(map[string]string),
-		constants:           make(map[string]int),
-		constantsInMain:     make(map[string]bool),
-		constantUsages:      make(map[string][]int),
-		declaredVars:        make(map[string]int),
-		scopeStack:          make([]map[string]int, 0),
-		functionScopeStack:  make([]map[string]string, 0),
-		inConditionalScope:  false,
-		structs:             make(map[string]*StructDefinition),
-		enums:               make(map[string]*EnumDefinition),
-		typeAliases:         make(map[string]string),
-		unionTypes:          make(map[string][]string),
-		objectLiterals:      make(map[string]map[string]bool),
-		currentFunctionRet:  "",
-		currentFunctionName: "",
-		functionScope:       make(map[string]string),
-		functions:           make(map[string]*FunctionSignature),
-		arrayLengths:        make(map[string]ArrayInfo),
-		cHeaders:            make(map[string]*CHeaderInfo),
-		cHeaderGlobal:       &CHeaderInfo{Functions: make(map[string]*CFunction), Enums: make(map[string]*CEnum), Defines: make(map[string]*CDefine), Structs: make(map[string]*CStruct)},
-		blockDepth:          0,
-		loopVarScopes:       make([]map[string]string, 0),
-		functionDepth:       0,
-		hasProgramDecl:      false,
-		inFunctionBody:      false,
-		sourceFilePath:      "",
-		zeroArgFunctions:    make(map[string]bool),
-	}
-	ast := parser.parseProgram()
-	stampErrorFiles(parser.Errors, "")
-	stampNodeFiles(ast, "")
-	return ast, parser.Errors
-}
-
-func ParseLintWithPath(tokens []Token, sourceFilePath string) (*ASTNode, []ParseError) {
-	parser := &Parser{
-		tokens:              tokens,
-		pos:                 0,
-		LintMode:            true,
-		Errors:              []ParseError{},
-		variableTypes:       make(map[string]string),
-		constants:           make(map[string]int),
-		constantsInMain:     make(map[string]bool),
-		constantUsages:      make(map[string][]int),
-		declaredVars:        make(map[string]int),
-		scopeStack:          make([]map[string]int, 0),
-		functionScopeStack:  make([]map[string]string, 0),
-		inConditionalScope:  false,
-		structs:             make(map[string]*StructDefinition),
-		enums:               make(map[string]*EnumDefinition),
-		typeAliases:         make(map[string]string),
-		unionTypes:          make(map[string][]string),
-		objectLiterals:      make(map[string]map[string]bool),
-		currentFunctionRet:  "",
-		currentFunctionName: "",
-		functionScope:       make(map[string]string),
-		functions:           make(map[string]*FunctionSignature),
-		arrayLengths:        make(map[string]ArrayInfo),
-		cHeaders:            make(map[string]*CHeaderInfo),
-		cHeaderGlobal:       &CHeaderInfo{Functions: make(map[string]*CFunction), Enums: make(map[string]*CEnum), Defines: make(map[string]*CDefine), Structs: make(map[string]*CStruct)},
-		blockDepth:          0,
-		loopVarScopes:       make([]map[string]string, 0),
-		functionDepth:       0,
-		hasProgramDecl:      false,
-		inFunctionBody:      false,
-		sourceFilePath:      sourceFilePath,
-		zeroArgFunctions:    make(map[string]bool),
-	}
-	ast := parser.parseProgram()
-	stampErrorFiles(parser.Errors, sourceFilePath)
-	stampNodeFiles(ast, sourceFilePath)
-	return ast, parser.Errors
-}
+// The public parse entry points (Parse, ParseWithPath, ParseLint, ...)
+// live in lint.go.
 
 func (p *Parser) current() Token {
 	if p.pos >= len(p.tokens) {
@@ -615,7 +460,7 @@ func (p *Parser) checkDuplicateArguments(call *ASTNode, funcName string) {
 		if firstPos, exists := seenArgs[argStr]; exists {
 			// Found a duplicate!
 			arg := call.Children[i]
-			
+
 			// Extract the actual value for error message
 			actualValue := ""
 			if arg.Type == NODE_BINARY_OP && arg.Value == "named_arg" && len(arg.Children) >= 2 {
@@ -626,11 +471,11 @@ func (p *Parser) checkDuplicateArguments(call *ASTNode, funcName string) {
 
 			// Build error message
 			errorMsg := fmt.Sprintf("duplicate argument '%s' in function call", actualValue)
-			
+
 			// Add parameter name info if available
 			if len(paramNames) > i && len(paramNames) > firstPos {
 				expectedParam := paramNames[i]
-				errorMsg = fmt.Sprintf("duplicate argument '%s'; expected parameter '%s' at position %d", 
+				errorMsg = fmt.Sprintf("duplicate argument '%s'; expected parameter '%s' at position %d",
 					actualValue, expectedParam, i+1)
 			}
 
@@ -727,26 +572,26 @@ func (p *Parser) inferType(node *ASTNode) string {
 	case NODE_CALL:
 		// Handle function calls - infer return type from function signature
 		funcName := node.Value
-		
+
 		// First check C headers (global namespace)
 		if p.cHeaderGlobal != nil {
 			if cFunc, exists := p.cHeaderGlobal.Functions[funcName]; exists {
 				return cFunc.ReturnType
 			}
 		}
-		
+
 		// Check C headers (namespaced)
 		for _, cHeader := range p.cHeaders {
 			if cFunc, exists := cHeader.Functions[funcName]; exists {
 				return cFunc.ReturnType
 			}
 		}
-		
+
 		// Check Ahoy function signatures
 		if funcSig, exists := p.functions[funcName]; exists {
 			if len(funcSig.ReturnTypes) > 0 {
 				returnType := funcSig.ReturnTypes[0]
-				
+
 				// If the return type is "infer", try to infer it from the function body
 				if returnType == "infer" && funcSig.FunctionNode != nil {
 					// Infer the actual return types
@@ -755,11 +600,11 @@ func (p *Parser) inferType(node *ASTNode) string {
 						return inferredTypes[0]
 					}
 				}
-				
+
 				return returnType
 			}
 		}
-		
+
 		return "unknown"
 	default:
 		// For expressions, we could recursively infer but for now return unknown
@@ -1406,12 +1251,12 @@ func (p *Parser) parseFunction() *ASTNode {
 			for p.current().Type == TOKEN_NEWLINE {
 				p.advance()
 			}
-			
+
 			// Check if we've reached the closing pipe
 			if p.current().Type == TOKEN_PIPE {
 				break
 			}
-			
+
 			paramName := p.expect(TOKEN_IDENTIFIER)
 			var paramType string
 
@@ -2704,7 +2549,7 @@ func (p *Parser) parseLoop() *ASTNode {
 		// Infer element type from collection
 		loopScope := make(map[string]string)
 		collectionType := p.inferType(collectionExpr)
-		
+
 		// If it's an array type like "array[string]", extract the element type
 		if strings.HasPrefix(collectionType, "array[") && strings.HasSuffix(collectionType, "]") {
 			elementType := collectionType[6 : len(collectionType)-1] // Extract type between [ and ]
@@ -3212,7 +3057,7 @@ func (p *Parser) parseAssertStatement() *ASTNode {
 func (p *Parser) parseGotoStatement() *ASTNode {
 	gotoToken := p.expect(TOKEN_GOTO)
 	line := gotoToken.Line
-	
+
 	// Expect a label name (identifier)
 	if p.current().Type != TOKEN_IDENTIFIER {
 		p.Errors = append(p.Errors, ParseError{
@@ -3222,10 +3067,10 @@ func (p *Parser) parseGotoStatement() *ASTNode {
 		})
 		return &ASTNode{Type: NODE_GOTO_STATEMENT, Line: line}
 	}
-	
+
 	labelName := p.current().Value
 	p.advance()
-	
+
 	return &ASTNode{
 		Type:  NODE_GOTO_STATEMENT,
 		Value: labelName,
@@ -3238,7 +3083,7 @@ func (p *Parser) parseLabelDeclaration() *ASTNode {
 	labelName := p.current().Value
 	line := p.current().Line
 	p.advance()
-	
+
 	// Expect a colon
 	if p.current().Type != TOKEN_ASSIGN || p.current().Value != ":" {
 		p.Errors = append(p.Errors, ParseError{
@@ -3249,18 +3094,18 @@ func (p *Parser) parseLabelDeclaration() *ASTNode {
 		return &ASTNode{Type: NODE_LABEL_DECLARATION, Value: labelName, Line: line}
 	}
 	p.advance()
-	
+
 	// Skip newline/indent after colon
 	for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT {
 		p.advance()
 	}
-	
+
 	// Parse the block body
 	p.blockDepth++
 	block := &ASTNode{Type: NODE_BLOCK, Line: line}
 	for p.current().Type != TOKEN_END && p.current().Type != TOKEN_EOF {
-		if p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_SEMICOLON || 
-		   p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
+		if p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_SEMICOLON ||
+			p.current().Type == TOKEN_INDENT || p.current().Type == TOKEN_DEDENT {
 			p.advance()
 			continue
 		}
@@ -3269,12 +3114,12 @@ func (p *Parser) parseLabelDeclaration() *ASTNode {
 			block.Children = append(block.Children, stmt)
 		}
 	}
-	
+
 	if p.current().Type == TOKEN_END {
 		p.advance() // Consume $
 		p.blockDepth--
 	}
-	
+
 	return &ASTNode{
 		Type:     NODE_LABEL_DECLARATION,
 		Value:    labelName,
@@ -4049,7 +3894,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					// Track if constant is declared in main function
 					if p.currentFunctionName == "main" {
 						p.constantsInMain[name.Value] = true
-						
+
 						// Check if this constant was used earlier in main
 						if usageLines, wasUsed := p.constantUsages[name.Value]; wasUsed {
 							for _, usageLine := range usageLines {
@@ -4202,7 +4047,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					// Track if constant is declared in main function
 					if p.currentFunctionName == "main" {
 						p.constantsInMain[name.Value] = true
-						
+
 						// Check if this constant was used earlier in main
 						if usageLines, wasUsed := p.constantUsages[name.Value]; wasUsed {
 							for _, usageLine := range usageLines {
@@ -5709,7 +5554,7 @@ func (p *Parser) parseArrayLiteral() *ASTNode {
 	if len(array.Children) > 0 {
 		firstType := p.inferType(array.Children[0])
 		allSameType := true
-		
+
 		for i := 1; i < len(array.Children); i++ {
 			elemType := p.inferType(array.Children[i])
 			if elemType != firstType {
@@ -5717,7 +5562,7 @@ func (p *Parser) parseArrayLiteral() *ASTNode {
 				break
 			}
 		}
-		
+
 		if allSameType && firstType != "" && firstType != "unknown" {
 			array.DataType = "array[" + firstType + "]"
 		}
@@ -6270,7 +6115,7 @@ func (p *Parser) parseConstantDeclaration() *ASTNode {
 			// Track if constant is declared in main function
 			if p.currentFunctionName == "main" {
 				p.constantsInMain[varName] = true
-				
+
 				// Check if this constant was used earlier in main
 				if usageLines, wasUsed := p.constantUsages[varName]; wasUsed {
 					for _, usageLine := range usageLines {
@@ -6381,12 +6226,12 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 		for p.current().Type == TOKEN_NEWLINE {
 			p.advance()
 		}
-		
+
 		// Check if we've reached the closing pipe
 		if p.current().Type == TOKEN_PIPE {
 			break
 		}
-		
+
 		// Safety check: if current token is not an identifier, break to avoid infinite loop
 		if p.current().Type != TOKEN_IDENTIFIER {
 			break
@@ -7253,7 +7098,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 						p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_CHAR_TYPE ||
 						p.current().Type == TOKEN_BOOL_TYPE || p.current().Type == TOKEN_DICT_TYPE ||
 						p.current().Type == TOKEN_ARRAY_TYPE {
-						
+
 						// Get field name (could be identifier or type keyword used as name)
 						var fieldName Token
 						if p.current().Type == TOKEN_IDENTIFIER ||
@@ -7270,7 +7115,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 						// Check if type is provided (field: type) or use default type
 						fieldType := ""
 						var defaultValue *ASTNode
-						
+
 						if p.current().Type == TOKEN_ASSIGN {
 							p.advance() // consume :
 
@@ -7310,11 +7155,11 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 									p.advance()
 								}
 							}
-							
+
 							// Check for = and default value
 							if p.current().Type == TOKEN_EQUALS {
 								p.advance() // consume =
-								
+
 								// Parse default value
 								if p.current().Type == TOKEN_NUMBER {
 									defaultValue = &ASTNode{
@@ -7391,7 +7236,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 		} else {
 			// Regular field - check for optional # prefix (static property) before field name
 			isStatic := false
-			
+
 			// Check for # prefix (static property) before field name
 			if p.current().Type == TOKEN_HASH {
 				isStatic = true
@@ -7414,7 +7259,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 			// Check if type is provided (field: type) or use default type
 			fieldType := ""
 			var defaultValue *ASTNode
-			
+
 			if p.current().Type == TOKEN_ASSIGN {
 				p.advance() // consume :
 
@@ -7454,11 +7299,11 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 						p.advance()
 					}
 				}
-				
+
 				// Check for = and default value
 				if p.current().Type == TOKEN_EQUALS {
 					p.advance() // consume =
-					
+
 					// Parse default value
 					if p.current().Type == TOKEN_NUMBER {
 						defaultValue = &ASTNode{
@@ -8286,7 +8131,7 @@ func (p *Parser) parseArrayLiteralBracket() *ASTNode {
 	if len(array.Children) > 0 {
 		firstType := p.inferType(array.Children[0])
 		allSameType := true
-		
+
 		for i := 1; i < len(array.Children); i++ {
 			elemType := p.inferType(array.Children[i])
 			if elemType != firstType {
@@ -8294,7 +8139,7 @@ func (p *Parser) parseArrayLiteralBracket() *ASTNode {
 				break
 			}
 		}
-		
+
 		if allSameType && firstType != "" && firstType != "unknown" {
 			array.DataType = "array[" + firstType + "]"
 		}
@@ -8611,7 +8456,7 @@ func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int)
 		// Validate count matches
 		expectedCount := len(leftSide.Children)
 		actualCount := len(returnTypes)
-		
+
 		// If function signature is found but returnTypes is empty, determine actual count
 		if actualCount == 0 && funcSig != nil && !funcSig.IsInfer {
 			// Check the function's DataType to see if it's void or single return
@@ -8630,7 +8475,7 @@ func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int)
 				actualCount = 1
 			}
 		}
-		
+
 		if expectedCount != actualCount {
 			var errMsg string
 			if actualCount == 0 {
