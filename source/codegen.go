@@ -4282,6 +4282,62 @@ func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
 	}
 }
 
+// hoistCallArguments evaluates arguments that are themselves calls into
+// temporary variables, and returns the replacement argument list.
+//
+// Print-style formatting reads each argument's inferred type and writes it out
+// as a simple expression. A nested call is not one: print|len|items|| would
+// otherwise emit the bare identifier 'len'. Storing the result first means the
+// temporary is an ordinary variable of the call's return type, so every
+// existing type branch - scalars, arrays, dicts, structs - keeps working.
+func (gen *CodeGenerator) hoistCallArguments(args []*ahoy.ASTNode) []*ahoy.ASTNode {
+	needsHoist := false
+	for _, arg := range args {
+		if arg != nil && arg.Type == ahoy.NODE_CALL {
+			needsHoist = true
+			break
+		}
+	}
+	if !needsHoist {
+		return args
+	}
+
+	out := make([]*ahoy.ASTNode, len(args))
+	copy(out, args)
+
+	wroteOne := false
+	for i, arg := range out {
+		if arg == nil || arg.Type != ahoy.NODE_CALL {
+			continue
+		}
+		resultType := gen.inferType(arg)
+		if resultType == "" || resultType == "void" || resultType == "unknown" {
+			// No usable result to store; leave the argument alone.
+			continue
+		}
+
+		tmp := fmt.Sprintf("__call_result_%d", gen.varCounter)
+		gen.varCounter++
+
+		if wroteOne {
+			gen.writeIndent()
+		}
+		gen.output.WriteString(fmt.Sprintf("%s %s = ", gen.mapType(resultType), tmp))
+		gen.generateNodeInternal(arg, false)
+		gen.output.WriteString(";\n")
+		wroteOne = true
+
+		gen.functionVars[tmp] = resultType
+		out[i] = &ahoy.ASTNode{Type: ahoy.NODE_IDENTIFIER, Value: tmp, DataType: resultType}
+	}
+
+	if wroteOne {
+		// Indent whatever follows the temporaries (the printf itself).
+		gen.writeIndent()
+	}
+	return out
+}
+
 func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 	// Keep user-defined functions as snake_case
 	// Convert C library functions to their original names
@@ -4344,26 +4400,29 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 		}
 		return
 	case "print":
+		// Arguments that are themselves calls are evaluated into temporaries first;
+		// see hoistCallArguments.
+		printArgs := gen.hoistCallArguments(node.Children)
 		// Check if we have multiple arguments or if first arg is a format string
-		hasMultipleArgs := len(node.Children) > 1
-		firstIsString := len(node.Children) > 0 && node.Children[0].Type == ahoy.NODE_STRING
+		hasMultipleArgs := len(printArgs) > 1
+		firstIsString := len(printArgs) > 0 && printArgs[0].Type == ahoy.NODE_STRING
 
 		// If first argument is a string AND it looks like a format string (has {} or %), treat it as one
 		if firstIsString && !hasMultipleArgs {
 			// Single string argument - just print it
 			gen.output.WriteString("printf(")
-			formatStr := node.Children[0].Value
+			formatStr := printArgs[0].Value
 			if !strings.HasSuffix(formatStr, "\\n") {
 				formatStr += "\\n"
 			}
 			gen.output.WriteString(fmt.Sprintf("\"%s\"", formatStr))
 			gen.output.WriteString(")")
 			return
-		} else if firstIsString && (strings.Contains(node.Children[0].Value, "{}") || strings.Contains(node.Children[0].Value, "%")) {
+		} else if firstIsString && (strings.Contains(printArgs[0].Value, "{}") || strings.Contains(printArgs[0].Value, "%")) {
 			// First arg is a format string with placeholders
 			gen.output.WriteString("printf(")
-			formatStr := node.Children[0].Value
-			args := node.Children[1:]
+			formatStr := printArgs[0].Value
+			args := printArgs[1:]
 
 			// Process %v and %t in format string
 			processedFormat, processedArgs := gen.processFormatString(formatStr, args)
@@ -4386,11 +4445,11 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 		} else {
 			// Multiple arguments without format string - print on one line with spaces (Python-style)
 			gen.output.WriteString("printf(")
-			if len(node.Children) > 0 {
+			if len(printArgs) > 0 {
 				formatParts := []string{}
 
 				// Build format string with spaces between arguments
-				for _, arg := range node.Children {
+				for _, arg := range printArgs {
 					argType := gen.inferType(arg)
 					formatSpec := ""
 
@@ -4501,7 +4560,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 				gen.output.WriteString(fmt.Sprintf("\"%s\"", formatStr))
 
 				// Output all arguments
-				for _, arg := range node.Children {
+				for _, arg := range printArgs {
 					gen.output.WriteString(", ")
 					argType := gen.inferType(arg)
 
