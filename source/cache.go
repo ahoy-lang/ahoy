@@ -40,7 +40,7 @@ type CHeaderCache struct {
 // BuildCache manages the incremental build cache
 type BuildCache struct {
 	CacheDir    string
-	ProgramName string                    // Name of the program being cached
+	ProgramName string                   // Name of the program being cached
 	Files       map[string]*FileCache    // path -> cache entry
 	CHeaders    map[string]*CHeaderCache // path -> C header cache entry
 	Enabled     bool
@@ -174,28 +174,28 @@ func (bc *BuildCache) IsFileChanged(filePath string) bool {
 	if !bc.Enabled {
 		return true
 	}
-	
+
 	absPath, err := filepath.Abs(filePath)
 	if err != nil {
 		return true
 	}
-	
+
 	cached, exists := bc.Files[absPath]
 	if !exists {
 		return true
 	}
-	
+
 	// Get current file info
 	info, err := os.Stat(absPath)
 	if err != nil {
 		return true
 	}
-	
+
 	// Quick check: mod time and size
 	if info.ModTime() != cached.ModTime || info.Size() != cached.Size {
 		return true
 	}
-	
+
 	return false
 }
 
@@ -230,7 +230,7 @@ func (bc *BuildCache) GetCachedFile(filePath string) (*PackageFile, bool) {
 	bc.mu.RLock()
 	cached := bc.Files[absPath]
 	bc.mu.RUnlock()
-	
+
 	if cached == nil || cached.AST == nil {
 		bc.mu.Lock()
 		bc.CacheMisses++

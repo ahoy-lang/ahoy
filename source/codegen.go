@@ -489,20 +489,20 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 	if len(gen.globalConstantGetters) > 0 {
 		result.WriteString("// Hot-reloadable constant getters\n")
 		result.WriteString("// These allow constants to update during hot reload\n\n")
-		
+
 		// Generate static storage for constant values
 		result.WriteString("// Internal storage for constant values\n")
 		for name, info := range gen.globalConstantGetters {
 			result.WriteString(fmt.Sprintf("static %s _const_%s = %s;\n", info.CType, name, info.InitValue))
 		}
 		result.WriteString("\n")
-		
+
 		// Generate getter functions
 		result.WriteString("// Getter functions for constants\n")
 		for name, info := range gen.globalConstantGetters {
 			result.WriteString(fmt.Sprintf("static inline %s get_%s(void) { return _const_%s; }\n", info.CType, name, name))
 		}
-		
+
 		// Generate update function for hot reload
 		result.WriteString("\n// Update function for hot reload\n")
 		result.WriteString("void ahoy_update_constants(void) {\n")
@@ -1303,7 +1303,7 @@ func (gen *CodeGenerator) scanTypeDeclarations(node *ahoy.ASTNode) {
 				canCompute = true
 			}
 		}
-		
+
 		// All global and main-scope constants should use getters for hot reload
 		// We can't check gen.currentFunction during scan, so we check the init expression
 		// If it's simple or can be computed, make it a getter
@@ -5444,7 +5444,7 @@ func (gen *CodeGenerator) generateConstant(node *ahoy.ASTNode) {
 			gen.generateNode(node.Children[0])
 		}
 		initExpr := gen.output.String()
-		
+
 		info := gen.globalConstantGetters[constName]
 		info.InitValue = initExpr
 		gen.globalConstantGetters[constName] = info
@@ -5475,7 +5475,7 @@ func (gen *CodeGenerator) generateConstant(node *ahoy.ASTNode) {
 				gen.generateNode(node.Children[0])
 			}
 			initExpr := gen.output.String()
-			
+
 			info := gen.globalConstantGetters[constName]
 			info.InitValue = initExpr
 			gen.globalConstantGetters[constName] = info
@@ -6878,7 +6878,7 @@ func (gen *CodeGenerator) reorderRaylibIncludes() {
 			// Update raylibIdx after swap
 			raylibIdx, raymathIdx = raymathIdx, raylibIdx
 		}
-		
+
 		// If raygui comes before raylib, swap them
 		if rayguiIdx != -1 && rayguiIdx < raylibIdx {
 			gen.orderedIncludes[raylibIdx], gen.orderedIncludes[rayguiIdx] =
@@ -7094,12 +7094,12 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 				if knownType, exists := gen.variables[v]; exists {
 					varType = knownType
 				}
-				
+
 				// Also check constants map for type
 				if constType, exists := gen.constants[v]; exists && varType == "int" {
 					varType = constType
 				}
-				
+
 				// Check if this is a global constant that needs getter
 				if _, isConst := gen.globalConstantGetters[v]; isConst {
 					// Apply cast if needed, then use getter function
