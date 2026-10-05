@@ -189,6 +189,7 @@ type CodeGenerator struct {
 	cTypeDefinitions              map[string]bool              // Track known C types from headers
 	declaredGlobalVars            map[string]bool              // Track global variables that have been declared in C code
 	declaredFunctionVars          map[string]bool              // Track function-local variables that have been declared in C code
+	scopeDeclared                 []map[string]bool            // Stack of open blocks -> names declared in each
 	enableBoundsChecking          bool                         // Enable runtime array bounds checking
 	enableSignalHandler           bool                         // Enable signal handler for crash reporting
 	skipBoundsCheck               bool                         // Temporarily skip bounds check (for lvalue contexts)
@@ -1898,6 +1899,8 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 
 	// Clear function-local declared variables for this new function
 	gen.declaredFunctionVars = make(map[string]bool)
+	// Start a fresh block-scope chain; the outermost entry is the function body.
+	gen.scopeDeclared = []map[string]bool{{}}
 
 	for _, param := range params.Children {
 		if param.DataType != "" {
@@ -1926,9 +1929,11 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	gen.autoFreedVars = make(map[string]bool)
 	gen.functionParameters = make(map[string]bool)
 
-	// Mark function parameters so we never auto-free them
+	// Mark function parameters so we never auto-free them. They are visible for
+	// the whole function body, so they belong in the outermost block scope.
 	for _, param := range params.Children {
 		gen.functionParameters[param.Value] = true
+		gen.markDeclaredInCurrentScope(param.Value)
 	}
 
 	gen.generateNodeInternal(body, false)
@@ -2357,7 +2362,20 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 		needsRedeclare = true
 	}
 
+	// A declaration in a block that has already ended must be declared again,
+	// even when it sits at the same indent as the original: sibling blocks are
+	// separate C scopes, so the earlier declaration is not visible here. The
+	// indent heuristic below cannot see that, and emitted an assignment to a
+	// variable that C could not resolve.
+	if node.Type == ahoy.NODE_VARIABLE_DECLARATION && isDeclared && !gen.nameVisibleInOpenScope(node.Value) {
+		needsRedeclare = true
+	}
+
 	canRedeclare := isLoopLocalPattern || needsRedeclare
+
+	if !isDeclared || canRedeclare {
+		gen.markDeclaredInCurrentScope(node.Value)
+	}
 
 	if isDeclared && !canRedeclare {
 		// Just assignment - mark RHS variables as escaping if being assigned to existing var
@@ -3876,6 +3894,27 @@ func (gen *CodeGenerator) registerHeapAllocation(varName string, varType string)
 // enterScope increments scope depth for tracking nested allocations
 func (gen *CodeGenerator) enterScope() {
 	gen.scopeDepth++
+	gen.scopeDeclared = append(gen.scopeDeclared, map[string]bool{})
+}
+
+// markDeclaredInCurrentScope records that a name was declared in the innermost
+// open block, so a later block can tell whether it is still visible.
+func (gen *CodeGenerator) markDeclaredInCurrentScope(name string) {
+	if name == "" || name == "_" || len(gen.scopeDeclared) == 0 {
+		return
+	}
+	gen.scopeDeclared[len(gen.scopeDeclared)-1][name] = true
+}
+
+// nameVisibleInOpenScope reports whether a name was declared in the innermost
+// block or in any block still enclosing it.
+func (gen *CodeGenerator) nameVisibleInOpenScope(name string) bool {
+	for i := len(gen.scopeDeclared) - 1; i >= 0; i-- {
+		if gen.scopeDeclared[i][name] {
+			return true
+		}
+	}
+	return false
 }
 
 // enterLoopScope marks the current scope as a loop boundary for break/continue handling
@@ -3983,6 +4022,9 @@ func (gen *CodeGenerator) exitScope() string {
 	}
 
 	gen.scopeDepth--
+	if len(gen.scopeDeclared) > 0 {
+		gen.scopeDeclared = gen.scopeDeclared[:len(gen.scopeDeclared)-1]
+	}
 	return cleanup.String()
 }
 

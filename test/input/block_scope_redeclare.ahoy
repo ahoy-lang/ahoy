@@ -1,0 +1,18 @@
+expected: []
+? Two sibling blocks may each declare the same name. Ahoy is block scoped,
+? so the first declaration is out of scope in the second block and the code
+? generator has to emit a declaration there too. It used to emit a plain
+? assignment instead, which C rejected with "'a' undeclared".
+
+@ main ||:
+	if true then
+		a: 1
+		print|a|
+	$
+	if true then
+		a: 2
+		print|a|
+	$
+	expected.push|"1", "2"|
+	print|expected|
+$
