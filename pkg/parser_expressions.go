@@ -662,12 +662,17 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 			p.current().Type == TOKEN_IDENTIFIER {
 
-			// Check if this is a cast (type followed by parenthesis) - if so, don't treat as type annotation
+			// A cast opens with a pipe: int|5|, string|n|. Parentheses are also
+			// accepted. Without this the type keyword was taken as an annotation and
+			// the pipe that followed was left dangling, so `s: string|x|` failed to
+			// parse even though `s: string|42|` happened to work.
 			if (p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
-				p.current().Type == TOKEN_CHAR_TYPE || p.current().Type == TOKEN_STRING_TYPE) &&
-				p.peek(1).Type == TOKEN_LPAREN {
-				// This is a cast like int(5), not a type annotation - treat as simple declaration with inferred type
-				// isDeclaration is already true, so just fall through
+				p.current().Type == TOKEN_CHAR_TYPE || p.current().Type == TOKEN_STRING_TYPE ||
+				p.current().Type == TOKEN_BOOL_TYPE) &&
+				(p.peek(1).Type == TOKEN_PIPE || p.peek(1).Type == TOKEN_LPAREN) {
+				// This is a cast, not a type annotation - treat as a declaration whose
+				// type is inferred from the cast expression. isDeclaration is already
+				// true, so just fall through.
 			} else if p.current().Type == TOKEN_IDENTIFIER && p.peek(1).Type == TOKEN_LANGLE {
 				// Check if this is a type annotation (Type<...>) or dict access (var<key>)
 				// Types are capitalized, variables are lowercase

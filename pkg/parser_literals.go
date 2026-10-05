@@ -555,6 +555,13 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 		if p.current().Type == TOKEN_PIPE {
 			// vector2|x,y| syntax
 			p.advance() // consume |
+
+			// Count this as being inside a call while the arguments are parsed.
+			// Otherwise the rule that an identifier followed by a pipe starts a
+			// call fires on a bare argument and swallows the cast's own closing
+			// pipe: string|x| parsed as string( x() ) and then fell apart, while
+			// string|42| worked because a number cannot start a call.
+			p.inFunctionCall++
 			args := []*ASTNode{}
 			for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
 				arg := p.parseAdditiveExpression()
@@ -566,6 +573,7 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 					break
 				}
 			}
+			p.inFunctionCall--
 			p.expect(TOKEN_PIPE)
 
 			return &ASTNode{
@@ -785,70 +793,6 @@ func (p *Parser) parseObjectLiteral() *ASTNode {
 	}
 
 	return object
-}
-
-func (p *Parser) parseObjectOrVector2Literal() *ASTNode {
-	// Parse < ... > which could be vector2 or object literal
-	p.expect(TOKEN_LANGLE)
-
-	// Peek ahead to determine if it's a simple vector2 <x,y> or object literal
-	savedPos := p.pos
-	isVector2 := false
-
-	// Check for simple vector2 pattern: <number,number>
-	if p.current().Type == TOKEN_NUMBER {
-		p.advance()
-		if p.current().Type == TOKEN_COMMA {
-			p.advance()
-			if p.current().Type == TOKEN_NUMBER {
-				p.advance()
-				if p.current().Type == TOKEN_RANGLE {
-					isVector2 = true
-				}
-			}
-		}
-	} else if p.current().Type == TOKEN_IDENTIFIER {
-		// Could be <x:10,y:20> object literal or variable reference
-		p.advance()
-		if p.current().Type == TOKEN_ASSIGN {
-			// It's an object literal with named properties <x:10>
-			isVector2 = false
-		} else if p.current().Type == TOKEN_COMMA {
-			// Could be <var1,var2> - check next
-			p.advance()
-			if p.current().Type == TOKEN_IDENTIFIER {
-				p.advance()
-				if p.current().Type == TOKEN_RANGLE {
-					// Simple <x,y> with identifiers - treat as vector2-like
-					isVector2 = true
-				}
-			}
-		}
-	}
-
-	// Restore position
-	p.pos = savedPos
-
-	if isVector2 {
-		// Parse simple vector2: <number,number>
-		x := p.expect(TOKEN_NUMBER)
-		p.expect(TOKEN_COMMA)
-		y := p.expect(TOKEN_NUMBER)
-		p.expect(TOKEN_RANGLE)
-
-		xNode := &ASTNode{Type: NODE_NUMBER, Value: x.Value, Line: x.Line}
-		yNode := &ASTNode{Type: NODE_NUMBER, Value: y.Value, Line: y.Line}
-
-		return &ASTNode{
-			Type:     NODE_OBJECT_LITERAL,
-			DataType: "vector2",
-			Children: []*ASTNode{xNode, yNode},
-			Line:     x.Line,
-		}
-	} else {
-		// Parse as full object literal
-		return p.parseObjectLiteral()
-	}
 }
 
 func (p *Parser) parseDictLiteral() *ASTNode {
