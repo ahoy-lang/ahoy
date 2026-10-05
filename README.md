@@ -240,13 +240,13 @@ $
 
 ? Loop over array
 numbers: [1, 2, 3, 4, 5]
-loop num in numbers
+loop num in numbers do
     ahoy |f"Number: {num}"|
 $
 
 ? Loop over dict
 data: {"x": 10, "y": 20}
-loop key, value in data
+loop key, value in data do
     ahoy |f"{key} = {value}"|
 $
 ```
@@ -352,7 +352,7 @@ last: numbers[3]
 items:array= [1, 2, 3, 4, 5]
 
 ? Iteration
-loop num in numbers
+loop num in numbers do
     ahoy |f"Number: {num}"|
 $
 ```
@@ -436,7 +436,7 @@ settings<"lang">: "es"
 config:dict = <"host": "localhost", "port": 8080>
 
 ? Iteration
-loop key, value in settings
+loop key, value in settings do
     print|f"{key}: {value}"|
 $
 
@@ -490,7 +490,7 @@ TIMEOUT::float= 30.0
     success:bool= false
     
     ? Processing loop
-    loop i:1 to retries
+    loop i:1 to retries do
         defer ahoy |f"Attempt {i} finished"|
         
         attempt: attempt + 1
@@ -525,7 +525,7 @@ ahoy |f"Result2: {result2}"|
 
 ? Array operations
 numbers:array= [1, 2, 3, 4, 5]
-loop num in numbers
+loop num in numbers do
     square: num * num
     ahoy |f"{num}² = {square}"|
 $
@@ -678,9 +678,9 @@ All Ahoy source files use the `.ahoy` extension.
 | Ternary | `cond ?? true : false` | `max: a > b ?? a : b` |
 | Assert | `assert condition` | `assert x > 0` |
 | Defer | `defer statement` | `defer cleanup\|\|` |
-| Loop | `loop var:start to end` | `loop i:0 to 10` |
-| Loop (array) | `loop item in array` | `loop x in nums` |
-| Loop (dict) | `loop key, val in dict` | `loop k, v in data` |
+| Loop | `loop var:start to end do` | `loop i:0 to 10 do` |
+| Loop (array) | `loop item in array do` | `loop x in nums do` |
+| Loop (dict) | `loop key, val in dict do` | `loop k, v in data do` |
 | Break | `halt` | `if done halt` |
 | Continue | `next` | `if skip next` |
 
