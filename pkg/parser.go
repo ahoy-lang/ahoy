@@ -84,11 +84,8 @@ type ASTNode struct {
 	IsConst      bool     // For struct fields in SCREAMING_SNAKE_CASE (immutable)
 }
 
-type ParseError struct {
-	Message string
-	Line    int
-	Column  int
-}
+// ParseError, its File/Severity fields and stampErrorFiles live in
+// diagnostics.go.
 
 type StructField struct {
 	Name         string
@@ -339,6 +336,7 @@ func ParseLint(tokens []Token) (*ASTNode, []ParseError) {
 		zeroArgFunctions:    make(map[string]bool),
 	}
 	ast := parser.parseProgram()
+	stampErrorFiles(parser.Errors, "")
 	return ast, parser.Errors
 }
 
@@ -377,6 +375,7 @@ func ParseLintWithPath(tokens []Token, sourceFilePath string) (*ASTNode, []Parse
 		zeroArgFunctions:    make(map[string]bool),
 	}
 	ast := parser.parseProgram()
+	stampErrorFiles(parser.Errors, sourceFilePath)
 	return ast, parser.Errors
 }
 
@@ -425,9 +424,10 @@ func (p *Parser) recordWarning(message string) {
 	if p.LintMode {
 		token := p.current()
 		p.Errors = append(p.Errors, ParseError{
-			Message: "Warning: " + message,
-			Line:    token.Line,
-			Column:  token.Column,
+			Message:  message,
+			Line:     token.Line,
+			Column:   token.Column,
+			Severity: "warning",
 		})
 	}
 }
