@@ -1,0 +1,23 @@
+? Ahoy hot reload demo — change bg_color below, save, watch it change live.
+program hotdemo
+
+import "/home/lee/Documents/ahoy-lang/ahoy/repos/raylib/src/raylib.h"
+
+@ main :: || void:
+	init_window|480, 320, "Ahoy Hot Reload Demo"|
+	set_target_fps|60|
+
+	? >>> EDIT ME: background colour <<<
+	bg_color : color{r: 220, g: 60, b: 60, a: 255};
+	print|"BGCOLOR %d %d %d\n", bg_color.r, bg_color.g, bg_color.b|
+
+	frames: 0
+	loop till not window_should_close do
+		frames = frames + 1
+		begin_drawing||
+		clear_background|bg_color|
+		draw_text|f"frame {frames}", 20, 20, 20, color{r: 255, g: 255, b: 255, a: 255}|
+		end_drawing||
+	$
+	close_window||
+$
