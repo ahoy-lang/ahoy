@@ -16,6 +16,13 @@ type PackageFile struct {
 	ProgramName string // Empty if standalone script
 	AST         *ahoy.ASTNode
 	Content     string
+	// SemanticErrors holds the diagnostics from the semantic pass (types,
+	// undeclared variables, duplicate declarations, const reassignment, ...).
+	// Parsing alone does not run these checks, so without them a broken program
+	// reaches the C compiler and fails there - or produces a silently wrong
+	// binary. They are part of the build cache too (see FileCache), because a
+	// cache hit skips the parse and would otherwise skip validation with it.
+	SemanticErrors []ahoy.ParseError
 }
 
 // Package represents a collection of files with the same program name
@@ -73,9 +80,10 @@ func (pm *PackageManager) LoadFile(filePath string) (*PackageFile, error) {
 	}
 
 	pf := &PackageFile{
-		Path:    filePath,
-		AST:     ast,
-		Content: formattedContent,
+		Path:           filePath,
+		AST:            ast,
+		Content:        formattedContent,
+		SemanticErrors: validateSemantics(tokens, filePath),
 	}
 
 	// Check if first statement is a program declaration
@@ -90,6 +98,28 @@ func (pm *PackageManager) LoadFile(filePath string) (*PackageFile, error) {
 	GetBuildCache().CacheFile(pf)
 
 	return pf, nil
+}
+
+// validateSemantics runs the semantic pass over an already-tokenized file and
+// returns its diagnostics. The parser's semantic checks live behind LintMode,
+// which the code-generation path does not use, so this is the only place they
+// run during a normal build.
+func validateSemantics(tokens []ahoy.Token, filePath string) (diagnostics []ahoy.ParseError) {
+	defer func() {
+		if r := recover(); r != nil {
+			// A crash in the validator must not take down compilation; report it
+			// as a warning so the build still reaches code generation.
+			diagnostics = append(diagnostics, ahoy.ParseError{
+				Message:  fmt.Sprintf("internal validator error (please report): %v", r),
+				Line:     1,
+				Column:   1,
+				File:     filePath,
+				Severity: "warning",
+			})
+		}
+	}()
+	_, diagnostics = ahoy.ParseLintWithPath(tokens, filePath)
+	return diagnostics
 }
 
 // LoadPackageFromFile loads a file and its associated package files

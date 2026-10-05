@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/pprof"
+	"sort"
 	"strings"
 	"time"
 
@@ -527,6 +528,7 @@ func main() {
 	genStdlibFlag := flag.Bool("gen_stdlib_docs", false, "Generate stdlib documentation as .ahoy file")
 	hotReloadFlag := flag.Bool("hotreload", false, "Enable hot code reloading (keeps window open, reloads on file changes) - development only")
 	coldReloadFlag := flag.Bool("coldreload", false, "Enable cold reload (auto-recompile and restart on file changes) - development only")
+	noSemanticsFlag := flag.Bool("no_semantics", false, "Skip semantic validation (type errors, undeclared names, duplicate definitions)")
 	helpFlag := flag.Bool("h", false, "Show help")
 
 	flag.Parse()
@@ -665,17 +667,8 @@ func main() {
 
 	// Lint mode
 	if *lintFlag {
-		// Parse the code to check for C imports
-		ast, errors := ahoy.ParseLintWithPath(tokens, sourceFile)
-
-		// Check syntax errors
-		if len(errors) > 0 {
-			fmt.Printf("Found %d syntax error(s) in %s:\n", len(errors), sourceFile)
-			for _, err := range errors {
-				fmt.Printf("  Line %d, Column %d: %s\n", err.Line, err.Column, err.Message)
-			}
-			os.Exit(1)
-		}
+		ast, diagnostics := ahoy.ParseLintWithPath(tokens, sourceFile)
+		sources := map[string]string{sourceFile: string(content)}
 
 		// Check if this is a multi-file program and validate for duplicates
 		programName := ""
@@ -691,64 +684,28 @@ func main() {
 			}
 		}
 
-		// If this is a multi-file program, check for duplicate functions across files
+		// Multi-file programs: validate the sibling files as well and report
+		// definitions that collide across the program.
 		if programName != "" {
-			absPath, _ := filepath.Abs(sourceFile)
-			pm := NewPackageManager(filepath.Dir(absPath))
-			pkg, err := pm.LoadPackageFromFile(absPath)
-			if err == nil && len(pkg.Files) > 1 {
-				// Track function definitions across files
-				functionDefs := make(map[string]struct {
-					file string
-					line int
-				})
-				duplicateErrors := []string{}
-
-				for _, file := range pkg.Files {
-					if file.AST == nil {
-						continue
+			if absPath, absErr := filepath.Abs(sourceFile); absErr == nil {
+				pm := NewPackageManager(filepath.Dir(absPath))
+				if pkg, pkgErr := pm.LoadPackageFromFile(absPath); pkgErr == nil {
+					diagnostics = append(diagnostics, diagnosticsFromPackage(pkg)...)
+					for _, file := range pkg.Files {
+						sources[file.Path] = file.Content
 					}
-					for _, child := range file.AST.Children {
-						if child.Type == ahoy.NODE_FUNCTION {
-							funcName := child.Value
-							if existing, exists := functionDefs[funcName]; exists {
-								duplicateErrors = append(duplicateErrors,
-									fmt.Sprintf("Function '%s' is already declared in %s (line %d); Ahoy doesn't support function overloading",
-										funcName, filepath.Base(existing.file), existing.line))
-							} else {
-								functionDefs[funcName] = struct {
-									file string
-									line int
-								}{file: file.Path, line: child.Line}
-							}
-						}
-					}
-				}
-
-				if len(duplicateErrors) > 0 {
-					fmt.Printf("Found %d error(s) in package '%s' (%d files):\n", len(duplicateErrors), programName, len(pkg.Files))
-					for _, errMsg := range duplicateErrors {
-						fmt.Printf("  %s\n", errMsg)
-					}
-					os.Exit(1)
 				}
 			}
 		}
 
-		// Try to use LSP for comprehensive validation if available
-		_, err := exec.LookPath("ahoy-lsp")
-		if err == nil && !hasCImports {
-			// LSP is available and no C imports, use it for comprehensive linting
-			// Note: LSP --validate mode not implemented yet
-			fmt.Printf("✓ No syntax errors found in %s\n", sourceFile)
-		} else if hasCImports {
-			// Has C imports - basic validation only (C functions can't be validated without full header parsing)
-			fmt.Printf("✓ No syntax errors found in %s\n", sourceFile)
-			fmt.Printf("  Note: File uses C imports. Use LSP in your editor for full validation.\n")
-		} else {
-			// LSP not available, only syntax checking done
-			fmt.Printf("✓ No syntax errors found in %s\n", sourceFile)
-			fmt.Printf("  (Install ahoy-lsp to PATH for comprehensive validation)\n")
+		fatal := printDiagnostics(dedupeDiagnostics(diagnostics), sources)
+		if fatal > 0 {
+			os.Exit(1)
+		}
+
+		fmt.Printf("✓ No errors found in %s\n", sourceFile)
+		if hasCImports {
+			fmt.Printf("  Note: file uses C imports; C symbols are not validated.\n")
 		}
 		return
 	}
@@ -798,6 +755,25 @@ func main() {
 	}
 
 	importsTime := time.Since(importsStart)
+
+	// Semantic validation. Code generation does not run these checks, so without
+	// them a broken program either fails inside the C compiler with a message
+	// about generated code, or compiles into something that misbehaves at run
+	// time. `-no_semantics` bypasses this if the checks get in the way.
+	if !*noSemanticsFlag {
+		sources := map[string]string{}
+		var diagnostics []ahoy.ParseError
+		for _, p := range collectPackages(pkg, imports) {
+			for _, file := range p.Files {
+				sources[file.Path] = file.Content
+			}
+			diagnostics = append(diagnostics, diagnosticsFromPackage(p)...)
+		}
+		if fatal := printDiagnostics(dedupeDiagnostics(diagnostics), sources); fatal > 0 {
+			fmt.Fprintf(os.Stderr, "\n%d error(s) found; compilation aborted.\n", fatal)
+			os.Exit(1)
+		}
+	}
 
 	// Start merge timing
 	mergeStart := time.Now()
@@ -1189,6 +1165,159 @@ func getQuickProgramName(filePath string) string {
 	return ""
 }
 
+// collectPackages returns the main package plus every imported package, without
+// duplicates.
+func collectPackages(pkg *Package, imports map[string]*Package) []*Package {
+	result := []*Package{pkg}
+	seen := map[*Package]bool{pkg: true}
+	for _, imported := range imports {
+		if imported == nil || seen[imported] {
+			continue
+		}
+		seen[imported] = true
+		result = append(result, imported)
+	}
+	return result
+}
+
+// diagnosticsFromPackage gathers every diagnostic recorded while loading a
+// package, including definitions that collide across the program's files.
+func diagnosticsFromPackage(pkg *Package) []ahoy.ParseError {
+	var diagnostics []ahoy.ParseError
+	for _, file := range pkg.Files {
+		diagnostics = append(diagnostics, file.SemanticErrors...)
+	}
+	diagnostics = append(diagnostics, findDuplicateFunctions(pkg)...)
+	return diagnostics
+}
+
+// findDuplicateFunctions reports functions defined more than once across the
+// files of a single program. Ahoy has no overloading, and compilation would
+// otherwise silently keep whichever definition wins in the generated C.
+func findDuplicateFunctions(pkg *Package) []ahoy.ParseError {
+	type definition struct {
+		file string
+		line int
+	}
+	seen := make(map[string]definition)
+	var diagnostics []ahoy.ParseError
+	for _, file := range pkg.Files {
+		if file.AST == nil {
+			continue
+		}
+		for _, child := range file.AST.Children {
+			if child.Type != ahoy.NODE_FUNCTION {
+				continue
+			}
+			if first, exists := seen[child.Value]; exists {
+				diagnostics = append(diagnostics, ahoy.ParseError{
+					Message: fmt.Sprintf("Function '%s' is already declared in %s (line %d); Ahoy doesn't support function overloading",
+						child.Value, filepath.Base(first.file), first.line),
+					Line:   child.Line,
+					Column: child.Column,
+					File:   file.Path,
+				})
+				continue
+			}
+			seen[child.Value] = definition{file: file.Path, line: child.Line}
+		}
+	}
+	return diagnostics
+}
+
+// dedupeDiagnostics removes repeated diagnostics, keeping the first occurrence.
+// A file can be validated more than once: directly, and again as part of the
+// multi-file program it belongs to.
+func dedupeDiagnostics(diagnostics []ahoy.ParseError) []ahoy.ParseError {
+	seen := make(map[string]bool, len(diagnostics))
+	result := make([]ahoy.ParseError, 0, len(diagnostics))
+	for _, d := range diagnostics {
+		key := fmt.Sprintf("%s\x00%d\x00%d\x00%s", d.File, d.Line, d.Column, d.Message)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, d)
+	}
+	return result
+}
+
+// printDiagnostics writes diagnostics as file:line:column with the offending
+// source line and a caret, and returns how many of them are fatal. Warnings are
+// reported but never fail a build.
+func printDiagnostics(diagnostics []ahoy.ParseError, sources map[string]string) (fatal int) {
+	if len(diagnostics) == 0 {
+		return 0
+	}
+
+	sorted := make([]ahoy.ParseError, len(diagnostics))
+	copy(sorted, diagnostics)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].File != sorted[j].File {
+			return sorted[i].File < sorted[j].File
+		}
+		if sorted[i].Line != sorted[j].Line {
+			return sorted[i].Line < sorted[j].Line
+		}
+		return sorted[i].Column < sorted[j].Column
+	})
+
+	for _, d := range sorted {
+		severity := "error"
+		if d.IsWarning() {
+			severity = "warning"
+		} else {
+			fatal++
+		}
+		file := d.File
+		if file == "" {
+			file = "<unknown>"
+		}
+		fmt.Fprintf(os.Stderr, "%s:%d:%d: %s: %s\n", file, d.Line, d.Column, severity, d.Message)
+		if excerpt := sourceExcerpt(sources[file], d.Line, d.Column); excerpt != "" {
+			fmt.Fprint(os.Stderr, excerpt)
+		}
+	}
+	return fatal
+}
+
+// sourceExcerpt renders one source line with a caret under the reported column.
+func sourceExcerpt(content string, line, column int) string {
+	if content == "" || line <= 0 {
+		return ""
+	}
+	lines := strings.Split(content, "\n")
+	if line > len(lines) {
+		return ""
+	}
+	text := strings.TrimRight(lines[line-1], "\r")
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+
+	// Tabs would misalign the caret, so measure the prefix with them expanded.
+	const tabWidth = 4
+	expand := func(s string) string {
+		return strings.ReplaceAll(s, "\t", strings.Repeat(" ", tabWidth))
+	}
+	if column < 1 {
+		column = 1
+	}
+	if column > len(text)+1 {
+		column = len(text) + 1
+	}
+	caretOffset := len(expand(text[:column-1]))
+
+	gutter := fmt.Sprintf("%5d | ", line)
+	var b strings.Builder
+	b.WriteString(gutter)
+	b.WriteString(expand(text))
+	b.WriteString("\n")
+	b.WriteString(strings.Repeat(" ", len(gutter)+caretOffset))
+	b.WriteString("^\n")
+	return b.String()
+}
+
 func showHelp() {
 	fmt.Println("Ahoy Language Compiler")
 	fmt.Println("======================")
@@ -1204,12 +1333,18 @@ func showHelp() {
 	fmt.Println("  -arc=<bool>   Enable/disable Automatic Reference Counting (default: true)")
 	fmt.Println("  -target <t>   Cross-compile to target: linux, windows, macos, web, or all")
 	fmt.Println("  -format       Format the source file")
-	fmt.Println("  -lint         Check for syntax errors without compiling")
+	fmt.Println("  -lint         Check for errors without compiling")
+	fmt.Println("  -no_semantics Skip semantic validation (types, undeclared names, duplicates)")
 	fmt.Println("  -gen_stdlib_docs   Generate stdlib API reference as .ahoy file")
 	fmt.Println("  -cache        Enable incremental builds (cache parsed files)")
 	fmt.Println("  -hotreload    Enable hot code reloading (development only, keeps window open)")
 	fmt.Println("  -coldreload   Enable cold reload (development only, auto-recompile and restart)")
 	fmt.Println("  -h            Show this help message")
+	fmt.Println()
+	fmt.Println("Diagnostics:")
+	fmt.Println("  Type errors, undeclared variables, argument mismatches and duplicate")
+	fmt.Println("  definitions are reported as file:line:column with the source line and")
+	fmt.Println("  a caret. Use -no_semantics to compile without these checks.")
 	fmt.Println()
 	fmt.Println("Compilation modes:")
 	fmt.Println("  Default (debug): Uses TCC for fast compilation (~5ms)")
@@ -1368,7 +1503,8 @@ func handleColdReload(sourceFile string, absPath string, arcFlag bool) {
 	fmt.Println("\n❄️  Cold Reload Mode - Auto-recompile enabled")
 	fmt.Println("📝 Edit and save to auto-recompile and restart")
 	fmt.Println("⚡ Using fast compilation")
-	fmt.Println("🛑 Press Ctrl+C to stop\n")
+	fmt.Println("🛑 Press Ctrl+C to stop")
+	fmt.Println()
 
 	sourceDir := filepath.Dir(absPath)
 

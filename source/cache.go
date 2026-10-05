@@ -22,6 +22,10 @@ type FileCache struct {
 	AST         *ahoy.ASTNode
 	Content     string
 	ProgramName string
+	// SemanticErrors must be cached alongside the AST: a cache hit skips the
+	// parse, and therefore skips validation too. Without this, compiling with
+	// -cache would silently drop every diagnostic after the first run.
+	SemanticErrors []ahoy.ParseError
 }
 
 // CHeaderCache stores cached C header parsing results
@@ -87,13 +91,19 @@ type CacheData struct {
 	CHeaders map[string]*CHeaderCache
 }
 
+// cacheFormatVersion is bumped whenever the shape of the cached data changes,
+// so entries written by an older compiler are never read back. v2 added
+// PackageFile.SemanticErrors: without this, an existing v1 cache would decode
+// with empty diagnostics and silently skip semantic validation.
+const cacheFormatVersion = 2
+
 // getCacheFileName returns the cache file name for the current program
 func (bc *BuildCache) getCacheFileName() string {
 	name := bc.ProgramName
 	if name == "" {
 		name = "default"
 	}
-	return name + "_cache.gob"
+	return fmt.Sprintf("%s_v%d_cache.gob", name, cacheFormatVersion)
 }
 
 // load loads the cache from disk
@@ -250,10 +260,11 @@ func (bc *BuildCache) GetCachedFile(filePath string) (*PackageFile, bool) {
 	bc.mu.Unlock()
 
 	return &PackageFile{
-		Path:        cached.Path,
-		ProgramName: cached.ProgramName,
-		AST:         cached.AST,
-		Content:     cached.Content,
+		Path:           cached.Path,
+		ProgramName:    cached.ProgramName,
+		AST:            cached.AST,
+		Content:        cached.Content,
+		SemanticErrors: cached.SemanticErrors,
 	}, true
 }
 
@@ -275,13 +286,14 @@ func (bc *BuildCache) CacheFile(pf *PackageFile) {
 
 	bc.mu.Lock()
 	bc.Files[absPath] = &FileCache{
-		Path:        absPath,
-		ModTime:     info.ModTime(),
-		Size:        info.Size(),
-		Checksum:    computeChecksum(pf.Content),
-		AST:         pf.AST,
-		Content:     pf.Content,
-		ProgramName: pf.ProgramName,
+		Path:           absPath,
+		ModTime:        info.ModTime(),
+		Size:           info.Size(),
+		Checksum:       computeChecksum(pf.Content),
+		AST:            pf.AST,
+		Content:        pf.Content,
+		ProgramName:    pf.ProgramName,
+		SemanticErrors: pf.SemanticErrors,
 	}
 	bc.mu.Unlock()
 }
@@ -389,7 +401,9 @@ func (bc *BuildCache) Clear() {
 	bc.CHeaders = make(map[string]*CHeaderCache)
 	bc.mu.Unlock()
 	if bc.CacheDir != "" {
-		cacheFile := filepath.Join(bc.CacheDir, "cache.gob")
+		// Must match the name save()/load() use, otherwise Clear() removes a
+		// file that was never written and the cache survives.
+		cacheFile := filepath.Join(bc.CacheDir, bc.getCacheFileName())
 		os.Remove(cacheFile)
 	}
 }
