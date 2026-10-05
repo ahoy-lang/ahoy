@@ -1,14 +1,12 @@
 program example
 
-@ multiply_two_numbers ::|a:int, b:int| int :
-	return a * b
-$
-
 @ main :: || void:
 	expected:[]
 	print|"Program, Example!"|
 	number: multiply_two_numbers|5, 10|
 	print|f"5 * 10 = {number}"|
-	expected.push|"Program, Example!", "5 * 10 = 50"|
+	message: extended_message|"Program"|
+	print|message|
+	expected.push|"Program, Example!", "5 * 10 = 50", "Program, extended!"|
 	print|expected|
 $

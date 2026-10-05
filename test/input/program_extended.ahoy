@@ -1,6 +1,9 @@
 program example
 
 @ multiply_two_numbers ::|a:int, b:int| int :
-		result: a * b
-		return result
+	return a * b
+$
+
+@ extended_message ::|name:string| string:
+	return f"{name}, extended!"
 $

@@ -2,6 +2,6 @@ program test_errors2
 
 ? Valid: declare then reassign
 z: 10
-z : 29
+z = 29
 print|z|
 print|["29"]|
