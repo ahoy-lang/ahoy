@@ -1666,7 +1666,6 @@ func (p *Parser) parseAhoyStatement() *ASTNode {
 
 		arg := p.parseCallArgument()
 
-
 		call.Children = append(call.Children, arg)
 
 		if p.current().Type == TOKEN_COMMA {
@@ -1722,7 +1721,6 @@ func (p *Parser) parsePrintStatement() *ASTNode {
 		}
 
 		arg := p.parseCallArgument()
-
 
 		call.Children = append(call.Children, arg)
 
@@ -1780,7 +1778,6 @@ func (p *Parser) parseLogStatement() *ASTNode {
 
 		arg := p.parseCallArgument()
 
-
 		call.Children = append(call.Children, arg)
 
 		if p.current().Type == TOKEN_COMMA {
@@ -1836,7 +1833,6 @@ func (p *Parser) parsePanicStatement() *ASTNode {
 		}
 
 		arg := p.parseCallArgument()
-
 
 		call.Children = append(call.Children, arg)
 

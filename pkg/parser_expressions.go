@@ -1088,10 +1088,12 @@ func (p *Parser) tryParseNestedCall(name Token) *ASTNode {
 	p.inFunctionCall--
 
 	// With arguments the shape is unambiguous: the nested call's closing pipe
-	// must be followed by the enclosing call's closing pipe, as in
-	// print|len|items||.
+	// must be followed either by the enclosing call's closing pipe
+	// (print|len|items||) or by a comma, when it is one of several arguments
+	// (print|greet|name|, count|).
 	if len(call.Children) > 0 {
-		if p.current().Type == TOKEN_PIPE && p.peek(1).Type == TOKEN_PIPE {
+		if p.current().Type == TOKEN_PIPE &&
+			(p.peek(1).Type == TOKEN_PIPE || p.peek(1).Type == TOKEN_COMMA) {
 			p.advance() // consume the nested call's closing pipe
 			return call
 		}

@@ -449,4 +449,3 @@ func (pkg *Package) MergeAST() *ahoy.ASTNode {
 
 	return merged
 }
-

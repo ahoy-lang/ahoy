@@ -8,7 +8,7 @@ _ , _ = add|x_input, y_input|
 world : "World"
 name : "Alice"
 @ greet :: |name:string, world:string| string:
-  return "Hello " + name
+  return f"Hello {name}"
 $
 greeted : greet|world,name|
 

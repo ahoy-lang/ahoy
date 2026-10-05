@@ -372,7 +372,6 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 
 					arg := p.parseCallArgument()
 
-
 					call.Children = append(call.Children, arg)
 
 					if p.current().Type == TOKEN_COMMA {

@@ -1,364 +1,281 @@
 package main
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
 
-func TestFormatterBasicIndentation(t *testing.T) {
-	input := `greet :: |name:string|:
+// Tests for the source formatter. The rules are documented on formatSource:
+// two-space indentation, a `$` at the level of the line that opened the block,
+// a single-statement block joined onto one line when it fits, comments kept,
+// and spacing normalised.
+
+func expectFormat(t *testing.T, name, input, want string) {
+	t.Helper()
+	got := formatSource(input)
+	if got != want {
+		t.Errorf("%s:\n--- want ---\n%s\n--- got ---\n%s", name, want, got)
+	}
+}
+
+func TestFormatterIndentsFunctionBody(t *testing.T) {
+	expectFormat(t, "function body", `@ greet ::|name:string|:
 ahoy|"Hello"|
-end`
-
-	expected := `greet :: |name:string|:
-    ahoy|"Hello"|
-end
-`
-
-	result := formatSource(input)
-	if result != expected {
-		t.Errorf("Basic indentation failed.\nExpected:\n%s\nGot:\n%s", expected, result)
-	}
+$
+`, `@ greet::|name: string|:
+  ahoy|"Hello"|
+$
+`)
 }
 
-func TestFormatterIfStatement(t *testing.T) {
-	input := `check :: |num:int|:
+func TestFormatterIndentsNestedBlocks(t *testing.T) {
+	expectFormat(t, "nested", `@ check ::|num:int|:
 if num > 0 then
-ahoy|"Positive"|
-end
-end`
-
-	expected := `check :: |num:int|:
-    if num > 0 then
-        ahoy|"Positive"|
-    end
-end
-`
-
-	result := formatSource(input)
-	if result != expected {
-		t.Errorf("If statement formatting failed.\nExpected:\n%s\nGot:\n%s", expected, result)
-	}
-}
-
-func TestFormatterIfElseIfElse(t *testing.T) {
-	input := `classify :: |num:int|:
-if num > 0 then
-ahoy|"Positive"|
-elseif num < 0 then
-ahoy|"Negative"|
-else
-ahoy|"Zero"|
-end
-end`
-
-	expected := `classify :: |num:int|:
-    if num > 0 then
-        ahoy|"Positive"|
-    elseif num < 0 then
-        ahoy|"Negative"|
-    else
-        ahoy|"Zero"|
-    end
-end
-`
-
-	result := formatSource(input)
-	if result != expected {
-		t.Errorf("If/elseif/else formatting failed.\nExpected:\n%s\nGot:\n%s", expected, result)
-	}
-}
-
-func TestFormatterLoop(t *testing.T) {
-	input := `count :: |max:int|:
-loop i to max do
+loop i:0 to num do
 ahoy|i|
-end
-end`
-
-	expected := `count :: |max:int|:
-    loop i to max do
-        ahoy|i|
-    end
-end
-`
-
-	result := formatSource(input)
-	if result != expected {
-		t.Errorf("Loop formatting failed.\nExpected:\n%s\nGot:\n%s", expected, result)
-	}
+$
+$
+$
+`, `@ check::|num: int|:
+  if num > 0 then
+    loop i:0 to num do
+      ahoy|i|
+    $
+  $
+$
+`)
 }
 
-func TestFormatterSwitch(t *testing.T) {
-	input := `test_switch :: |value:int|:
-switch value on
-1: ahoy|"One"|
-2: ahoy|"Two"|
-_: ahoy|"Other"|
-end
-end`
-
-	expected := `test_switch :: |value:int|:
-    switch value on
-        1: ahoy|"One"|
-        2: ahoy|"Two"|
-        _: ahoy|"Other"|
-    end
-end
-`
-
-	result := formatSource(input)
-	if result != expected {
-		t.Errorf("Switch formatting failed.\nExpected:\n%s\nGot:\n%s", expected, result)
-	}
+func TestFormatterKeepsDollarAtOpeningLevel(t *testing.T) {
+	// The short if joins onto one line; the loop cannot, so its `$` stays at the
+	// level of the line that opened it.
+	expectFormat(t, "closers", `@ f ||:
+if true then
+ahoy|"a"|
+$
+loop i:0 to 1 do
+ahoy|i|
+$
+$
+`, `@ f ||:
+  if true then ahoy|"a"| $
+  loop i:0 to 1 do
+    ahoy|i|
+  $
+$
+`)
 }
 
-func TestFormatterNested(t *testing.T) {
-	input := `nested :: |x:int|:
+func TestFormatterCollapsesShortSingleStatementIf(t *testing.T) {
+	expectFormat(t, "collapse if", `@ f ||:
 if x > 0 then
-loop i to x do
-ahoy|i|
-end
-end
-end`
+print|"pos"|
+$
+$
+`, `@ f ||:
+  if x > 0 then print|"pos"| $
+$
+`)
+}
 
-	expected := `nested :: |x:int|:
-    if x > 0 then
-        loop i to x do
-            ahoy|i|
-        end
-    end
-end
-`
-
-	result := formatSource(input)
-	if result != expected {
-		t.Errorf("Nested blocks formatting failed.\nExpected:\n%s\nGot:\n%s", expected, result)
+func TestFormatterExpandsLongSingleStatementIf(t *testing.T) {
+	long := strings.Repeat("a", formatterMaxWidth)
+	input := "@ f ||:\nif x > 0 then\nprint|\"" + long + "\"|\n$\n$\n"
+	got := formatSource(input)
+	if strings.Contains(got, "then print|") {
+		t.Errorf("a block longer than %d columns should not be joined:\n%s", formatterMaxWidth, got)
+	}
+	if !strings.Contains(got, "  if x > 0 then\n    print|") {
+		t.Errorf("expected the body on its own indented line, got:\n%s", got)
 	}
 }
 
-func TestFormatterSingleLineIf(t *testing.T) {
-	input := `quick :: |value:int|:
-if value > 0 then ahoy|"Positive"|
-end`
-
-	expected := `quick :: |value:int|:
-    if value > 0 then ahoy|"Positive"|
-end
-`
-
-	result := formatSource(input)
-	if result != expected {
-		t.Errorf("Single-line if formatting failed.\nExpected:\n%s\nGot:\n%s", expected, result)
+func TestFormatterNeverCollapsesLoops(t *testing.T) {
+	// A `$` on the same line as a one-line loop is a parse error.
+	got := formatSource("@ f ||:\nloop i:0 to 2 do\nprint|i|\n$\n$\n")
+	if strings.Contains(got, "do print|") {
+		t.Errorf("loops must not be collapsed:\n%s", got)
 	}
 }
 
-func TestFormatterSingleLineLoop(t *testing.T) {
-	input := `quick :: |max:int|:
-loop i to max do ahoy|i|
-end`
-
-	expected := `quick :: |max:int|:
-    loop i to max do ahoy|i|
-end
-`
-
-	result := formatSource(input)
-	if result != expected {
-		t.Errorf("Single-line loop formatting failed.\nExpected:\n%s\nGot:\n%s", expected, result)
+func TestFormatterNeverCollapsesVoidFunctionWithBody(t *testing.T) {
+	// The parser rejects `void: print|a| $`, so the `$` stays on its own line.
+	got := formatSource("@ f |a:int| void:\nprint|a|\n$\n")
+	if strings.Contains(got, "void: print|a| $") {
+		t.Errorf("a void function must not be collapsed with a trailing $:\n%s", got)
+	}
+	if !strings.Contains(got, "  print|a|\n$\n") {
+		t.Errorf("expected the body on its own line, got:\n%s", got)
 	}
 }
 
-func TestFormatterEnum(t *testing.T) {
-	input := `enum Color:
-RED
-GREEN
-BLUE
-end`
-
-	expected := `enum Color:
-    RED
-    GREEN
-    BLUE
-end
-`
-
-	result := formatSource(input)
-	if result != expected {
-		t.Errorf("Enum formatting failed.\nExpected:\n%s\nGot:\n%s", expected, result)
-	}
+func TestFormatterKeepsSwitchCasesIndented(t *testing.T) {
+	expectFormat(t, "switch", `@ f ||:
+switch x:
+on 1:
+print|"one"|
+on 2: print|"two"|
+_:
+print|"other"|
+$
+$
+`, `@ f ||:
+  switch x:
+    on 1:
+      print|"one"|
+    on 2: print|"two"|
+    _:
+      print|"other"|
+  $
+$
+`)
 }
 
-func TestFormatterStruct(t *testing.T) {
-	input := `struct Point:
-x: float
-y: float
-end`
-
-	expected := `struct Point:
-    x: float
-    y: float
-end
-`
-
-	result := formatSource(input)
-	if result != expected {
-		t.Errorf("Struct formatting failed.\nExpected:\n%s\nGot:\n%s", expected, result)
-	}
+func TestFormatterKeepsElseAtIfLevel(t *testing.T) {
+	// `else` must not be indented past its `if`, and its short body joins.
+	expectFormat(t, "else", `@ f ||:
+if a then
+print|"a"|
+else
+print|"b"|
+$
+$
+`, `@ f ||:
+  if a then
+    print|"a"|
+  else print|"b"| $
+$
+`)
 }
 
-func TestFormatterStructWithType(t *testing.T) {
-	input := `struct Particle:
-pos: Vector2
-vel: Vector2
-type smoke:
-alpha: float
-size: float
-end`
-
-	expected := `struct Particle:
-    pos: Vector2
-    vel: Vector2
-    type smoke:
-        alpha: float
-        size: float
-end
-`
-
-	result := formatSource(input)
-	if result != expected {
-		t.Errorf("Struct with type variant formatting failed.\nExpected:\n%s\nGot:\n%s", expected, result)
-	}
+func TestFormatterNormalisesSpacing(t *testing.T) {
+	expectFormat(t, "spacing", `@ f ||:
+x:1
+y : 2
+z: 3+4
+w: a,b
+count:array[int]= [1,2]
+$
+`, `@ f ||:
+  x: 1
+  y: 2
+  z: 3 + 4
+  w: a, b
+  count:array[int]= [1, 2]
+$
+`)
 }
 
-func TestFormatterWhen(t *testing.T) {
-	input := `when DEBUG then
-ahoy|"Debug mode"|
-end`
+func TestFormatterKeepsCompoundAssignments(t *testing.T) {
+	expectFormat(t, "compound", `@ f ||:
+x: 0
+x += 1
+x -= 2
+x *= 3
+$
+`, `@ f ||:
+  x: 0
+  x += 1
+  x -= 2
+  x *= 3
+$
+`)
+}
 
-	expected := `when DEBUG then
-    ahoy|"Debug mode"|
-end
-`
-
-	result := formatSource(input)
-	if result != expected {
-		t.Errorf("When statement formatting failed.\nExpected:\n%s\nGot:\n%s", expected, result)
+func TestFormatterWritesLoopCounterWithoutSpace(t *testing.T) {
+	got := formatSource("@ f ||:\nloop i:0 to 2 do\nprint|i|\n$\n$\n")
+	if !strings.Contains(got, "loop i:0 to 2 do") {
+		t.Errorf("a loop counter keeps its colon tight, got:\n%s", got)
 	}
 }
 
 func TestFormatterPreservesComments(t *testing.T) {
-	input := `# This is a comment
-greet :: |name:string|:
-? This is also a comment
-ahoy|"Hello"|
-end`
+	expectFormat(t, "comments", `? leading comment
+@ f ||:
+? inside the body
+x: 1 ? trailing
+$
+`, `? leading comment
+@ f ||:
+  ? inside the body
+  x: 1 ? trailing
+$
+`)
+}
 
-	expected := `# This is a comment
-greet :: |name:string|:
-    ? This is also a comment
-    ahoy|"Hello"|
-end
-`
+func TestFormatterCollapsesBlankRuns(t *testing.T) {
+	expectFormat(t, "blank lines", `@ f ||:
 
-	result := formatSource(input)
-	if result != expected {
-		t.Errorf("Comment preservation failed.\nExpected:\n%s\nGot:\n%s", expected, result)
+
+x: 1
+
+
+
+y: 2
+
+
+$
+`, `@ f ||:
+
+  x: 1
+
+  y: 2
+$
+`)
+}
+
+func TestFormatterDropsLeadingAndTrailingBlankLines(t *testing.T) {
+	expectFormat(t, "edges", "\n\n@ f ||:\n  x: 1\n$\n\n\n", "@ f ||:\n  x: 1\n$\n")
+}
+
+func TestFormatterConvertsTabs(t *testing.T) {
+	got := formatSource("@ f ||:\n\tx: 1\n$\n")
+	if strings.Contains(got, "\t") {
+		t.Errorf("tabs must be replaced by spaces, got %q", got)
+	}
+	if !strings.Contains(got, "  x: 1") {
+		t.Errorf("expected two-space indentation, got %q", got)
 	}
 }
 
-func TestFormatterPreservesEmptyLines(t *testing.T) {
-	input := `greet :: |name:string|:
-ahoy|"Hello"|
-end
-
-add :: |a:int, b:int| int:
-return a + b
-end`
-
-	expected := `greet :: |name:string|:
-    ahoy|"Hello"|
-end
-
-add :: |a:int, b:int| int:
-    return a + b
-end
-`
-
-	result := formatSource(input)
-	if result != expected {
-		t.Errorf("Empty line preservation failed.\nExpected:\n%s\nGot:\n%s", expected, result)
+func TestFormatterEndsWithSingleNewline(t *testing.T) {
+	got := formatSource("@ f ||:\n  x: 1\n$")
+	if !strings.HasSuffix(got, "$\n") || strings.HasSuffix(got, "\n\n") {
+		t.Errorf("expected exactly one trailing newline, got %q", got)
 	}
 }
 
-func TestFormatterComplexFile(t *testing.T) {
-	// Read the unindented test file
-	input, err := os.ReadFile("testdata/formatter/test_unindented.ahoy")
-	if err != nil {
-		t.Skipf("Skipping test - test file not found: %v", err)
-		return
+func TestFormatterIsIdempotent(t *testing.T) {
+	inputs := []string{
+		"@ f ||:\nif a then\nprint|1|\n$\n$\n",
+		"@ f ||:\nswitch x:\non 1:\nprint|1|\n$\n$\n",
+		"? c\n@ f ||:\nx:1\nloop i:0 to 2 do\nprint|i|\n$\n$\n",
+		"@ f |a:int| void:\nprint|a|\n$\n",
+		"@ f ||:\nx += 1\ny:array[int]= [1,2]\n$\n",
 	}
-
-	// Read the expected formatted output
-	expectedBytes, err := os.ReadFile("testdata/formatter/test_expected.ahoy")
-	if err != nil {
-		t.Skipf("Skipping test - expected file not found: %v", err)
-		return
-	}
-
-	expected := string(expectedBytes)
-	result := formatSource(string(input))
-
-	if result != expected {
-		// Show line-by-line diff for easier debugging
-		expectedLines := strings.Split(expected, "\n")
-		resultLines := strings.Split(result, "\n")
-
-		maxLines := len(expectedLines)
-		if len(resultLines) > maxLines {
-			maxLines = len(resultLines)
-		}
-
-		t.Errorf("Complex file formatting failed. Line-by-line diff:")
-		for i := 0; i < maxLines; i++ {
-			var expLine, resLine string
-			if i < len(expectedLines) {
-				expLine = expectedLines[i]
-			}
-			if i < len(resultLines) {
-				resLine = resultLines[i]
-			}
-
-			if expLine != resLine {
-				t.Errorf("Line %d differs:\nExpected: %q\nGot:      %q", i+1, expLine, resLine)
-			}
+	for _, input := range inputs {
+		once := formatSource(input)
+		twice := formatSource(once)
+		if once != twice {
+			t.Errorf("formatting is not idempotent:\n--- once ---\n%s\n--- twice ---\n%s", once, twice)
 		}
 	}
 }
 
-func TestFormatterIdempotent(t *testing.T) {
-	input := `greet :: |name:string|:
-    ahoy|"Hello"|
-end
-`
-
-	// Formatting already-formatted code should not change it
-	result := formatSource(input)
-	if result != input {
-		t.Errorf("Formatter is not idempotent.\nInput:\n%s\nOutput:\n%s", input, result)
+func TestFormatterKeepsStringsIntact(t *testing.T) {
+	// Spacing rules must not reach inside string literals.
+	got := formatSource("@ f ||:\n  a: \"x  ,  y\"\n  b: f\"{a}+{a}\"\n$\n")
+	if !strings.Contains(got, `"x  ,  y"`) {
+		t.Errorf("a string literal was rewritten, got:\n%s", got)
+	}
+	if !strings.Contains(got, `f"{a}+{a}"`) {
+		t.Errorf("an f-string was rewritten, got:\n%s", got)
 	}
 }
 
-func TestFormatterTabsToSpaces(t *testing.T) {
-	input := "greet :: |name:string|:\n\tahoy|\"Hello\"|\nend"
-	expected := `greet :: |name:string|:
-    ahoy|"Hello"|
-end
-`
-
-	result := formatSource(input)
-	if result != expected {
-		t.Errorf("Tab conversion failed.\nExpected:\n%s\nGot:\n%s", expected, result)
+func TestFormatterKeepsCommentTextIntact(t *testing.T) {
+	got := formatSource("@ f ||:\n  ? keep   this   spacing\n$\n")
+	if !strings.Contains(got, "? keep   this   spacing") {
+		t.Errorf("comment text was rewritten, got:\n%s", got)
 	}
 }
