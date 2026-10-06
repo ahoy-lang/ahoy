@@ -881,6 +881,10 @@ func (gen *CodeGenerator) scanVariableTypes(node *ahoy.ASTNode) {
 	// Scan for variable declarations and track their types
 	if node.Type == ahoy.NODE_VARIABLE_DECLARATION || node.Type == ahoy.NODE_ASSIGNMENT {
 		varName := node.Value
+		// This pass runs before the body is generated, so a submitted job's
+		// result type has to be recorded here too: otherwise a later
+		// `pool.wait|j|` is typed before the submit has been seen.
+		gen.recordJobResultType(node)
 		if len(node.Children) > 0 {
 			// Check for explicit type annotation
 			if node.DataType != "" && node.DataType != "generic" && node.DataType != "any" {
@@ -6011,20 +6015,15 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 		switch methodName {
 		case "submit":
 			gen.output.WriteString("ahoy_jobs_submit(" + object.Value + ", ")
+			argType := ""
 			if len(args.Children) > 0 {
-				task := args.Children[0]
-				if task.Type == ahoy.NODE_UNARY_OP && task.Value == "&" && len(task.Children) == 1 &&
-					task.Children[0].Type == ahoy.NODE_IDENTIFIER && gen.userFunctions[task.Children[0].Value] {
-					gen.emitFunctionReference(task.Children[0].Value)
-				} else {
-					gen.generateNode(task)
-				}
+				argType = gen.emitTaskFn(args.Children[0])
 			} else {
 				gen.output.WriteString("(AhoyFn){0, 0}")
 			}
 			gen.output.WriteString(", (intptr_t)(")
 			if len(args.Children) > 1 {
-				gen.generateNode(args.Children[1])
+				gen.emitTaskArg(args.Children[1], argType)
 			} else {
 				gen.output.WriteString("0")
 			}
@@ -11288,6 +11287,130 @@ func (gen *CodeGenerator) recordJobResultType(node *ahoy.ASTNode) {
 	if ret != "" && ret != "unknown" {
 		gen.jobResultTypes[node.Value] = ret
 	}
+}
+
+// isFloatAhoyType reports whether a type travels as a C double.
+func isFloatAhoyType(t string) bool {
+	return t == "float" || t == "double"
+}
+
+// taskSignature returns the parameter and return Ahoy types of a task value:
+// a named function reference, a function-typed variable or a lambda.
+func (gen *CodeGenerator) taskSignature(task *ahoy.ASTNode) (string, string, bool) {
+	if task == nil {
+		return "", "", false
+	}
+	if task.Type == ahoy.NODE_UNARY_OP && task.Value == "&" && len(task.Children) == 1 &&
+		task.Children[0].Type == ahoy.NODE_IDENTIFIER {
+		name := task.Children[0].Value
+		params := gen.functionParamTypes[name]
+		rets := gen.functionReturnTypes[name]
+		if len(params) == 1 && len(rets) == 1 {
+			return params[0], rets[0], true
+		}
+		return "", "", false
+	}
+	if task.Type == ahoy.NODE_IDENTIFIER {
+		if ft, ok := gen.functionValueType(task.Value); ok {
+			if ps, r, ok := ahoy.ParseFunctionType(ft); ok && len(ps) == 1 {
+				return ps[0], r, true
+			}
+		}
+		return "", "", false
+	}
+	if task.Type == ahoy.NODE_LAMBDA {
+		count := 0
+		for _, ch := range task.Value {
+			if ch >= '0' && ch <= '9' {
+				count = count*10 + int(ch-'0')
+			}
+		}
+		if count < 1 || count > len(task.Children) {
+			return "", "", false
+		}
+		argType := task.Children[0].DataType
+		body := task.Children[count]
+		retType := gen.inferType(body)
+		if argType == "" {
+			return "", "", false
+		}
+		return argType, retType, true
+	}
+	return "", "", false
+}
+
+// emitTaskFn writes the AhoyFn a submit call should run and returns the task's
+// argument type (for marshalling the argument). A task whose argument or result
+// is a double gets a small marshalling thunk: the runtime passes everything as
+// intptr_t, so doubles travel as their bit pattern.
+func (gen *CodeGenerator) emitTaskFn(task *ahoy.ASTNode) string {
+	argType, retType, known := gen.taskSignature(task)
+	if known && (isFloatAhoyType(argType) || isFloatAhoyType(retType)) {
+		gen.emitTaskMarshalThunk(task, argType, retType)
+		return argType
+	}
+	if task.Type == ahoy.NODE_UNARY_OP && task.Value == "&" && len(task.Children) == 1 &&
+		task.Children[0].Type == ahoy.NODE_IDENTIFIER && gen.userFunctions[task.Children[0].Value] {
+		gen.emitFunctionReference(task.Children[0].Value)
+	} else {
+		gen.generateNode(task)
+	}
+	return argType
+}
+
+// emitTaskMarshalThunk writes a thunk that bit-casts a double argument and/or
+// result between the task's real signature and the runtime's intptr_t ABI, then
+// emits the AhoyFn value that carries the task in a single-use environment.
+func (gen *CodeGenerator) emitTaskMarshalThunk(task *ahoy.ASTNode, argType, retType string) {
+	id := gen.varCounter
+	gen.varCounter++
+	envName := fmt.Sprintf("__ahoy_task_env_%d", id)
+	thunk := fmt.Sprintf("__ahoy_task_%d", id)
+
+	argC := gen.mapType(argType)
+	retC := gen.mapType(retType)
+
+	gen.closureDecls.WriteString(fmt.Sprintf("typedef struct { AhoyFn fn; } %s;\n", envName))
+	gen.closureDecls.WriteString(fmt.Sprintf("static intptr_t %s(void* env, intptr_t arg) {\n", thunk))
+	gen.closureDecls.WriteString(fmt.Sprintf("    %s* e = (%s*)env;\n", envName, envName))
+	gen.closureDecls.WriteString("    AhoyFn fn = e->fn;\n    free(e);\n")
+	argExpr := "arg"
+	if isFloatAhoyType(argType) {
+		gen.closureDecls.WriteString("    double a0; memcpy(&a0, &arg, sizeof(double));\n")
+		argExpr = "a0"
+	}
+	call := fmt.Sprintf("((%s(*)(void*, %s))fn.fn)(fn.env, %s)", retC, argC, argExpr)
+	switch {
+	case isFloatAhoyType(retType):
+		gen.closureDecls.WriteString("    double r0 = " + call + ";\n")
+		gen.closureDecls.WriteString("    intptr_t out; memcpy(&out, &r0, sizeof(double)); return out;\n")
+	case retType == "void" || retType == "":
+		gen.closureDecls.WriteString("    " + call + ";\n    return 0;\n")
+	default:
+		gen.closureDecls.WriteString(fmt.Sprintf("    return (intptr_t)(%s);\n", call))
+	}
+	gen.closureDecls.WriteString("}\n")
+
+	gen.output.WriteString(fmt.Sprintf("({ %s* __e = (%s*)malloc(sizeof(%s)); __e->fn = ", envName, envName, envName))
+	if task.Type == ahoy.NODE_UNARY_OP && task.Value == "&" && len(task.Children) == 1 &&
+		task.Children[0].Type == ahoy.NODE_IDENTIFIER && gen.userFunctions[task.Children[0].Value] {
+		gen.emitFunctionReference(task.Children[0].Value)
+	} else {
+		gen.generateNode(task)
+	}
+	gen.output.WriteString(fmt.Sprintf("; (AhoyFn){ (void(*)(void))%s, __e }; })", thunk))
+}
+
+// emitTaskArg writes a task argument, packing a double into the intptr_t slot
+// the runtime reserves for it.
+func (gen *CodeGenerator) emitTaskArg(arg *ahoy.ASTNode, argType string) {
+	if isFloatAhoyType(argType) {
+		gen.output.WriteString("({ double __a = (double)(")
+		gen.generateNode(arg)
+		gen.output.WriteString("); intptr_t __o; memcpy(&__o, &__a, sizeof(double)); __o; })")
+		return
+	}
+	gen.generateNode(arg)
 }
 
 // jobResultExpr renders a read of a job's result, casting the runtime's

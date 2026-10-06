@@ -1,0 +1,42 @@
+program jobs_float_test
+
+? The pool runtime passes values as intptr_t, so a double argument or result
+? travels as its bit pattern and the generated thunks bit-cast it.
+
+@ half |x:float| float:
+	return x / 2.0
+$
+
+@ to_int |x:float| int:
+	return int|x|
+$
+
+@ widen |n:int| float:
+	return float|n| / 2.0
+$
+
+@ main ||:
+	expected: []
+	pool: pool = jobs|4|
+
+	? float argument, float result
+	j1: job = pool.submit|&half, 5.0|
+	r1: pool.wait|j1|
+	print|r1|
+	expected.push|"2.5"|
+
+	? float argument, int result
+	j2: job = pool.submit|&to_int, 7.5|
+	r2: pool.wait|j2|
+	print|r2|
+	expected.push|"7"|
+
+	? int argument, float result
+	j3: job = pool.submit|&widen, 9|
+	r3: pool.wait|j3|
+	print|r3|
+	expected.push|"4.5"|
+
+	pool.stop||
+	print|expected|
+$
