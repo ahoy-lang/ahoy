@@ -324,6 +324,62 @@ $
 	wantError(t, msgs, "is not allowed as an argument")
 }
 
+// A cast is not a call, so int(x)/float(x)/char(x)/string(x) stay legal as an
+// argument even though the parser builds a NODE_CALL for them.
+func TestCastArgumentIsNotReported(t *testing.T) {
+	msgs := diagnosticsFor(`program p
+@ take ::|n:int| void:
+	print|n|
+$
+@ main ||:
+	v: 3
+	pct: 0.5
+	take|int(float(v) * pct)|
+$
+`)
+	wantNoError(t, msgs, "is not allowed as an argument")
+	wantNoError(t, msgs, "is not defined")
+}
+
+// Constants declared in main are emitted as global constants, so functions can
+// reference them.
+func TestMainConstantIsVisibleInFunctions(t *testing.T) {
+	msgs := diagnosticsFor(`program p
+@ helper ::|| int:
+	return OFFSET + 1
+$
+@ main ||:
+	OFFSET: int = 4
+	print|helper||
+$
+`)
+	wantNoError(t, msgs, "is not declared")
+}
+
+// ParseWithPath is the code-generation parser. A call with a bare identifier
+// argument used inside a larger expression used to panic there while linting
+// accepted it (`if g|v| then`, `g|v| + 1`).
+func TestCallInExpressionParsesWithoutPanic(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("ParseWithPath panicked: %v", r)
+		}
+	}()
+	ast := ahoy.ParseWithPath(ahoy.Tokenize(`program p
+@ g ::|n:int| int:
+	return n
+$
+@ main ||:
+	v: 3
+	a: g|v| + 1
+	if g|v| > 2 then print|a| $
+$
+`), "test.ahoy")
+	if ast == nil {
+		t.Fatal("expected an AST")
+	}
+}
+
 func TestPartialMultiReturnIsWarned(t *testing.T) {
 	errs := allDiagnosticsFor(`program p
 @ pair ::|n:int| int,string:

@@ -1,0 +1,30 @@
+program call_in_expression
+
+@ double_it ::|x:int| int:
+	return x * 2
+$
+
+@ main ||:
+	expected: []
+
+	v: 3
+
+	? A call with a bare identifier argument is a normal expression operand.
+	? The code-generation parser used to panic on these.
+	a: double_it|v| + 1
+	print|a|
+	expected.push|"7"|
+
+	if double_it|v| > 2 then
+		print|"big"|
+		expected.push|"big"|
+	$
+
+	? A member access as the last argument of a call: the pipe after
+	? `arr.length` closes print, it does not open a method call.
+	arr: [1, 2, 3]
+	if arr.length > 0 then print|arr.length| $
+	expected.push|"3"|
+
+	print|expected|
+$
