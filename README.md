@@ -177,6 +177,20 @@ result: a / b       ? or: a div b
 result: a % b       ? or: a mod b
 ```
 
+**Bitwise** (words only; `&`, `^` and `|` already mean address-of,
+dereference and a call's pipes). Precedence follows C: `band` binds tighter
+than `bxor`, which binds tighter than `bor`; shifts bind tighter than
+comparison and looser than `+`:
+```ahoy
+flags: LAYER_UI band MASK     ? and
+merged: a bor b               ? or
+flipped: a bxor TOGGLE_BIT    ? xor
+inv: bnot flags               ? not
+shifted: 1 shl 4              ? left  (16)
+back: value shr 2             ? right
+packed: r shl 16 bor g shl 8 bor b   ? colour packing
+```
+
 **Comparison** (symbols or words):
 ```ahoy
 if x > y then       ? or: x greater_than y

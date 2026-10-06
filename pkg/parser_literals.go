@@ -531,7 +531,7 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			// Otherwise parse as comma-separated values: OLD vector2<10,20> syntax
 			args := []*ASTNode{}
 			for p.current().Type != TOKEN_RANGLE && p.current().Type != TOKEN_EOF {
-				arg := p.parseAdditiveExpression() // Use additive to avoid consuming > as comparison
+				arg := p.parseCallArgumentExpression() // bitwise words included; > is still not a comparison here
 				args = append(args, arg)
 
 				if p.current().Type == TOKEN_COMMA {
@@ -563,7 +563,7 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			p.inFunctionCall++
 			args := []*ASTNode{}
 			for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
-				arg := p.parseAdditiveExpression()
+				arg := p.parseCallArgumentExpression()
 				args = append(args, arg)
 
 				if p.current().Type == TOKEN_COMMA {

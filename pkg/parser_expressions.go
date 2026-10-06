@@ -1007,6 +1007,47 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 	return p.parseExpression()
 }
 
+// Bitwise operators must work inside call arguments (print|a band b|) and cast
+// arguments, but the argument grammar deliberately stops short of comparisons
+// so a `>` cannot be eaten. These words cannot be mistaken for the comma or the
+// closing pipe, so the three bitwise levels and shifts are safe to include.
+func (p *Parser) parseCallArgumentExpression() *ASTNode {
+	return p.parseArgBitwiseOr()
+}
+
+func (p *Parser) parseArgBitwiseOr() *ASTNode {
+	left := p.parseArgBitwiseXor()
+	for p.current().Type == TOKEN_BOR {
+		op := p.current()
+		p.advance()
+		right := p.parseArgBitwiseXor()
+		left = &ASTNode{Type: NODE_BINARY_OP, Value: op.Value, Children: []*ASTNode{left, right}}
+	}
+	return left
+}
+
+func (p *Parser) parseArgBitwiseXor() *ASTNode {
+	left := p.parseArgBitwiseAnd()
+	for p.current().Type == TOKEN_BXOR {
+		op := p.current()
+		p.advance()
+		right := p.parseArgBitwiseAnd()
+		left = &ASTNode{Type: NODE_BINARY_OP, Value: op.Value, Children: []*ASTNode{left, right}}
+	}
+	return left
+}
+
+func (p *Parser) parseArgBitwiseAnd() *ASTNode {
+	left := p.parseShiftExpression()
+	for p.current().Type == TOKEN_BAND {
+		op := p.current()
+		p.advance()
+		right := p.parseShiftExpression()
+		left = &ASTNode{Type: NODE_BINARY_OP, Value: op.Value, Children: []*ASTNode{left, right}}
+	}
+	return left
+}
+
 func (p *Parser) parseCallArgument() *ASTNode {
 	// Check for named argument: name: value
 	// Only parse as named arg if we're in a function call context
@@ -1018,7 +1059,7 @@ func (p *Parser) parseCallArgument() *ASTNode {
 		p.advance() // consume :
 
 		// Parse the value
-		value := p.parseAdditiveExpression()
+		value := p.parseCallArgumentExpression()
 
 		// Create a special node to represent named argument
 		return &ASTNode{
@@ -1044,8 +1085,9 @@ func (p *Parser) parseCallArgument() *ASTNode {
 	}
 
 	// Parse an expression but stop at comma, pipe, or comparison operators
-	// Use parseAdditiveExpression to avoid treating <> as comparisons
-	return p.parseAdditiveExpression()
+	// Use parseCallArgumentExpression to avoid treating <> as comparisons; it
+	// still accepts the word bitwise operators and shifts.
+	return p.parseCallArgumentExpression()
 }
 
 // tryParseNestedCall parses `name|args|` as a call while the parser is inside
@@ -1336,12 +1378,12 @@ func (p *Parser) parseOrExpression() *ASTNode {
 }
 
 func (p *Parser) parseAndExpression() *ASTNode {
-	left := p.parseEqualityExpression()
+	left := p.parseBitwiseOrExpression()
 
 	for p.current().Type == TOKEN_AND {
 		op := p.current()
 		p.advance()
-		right := p.parseEqualityExpression()
+		right := p.parseBitwiseOrExpression()
 		left = &ASTNode{
 			Type:     NODE_BINARY_OP,
 			Value:    op.Value,
@@ -1349,6 +1391,43 @@ func (p *Parser) parseAndExpression() *ASTNode {
 		}
 	}
 
+	return left
+}
+
+// Bitwise operators follow C precedence: bor is the loosest, then bxor, then
+// band, and all of them bind looser than equality. Shifts bind tighter (see
+// parseShiftExpression). They are word operators because &, ^ and | already
+// mean address-of, dereference and a call's pipes.
+func (p *Parser) parseBitwiseOrExpression() *ASTNode {
+	left := p.parseBitwiseXorExpression()
+	for p.current().Type == TOKEN_BOR {
+		op := p.current()
+		p.advance()
+		right := p.parseBitwiseXorExpression()
+		left = &ASTNode{Type: NODE_BINARY_OP, Value: op.Value, Children: []*ASTNode{left, right}}
+	}
+	return left
+}
+
+func (p *Parser) parseBitwiseXorExpression() *ASTNode {
+	left := p.parseBitwiseAndExpression()
+	for p.current().Type == TOKEN_BXOR {
+		op := p.current()
+		p.advance()
+		right := p.parseBitwiseAndExpression()
+		left = &ASTNode{Type: NODE_BINARY_OP, Value: op.Value, Children: []*ASTNode{left, right}}
+	}
+	return left
+}
+
+func (p *Parser) parseBitwiseAndExpression() *ASTNode {
+	left := p.parseEqualityExpression()
+	for p.current().Type == TOKEN_BAND {
+		op := p.current()
+		p.advance()
+		right := p.parseEqualityExpression()
+		left = &ASTNode{Type: NODE_BINARY_OP, Value: op.Value, Children: []*ASTNode{left, right}}
+	}
 	return left
 }
 
@@ -1401,7 +1480,7 @@ func (p *Parser) parseEqualityExpression() *ASTNode {
 }
 
 func (p *Parser) parseRelationalExpression() *ASTNode {
-	left := p.parseAdditiveExpression()
+	left := p.parseShiftExpression()
 
 	for p.current().Type == TOKEN_LANGLE || p.current().Type == TOKEN_RANGLE ||
 		p.current().Type == TOKEN_LESS_EQUAL || p.current().Type == TOKEN_GREATER_EQUAL ||
@@ -1455,7 +1534,7 @@ func (p *Parser) parseRelationalExpression() *ASTNode {
 
 		op := p.current()
 		p.advance()
-		right := p.parseAdditiveExpression()
+		right := p.parseShiftExpression()
 		left = &ASTNode{
 			Type:     NODE_BINARY_OP,
 			Value:    op.Value,
@@ -1463,6 +1542,19 @@ func (p *Parser) parseRelationalExpression() *ASTNode {
 		}
 	}
 
+	return left
+}
+
+// Shifts bind tighter than comparisons and looser than addition, as in C:
+// a + b shl 2 is (a + b) shl 2.
+func (p *Parser) parseShiftExpression() *ASTNode {
+	left := p.parseAdditiveExpression()
+	for p.current().Type == TOKEN_SHL || p.current().Type == TOKEN_SHR {
+		op := p.current()
+		p.advance()
+		right := p.parseAdditiveExpression()
+		left = &ASTNode{Type: NODE_BINARY_OP, Value: op.Value, Children: []*ASTNode{left, right}}
+	}
 	return left
 }
 
@@ -1524,7 +1616,8 @@ func (p *Parser) parsePowerExpression() *ASTNode {
 
 func (p *Parser) parseUnaryExpression() *ASTNode {
 	if p.current().Type == TOKEN_NOT || p.current().Type == TOKEN_MINUS ||
-		p.current().Type == TOKEN_CARET || p.current().Type == TOKEN_AMPERSAND {
+		p.current().Type == TOKEN_CARET || p.current().Type == TOKEN_AMPERSAND ||
+		p.current().Type == TOKEN_BNOT {
 		op := p.current()
 		p.advance()
 		expr := p.parseUnaryExpression()

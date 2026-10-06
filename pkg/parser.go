@@ -202,9 +202,7 @@ type Parser struct {
 	constantsInMain     map[string]bool               // Track constants declared in main function
 	constantUsages      map[string][]int              // Track where identifiers are used (name -> list of line numbers)
 	declaredVars        map[string]int                // Track variable declarations (name -> line number) for error reporting
-	scopeStack          []map[string]int              // Stack of scopes for conditional blocks (each map is varName -> line)
 	functionScopeStack  []map[string]string           // Stack of function scopes for conditional blocks
-	inConditionalScope  bool                          // Track if we're inside a conditional branch
 	structs             map[string]*StructDefinition  // Track struct definitions
 	enums               map[string]*EnumDefinition    // Track enum definitions
 	typeAliases         map[string]string             // Track type aliases
@@ -274,20 +272,6 @@ func (p *Parser) recordErrorAtLine(message string, line int) {
 		Line:    line,
 		Column:  1, // Default to column 1 for block-level errors
 	})
-}
-
-func (p *Parser) recordWarning(message string) {
-	// For now, warnings are treated as errors in lint mode
-	// In future, we could add a separate Warnings slice
-	if p.LintMode {
-		token := p.current()
-		p.Errors = append(p.Errors, ParseError{
-			Message:  message,
-			Line:     token.Line,
-			Column:   token.Column,
-			Severity: "warning",
-		})
-	}
 }
 
 // validateNoGlobalFunctionCalls checks if a statement contains function calls at global scope
@@ -856,6 +840,8 @@ func tokenTypeName(t TokenType) string {
 		TOKEN_MINUS: "'-'", TOKEN_MULTIPLY: "'*'", TOKEN_DIVIDE: "'/'",
 		TOKEN_MODULO: "'%'", TOKEN_PLUS_WORD: "'plus'", TOKEN_MINUS_WORD: "'minus'",
 		TOKEN_TIMES_WORD: "'times'", TOKEN_DIV_WORD: "'div'", TOKEN_MOD_WORD: "'mod'",
+		TOKEN_BAND: "'band'", TOKEN_BOR: "'bor'", TOKEN_BXOR: "'bxor'",
+		TOKEN_BNOT: "'bnot'", TOKEN_SHL: "'shl'", TOKEN_SHR: "'shr'",
 		TOKEN_LESS: "'<'", TOKEN_GREATER: "'>'", TOKEN_LESS_EQUAL: "'<='",
 		TOKEN_GREATER_EQUAL: "'>='", TOKEN_LESSER_WORD: "'lesser'", TOKEN_GREATER_WORD: "'greater'",
 		TOKEN_PIPE: "'|'", TOKEN_LPAREN: "'('", TOKEN_RPAREN: "')'",
@@ -885,47 +871,6 @@ func tokenTypeName(t TokenType) string {
 func (p *Parser) advance() {
 	if p.pos < len(p.tokens) {
 		p.pos++
-	}
-}
-
-// pushScope creates a new scope for conditional blocks (if/else/switch)
-// Variables declared in this scope won't conflict with parallel branches
-func (p *Parser) pushScope() {
-	// Save the CURRENT declaredVars to the stack (this is the parent scope)
-	// Then create a COPY for the new branch scope
-	savedScope := make(map[string]int)
-	for k, v := range p.declaredVars {
-		savedScope[k] = v
-	}
-
-	// Only save parent scope once per conditional (first branch)
-	// Subsequent branches should restore the same parent scope
-	if len(p.scopeStack) == 0 || !p.inConditionalScope {
-		p.scopeStack = append(p.scopeStack, savedScope)
-	}
-
-	// Create a fresh copy for this branch (inherits from parent but modifications won't affect siblings)
-	// Always use the FIRST saved scope (the parent before any branches)
-	parentScope := p.scopeStack[len(p.scopeStack)-1]
-	branchScope := make(map[string]int)
-	for k, v := range parentScope {
-		branchScope[k] = v
-	}
-	p.declaredVars = branchScope
-	p.inConditionalScope = true
-}
-
-// popScope restores the previous scope, discarding variables declared in the conditional branch
-func (p *Parser) popScope() {
-	if len(p.scopeStack) > 0 {
-		// Restore the parent scope (the one saved before the branch)
-		p.declaredVars = p.scopeStack[len(p.scopeStack)-1]
-		p.scopeStack = p.scopeStack[:len(p.scopeStack)-1]
-
-		// If no more scopes, we're not in conditional scope
-		if len(p.scopeStack) == 0 {
-			p.inConditionalScope = false
-		}
 	}
 }
 

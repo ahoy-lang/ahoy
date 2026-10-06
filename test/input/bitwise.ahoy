@@ -1,0 +1,36 @@
+program bitwise_test
+
+@ main ||:
+	expected: []
+
+	a: 5
+	b: 3
+
+	print|a band b|
+	expected.push|"1"|
+
+	print|a bor b|
+	expected.push|"7"|
+
+	print|a bxor b|
+	expected.push|"6"|
+
+	print|bnot 0|
+	expected.push|"-1"|
+
+	print|1 shl 4|
+	expected.push|"16"|
+
+	print|16 shr 2|
+	expected.push|"4"|
+
+	? band binds tighter than bor: (a band b) bor 8 = 9
+	print|a band b bor 8|
+	expected.push|"9"|
+
+	? shl binds looser than +: 1 shl (2 + 1) = 8
+	print|1 shl 2 + 1|
+	expected.push|"8"|
+
+	print|expected|
+$

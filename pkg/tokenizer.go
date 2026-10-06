@@ -53,6 +53,12 @@ const (
 	TOKEN_DIV_WORD      // div
 	TOKEN_MOD_WORD      // mod
 	TOKEN_POW_WORD      // pow (exponentiation keyword)
+	TOKEN_BAND          // band (bitwise and)
+	TOKEN_BOR           // bor (bitwise or)
+	TOKEN_BXOR          // bxor (bitwise xor)
+	TOKEN_BNOT          // bnot (bitwise not)
+	TOKEN_SHL           // shl (shift left)
+	TOKEN_SHR           // shr (shift right)
 	TOKEN_LESS          // <
 	TOKEN_GREATER       // >
 	TOKEN_LESS_EQUAL    // <=
@@ -154,6 +160,12 @@ var keywords = map[string]TokenType{
 	"div":          TOKEN_DIV_WORD,
 	"mod":          TOKEN_MOD_WORD,
 	"pow":          TOKEN_POW_WORD,
+	"band":         TOKEN_BAND,
+	"bor":          TOKEN_BOR,
+	"bxor":         TOKEN_BXOR,
+	"bnot":         TOKEN_BNOT,
+	"shl":          TOKEN_SHL,
+	"shr":          TOKEN_SHR,
 	"greater_than": TOKEN_GREATER_WORD,
 	"lesser_than":  TOKEN_LESSER_WORD,
 	"less_than":    TOKEN_LESSER_WORD,

@@ -376,3 +376,30 @@ $
 `)
 	wantNoError(t, msgs, "is not declared")
 }
+
+func TestBitwiseOnIntegersIsNotReported(t *testing.T) {
+	cases := []string{
+		`	a: 5 band 3`,
+		`	a: 5 bor 3`,
+		`	a: 5 bxor 3`,
+		`	a: bnot 5`,
+		`	a: 1 shl 4`,
+		`	a: 16 shr 2`,
+	}
+	for _, stmt := range cases {
+		msgs := diagnosticsFor("program p\n@ main ||:\n" + stmt + "\n\tprint|a|\n$\n")
+		wantNoError(t, msgs, "requires integers")
+	}
+}
+
+func TestBitwiseOnNonIntegerIsReported(t *testing.T) {
+	cases := []string{
+		`	a: 1.5 band 2`,
+		`	a: "x" bor 1`,
+		`	a: bnot 1.5`,
+	}
+	for _, stmt := range cases {
+		msgs := diagnosticsFor("program p\n@ main ||:\n" + stmt + "\n\tprint|a|\n$\n")
+		wantError(t, msgs, "requires")
+	}
+}

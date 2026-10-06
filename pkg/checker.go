@@ -677,6 +677,14 @@ func (c *checker) checkExpr(node *ASTNode) {
 		c.checkExpr(childAt(node, 1))
 
 	case NODE_UNARY_OP:
+		if node.Value == "bnot" {
+			if operand := childAt(node, 0); operand != nil {
+				t := c.p.inferType(operand)
+				if operandIsKnown(t) && bitwiseOperandInvalid(t) {
+					c.errorAt(node, "Bitwise operator 'bnot' requires an integer, got %s", t)
+				}
+			}
+		}
 		c.checkExpr(childAt(node, 0))
 
 	case NODE_TERNARY:
@@ -933,12 +941,45 @@ var orderingOps = map[string]bool{
 	"greater_than_or_equal": true, "lesser_than_or_equal": true,
 }
 
+var bitwiseOps = map[string]bool{
+	"band": true, "bor": true, "bxor": true, "shl": true, "shr": true,
+}
+
+// bitwiseOperandInvalid reports whether a type cannot take part in a bitwise
+// operation. bool and char are left alone: they are integers in C.
+func bitwiseOperandInvalid(t string) bool {
+	return t == "float" || t == "double" ||
+		isStringType(t) || isCollectionType(t) || isStructType(t)
+}
+
+// checkBitwiseOperands rejects bitwise operators on operands that are certainly
+// not integers, so `1.5 band 2` does not silently truncate in C.
+func (c *checker) checkBitwiseOperands(node *ASTNode, op string) {
+	for _, n := range []*ASTNode{childAt(node, 0), childAt(node, 1)} {
+		if n == nil {
+			continue
+		}
+		t := c.p.inferType(n)
+		if !operandIsKnown(t) {
+			continue
+		}
+		if bitwiseOperandInvalid(t) {
+			c.errorAt(node, "Bitwise operator '%s' requires integers, got %s", op, t)
+			return
+		}
+	}
+}
+
 // checkBinaryOp rejects operand types that cannot be combined. Only cases that
 // are certainly wrong are reported: an int plus a string currently compiles and
 // prints the string's address, and string ordering compares pointers, so both
 // produce a program that runs and silently does the wrong thing.
 func (c *checker) checkBinaryOp(node *ASTNode) {
 	op := node.Value
+	if bitwiseOps[op] {
+		c.checkBitwiseOperands(node, op)
+		return
+	}
 	if !arithmeticOps[op] && !orderingOps[op] {
 		return
 	}

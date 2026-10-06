@@ -5474,6 +5474,36 @@ func (gen *CodeGenerator) generateBinaryOp(node *ahoy.ASTNode) {
 		gen.output.WriteString(" % ")
 		gen.generateNode(node.Children[1])
 		gen.output.WriteString(")")
+	case "band":
+		gen.output.WriteString("(")
+		gen.generateNode(node.Children[0])
+		gen.output.WriteString(" & ")
+		gen.generateNode(node.Children[1])
+		gen.output.WriteString(")")
+	case "bor":
+		gen.output.WriteString("(")
+		gen.generateNode(node.Children[0])
+		gen.output.WriteString(" | ")
+		gen.generateNode(node.Children[1])
+		gen.output.WriteString(")")
+	case "bxor":
+		gen.output.WriteString("(")
+		gen.generateNode(node.Children[0])
+		gen.output.WriteString(" ^ ")
+		gen.generateNode(node.Children[1])
+		gen.output.WriteString(")")
+	case "shl":
+		gen.output.WriteString("(")
+		gen.generateNode(node.Children[0])
+		gen.output.WriteString(" << ")
+		gen.generateNode(node.Children[1])
+		gen.output.WriteString(")")
+	case "shr":
+		gen.output.WriteString("(")
+		gen.generateNode(node.Children[0])
+		gen.output.WriteString(" >> ")
+		gen.generateNode(node.Children[1])
+		gen.output.WriteString(")")
 	case "pow", "**":
 		// Use pow() function from math.h for exponentiation
 		if !gen.includes["math.h"] {
@@ -6111,6 +6141,8 @@ func (gen *CodeGenerator) generateUnaryOp(node *ahoy.ASTNode) {
 	switch node.Value {
 	case "not":
 		gen.output.WriteString("!")
+	case "bnot":
+		gen.output.WriteString("~")
 	case "^":
 		// Pointer dereference - convert ^ to *
 		gen.output.WriteString("*")
