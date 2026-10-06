@@ -656,8 +656,13 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 		var explicitType string
 		isDeclaration := true
 
-		// Check if next token looks like a type annotation
-		if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
+		// A function type annotation: f: fn(int)->int = (x:int): x * 2
+		if p.current().Type == TOKEN_FN {
+			explicitType = p.parseFunctionTypeString()
+			if p.current().Type == TOKEN_EQUALS {
+				p.advance()
+			}
+		} else if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 			p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
 			p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 			p.current().Type == TOKEN_IDENTIFIER {

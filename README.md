@@ -301,6 +301,39 @@ if name is not "" then
 $
 ```
 
+### Function Values
+
+`&name` takes a reference to a function, and a lambda `(x:int): expression` is
+a value too. A lambda captures the enclosing locals it uses, so a closure can
+keep a value alive after the function that made it returns.
+
+```ahoy
+@ double_it :: |x:int| int:
+    return x * 2
+$
+
+? A function value is a parameter like any other
+@ apply :: |f:fn(int)->int, v:int| int:
+    return f|v|
+$
+
+f: fn(int)->int = &double_it        ? reference to a named function
+g: fn(int)->int = (x:int): x + 1    ? stored lambda
+
+base: 10
+add_base: fn(int)->int = (x:int): x + base   ? captures base
+
+r1: apply|f, 3|      ? 6
+r2: g|41|            ? 42
+r3: add_base|5|      ? 15
+```
+
+`fn(params)->ret` names a function value. A reference to a named function (or a
+lambda that captures nothing) is a plain C function pointer; a capturing lambda
+carries a small environment with it, so it is only callable from Ahoy. Function
+values must return a single value and named functions used as values need typed
+parameters.
+
 ### Assert Statements (NEW!)
 
 ```ahoy

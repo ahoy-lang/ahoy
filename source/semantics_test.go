@@ -403,3 +403,46 @@ func TestBitwiseOnNonIntegerIsReported(t *testing.T) {
 		wantError(t, msgs, "requires")
 	}
 }
+
+func TestFunctionTypedVariableIsCallable(t *testing.T) {
+	msgs := diagnosticsFor(`program p
+@ double_it |x:int| int:
+	return x * 2
+$
+@ main ||:
+	f: fn(int)->int = &double_it
+	r: f|3|
+	print|r|
+$
+`)
+	wantNoError(t, msgs, "is not defined")
+}
+
+func TestFunctionValueParameterIsCallable(t *testing.T) {
+	msgs := diagnosticsFor(`program p
+@ double_it |x:int| int:
+	return x * 2
+$
+@ apply |f:fn(int)->int, v:int| int:
+	return f|v|
+$
+@ main ||:
+	r: apply|&double_it, 3|
+	print|r|
+$
+`)
+	wantNoError(t, msgs, "is not defined")
+}
+
+func TestLambdaCaptureIsResolved(t *testing.T) {
+	msgs := diagnosticsFor(`program p
+@ main ||:
+	base: 10
+	f: fn(int)->int = (x:int): x + base
+	r: f|1|
+	print|r|
+$
+`)
+	wantNoError(t, msgs, "is not declared")
+	wantNoError(t, msgs, "is not defined")
+}

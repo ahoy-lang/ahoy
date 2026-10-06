@@ -180,6 +180,10 @@ type CodeGenerator struct {
 	functionParamTypes            map[string][]string          // function name -> parameter types
 	functionParamNames            map[string][]string          // function name -> parameter names
 	functionParamDefaults         map[string][]*ahoy.ASTNode   // function name -> parameter default values
+	closureDecls                  strings.Builder             // hoisted thunks for lambdas and function references
+	funcRefThunks                 map[string]bool             // function names whose reference thunk has been emitted
+	closureCaptures               map[string]string           // captured name -> C expression while generating a thunk body
+	pendingFuncType               string                      // declared fn(...) type of the lambda being initialized
 	dictSourcedVars               map[string]string            // variable name -> dict name (for dict-accessed vars)
 	dictSourcedKeys               map[string]string            // variable name -> key (for dict-accessed vars)
 	generatedTypes                map[string]bool              // Track which types have been generated
@@ -264,6 +268,8 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 		functionParamTypes:    make(map[string][]string),
 		functionParamNames:    make(map[string][]string),
 		functionParamDefaults: make(map[string][]*ahoy.ASTNode),
+		funcRefThunks:         make(map[string]bool),
+		closureCaptures:       make(map[string]string),
 		dictSourcedVars:       make(map[string]string),
 		dictLoopValueExpr:     make(map[string]string),
 		dictSourcedKeys:       make(map[string]string),
@@ -425,6 +431,15 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 	result.WriteString("    AHOY_TYPE_STRUCT\n")
 	result.WriteString("} AhoyValueType;\n\n")
 
+	// Function values: a code pointer plus an optional captured environment.
+	// Non-capturing values (named function references, lambdas with no captured
+	// locals) leave env NULL.
+	result.WriteString("// Function values\n")
+	result.WriteString("typedef struct {\n")
+	result.WriteString("    void (*fn)(void);\n")
+	result.WriteString("    void* env;\n")
+	result.WriteString("} AhoyFn;\n\n")
+
 	// Write AhoyArray struct definition if arrays are used (must come after AhoyValueType)
 	if gen.arrayImpls || len(gen.arrayMethods) > 0 {
 		result.WriteString("// Array Helper Structure\n")
@@ -485,6 +500,14 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 	if gen.funcForwardDecls.Len() > 0 {
 		result.WriteString("// User function forward declarations\n")
 		result.WriteString(gen.funcForwardDecls.String())
+		result.WriteString("\n")
+	}
+
+	// Write hoisted function values: thunks for &name references and lambdas.
+	// They call user functions, whose forward declarations are directly above.
+	if gen.closureDecls.Len() > 0 {
+		result.WriteString("// Function values (lambdas and function references)\n")
+		result.WriteString(gen.closureDecls.String())
 		result.WriteString("\n")
 	}
 
@@ -1548,7 +1571,19 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 		gen.generateFunction(node)
 
 	case ahoy.NODE_ASSIGNMENT, ahoy.NODE_VARIABLE_DECLARATION:
+		// A lambda initialised into a variable with a declared fn(...) type takes
+		// its parameter and return types from that declaration.
+		savedPending := gen.pendingFuncType
+		if ahoy.IsFunctionType(node.DataType) {
+			for _, c := range node.Children {
+				if c.Type == ahoy.NODE_LAMBDA {
+					gen.pendingFuncType = node.DataType
+					break
+				}
+			}
+		}
 		gen.generateAssignment(node)
+		gen.pendingFuncType = savedPending
 
 	case ahoy.NODE_IF_STATEMENT:
 		gen.generateIfStatement(node)
@@ -1602,6 +1637,9 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 	case ahoy.NODE_UNARY_OP:
 		gen.generateUnaryOp(node)
 
+	case ahoy.NODE_LAMBDA:
+		gen.generateLambdaValue(node)
+
 	case ahoy.NODE_TERNARY:
 		if isStatement {
 			gen.writeIndent()
@@ -1615,6 +1653,9 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 		// Check if it's the loop counter variable
 		if node.Value == "__loop_counter" && len(gen.loopCounters) > 0 {
 			gen.output.WriteString(gen.loopCounters[len(gen.loopCounters)-1])
+		} else if expr, isCapture := gen.closureCaptures[node.Value]; isCapture {
+			// Within a closure thunk a captured local lives in the environment
+			gen.output.WriteString(expr)
 		} else {
 			// Check if this is a global constant with a getter function
 			if _, isGlobalConst := gen.globalConstantGetters[node.Value]; isGlobalConst {
@@ -4533,6 +4574,12 @@ func (gen *CodeGenerator) hoistCallArguments(args []*ahoy.ASTNode) []*ahoy.ASTNo
 }
 
 func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
+	// A variable of function type (fn(int)->int) is called indirectly.
+	if ft, ok := gen.functionValueType(node.Value); ok {
+		gen.generateIndirectCall(node, ft)
+		return
+	}
+
 	// Keep user-defined functions as snake_case
 	// Convert C library functions to their original names
 	funcName := node.Value
@@ -6137,6 +6184,213 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 	}
 }
 
+// functionValueType returns the fn(...) type of a variable, if it holds one.
+func (gen *CodeGenerator) functionValueType(name string) (string, bool) {
+	if t, ok := gen.functionVars[name]; ok && ahoy.IsFunctionType(t) {
+		return t, true
+	}
+	if t, ok := gen.variables[name]; ok && ahoy.IsFunctionType(t) {
+		return t, true
+	}
+	return "", false
+}
+
+// generateIndirectCall calls through a function value:
+// ((ret(*)(void*,params))f.fn)(f.env, args...).
+func (gen *CodeGenerator) generateIndirectCall(node *ahoy.ASTNode, funcType string) {
+	params, ret, _ := ahoy.ParseFunctionType(funcType)
+	paramList := "void*"
+	for _, p := range params {
+		paramList += ", " + gen.mapType(p)
+	}
+	gen.output.WriteString(fmt.Sprintf("((%s(*)(%s))%s.fn)(%s.env",
+		gen.mapType(ret), paramList, node.Value, node.Value))
+	for _, arg := range node.Children {
+		gen.output.WriteString(", ")
+		gen.generateNode(arg)
+	}
+	gen.output.WriteString(")")
+}
+
+// emitFunctionReference writes an AhoyFn for a named function. A thunk adapts
+// the function to the (void* env, params...) convention every function value
+// uses, so a call through a value has exactly one shape.
+func (gen *CodeGenerator) emitFunctionReference(name string) {
+	thunk := "__ahoy_ref_" + name
+	if !gen.funcRefThunks[name] {
+		gen.funcRefThunks[name] = true
+
+		retC := "void"
+		retTypes := gen.functionReturnTypes[name]
+		if len(retTypes) == 1 {
+			retC = gen.mapType(retTypes[0])
+		} else if len(retTypes) > 1 {
+			fmt.Fprintf(os.Stderr, "error: '%s' returns multiple values and cannot be used as a function value\n", name)
+			gen.hasError = true
+		}
+
+		var sig, args []string
+		for i, pt := range gen.functionParamTypes[name] {
+			ct := "intptr_t"
+			if pt != "" && pt != "any" && pt != "generic" {
+				ct = gen.mapType(pt)
+			}
+			sig = append(sig, fmt.Sprintf("%s p%d", ct, i))
+			args = append(args, fmt.Sprintf("p%d", i))
+		}
+
+		cName := name
+		if name == "main" {
+			cName = "ahoy_main"
+		}
+		call := fmt.Sprintf("%s(%s)", cName, strings.Join(args, ", "))
+		body := call + ";"
+		if retC != "void" {
+			body = "return " + call + ";"
+		}
+		gen.closureDecls.WriteString(fmt.Sprintf("static %s %s(void* __env, %s) { (void)__env; %s }\n",
+			retC, thunk, strings.Join(sig, ", "), body))
+	}
+	gen.output.WriteString(fmt.Sprintf("((AhoyFn){ (void(*)(void))%s, NULL })", thunk))
+}
+
+// generateLambdaValue emits a lambda as an AhoyFn. The lambda becomes a static
+// C function with the (void* env, params...) convention; captured locals are
+// copied into a heap environment it reads through env.
+func (gen *CodeGenerator) generateLambdaValue(node *ahoy.ASTNode) {
+	paramCount := 0
+	for _, ch := range node.Value {
+		if ch >= '0' && ch <= '9' {
+			paramCount = paramCount*10 + int(ch-'0')
+		}
+	}
+	if paramCount > len(node.Children) {
+		paramCount = len(node.Children)
+	}
+	params := node.Children[:paramCount]
+	body := node.Children[paramCount]
+
+	// The declared fn(...) type of the variable being initialised supplies the
+	// parameter and return types when the lambda itself is unannotated.
+	var declaredParams []string
+	declaredRet := ""
+	if gen.pendingFuncType != "" {
+		if dp, dr, ok := ahoy.ParseFunctionType(gen.pendingFuncType); ok {
+			declaredParams = dp
+			declaredRet = dr
+		}
+	}
+
+	paramNames := map[string]bool{}
+	var sig []string
+	for i, param := range params {
+		paramNames[param.Value] = true
+		pt := param.DataType
+		if pt == "" && i < len(declaredParams) {
+			pt = declaredParams[i]
+		}
+		if pt == "" {
+			pt = "int"
+		}
+		sig = append(sig, fmt.Sprintf("%s p%d", gen.mapType(pt), i))
+	}
+
+	// Which enclosing locals does the body use?
+	var captures []string
+	seen := map[string]bool{}
+	var collect func(n *ahoy.ASTNode)
+	collect = func(n *ahoy.ASTNode) {
+		if n == nil {
+			return
+		}
+		if n.Type == ahoy.NODE_IDENTIFIER && !paramNames[n.Value] && !seen[n.Value] {
+			if !gen.userFunctions[n.Value] {
+				if _, ok := gen.functionVars[n.Value]; ok {
+					seen[n.Value] = true
+					captures = append(captures, n.Value)
+				} else if _, ok := gen.variables[n.Value]; ok {
+					seen[n.Value] = true
+					captures = append(captures, n.Value)
+				}
+			}
+		}
+		for _, c := range n.Children {
+			collect(c)
+		}
+	}
+	collect(body)
+
+	id := gen.varCounter
+	gen.varCounter++
+	thunk := fmt.Sprintf("__ahoy_lambda_%d", id)
+
+	retType := gen.inferType(body)
+	if retType == "" || retType == "unknown" {
+		retType = declaredRet
+	}
+	if retType == "" || retType == "unknown" {
+		retType = "int"
+	}
+	retC := gen.mapType(retType)
+
+	envName := ""
+	if len(captures) > 0 {
+		envName = fmt.Sprintf("__ahoy_env_%d", id)
+		gen.closureDecls.WriteString("typedef struct {\n")
+		for _, c := range captures {
+			t := gen.functionVars[c]
+			if t == "" {
+				t = gen.variables[c]
+			}
+			gen.closureDecls.WriteString(fmt.Sprintf("    %s %s;\n", gen.mapType(t), c))
+		}
+		gen.closureDecls.WriteString(fmt.Sprintf("} %s;\n", envName))
+	}
+
+	// Emit the body with captured names redirected into the environment. The
+	// output builder is swapped for a fresh one while the body is generated.
+	savedOutput := gen.output
+	savedIndent := gen.indent
+	savedCaptures := gen.closureCaptures
+	gen.output = strings.Builder{}
+	gen.indent = 0
+	gen.closureCaptures = map[string]string{}
+	// The thunk's C parameters are p0, p1, ...; the body uses the source names.
+	for i, param := range params {
+		gen.closureCaptures[param.Value] = fmt.Sprintf("p%d", i)
+	}
+	for _, c := range captures {
+		gen.closureCaptures[c] = fmt.Sprintf("((%s*)__env)->%s", envName, c)
+	}
+	if retC == "void" {
+		gen.generateNodeInternal(body, false)
+	} else {
+		gen.output.WriteString("return ")
+		gen.generateNodeInternal(body, false)
+	}
+	bodyCode := gen.output.String()
+	gen.output = savedOutput
+	gen.indent = savedIndent
+	gen.closureCaptures = savedCaptures
+
+	if envName == "" {
+		gen.closureDecls.WriteString(fmt.Sprintf("static %s %s(void* __env, %s) { (void)__env; %s; }\n",
+			retC, thunk, strings.Join(sig, ", "), bodyCode))
+		gen.output.WriteString(fmt.Sprintf("((AhoyFn){ (void(*)(void))%s, NULL })", thunk))
+		return
+	}
+
+	gen.closureDecls.WriteString(fmt.Sprintf("static %s %s(void* __env, %s) { %s; }\n",
+		retC, thunk, strings.Join(sig, ", "), bodyCode))
+	var alloc strings.Builder
+	fmt.Fprintf(&alloc, "({ %s* __e = (%s*)malloc(sizeof(%s)); ", envName, envName, envName)
+	for _, c := range captures {
+		fmt.Fprintf(&alloc, "__e->%s = %s; ", c, c)
+	}
+	fmt.Fprintf(&alloc, "(AhoyFn){ (void(*)(void))%s, __e }; })", thunk)
+	gen.output.WriteString(alloc.String())
+}
+
 func (gen *CodeGenerator) generateUnaryOp(node *ahoy.ASTNode) {
 	switch node.Value {
 	case "not":
@@ -6147,7 +6401,12 @@ func (gen *CodeGenerator) generateUnaryOp(node *ahoy.ASTNode) {
 		// Pointer dereference - convert ^ to *
 		gen.output.WriteString("*")
 	case "&":
-		// Address-of operator
+		// Address-of a variable, or a reference to a named function.
+		if len(node.Children) == 1 && node.Children[0].Type == ahoy.NODE_IDENTIFIER &&
+			gen.userFunctions[node.Children[0].Value] {
+			gen.emitFunctionReference(node.Children[0].Value)
+			return
+		}
 		gen.output.WriteString("&")
 	default:
 		gen.output.WriteString(node.Value)
@@ -6537,6 +6796,11 @@ func (gen *CodeGenerator) generateDictLiteral(node *ahoy.ASTNode) {
 }
 
 func (gen *CodeGenerator) mapType(langType string) string {
+	// Function values are {code pointer, environment} pairs
+	if ahoy.IsFunctionType(langType) {
+		return "AhoyFn"
+	}
+
 	// Check for typed collections first
 	if strings.HasPrefix(langType, "array[") {
 		return "AhoyArray*"

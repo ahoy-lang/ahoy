@@ -8,6 +8,12 @@ import (
 // Primary expressions and literals: arrays, objects, dicts, lambdas.
 
 func (p *Parser) parsePrimaryExpression() *ASTNode {
+	// A lambda used as a value: (x:int): x * 2, (a, b): a + b. It has to be
+	// recognised before the parenthesized-expression case below.
+	if p.current().Type == TOKEN_LPAREN && p.looksLikeLambda() {
+		return p.parseLambda()
+	}
+
 	switch p.current().Type {
 	case TOKEN_NUMBER:
 		token := p.current()

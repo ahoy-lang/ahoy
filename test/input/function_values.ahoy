@@ -1,0 +1,56 @@
+program function_values_test
+
+@ double_it |x:int| int:
+	return x * 2
+$
+
+@ apply |f:fn(int)->int, v:int| int:
+	return f|v|
+$
+
+@ make_adder |base:int| fn(int)->int:
+	return (x:int): x + base
+$
+
+@ main ||:
+	expected: []
+
+	? a reference to a named function
+	ref: fn(int)->int = &double_it
+	r1: ref|3|
+	print|r1|
+	expected.push|"6"|
+
+	? a stored lambda
+	inc: fn(int)->int = (x:int): x + 1
+	r2: inc|10|
+	print|r2|
+	expected.push|"11"|
+
+	? a lambda that captures an enclosing local
+	base: 100
+	addbase: fn(int)->int = (x:int): x + base
+	r3: addbase|5|
+	print|r3|
+	expected.push|"105"|
+
+	? a function value passed as an argument
+	r4: apply|&double_it, 7|
+	print|r4|
+	expected.push|"14"|
+
+	? a closure returned from a function keeps its captured value
+	add5: fn(int)->int = make_adder|5|
+	r5: add5|1|
+	print|r5|
+	expected.push|"6"|
+
+	? closures from the same factory are independent
+	add10: fn(int)->int = make_adder|10|
+	r6: add5|1|
+	r7: add10|1|
+	print|r6, r7|
+	expected.push|"6 11"|
+
+	print|expected|
+$

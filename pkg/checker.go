@@ -25,6 +25,9 @@ type checker struct {
 
 	// scopes is the stack of open blocks; scopes[0] is the global scope.
 	scopes []map[string]bool
+	// scopeTypes mirrors scopes with the declared type of each name, so a
+	// function-typed local (f: fn(int)->int) is known to be callable.
+	scopeTypes []map[string]string
 	// programNames holds names declared elsewhere in the same program, so a
 	// multi-file program resolves names across its files.
 	programNames map[string]bool
@@ -43,6 +46,7 @@ func (p *Parser) checkSemantics(ast *ASTNode, programNames []string) {
 	c := &checker{
 		p:            p,
 		scopes:       []map[string]bool{{}},
+		scopeTypes:   []map[string]string{{}},
 		programNames: make(map[string]bool, len(programNames)),
 	}
 	for _, name := range programNames {
@@ -156,11 +160,15 @@ func firstPositioned(node *ASTNode) *ASTNode {
 
 // ---------------------------------------------------------------- scopes
 
-func (c *checker) pushScope() { c.scopes = append(c.scopes, map[string]bool{}) }
+func (c *checker) pushScope() {
+	c.scopes = append(c.scopes, map[string]bool{})
+	c.scopeTypes = append(c.scopeTypes, map[string]string{})
+}
 
 func (c *checker) popScope() {
 	if len(c.scopes) > 1 {
 		c.scopes = c.scopes[:len(c.scopes)-1]
+		c.scopeTypes = c.scopeTypes[:len(c.scopeTypes)-1]
 	}
 }
 
@@ -169,6 +177,25 @@ func (c *checker) declare(name string) {
 		return
 	}
 	c.scopes[len(c.scopes)-1][name] = true
+}
+
+// declareTyped is declare plus the declared type, when there is one.
+func (c *checker) declareTyped(name, typeName string) {
+	c.declare(name)
+	if name == "" || name == "_" || typeName == "" {
+		return
+	}
+	c.scopeTypes[len(c.scopeTypes)-1][name] = typeName
+}
+
+// lookupType returns the innermost declared type of a name, if any.
+func (c *checker) lookupType(name string) string {
+	for i := len(c.scopeTypes) - 1; i >= 0; i-- {
+		if t, ok := c.scopeTypes[i][name]; ok && t != "" {
+			return t
+		}
+	}
+	return ""
 }
 
 func (c *checker) isVisible(name string) bool {
@@ -276,6 +303,10 @@ func (c *checker) isCallable(name string) bool {
 	if _, ok := c.p.functions[name]; ok {
 		return true
 	}
+	// A variable holding a function value is called through it
+	if c.isFunctionTypedVariable(name) {
+		return true
+	}
 	if c.p.zeroArgFunctions[name] {
 		return true
 	}
@@ -289,6 +320,18 @@ func (c *checker) isCallable(name string) bool {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+// isFunctionTypedVariable reports whether a local or global variable holds a
+// function value, e.g. `f: fn(int)->int = &double_it`.
+func (c *checker) isFunctionTypedVariable(name string) bool {
+	if IsFunctionType(c.lookupType(name)) {
+		return true
+	}
+	if t, ok := c.p.variableTypes[name]; ok && IsFunctionType(t) {
+		return true
 	}
 	return false
 }
@@ -445,7 +488,7 @@ func (c *checker) checkFunction(node *ASTNode) {
 	c.pushScope()
 	if params != nil {
 		for _, param := range params.Children {
-			c.declare(param.Value)
+			c.declareTyped(param.Value, param.DataType)
 		}
 	}
 	c.checkBlock(body)
@@ -480,7 +523,7 @@ func (c *checker) checkStatement(node *ASTNode) {
 	case NODE_VARIABLE_DECLARATION:
 		c.checkExpr(childAt(node, 0))
 		c.warnPartialCallResult(node, childAt(node, 0), 1)
-		c.declare(node.Value)
+		c.declareTyped(node.Value, node.DataType)
 
 	case NODE_ASSIGNMENT:
 		// The parser already rejects assignment to an undeclared variable.

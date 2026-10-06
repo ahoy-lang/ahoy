@@ -33,6 +33,7 @@ const (
 	TOKEN_TO   // to (for loop range)
 	TOKEN_TILL // till (for loop condition)
 	TOKEN_FUNC
+	TOKEN_FN // fn (function type, e.g. fn(int)->int)
 	TOKEN_RETURN
 	TOKEN_IMPORT
 	TOKEN_PROGRAM       // program (package declaration)
@@ -160,6 +161,7 @@ var keywords = map[string]TokenType{
 	"div":          TOKEN_DIV_WORD,
 	"mod":          TOKEN_MOD_WORD,
 	"pow":          TOKEN_POW_WORD,
+	"fn":           TOKEN_FN,
 	"band":         TOKEN_BAND,
 	"bor":          TOKEN_BOR,
 	"bxor":         TOKEN_BXOR,

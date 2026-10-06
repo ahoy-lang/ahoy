@@ -479,6 +479,61 @@ func (p *Parser) isLambda() bool {
 	return false
 }
 
+// looksLikeLambda reports whether the current '(' opens a lambda parameter
+// list followed by ':' - (x): ..., (a, b): ..., (x:int): ...
+func (p *Parser) looksLikeLambda() bool {
+	if p.current().Type != TOKEN_LPAREN {
+		return false
+	}
+	saved := p.pos
+	defer func() { p.pos = saved }()
+
+	p.advance() // (
+	for {
+		if p.current().Type != TOKEN_IDENTIFIER {
+			return false
+		}
+		p.advance()
+
+		// Optional parameter type
+		if p.current().Type == TOKEN_ASSIGN {
+			p.advance() // :
+			if !p.isTypeToken(p.current().Type) {
+				return false
+			}
+			// Skip a possibly complex type, including fn(...) -> ret
+			depth := 0
+			for p.current().Type != TOKEN_EOF {
+				t := p.current().Type
+				if t == TOKEN_RPAREN && depth == 0 {
+					break
+				}
+				if t == TOKEN_COMMA && depth == 0 {
+					break
+				}
+				if t == TOKEN_LPAREN {
+					depth++
+				} else if t == TOKEN_RPAREN {
+					depth--
+				}
+				p.advance()
+			}
+		}
+
+		if p.current().Type == TOKEN_COMMA {
+			p.advance()
+			continue
+		}
+		break
+	}
+
+	if p.current().Type != TOKEN_RPAREN {
+		return false
+	}
+	p.advance()
+	return p.current().Type == TOKEN_ASSIGN
+}
+
 // Parse lambda expression: param: expression or (param1, param2): expression
 func (p *Parser) parseLambda() *ASTNode {
 	startLine := p.current().Line
@@ -488,13 +543,21 @@ func (p *Parser) parseLambda() *ASTNode {
 	if p.current().Type == TOKEN_LPAREN {
 		p.advance() // consume (
 
-		// Parse parameters
+		// Parse parameters, each with an optional ": type" annotation
 		for p.current().Type != TOKEN_RPAREN && p.current().Type != TOKEN_EOF {
 			param := p.expect(TOKEN_IDENTIFIER)
+			paramType := ""
+			if p.current().Type == TOKEN_ASSIGN {
+				p.advance() // :
+				if p.isTypeToken(p.current().Type) {
+					paramType = p.parseComplexReturnType()
+				}
+			}
 			params = append(params, &ASTNode{
-				Type:  NODE_IDENTIFIER,
-				Value: param.Value,
-				Line:  param.Line,
+				Type:     NODE_IDENTIFIER,
+				Value:    param.Value,
+				DataType: paramType,
+				Line:     param.Line,
 			})
 
 			if p.current().Type == TOKEN_COMMA {
@@ -998,11 +1061,52 @@ func (p *Parser) isTypeToken(tokenType TokenType) bool {
 	return tokenType == TOKEN_INT_TYPE || tokenType == TOKEN_FLOAT_TYPE ||
 		tokenType == TOKEN_STRING_TYPE || tokenType == TOKEN_BOOL_TYPE ||
 		tokenType == TOKEN_DICT_TYPE || tokenType == TOKEN_ARRAY_TYPE ||
-		tokenType == TOKEN_ANY_TYPE || tokenType == TOKEN_IDENTIFIER
+		tokenType == TOKEN_ANY_TYPE || tokenType == TOKEN_IDENTIFIER ||
+		tokenType == TOKEN_FN
+}
+
+// parseFunctionTypeString parses `fn(int, string) -> int` and returns the
+// canonical type string `fn(int,string)->int`. The current token is 'fn'.
+func (p *Parser) parseFunctionTypeString() string {
+	p.expect(TOKEN_FN)
+	p.expect(TOKEN_LPAREN)
+
+	params := []string{}
+	for p.current().Type != TOKEN_RPAREN && p.current().Type != TOKEN_EOF {
+		if !p.isTypeToken(p.current().Type) {
+			break
+		}
+		params = append(params, p.parseComplexReturnType())
+		if p.current().Type == TOKEN_COMMA {
+			p.advance()
+			continue
+		}
+		break
+	}
+	p.expect(TOKEN_RPAREN)
+
+	ret := "void"
+	// '>' is TOKEN_RANGLE: the tokenizer uses the bracket token for both
+	// comparison and dict access.
+	if p.current().Type == TOKEN_MINUS &&
+		(p.peek(1).Type == TOKEN_GREATER || p.peek(1).Type == TOKEN_RANGLE) {
+		p.advance() // -
+		p.advance() // >
+		if p.isTypeToken(p.current().Type) {
+			ret = p.parseComplexReturnType()
+		}
+	}
+
+	return FormatFunctionType(params, ret)
 }
 
 // parseComplexReturnType parses a return type that may include complex types like array[int] or dict<string,int>
 func (p *Parser) parseComplexReturnType() string {
+	// Function types: fn(int,string)->void
+	if p.current().Type == TOKEN_FN {
+		return p.parseFunctionTypeString()
+	}
+
 	baseType := p.current().Value
 	p.advance()
 
