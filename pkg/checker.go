@@ -643,6 +643,18 @@ func (c *checker) checkStatement(node *ASTNode) {
 			c.checkStatement(child)
 		}
 
+	case NODE_WHEN_STATEMENT:
+		// `when NAME then ...` compiles only under -D NAME, but the body is
+		// always parsed. It was skipped here, so a declaration inside the block
+		// was invisible to the very next statement in the same block.
+		for _, child := range node.Children {
+			if child.Type == NODE_BLOCK {
+				c.checkBlock(child)
+			} else {
+				c.checkStatement(child)
+			}
+		}
+
 	case NODE_SWITCH_STATEMENT:
 		c.checkExpr(childAt(node, 0))
 		for _, caseNode := range node.Children[1:] {

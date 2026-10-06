@@ -1,0 +1,46 @@
+program zero_arg_refs
+
+? A zero-argument function used as a value (`&tick`) must stay a reference.
+? The parser auto-calls zero-argument functions written bare, so it emitted
+? `&tick()`, and a reference thunk was generated with a trailing comma in
+? its parameter list (`void* __env, )`).
+
+@ tick || int:
+	return 7
+$
+@ nothing || void:
+$
+@ read_out |f:fn()->int| int:
+	return f||
+$
+
+struct Callbacks:
+	on_tick: fn()->int
+	on_idle: fn()->void
+$
+
+@ main ||:
+	expected: []
+
+	cb: Callbacks{on_tick: &tick, on_idle: &nothing}
+	r: cb.on_tick||
+	print|r|
+	expected.push|"7"|
+
+	cb.on_idle||
+	print|"idle ok"|
+	expected.push|"idle ok"|
+
+	? also works passed straight to a function (as a statement: a call inside
+	? another call's argument list is a separate parser weakness)
+	got: read_out|&tick|
+	print|got|
+	expected.push|"7"|
+
+	ref: fn()->int = &tick
+	got2: read_out|ref|
+	print|got2|
+	expected.push|"7"|
+
+	print|expected|
+$

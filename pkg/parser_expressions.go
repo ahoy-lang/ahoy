@@ -1685,7 +1685,15 @@ func (p *Parser) parseUnaryExpression() *ASTNode {
 		p.current().Type == TOKEN_BNOT {
 		op := p.current()
 		p.advance()
+		// `&name` is a function reference, not the result of calling name:
+		// a zero-argument function must not be auto-called under &. That
+		// produced `&hello()` and the C compiler rejected it as an lvalue.
+		savedFuncRef := p.inFunctionReference
+		if op.Type == TOKEN_AMPERSAND {
+			p.inFunctionReference = true
+		}
 		expr := p.parseUnaryExpression()
+		p.inFunctionReference = savedFuncRef
 		return &ASTNode{
 			Type:     NODE_UNARY_OP,
 			Value:    op.Value,

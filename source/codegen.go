@@ -6547,8 +6547,14 @@ func (gen *CodeGenerator) emitFunctionReference(name string) {
 		if retC != "void" {
 			body = "return " + call + ";"
 		}
-		gen.closureDecls.WriteString(fmt.Sprintf("static %s %s(void* __env, %s) { (void)__env; %s }\n",
-			retC, thunk, strings.Join(sig, ", "), body))
+		// A zero-parameter function must not leave a trailing comma in the
+		// thunk's parameter list (`void* __env, )` is not a C parameter list).
+		thunkParams := "void* __env"
+		if len(sig) > 0 {
+			thunkParams += ", " + strings.Join(sig, ", ")
+		}
+		gen.closureDecls.WriteString(fmt.Sprintf("static %s %s(%s) { (void)__env; %s }\n",
+			retC, thunk, thunkParams, body))
 	}
 	gen.output.WriteString(fmt.Sprintf("((AhoyFn){ (void(*)(void))%s, NULL })", thunk))
 }
@@ -11846,6 +11852,13 @@ int ahoy_jobs_drain(AhoyPool* pool, AhoyFn handler, intptr_t context) {
     pool->completed = NULL;
     pool->completed_tail = NULL;
     for (struct AhoyJob* j = list; j != NULL; j = j->next_completed) {
+        /* A job enters the completed queue only after its result is written,
+           but the worker publishes done afterwards. drain() promises finished
+           jobs, and j.result|| refuses a job whose done is still 0, so publish
+           it here: without this a drained job's result read back as 0. */
+        pthread_mutex_lock(&j->mutex);
+        j->done = 1;
+        pthread_mutex_unlock(&j->mutex);
         j->in_completed = 0;
     }
     pthread_mutex_unlock(&pool->mutex);

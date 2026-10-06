@@ -1598,25 +1598,30 @@ func (p *Parser) parseLoop() *ASTNode {
 }
 
 func (p *Parser) parseWhenStatement() *ASTNode {
+	startLine := p.current().Line
 	p.expect(TOKEN_WHEN)
 	condition := p.expect(TOKEN_IDENTIFIER) // Compile-time condition like DEBUG, RELEASE
-	p.expect(TOKEN_THEN)
-	p.expect(TOKEN_NEWLINE)
-	p.expect(TOKEN_INDENT)
-
-	body := p.parseBlock()
-
-	// Consume 'end' keyword for when statement
-	if p.current().Type == TOKEN_END {
+	if p.current().Type == TOKEN_THEN || p.current().Type == TOKEN_DO {
 		p.advance()
 	} else {
-		errMsg := fmt.Sprintf("Expected '$' to close when statement at line %d", p.current().Line)
+		errMsg := fmt.Sprintf("Expected 'then' in when statement, got %s at line %d:%d",
+			tokenTypeName(p.current().Type), p.current().Line, p.current().Column)
 		if p.LintMode {
 			p.recordError(errMsg)
 		} else {
 			panic(errMsg)
 		}
 	}
+
+	// Like every other block, the body runs until '$'. Parsing until DEDENT
+	// instead swallowed every following statement into the body: the generated
+	// #ifdef then wrapped the rest of the function.
+	for p.current().Type == TOKEN_NEWLINE {
+		p.advance()
+	}
+	p.skipWhitespace()
+	p.blockDepth++ // Opening a block
+	body := p.parseBlockUntilEnd("when", startLine)
 
 	return &ASTNode{
 		Type:     NODE_WHEN_STATEMENT,

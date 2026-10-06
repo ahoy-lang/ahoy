@@ -1,0 +1,31 @@
+program when_scope
+
+? A `when NAME then` body is parsed and checked even when NAME is not
+? defined, so a declaration in it has to be visible to the rest of the
+? block. The checker skipped the body entirely, and the next statement
+? was reported as using an undeclared variable.
+? (Without -D DEBUG the body is not compiled, hence the small output.)
+
+@ main ||:
+	expected: []
+
+	when DEBUG then
+		message: "debug run"
+		print|message|
+		value: 1 + 1
+		if value is 2 then
+			print|"math still works"|
+		$
+	$
+
+	when NEVER_DEFINED then
+		frame: 0
+		frame = frame + 1
+		print|frame|
+	$
+
+	print|"release path"|
+	expected.push|"release path"|
+
+	print|expected|
+$

@@ -236,6 +236,10 @@ type Parser struct {
 	inFunctionBody      bool                          // Track if we're inside a function body
 	sourceFilePath      string                        // Source file path for resolving relative imports
 	zeroArgFunctions    map[string]bool               // O(1) lookup for zero-argument functions (snake_case name -> true)
+	// inFunctionReference is set while parsing the operand of `&`: the
+	// operand is a function value, so a zero-argument function must not be
+	// auto-called into a call node there.
+	inFunctionReference bool
 
 	// knownVars records declared variable names in BOTH modes. declaredVars and
 	// functionScope are only maintained while linting, but code generation also

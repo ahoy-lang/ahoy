@@ -440,8 +440,9 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 		}
 
 		// Check if this is a zero-arg function that can be called without ||
-		// Only do this at top-level (not inside another function call)
-		if p.inFunctionCall == 0 && p.zeroArgFunctions[token.Value] {
+		// Only do this at top-level (not inside another function call, and not
+		// under & where the name itself is the function value)
+		if p.inFunctionCall == 0 && !p.inFunctionReference && p.zeroArgFunctions[token.Value] {
 			return &ASTNode{
 				Type:     NODE_CALL,
 				Value:    token.Value,
