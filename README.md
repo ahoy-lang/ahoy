@@ -334,6 +334,41 @@ carries a small environment with it, so it is only callable from Ahoy. Function
 values must return a single value and named functions used as values need typed
 parameters.
 
+### Callback Tables (backend contracts)
+
+A struct whose fields are function values is a contract. Each backend fills in
+the same struct, and engine code only calls the fields, so swapping a backend is
+passing a different value:
+
+```ahoy
+struct Renderer:
+    clear: fn(int,int,int)->int
+    draw:  fn(int,int)->int
+    name:  string
+$
+
+@ raylib_clear :: |r:int,g:int,b:int| int:
+    return 100 + r + g + b
+$
+
+@ raylib_backend :: || Renderer:
+    return Renderer{clear: &raylib_clear, draw: &raylib_draw, name: "raylib"}
+$
+
+@ render_frame :: |r:Renderer|:
+    print|r.name|
+    r.clear|0, 0, 0|
+    r.draw|10, 20|
+$
+```
+
+`r.clear|...|` dispatches through the stored function value, so `render_frame`
+never mentions raylib, SDL or Vulkan: swapping the backend is passing a
+different `Renderer`. Backends are selected at build time (different C
+libraries); a `when NAME:` block emits `#ifdef NAME`, but the compiler cannot
+pass `-D` defines to the C compiler yet, so use separate files per backend for
+now.
+
 ### Assert Statements (NEW!)
 
 ```ahoy

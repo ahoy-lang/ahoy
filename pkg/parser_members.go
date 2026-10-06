@@ -1092,7 +1092,9 @@ func (p *Parser) parseFunctionTypeString() string {
 		(p.peek(1).Type == TOKEN_GREATER || p.peek(1).Type == TOKEN_RANGLE) {
 		p.advance() // -
 		p.advance() // >
-		if p.isTypeToken(p.current().Type) {
+		if p.current().Type == TOKEN_VOID {
+			p.advance()
+		} else if p.isTypeToken(p.current().Type) {
 			ret = p.parseComplexReturnType()
 		}
 	}

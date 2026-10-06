@@ -119,7 +119,8 @@ func toCFuncName(name string) string {
 
 type StructField struct {
 	Name         string
-	Type         string
+	Type         string // C type after mapType
+	AhoyType     string // Ahoy-level type before mapType, e.g. fn(int)->int
 	DefaultValue string // C code for default value (if any)
 	IsStatic     bool   // Static field (shared across instances)
 	IsConst      bool   // Const field (SCREAMING_SNAKE_CASE - immutable)
@@ -1297,10 +1298,17 @@ func (gen *CodeGenerator) scanTypeDeclarations(node *ahoy.ASTNode) {
 	// Scan for struct declarations
 	if node.Type == ahoy.NODE_STRUCT_DECLARATION {
 		structName := node.Value
-		// Just register that this struct exists - actual generation happens later
+		// Register the struct and its fields. The field types are needed when a
+		// field holds a function value (r.draw_sprite|...|).
 		if gen.structs[structName] == nil {
-			gen.structs[structName] = &StructInfo{Name: structName, Fields: make([]StructField, 0)}
-			gen.structs[capitalizeFirst(structName)] = gen.structs[structName]
+			info := &StructInfo{Name: structName, Fields: make([]StructField, 0)}
+			for _, field := range node.Children {
+				if field.Type == ahoy.NODE_OBJECT_PROPERTY || field.Type == ahoy.NODE_IDENTIFIER {
+					info.Fields = append(info.Fields, StructField{Name: field.Value, Type: field.DataType, AhoyType: field.DataType})
+				}
+			}
+			gen.structs[structName] = info
+			gen.structs[capitalizeFirst(structName)] = info
 		}
 	}
 
@@ -5930,6 +5938,24 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 		}
 	}
 
+	// A struct field holding a function value: r.draw_sprite|args| calls
+	// through the stored callback table.
+	if object.Type == ahoy.NODE_IDENTIFIER {
+		objType := strings.TrimPrefix(gen.inferType(object), "struct:")
+		if info := gen.structs[objType]; info != nil {
+			for _, f := range info.Fields {
+				fieldType := f.AhoyType
+				if fieldType == "" {
+					fieldType = f.Type
+				}
+				if f.Name == methodName && ahoy.IsFunctionType(fieldType) {
+					gen.generateStructCallbackCall(object, methodName, fieldType, args)
+					return
+				}
+			}
+		}
+	}
+
 	// Handle map and filter with inline code generation
 	if methodName == "map" || methodName == "filter" {
 		if len(args.Children) > 0 && args.Children[0].Type == ahoy.NODE_LAMBDA {
@@ -6182,6 +6208,24 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 		}
 		gen.output.WriteString(")")
 	}
+}
+
+// generateStructCallbackCall calls a function-typed struct field:
+// ((ret(*)(void*,params))obj.field.fn)(obj.field.env, args...).
+func (gen *CodeGenerator) generateStructCallbackCall(object *ahoy.ASTNode, fieldName, funcType string, args *ahoy.ASTNode) {
+	params, ret, _ := ahoy.ParseFunctionType(funcType)
+	paramList := "void*"
+	for _, p := range params {
+		paramList += ", " + gen.mapType(p)
+	}
+	obj := object.Value
+	gen.output.WriteString(fmt.Sprintf("((%s(*)(%s))%s.%s.fn)(%s.%s.env",
+		gen.mapType(ret), paramList, obj, fieldName, obj, fieldName))
+	for _, arg := range args.Children {
+		gen.output.WriteString(", ")
+		gen.generateNode(arg)
+	}
+	gen.output.WriteString(")")
 }
 
 // functionValueType returns the fn(...) type of a variable, if it holds one.
@@ -6934,6 +6978,25 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		}
 		return "int"
 	case ahoy.NODE_METHOD_CALL:
+		// A callback-table field (r.draw_sprite|...|) returns the field's own
+		// return type.
+		if len(node.Children) > 0 && node.Children[0].Type == ahoy.NODE_IDENTIFIER {
+			objType := strings.TrimPrefix(gen.inferType(node.Children[0]), "struct:")
+			if info := gen.structs[objType]; info != nil {
+				for _, f := range info.Fields {
+					ft := f.AhoyType
+					if ft == "" {
+						ft = f.Type
+					}
+					if f.Name == node.Value && ahoy.IsFunctionType(ft) {
+						if _, ret, ok := ahoy.ParseFunctionType(ft); ok {
+							return ret
+						}
+					}
+				}
+			}
+		}
+
 		// Check if this is a namespaced C function call
 		if len(node.Children) > 0 && node.Children[0].Type == ahoy.NODE_IDENTIFIER {
 			namespace := node.Children[0].Value
@@ -8731,6 +8794,7 @@ func (gen *CodeGenerator) generateStruct(node *ahoy.ASTNode) {
 		structInfo.Fields = append(structInfo.Fields, StructField{
 			Name:         field.Value,
 			Type:         fieldType,
+			AhoyType:     field.DataType,
 			DefaultValue: defaultValue,
 			IsStatic:     false,
 			IsConst:      field.IsConst,
@@ -9945,6 +10009,31 @@ func (gen *CodeGenerator) getValueType(node *ahoy.ASTNode) string {
 		// misses them; they only appear in functionVars.
 		if varType, exists := gen.functionVars[node.Value]; exists {
 			return varType
+		}
+		return "int"
+	case ahoy.NODE_MEMBER_ACCESS:
+		// obj.field: resolve through the struct so a string field is tagged as a
+		// string when it is pushed into an array or dict.
+		if len(node.Children) > 0 && node.Children[0].Type == ahoy.NODE_IDENTIFIER {
+			objType := strings.TrimPrefix(gen.inferType(node.Children[0]), "struct:")
+			if info := gen.structs[objType]; info != nil {
+				for _, f := range info.Fields {
+					if f.Name != node.Value {
+						continue
+					}
+					ft := f.AhoyType
+					if ft == "" {
+						ft = f.Type
+					}
+					switch ft {
+					case "char*", "const char*":
+						return "string"
+					case "double":
+						return "float"
+					}
+					return ft
+				}
+			}
 		}
 		return "int"
 	default:

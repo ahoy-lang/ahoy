@@ -1,0 +1,59 @@
+program callback_table_test
+
+? An engine-style renderer contract: a struct of function values. Each backend
+? fills it in and engine code only talks to the contract, so the backend is
+? swapped by passing a different value.
+
+@ raylib_clear |r:int, g:int, b:int| int:
+	return 100 + r + g + b
+$
+@ raylib_draw |x:int, y:int| int:
+	return 200 + x + y
+$
+
+@ sdl_clear |r:int, g:int, b:int| int:
+	return 300 + r + g + b
+$
+@ sdl_draw |x:int, y:int| int:
+	return 400 + x + y
+$
+
+struct Renderer:
+	clear: fn(int,int,int)->int
+	draw:  fn(int,int)->int
+	name:  string
+$
+
+@ raylib_backend || Renderer:
+	return Renderer{clear: &raylib_clear, draw: &raylib_draw, name: "raylib"}
+$
+
+@ sdl_backend || Renderer:
+	return Renderer{clear: &sdl_clear, draw: &sdl_draw, name: "sdl"}
+$
+
+@ render_frame |r:Renderer, expected:array| void:
+	print|r.name|
+	expected.push|r.name|
+
+	cleared: r.clear|0, 0, 0|
+	print|cleared|
+	expected.push|cleared|
+
+	drawn: r.draw|10, 20|
+	print|drawn|
+	expected.push|drawn|
+$
+
+@ main ||:
+	expected: []
+
+	raylib: raylib_backend||
+	sdl: sdl_backend||
+
+	? the same engine code drives both backends
+	render_frame|raylib, expected|
+	render_frame|sdl, expected|
+
+	print|expected|
+$

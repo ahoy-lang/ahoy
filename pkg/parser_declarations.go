@@ -1294,7 +1294,9 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 							p.advance() // consume :
 
 							// Get type - handle array[type] and dict<key,val> syntax
-							if p.current().Type == TOKEN_ARRAY_TYPE {
+							if p.current().Type == TOKEN_FN {
+								fieldType = p.parseFunctionTypeString()
+							} else if p.current().Type == TOKEN_ARRAY_TYPE {
 								fieldType = "array"
 								p.advance()
 								if p.current().Type == TOKEN_LBRACKET {
@@ -1438,7 +1440,9 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 				p.advance() // consume :
 
 				// Get type - handle array[type] and dict<key,val> syntax
-				if p.current().Type == TOKEN_ARRAY_TYPE {
+				if p.current().Type == TOKEN_FN {
+					fieldType = p.parseFunctionTypeString()
+				} else if p.current().Type == TOKEN_ARRAY_TYPE {
 					fieldType = "array"
 					p.advance()
 					if p.current().Type == TOKEN_LBRACKET {
