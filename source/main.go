@@ -540,6 +540,15 @@ func buildForTarget(target *CrossCompileTarget, cFile, baseName, sourceDir strin
 	return nil
 }
 
+// pthreadFlags returns the threading library flags for the host platform. The
+// job system uses pthreads; Windows has no -lpthread.
+func pthreadFlags() []string {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	return []string{"-lpthread"}
+}
+
 // defineList collects -D NAME flags. Names are made available to `when NAME:`
 // blocks, which emit #ifdef NAME into the generated C.
 type defineList []string
@@ -960,6 +969,7 @@ func main() {
 			compileArgs = append(compileArgs, raylibArg, "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
 		} else {
 			compileArgs = append(compileArgs, "-lm")
+			compileArgs = append(compileArgs, pthreadFlags()...)
 		}
 
 		compileArgs = withDefines(compileArgs)
@@ -1490,6 +1500,7 @@ func handleHotReload(sourceFile string, ast *ahoy.ASTNode, absPath string, arcFl
 			libArgs = append(libArgs, "-lraylib", "-lm", "-lpthread", "-ldl")
 		} else {
 			libArgs = append(libArgs, "-lm")
+			libArgs = append(libArgs, pthreadFlags()...)
 		}
 	} else {
 		fmt.Println("⚠️  TCC not found, falling back to GCC...")
@@ -1503,6 +1514,7 @@ func handleHotReload(sourceFile string, ast *ahoy.ASTNode, absPath string, arcFl
 			libArgs = append(libArgs, "-lraylib", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
 		} else {
 			libArgs = append(libArgs, "-lm")
+			libArgs = append(libArgs, pthreadFlags()...)
 		}
 	}
 
@@ -1757,6 +1769,7 @@ func recompileLibraryHot(sourceFile, libSourceFile, libFile string, arcFlag bool
 			libArgs = append(libArgs, "-lraylib", "-lm", "-lpthread", "-ldl")
 		} else {
 			libArgs = append(libArgs, "-lm")
+			libArgs = append(libArgs, pthreadFlags()...)
 		}
 	} else {
 		compiler = "gcc"
@@ -1769,6 +1782,7 @@ func recompileLibraryHot(sourceFile, libSourceFile, libFile string, arcFlag bool
 			libArgs = append(libArgs, "-lraylib", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
 		} else {
 			libArgs = append(libArgs, "-lm")
+			libArgs = append(libArgs, pthreadFlags()...)
 		}
 	}
 
@@ -1888,6 +1902,7 @@ func compileAndRunCold(sourceFile string, arcFlag bool, isInitial bool) {
 			compileArgs = append(compileArgs, raylibArg, "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
 		} else {
 			compileArgs = append(compileArgs, "-lm")
+			compileArgs = append(compileArgs, pthreadFlags()...)
 		}
 	} else {
 		compiler = tccPath
@@ -1904,6 +1919,7 @@ func compileAndRunCold(sourceFile string, arcFlag bool, isInitial bool) {
 			compileArgs = append(compileArgs, raylibArg, "-lm", "-lpthread", "-ldl")
 		} else {
 			compileArgs = append(compileArgs, "-lm")
+			compileArgs = append(compileArgs, pthreadFlags()...)
 		}
 	}
 

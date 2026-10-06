@@ -393,6 +393,33 @@ $
 
 `-D` accepts several names (repeat the flag or comma-separate them).
 
+### Jobs (worker pool)
+
+`jobs|n|` starts a pool of `n` worker threads. `pool.submit|fn, arg|` queues a
+task and returns a job; `pool.wait|job|` blocks until it finishes and returns
+its result. A task is a function value taking one argument (pass `0` when it
+needs none); results are pointer-sized, so ints, strings, arrays and pointers
+work, while floats in the task ABI are not supported yet.
+
+```ahoy
+@ square :: |n:int| int:
+    return n * n
+$
+
+pool: pool = jobs|4|
+j1: job = pool.submit|&square, 12|
+j2: job = pool.submit|&square, 13|
+r1: pool.wait|j1|        ? 144
+r2: pool.wait|j2|        ? 169
+pool.stop||
+```
+
+This is the asset-loading pattern: workers read and decode files, and the main
+thread calls `wait` and then uploads the result to the GPU. Workers must not
+call raylib/OpenGL — the graphics context belongs to the main thread. A pool is
+stopped when its variable leaves scope, and a job is released at scope exit
+(release waits first, so a forgotten `wait` cannot corrupt memory).
+
 ### Assert Statements (NEW!)
 
 ```ahoy

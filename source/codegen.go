@@ -163,6 +163,8 @@ type CodeGenerator struct {
 	stringMethods                 map[string]bool              // Track which string methods are used
 	dictMethods                   map[string]bool              // Track which dict methods are used
 	useJSON                       bool                         // Track if JSON functions are used
+	useJobs                       bool                         // Track if the job system is used
+	jobResultTypes                map[string]string            // job variable -> task result Ahoy type
 	jsonVariables                 map[string]bool              // Track which variables hold JSON data
 	jsonStructs                   map[string]bool              // Track which structs are JSON schemas (not real C structs)
 	loopCounters                  []string                     // Stack of loop counter variable names
@@ -300,6 +302,7 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 		cTypedefs:             make(map[string]string),
 		cFunctionParamTypes:   make(map[string][]string),
 		cFuncPtrTypedefs:      make(map[string]bool),
+		jobResultTypes:        make(map[string]string),
 		parsedCHeaders:        make(map[string]*ahoy.CHeaderInfo),
 		enableARC:             enableARC, // Use parameter value
 		arcStructs:            make(map[string]bool),
@@ -442,6 +445,14 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 	result.WriteString("    void (*fn)(void);\n")
 	result.WriteString("    void* env;\n")
 	result.WriteString("} AhoyFn;\n\n")
+	result.WriteString("// Job system (implemented after the user functions when used)\n")
+	result.WriteString("typedef struct AhoyPool AhoyPool;\n")
+	result.WriteString("typedef struct AhoyJob AhoyJob;\n")
+	result.WriteString("AhoyPool* ahoy_jobs_new(int count);\n")
+	result.WriteString("AhoyJob* ahoy_jobs_submit(AhoyPool* pool, AhoyFn fn, intptr_t arg);\n")
+	result.WriteString("intptr_t ahoy_jobs_wait(AhoyJob* job);\n")
+	result.WriteString("void ahoy_jobs_release(AhoyJob* job);\n")
+	result.WriteString("void ahoy_jobs_stop(AhoyPool* pool);\n\n")
 
 	// Write AhoyArray struct definition if arrays are used (must come after AhoyValueType)
 	if gen.arrayImpls || len(gen.arrayMethods) > 0 {
@@ -551,6 +562,12 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 	// Write function implementations
 	result.WriteString(gen.funcDecls.String())
 	result.WriteString("\n")
+
+	// Write the job system runtime only when a pool is created
+	if gen.useJobs {
+		result.WriteString(getJobRuntime())
+		result.WriteString("\n")
+	}
 
 	// Write main program. This scaffolding is not user code, so point the
 	// diagnostic location back at the generated file rather than leaving it on
@@ -1522,6 +1539,9 @@ func (gen *CodeGenerator) isHeapAllocatedType(varType string) bool {
 	if ahoy.IsFunctionType(varType) {
 		return true
 	}
+	if varType == "pool" || varType == "job" {
+		return true
+	}
 	// String methods that return new strings are heap-allocated
 	// JSON objects are heap-allocated
 	if varType == "AhoyJSON*" {
@@ -1599,6 +1619,7 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 				}
 			}
 		}
+		gen.recordJobResultType(node)
 		gen.generateAssignment(node)
 		gen.pendingFuncType = savedPending
 
@@ -4245,6 +4266,12 @@ func (gen *CodeGenerator) generateFreeCodeForVar(varName string, varType string)
 	if ahoy.IsFunctionType(varType) {
 		return fmt.Sprintf("    if (%s.env) free(%s.env);\n", varName, varName)
 	}
+	if varType == "pool" {
+		return fmt.Sprintf("    if (%s) ahoy_jobs_stop(%s);\n", varName, varName)
+	}
+	if varType == "job" {
+		return fmt.Sprintf("    if (%s) ahoy_jobs_release(%s);\n", varName, varName)
+	}
 
 	// Check if this is an ARC-enabled struct - use release instead of free
 	if gen.enableARC {
@@ -4669,6 +4696,17 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 			return
 		}
 		return
+	case "jobs":
+		gen.useJobs = true
+		gen.output.WriteString("ahoy_jobs_new(")
+		if len(node.Children) > 0 {
+			gen.generateNode(node.Children[0])
+		} else {
+			gen.output.WriteString("4")
+		}
+		gen.output.WriteString(")")
+		return
+
 	case "print":
 		// Arguments that are themselves calls are evaluated into temporaries first;
 		// see hoistCallArguments.
@@ -5967,6 +6005,44 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 		}
 	}
 
+	// Job pool methods: p.submit|fn, arg|, p.wait|job|, p.stop||
+	if object.Type == ahoy.NODE_IDENTIFIER && gen.inferType(object) == "pool" {
+		gen.useJobs = true
+		switch methodName {
+		case "submit":
+			gen.output.WriteString("ahoy_jobs_submit(" + object.Value + ", ")
+			if len(args.Children) > 0 {
+				task := args.Children[0]
+				if task.Type == ahoy.NODE_UNARY_OP && task.Value == "&" && len(task.Children) == 1 &&
+					task.Children[0].Type == ahoy.NODE_IDENTIFIER && gen.userFunctions[task.Children[0].Value] {
+					gen.emitFunctionReference(task.Children[0].Value)
+				} else {
+					gen.generateNode(task)
+				}
+			} else {
+				gen.output.WriteString("(AhoyFn){0, 0}")
+			}
+			gen.output.WriteString(", (intptr_t)(")
+			if len(args.Children) > 1 {
+				gen.generateNode(args.Children[1])
+			} else {
+				gen.output.WriteString("0")
+			}
+			gen.output.WriteString("))")
+			return
+		case "wait":
+			if len(args.Children) > 0 {
+				gen.output.WriteString("((" + gen.jobWaitCast(args.Children[0]) + ")ahoy_jobs_wait(")
+				gen.generateNode(args.Children[0])
+				gen.output.WriteString("))")
+			}
+			return
+		case "stop":
+			gen.output.WriteString("ahoy_jobs_stop(" + object.Value + ")")
+			return
+		}
+	}
+
 	// A struct field holding a function value: r.draw_sprite|args| calls
 	// through the stored callback table.
 	if object.Type == ahoy.NODE_IDENTIFIER {
@@ -6943,6 +7019,10 @@ func (gen *CodeGenerator) mapType(langType string) string {
 		return "Vector2"
 	case "color":
 		return "Color"
+	case "pool":
+		return "AhoyPool*"
+	case "job":
+		return "AhoyJob*"
 	}
 
 	// Check for pointer types (e.g., "int*") but not already mapped types like "char*"
@@ -7011,6 +7091,9 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		return "struct"
 	case ahoy.NODE_CALL:
 		// Infer return type of function calls
+		if node.Value == "jobs" {
+			return "pool"
+		}
 		if node.Value == "sprintf" {
 			return "string"
 		}
@@ -7039,6 +7122,17 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		}
 		return "int"
 	case ahoy.NODE_METHOD_CALL:
+		// Job pool methods
+		if node.Value == "submit" && len(node.Children) > 0 &&
+			gen.inferType(node.Children[0]) == "pool" {
+			return "job"
+		}
+		if node.Value == "wait" && len(node.Children) > 1 && len(node.Children[1].Children) > 0 {
+			if t, ok := gen.jobResultTypes[node.Children[1].Children[0].Value]; ok && t != "" {
+				return t
+			}
+			return "intptr_t"
+		}
 		// A callback-table field (r.draw_sprite|...|) returns the field's own
 		// return type.
 		if len(node.Children) > 0 && node.Children[0].Type == ahoy.NODE_IDENTIFIER {
@@ -11117,4 +11211,161 @@ func contains(slice []string, item string) bool {
 		}
 	}
 	return false
+}
+
+// recordJobResultType remembers the result type of a submitted task so that
+// pool.wait|job| can cast the runtime's intptr_t back to an Ahoy type.
+func (gen *CodeGenerator) recordJobResultType(node *ahoy.ASTNode) {
+	if node == nil || node.Value == "" {
+		return
+	}
+	var value *ahoy.ASTNode
+	if node.Type == ahoy.NODE_VARIABLE_DECLARATION {
+		if len(node.Children) > 0 {
+			value = node.Children[0]
+		}
+	} else if len(node.Children) > 0 {
+		value = node.Children[len(node.Children)-1]
+	}
+	if value == nil || value.Type != ahoy.NODE_METHOD_CALL || value.Value != "submit" {
+		return
+	}
+	if len(value.Children) < 2 || len(value.Children[1].Children) == 0 {
+		return
+	}
+	task := value.Children[1].Children[0]
+	ret := ""
+	if task.Type == ahoy.NODE_UNARY_OP && task.Value == "&" && len(task.Children) == 1 &&
+		task.Children[0].Type == ahoy.NODE_IDENTIFIER {
+		if rets := gen.functionReturnTypes[task.Children[0].Value]; len(rets) == 1 {
+			ret = rets[0]
+		}
+	} else if task.Type == ahoy.NODE_IDENTIFIER {
+		if ft, ok := gen.functionValueType(task.Value); ok {
+			if _, r, ok := ahoy.ParseFunctionType(ft); ok {
+				ret = r
+			}
+		}
+	} else if task.Type == ahoy.NODE_LAMBDA {
+		ret = gen.inferType(task.Children[len(task.Children)-1])
+	}
+	if ret != "" && ret != "unknown" {
+		gen.jobResultTypes[node.Value] = ret
+	}
+}
+
+// jobWaitCast returns the C type a pool.wait|job| result is cast back to.
+func (gen *CodeGenerator) jobWaitCast(jobArg *ahoy.ASTNode) string {
+	if jobArg != nil && jobArg.Type == ahoy.NODE_IDENTIFIER {
+		if t, ok := gen.jobResultTypes[jobArg.Value]; ok && t != "" {
+			return gen.mapType(t)
+		}
+	}
+	return "intptr_t"
+}
+
+// getJobRuntime returns the worker-pool implementation. It is emitted only when
+// a program creates a pool; the prototypes live in the generated preamble.
+func getJobRuntime() string {
+	return `#include <pthread.h>
+
+struct AhoyJob {
+    AhoyFn fn;
+    intptr_t arg;
+    intptr_t result;
+    int done;
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    struct AhoyJob* next;
+};
+
+struct AhoyPool {
+    pthread_t* threads;
+    int thread_count;
+    struct AhoyJob* head;
+    struct AhoyJob* tail;
+    int stop;
+    pthread_mutex_t mutex;
+    pthread_cond_t work;
+};
+
+static void* ahoy_job_worker(void* data) {
+    struct AhoyPool* pool = (struct AhoyPool*)data;
+    for (;;) {
+        pthread_mutex_lock(&pool->mutex);
+        while (pool->head == NULL && !pool->stop) {
+            pthread_cond_wait(&pool->work, &pool->mutex);
+        }
+        if (pool->head == NULL && pool->stop) {
+            pthread_mutex_unlock(&pool->mutex);
+            return NULL;
+        }
+        struct AhoyJob* job = pool->head;
+        pool->head = job->next;
+        if (pool->head == NULL) pool->tail = NULL;
+        pthread_mutex_unlock(&pool->mutex);
+
+        job->result = ((intptr_t(*)(void*, intptr_t))job->fn.fn)(job->fn.env, job->arg);
+
+        pthread_mutex_lock(&job->mutex);
+        job->done = 1;
+        pthread_cond_broadcast(&job->cond);
+        pthread_mutex_unlock(&job->mutex);
+    }
+}
+
+AhoyPool* ahoy_jobs_new(int count) {
+    if (count < 1) count = 1;
+    AhoyPool* pool = (AhoyPool*)calloc(1, sizeof(AhoyPool));
+    pool->thread_count = count;
+    pool->threads = (pthread_t*)calloc(count, sizeof(pthread_t));
+    pthread_mutex_init(&pool->mutex, NULL);
+    pthread_cond_init(&pool->work, NULL);
+    for (int i = 0; i < count; i++) {
+        pthread_create(&pool->threads[i], NULL, ahoy_job_worker, pool);
+    }
+    return pool;
+}
+
+AhoyJob* ahoy_jobs_submit(AhoyPool* pool, AhoyFn fn, intptr_t arg) {
+    AhoyJob* job = (AhoyJob*)calloc(1, sizeof(AhoyJob));
+    job->fn = fn;
+    job->arg = arg;
+    pthread_mutex_init(&job->mutex, NULL);
+    pthread_cond_init(&job->cond, NULL);
+    pthread_mutex_lock(&pool->mutex);
+    if (pool->tail) pool->tail->next = job; else pool->head = job;
+    pool->tail = job;
+    pthread_cond_signal(&pool->work);
+    pthread_mutex_unlock(&pool->mutex);
+    return job;
+}
+
+intptr_t ahoy_jobs_wait(AhoyJob* job) {
+    if (job == NULL) return 0;
+    pthread_mutex_lock(&job->mutex);
+    while (!job->done) pthread_cond_wait(&job->cond, &job->mutex);
+    pthread_mutex_unlock(&job->mutex);
+    return job->result;
+}
+
+void ahoy_jobs_release(AhoyJob* job) {
+    if (job == NULL) return;
+    ahoy_jobs_wait(job);   /* a still-running task must not touch it after free */
+    pthread_mutex_destroy(&job->mutex);
+    pthread_cond_destroy(&job->cond);
+    free(job);
+}
+
+void ahoy_jobs_stop(AhoyPool* pool) {
+    if (pool == NULL) return;
+    pthread_mutex_lock(&pool->mutex);
+    pool->stop = 1;
+    pthread_cond_broadcast(&pool->work);
+    pthread_mutex_unlock(&pool->mutex);
+    for (int i = 0; i < pool->thread_count; i++) pthread_join(pool->threads[i], NULL);
+    free(pool->threads);
+    free(pool);
+}
+`
 }

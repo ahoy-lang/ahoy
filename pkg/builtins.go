@@ -23,8 +23,15 @@ func init() {
 		"assert", "exit", "float", "free", "input", "int", "len", "log",
 		"panic", "print", "rand", "rand_range", "read_json", "sleep", "str",
 		"typeof", "write_json",
+		// job system
+		"jobs",
 	} {
 		builtinCallNames[name] = true
+		builtinMethodNames[name] = true
+	}
+
+	// Job pool methods: p.submit|fn, arg|, p.wait|job|, p.stop||
+	for _, name := range []string{"submit", "wait", "stop"} {
 		builtinMethodNames[name] = true
 	}
 

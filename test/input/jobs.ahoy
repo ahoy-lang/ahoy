@@ -1,0 +1,37 @@
+program jobs_test
+
+@ square |n:int| int:
+	return n * n
+$
+
+@ main ||:
+	expected: []
+
+	pool: pool = jobs|4|
+
+	? a task runs on a worker; wait returns its result
+	j1: job = pool.submit|&square, 3|
+	r1: pool.wait|j1|
+	print|r1|
+	expected.push|"9"|
+
+	? several tasks in flight at once, waited in submission order
+	j2: job = pool.submit|&square, 4|
+	j3: job = pool.submit|&square, 5|
+	r2: pool.wait|j2|
+	r3: pool.wait|j3|
+	print|r2, r3|
+	expected.push|"16 25"|
+
+	? many small tasks: sum of squares 0..19
+	total: 0
+	loop i:0 to 20 do
+		j: job = pool.submit|&square, i|
+		total = total + pool.wait|j|
+	$
+	print|total|
+	expected.push|"2470"|
+
+	pool.stop||
+	print|expected|
+$
