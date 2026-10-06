@@ -64,8 +64,8 @@ int ahoy_check_reload(void);
 	// Raylib-specific transformations
 	if hasRaylib {
 		// Wrap InitWindow to skip on reload
-		modifiedCode = strings.ReplaceAll(modifiedCode, 
-			"InitWindow(", 
+		modifiedCode = strings.ReplaceAll(modifiedCode,
+			"InitWindow(",
 			"ahoy_init_window(")
 
 		// Remove CloseWindow() calls - the host manages window lifecycle
@@ -75,7 +75,7 @@ int ahoy_check_reload(void);
 	// Remove 'const' from global variables to allow hot reload updates
 	// This makes constants mutable so new values take effect on reload
 	modifiedCode = removeConstFromGlobals(modifiedCode)
-	
+
 	// Extract constant initializations for re-initialization after reload
 	constantInits := extractConstantInits(modifiedCode)
 
@@ -171,14 +171,14 @@ void ahoy_reinit_constants(void) {
 __attribute__((visibility("default")))
 void ahoy_on_reload(void) {
 `)
-	
+
 	if len(constantInits) > 0 {
 		result.WriteString(`    
     /* Re-apply constant initializers in this freshly loaded library */
     ahoy_reinit_constants();
 `)
 	}
-	
+
 	result.WriteString(`    printf("\033[32m[Hot Reload]\033[0m Code reloaded successfully\n");
 }
 
@@ -242,18 +242,18 @@ static int g_has_raylib = 0;  /* Flag to track if this is a Raylib program */
 
 /* Initialize raylib library for hot reload */
 int init_raylib_library(void) {`)
-	
+
 	// Add raylib initialization based on whether raylib is needed
 	if hasRaylib {
 		code.WriteString(`
     /* Preload raylib so symbols are available for libgame.so */
     const char* raylib_paths[] = {`)
-		
+
 		if raylibPath != "" {
 			code.WriteString(fmt.Sprintf(`
         "%s/libraylib.so",`, raylibPath))
 		}
-		
+
 		code.WriteString(`
         "libraylib.so",
         "/usr/local/lib/libraylib.so",
@@ -280,7 +280,7 @@ int init_raylib_library(void) {`)
     return 1;
 `)
 	}
-	
+
 	code.WriteString(`}
 
 /* Get file modification time */
@@ -627,15 +627,15 @@ int main(int argc, char** argv) {
 func removeConstFromGlobals(code string) string {
 	lines := strings.Split(code, "\n")
 	var result []string
-	
+
 	inFunction := false
 	braceCount := 0
-	
+
 	for _, line := range lines {
 		// Track if we're inside a function
 		braceCount += strings.Count(line, "{")
 		braceCount -= strings.Count(line, "}")
-		
+
 		// Check for function definitions
 		if strings.Contains(line, "(") && strings.Contains(line, ")") && strings.Contains(line, "{") {
 			inFunction = true
@@ -643,17 +643,17 @@ func removeConstFromGlobals(code string) string {
 		if braceCount == 0 {
 			inFunction = false
 		}
-		
+
 		// Only modify const declarations at global scope (not in functions)
 		// Match patterns like: const int X = 5; or const char* X = "hello";
 		if !inFunction && strings.HasPrefix(strings.TrimSpace(line), "const ") {
 			// Remove 'const ' from the beginning
 			line = strings.Replace(line, "const ", "", 1)
 		}
-		
+
 		result = append(result, line)
 	}
-	
+
 	return strings.Join(result, "\n")
 }
 
@@ -662,14 +662,14 @@ func removeConstFromGlobals(code string) string {
 func extractConstantInits(code string) []string {
 	lines := strings.Split(code, "\n")
 	var inits []string
-	
+
 	inFunction := false
 	braceCount := 0
 	inCommentBlock := false
-	
+
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		
+
 		// Skip comments
 		if strings.HasPrefix(trimmed, "/*") {
 			inCommentBlock = true
@@ -681,11 +681,11 @@ func extractConstantInits(code string) []string {
 		if inCommentBlock || strings.HasPrefix(trimmed, "//") {
 			continue
 		}
-		
+
 		// Track if we're inside a function
 		braceCount += strings.Count(line, "{")
 		braceCount -= strings.Count(line, "}")
-		
+
 		// Check for function definitions
 		if strings.Contains(line, "(") && strings.Contains(line, ")") && strings.Contains(line, "{") {
 			inFunction = true
@@ -693,24 +693,24 @@ func extractConstantInits(code string) []string {
 		if braceCount == 0 {
 			inFunction = false
 		}
-		
+
 		// Look for global variable declarations with initialization
 		// Pattern: type name = value;
 		// Already had 'const' removed, so looking for simple assignments
 		if !inFunction && strings.Contains(trimmed, "=") && strings.HasSuffix(trimmed, ";") {
 			// Skip if it's a typedef, struct, enum, or function pointer
-			if strings.HasPrefix(trimmed, "typedef") || 
-			   strings.HasPrefix(trimmed, "struct") ||
-			   strings.HasPrefix(trimmed, "enum") ||
-			   strings.Contains(trimmed, "(*") {
+			if strings.HasPrefix(trimmed, "typedef") ||
+				strings.HasPrefix(trimmed, "struct") ||
+				strings.HasPrefix(trimmed, "enum") ||
+				strings.Contains(trimmed, "(*") {
 				continue
 			}
-			
+
 			// Skip extern declarations
 			if strings.HasPrefix(trimmed, "extern") {
 				continue
 			}
-			
+
 			// Extract the assignment part (name = value;)
 			// Find the variable name and value
 			parts := strings.SplitN(trimmed, "=", 2)
@@ -722,13 +722,13 @@ func extractConstantInits(code string) []string {
 					// Handle pointer types (e.g., "char*" -> remove *)
 					varName = strings.TrimRight(varName, "*")
 					value := strings.TrimSpace(parts[1])
-					
+
 					// Generate re-initialization statement
 					inits = append(inits, fmt.Sprintf("    %s = %s", varName, value))
 				}
 			}
 		}
 	}
-	
+
 	return inits
 }

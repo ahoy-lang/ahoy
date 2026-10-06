@@ -589,7 +589,7 @@ func collapseBlocks(lines []*fLine) []*fLine {
 			}
 			joined += " $"
 			if len(joined) <= formatterMaxWidth || body == "" {
-				line.text = strings.TrimSpace(header + " " + body) + " $"
+				line.text = strings.TrimSpace(header+" "+body) + " $"
 				out = append(out, line)
 				continue
 			}
