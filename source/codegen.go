@@ -176,7 +176,7 @@ type CodeGenerator struct {
 	structs                       map[string]*StructInfo       // struct name -> struct info
 	currentTypeContext            string                       // Current type annotation context (e.g., "array[int]")
 	functionReturnTypes           map[string][]string          // function name -> return types (for inferred functions)
-	deferredStatements            []string                     // Stack of deferred statements for current function
+	deferredStatements            []deferredStmt               // Stack of deferred statements for current function
 	functionParamTypes            map[string][]string          // function name -> parameter types
 	functionParamNames            map[string][]string          // function name -> parameter names
 	functionParamDefaults         map[string][]*ahoy.ASTNode   // function name -> parameter default values
@@ -1921,7 +1921,7 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	}
 
 	// Initialize deferred statements stack for this function
-	gen.deferredStatements = []string{}
+	gen.deferredStatements = []deferredStmt{}
 	gen.heapAllocatedVars = make(map[string]bool)
 	gen.heapVarScopes = make(map[string]int)
 	gen.heapVarTypes = make(map[string]string)
@@ -1947,7 +1947,7 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	// Execute deferred statements in LIFO order before function end
 	if len(gen.deferredStatements) > 0 {
 		for i := len(gen.deferredStatements) - 1; i >= 0; i-- {
-			gen.output.WriteString(gen.deferredStatements[i])
+			gen.output.WriteString(gen.deferredStatements[i].code)
 		}
 	}
 
@@ -3224,6 +3224,7 @@ func (gen *CodeGenerator) generateForRangeLoop(node *ahoy.ASTNode) {
 
 		gen.indent++
 		gen.enterScope()
+		gen.markDeclaredInCurrentScope(loopVar)
 		gen.enterLoopScope()
 		gen.generateNodeInternal(node.Children[3], false)
 		gen.exitLoopScope()
@@ -3250,6 +3251,7 @@ func (gen *CodeGenerator) generateForRangeLoop(node *ahoy.ASTNode) {
 
 			gen.indent++
 			gen.enterScope()
+			gen.markDeclaredInCurrentScope(loopVar)
 			gen.enterLoopScope()
 			gen.generateNodeInternal(node.Children[0], false)
 			gen.exitLoopScope()
@@ -3268,6 +3270,7 @@ func (gen *CodeGenerator) generateForRangeLoop(node *ahoy.ASTNode) {
 
 			gen.indent++
 			gen.enterScope()
+			gen.markDeclaredInCurrentScope(loopVar)
 			gen.enterLoopScope()
 			gen.generateNodeInternal(node.Children[2], false)
 			gen.exitLoopScope()
@@ -3317,6 +3320,7 @@ func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 
 		gen.indent++
 		gen.enterScope()
+		gen.markDeclaredInCurrentScope(loopVar)
 		gen.enterLoopScope()
 		gen.generateNodeInternal(node.Children[2], false)
 		gen.exitLoopScope()
@@ -3352,6 +3356,7 @@ func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 
 		gen.indent++
 		gen.enterScope()
+		gen.markDeclaredInCurrentScope(loopVar)
 		gen.enterLoopScope()
 		gen.generateNodeInternal(node.Children[1], false)
 		gen.exitLoopScope()
@@ -3466,6 +3471,7 @@ func (gen *CodeGenerator) generateForInArrayLoop(node *ahoy.ASTNode) {
 
 		gen.indent++
 		gen.enterScope()
+		gen.markDeclaredInCurrentScope(elementVar)
 		gen.enterLoopScope()
 		gen.writeIndent()
 
@@ -3507,6 +3513,7 @@ func (gen *CodeGenerator) generateForInArrayLoop(node *ahoy.ASTNode) {
 
 		gen.indent++
 		gen.enterScope()
+		gen.markDeclaredInCurrentScope(elementVar)
 		gen.enterLoopScope()
 		gen.writeIndent()
 
@@ -3642,6 +3649,7 @@ func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
 
 	gen.indent++
 	gen.enterScope()
+	gen.markDeclaredInCurrentScope(keyVar)
 	gen.enterLoopScope()
 	gen.writeIndent()
 	gen.output.WriteString(fmt.Sprintf("HashMapEntry* %s = %s->buckets[%s];\n",
@@ -3652,6 +3660,7 @@ func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
 
 	gen.indent++
 	gen.enterScope()
+	gen.markDeclaredInCurrentScope(valueVar)
 	gen.enterLoopScope() // Inner loop for entry traversal
 	gen.writeIndent()
 	gen.output.WriteString(fmt.Sprintf("const char* %s = %s->key;\n", keyVar, entryVar))
@@ -3705,7 +3714,7 @@ func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
 		gen.writeIndent()
 		gen.output.WriteString(fmt.Sprintf("intptr_t %s = (intptr_t)%s->value;\n", valueVar, entryVar))
 
-			// Register loop variables
+		// Register loop variables
 		gen.variables[keyVar] = "char*"
 		gen.variables[valueVar] = "intptr_t"
 
@@ -3766,7 +3775,7 @@ func (gen *CodeGenerator) generateReturnStatement(node *ahoy.ASTNode) {
 	// Execute deferred statements in LIFO order before return
 	if len(gen.deferredStatements) > 0 {
 		for i := len(gen.deferredStatements) - 1; i >= 0; i-- {
-			gen.output.WriteString(gen.deferredStatements[i])
+			gen.output.WriteString(gen.deferredStatements[i].code)
 		}
 		// Clear deferred statements so they don't execute again at function end
 		gen.deferredStatements = nil
@@ -3865,7 +3874,16 @@ func (gen *CodeGenerator) generateDeferStatement(node *ahoy.ASTNode) {
 		gen.indent = savedIndent
 
 		// Add to deferred statements stack
-		gen.deferredStatements = append(gen.deferredStatements, deferredCode)
+		// A defer that mentions a loop counter or a nested-block local cannot run
+		// at function exit: those names are gone by then. Such a statement runs at
+		// the end of the block it was written in, which is where its names still
+		// exist. Deferred statements that only mention function-level names keep
+		// the documented function-exit behaviour.
+		gen.deferredStatements = append(gen.deferredStatements, deferredStmt{
+			depth:       gen.scopeDepth,
+			code:        deferredCode,
+			blockScoped: gen.referencesOutOfScopeName(node.Children[0]),
+		})
 	}
 }
 
@@ -3996,8 +4014,132 @@ func (gen *CodeGenerator) generateEarlyExitCleanup(includeLoopScope bool) string
 
 // exitScope generates cleanup code for variables allocated in the current scope
 // and decrements scope depth. Returns the cleanup code to be inserted before '}'
+// deferredStmt is one deferred statement waiting to be emitted.
+type deferredStmt struct {
+	// depth is the scope depth the statement was written at.
+	depth int
+	// code is the generated C for the statement.
+	code string
+	// blockScoped means the statement mentions a name that only exists inside
+	// the block it was written in, so it must run when that block ends.
+	blockScoped bool
+}
+
+// nameVisibleAtFunctionExit reports whether a name declared now will still
+// exist when the function returns.
+func (gen *CodeGenerator) nameVisibleAtFunctionExit(name string) bool {
+	if len(gen.scopeDeclared) > 0 && gen.scopeDeclared[0][name] {
+		return true // a parameter or a function-level local
+	}
+	return gen.declaredGlobalVars[name]
+}
+
+// referencesOutOfScopeName reports whether node mentions a name that is declared
+// in a block (a loop counter, a nested-block local) and so will not exist at
+// function exit. Names that are not declared locally at all - globals, types,
+// C symbols - are left alone.
+func (gen *CodeGenerator) referencesOutOfScopeName(node *ahoy.ASTNode) bool {
+	if node == nil {
+		return false
+	}
+	if node.Type == ahoy.NODE_IDENTIFIER {
+		return gen.nameIsOutOfScopeAtExit(node.Value)
+	}
+	// An f-string keeps its interpolated expressions as text rather than as
+	// child nodes, so they have to be read out of the value.
+	if node.Type == ahoy.NODE_F_STRING {
+		for _, name := range fstringLeadingIdentifiers(node.Value) {
+			if gen.nameIsOutOfScopeAtExit(name) {
+				return true
+			}
+		}
+	}
+	for _, child := range node.Children {
+		if gen.referencesOutOfScopeName(child) {
+			return true
+		}
+	}
+	return false
+}
+
+// nameIsOutOfScopeAtExit reports whether a name is declared in a block, and so
+// will not exist when the function returns.
+func (gen *CodeGenerator) nameIsOutOfScopeAtExit(name string) bool {
+	if name == "" || name == "_" || name == "__loop_counter" {
+		return false
+	}
+	if gen.nameVisibleAtFunctionExit(name) {
+		return false
+	}
+	// Only a name that is actually in an enclosing block counts; anything else is
+	// a global, a type or a C symbol.
+	return gen.nameVisibleInOpenScope(name)
+}
+
+// fstringLeadingIdentifiers returns the first identifier of each {..} group in
+// an f-string.
+func fstringLeadingIdentifiers(value string) []string {
+	var out []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(value); i++ {
+		switch value[i] {
+		case '{':
+			if depth == 0 {
+				start = i + 1
+			}
+			depth++
+		case '}':
+			if depth > 0 {
+				depth--
+				if depth == 0 && start <= i {
+					if name := leadingIdentifierText(value[start:i]); name != "" {
+						out = append(out, name)
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// leadingIdentifierText returns the first identifier in an interpolated
+// expression such as "i", "i + 1" or "item.name".
+func leadingIdentifierText(expr string) string {
+	expr = strings.TrimSpace(expr)
+	end := 0
+	for end < len(expr) {
+		ch := expr[end]
+		if ch == '_' || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+			(end > 0 && ch >= '0' && ch <= '9') {
+			end++
+			continue
+		}
+		break
+	}
+	return expr[:end]
+}
+
 func (gen *CodeGenerator) exitScope() string {
 	var cleanup strings.Builder
+
+	// Run any deferred statements written in this block now, while the names
+	// they mention are still in scope. LIFO within the block.
+	if len(gen.deferredStatements) > 0 {
+		kept := gen.deferredStatements[:0]
+		var flushed []deferredStmt
+		for _, d := range gen.deferredStatements {
+			if d.blockScoped && d.depth >= gen.scopeDepth {
+				flushed = append(flushed, d)
+				continue
+			}
+			kept = append(kept, d)
+		}
+		gen.deferredStatements = kept
+		for i := len(flushed) - 1; i >= 0; i-- {
+			cleanup.WriteString(flushed[i].code)
+		}
+	}
 
 	// Get variables allocated at current scope
 	if varsAtScope, exists := gen.scopeAllocations[gen.scopeDepth]; exists {
@@ -4192,7 +4334,7 @@ func (gen *CodeGenerator) addAutomaticDeferFrees() {
 		freeCode := gen.generateFreeCodeForVar(varName, varType)
 
 		if freeCode != "" {
-			gen.deferredStatements = append(gen.deferredStatements, freeCode)
+			gen.deferredStatements = append(gen.deferredStatements, deferredStmt{code: freeCode})
 			gen.autoFreedVars[varName] = true
 		}
 	}
