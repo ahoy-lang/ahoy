@@ -7217,6 +7217,25 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 					varType = knownType
 				}
 
+				// A member access ({node.texture}) must use the field's type, not the
+				// object's: the object type falls through to %d, so a string field
+				// was printed as a pointer.
+				if dot := strings.Index(varName, "."); dot > 0 {
+					fieldPart := varName[dot+1:]
+					if !strings.ContainsAny(fieldPart, ".<{[") {
+						objType := normalizeCollectionType(varType)
+						objType = strings.TrimPrefix(objType, "struct:")
+						if info := gen.structs[objType]; info != nil {
+							for _, f := range info.Fields {
+								if f.Name == fieldPart && f.Type != "" {
+									varType = f.Type
+									break
+								}
+							}
+						}
+					}
+				}
+
 				// dict<string,int> / dict[string,int] are all printed via the dict helper
 				varType = normalizeCollectionType(varType)
 
