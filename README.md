@@ -417,8 +417,30 @@ pool.stop||
 This is the asset-loading pattern: workers read and decode files, and the main
 thread calls `wait` and then uploads the result to the GPU. Workers must not
 call raylib/OpenGL — the graphics context belongs to the main thread. A pool is
-stopped when its variable leaves scope, and a job is released at scope exit
-(release waits first, so a forgotten `wait` cannot corrupt memory).
+stopped when its variable leaves scope.
+
+For a game loop, draining finished jobs is nicer than blocking. `j.done||`
+polls without consuming, `j.result||` reads a finished result, and
+`pool.drain|handler, context|` hands every job that finished since the last
+drain to `handler(job, context)` on the calling thread, then consumes them:
+
+```ahoy
+@ collect :: |j:job, acc:array| void:
+    r: j.result||
+    acc.push|r|
+$
+
+acc: []
+got: 0
+loop till got is not 5 do
+    got = got + pool.drain|&collect, acc|
+$
+```
+
+Jobs are owned by the pool until they are consumed: `wait` consumes its job,
+`drain` consumes each job it hands out, and jobs nobody consumed are freed when
+the pool is destroyed (its variable leaves scope). Do not use a job handle
+after `wait` or after its drain handler has run.
 
 ### Assert Statements (NEW!)
 

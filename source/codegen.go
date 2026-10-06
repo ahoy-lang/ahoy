@@ -451,7 +451,9 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 	result.WriteString("AhoyPool* ahoy_jobs_new(int count);\n")
 	result.WriteString("AhoyJob* ahoy_jobs_submit(AhoyPool* pool, AhoyFn fn, intptr_t arg);\n")
 	result.WriteString("intptr_t ahoy_jobs_wait(AhoyJob* job);\n")
-	result.WriteString("void ahoy_jobs_release(AhoyJob* job);\n")
+	result.WriteString("intptr_t ahoy_jobs_result(AhoyJob* job);\n")
+	result.WriteString("int ahoy_jobs_done(AhoyJob* job);\n")
+	result.WriteString("int ahoy_jobs_drain(AhoyPool* pool, AhoyFn handler, intptr_t context);\n")
 	result.WriteString("void ahoy_jobs_stop(AhoyPool* pool);\n")
 	result.WriteString("void ahoy_jobs_destroy(AhoyPool* pool);\n\n")
 
@@ -1540,7 +1542,7 @@ func (gen *CodeGenerator) isHeapAllocatedType(varType string) bool {
 	if ahoy.IsFunctionType(varType) {
 		return true
 	}
-	if varType == "pool" || varType == "job" {
+	if varType == "pool" {
 		return true
 	}
 	// String methods that return new strings are heap-allocated
@@ -4270,9 +4272,6 @@ func (gen *CodeGenerator) generateFreeCodeForVar(varName string, varType string)
 	if varType == "pool" {
 		return fmt.Sprintf("    if (%s) ahoy_jobs_destroy(%s);\n", varName, varName)
 	}
-	if varType == "job" {
-		return fmt.Sprintf("    if (%s) ahoy_jobs_release(%s);\n", varName, varName)
-	}
 
 	// Check if this is an ARC-enabled struct - use release instead of free
 	if gen.enableARC {
@@ -6033,13 +6032,35 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 			return
 		case "wait":
 			if len(args.Children) > 0 {
-				gen.output.WriteString("((" + gen.jobWaitCast(args.Children[0]) + ")ahoy_jobs_wait(")
-				gen.generateNode(args.Children[0])
-				gen.output.WriteString("))")
+				arg := args.Children[0]
+				if arg.Type == ahoy.NODE_IDENTIFIER {
+					gen.output.WriteString(gen.jobResultExpr("ahoy_jobs_wait("+arg.Value+")", arg.Value))
+				} else {
+					gen.output.WriteString("((intptr_t)ahoy_jobs_wait(")
+					gen.generateNode(arg)
+					gen.output.WriteString("))")
+				}
 			}
+			return
+		case "drain":
+			gen.emitJobHandler(args, "ahoy_jobs_drain("+object.Value+", ")
 			return
 		case "stop":
 			gen.output.WriteString("ahoy_jobs_stop(" + object.Value + ")")
+			return
+		}
+	}
+
+	// Job methods: j.result|| reads a finished result without blocking,
+	// j.done|| polls
+	if object.Type == ahoy.NODE_IDENTIFIER && gen.inferType(object) == "job" {
+		gen.useJobs = true
+		switch methodName {
+		case "result":
+			gen.output.WriteString(gen.jobResultExpr("ahoy_jobs_result("+object.Value+")", object.Value))
+			return
+		case "done":
+			gen.output.WriteString("ahoy_jobs_done(" + object.Value + ")")
 			return
 		}
 	}
@@ -7127,6 +7148,20 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		if node.Value == "submit" && len(node.Children) > 0 &&
 			gen.inferType(node.Children[0]) == "pool" {
 			return "job"
+		}
+		if node.Value == "drain" && len(node.Children) > 0 &&
+			gen.inferType(node.Children[0]) == "pool" {
+			return "int"
+		}
+		if (node.Value == "result" || node.Value == "done") && len(node.Children) > 0 &&
+			gen.inferType(node.Children[0]) == "job" {
+			if node.Value == "done" {
+				return "int"
+			}
+			if t, ok := gen.jobResultTypes[node.Children[0].Value]; ok && t != "" {
+				return t
+			}
+			return "intptr_t"
 		}
 		if node.Value == "wait" && len(node.Children) > 1 && len(node.Children[1].Children) > 0 {
 			if t, ok := gen.jobResultTypes[node.Children[1].Children[0].Value]; ok && t != "" {
@@ -11255,14 +11290,47 @@ func (gen *CodeGenerator) recordJobResultType(node *ahoy.ASTNode) {
 	}
 }
 
-// jobWaitCast returns the C type a pool.wait|job| result is cast back to.
-func (gen *CodeGenerator) jobWaitCast(jobArg *ahoy.ASTNode) string {
-	if jobArg != nil && jobArg.Type == ahoy.NODE_IDENTIFIER {
-		if t, ok := gen.jobResultTypes[jobArg.Value]; ok && t != "" {
-			return gen.mapType(t)
-		}
+// jobResultExpr renders a read of a job's result, casting the runtime's
+// intptr_t back to the Ahoy type. A double result travels as its bit pattern,
+// so it is memcpy'd back rather than cast.
+func (gen *CodeGenerator) jobResultExpr(callExpr, jobName string) string {
+	ret := gen.jobResultTypes[jobName]
+	if ret == "float" || ret == "double" {
+		return fmt.Sprintf("({ intptr_t __jr = %s; double __jd; memcpy(&__jd, &__jr, sizeof(double)); __jd; })", callExpr)
 	}
-	return "intptr_t"
+	if ret != "" {
+		return fmt.Sprintf("((%s)%s)", gen.mapType(ret), callExpr)
+	}
+	return callExpr
+}
+
+// emitJobHandler writes the handler and context arguments of a drain call:
+// ahoy_jobs_drain(pool, handler, context). The handler takes (job, context).
+func (gen *CodeGenerator) emitJobHandler(args *ahoy.ASTNode, prefix string) {
+	gen.output.WriteString(prefix)
+	if len(args.Children) > 0 {
+		task := args.Children[0]
+		if task.Type == ahoy.NODE_UNARY_OP && task.Value == "&" && len(task.Children) == 1 &&
+			task.Children[0].Type == ahoy.NODE_IDENTIFIER && gen.userFunctions[task.Children[0].Value] {
+			name := task.Children[0].Value
+			if params := gen.functionParamTypes[name]; len(params) > 0 && len(params) != 2 {
+				fmt.Fprintf(os.Stderr, "error: drain handler '%s' must take (job, context), got %d parameter(s)\n", name, len(params))
+				gen.hasError = true
+			}
+			gen.emitFunctionReference(name)
+		} else {
+			gen.generateNode(task)
+		}
+	} else {
+		gen.output.WriteString("(AhoyFn){0, 0}")
+	}
+	gen.output.WriteString(", (intptr_t)(")
+	if len(args.Children) > 1 {
+		gen.generateNode(args.Children[1])
+	} else {
+		gen.output.WriteString("0")
+	}
+	gen.output.WriteString("))")
 }
 
 // getJobRuntime returns the worker-pool implementation. It is emitted only when
@@ -11275,9 +11343,13 @@ struct AhoyJob {
     intptr_t arg;
     intptr_t result;
     int done;
+    int in_completed;            /* linked into the pool's completion queue */
+    struct AhoyPool* pool;       /* back pointer, for unlinking */
     pthread_mutex_t mutex;
     pthread_cond_t cond;
-    struct AhoyJob* next;
+    struct AhoyJob* next;        /* task queue */
+    struct AhoyJob* next_completed;
+    struct AhoyJob* next_all;    /* registry, so destroy() frees leftovers */
 };
 
 struct AhoyPool {
@@ -11285,11 +11357,59 @@ struct AhoyPool {
     int thread_count;
     struct AhoyJob* head;
     struct AhoyJob* tail;
+    struct AhoyJob* completed;   /* finished jobs nobody waited for */
+    struct AhoyJob* completed_tail;
+    struct AhoyJob* all;         /* every job this pool has handed out */
+    struct AhoyJob* all_tail;
     int stop;
     int stopped;
     pthread_mutex_t mutex;
     pthread_cond_t work;
 };
+
+/* Remove a job from the completion queue. The caller holds pool->mutex. */
+static void ahoy_jobs_unlink_completed(struct AhoyPool* pool, struct AhoyJob* job) {
+    if (pool == NULL || job == NULL || !job->in_completed) return;
+    struct AhoyJob* prev = NULL;
+    struct AhoyJob* cur = pool->completed;
+    while (cur != NULL && cur != job) {
+        prev = cur;
+        cur = cur->next_completed;
+    }
+    if (cur == NULL) { job->in_completed = 0; return; }
+    if (prev == NULL) pool->completed = job->next_completed; else prev->next_completed = job->next_completed;
+    if (pool->completed_tail == job) pool->completed_tail = prev;
+    job->next_completed = NULL;
+    job->in_completed = 0;
+}
+
+/* Remove a job from the pool's registry. The caller holds pool->mutex. */
+static void ahoy_jobs_unlink_all(struct AhoyPool* pool, struct AhoyJob* job) {
+    if (pool == NULL || job == NULL) return;
+    struct AhoyJob* prev = NULL;
+    struct AhoyJob* cur = pool->all;
+    while (cur != NULL && cur != job) {
+        prev = cur;
+        cur = cur->next_all;
+    }
+    if (cur == NULL) return;
+    if (prev == NULL) pool->all = job->next_all; else prev->next_all = job->next_all;
+    if (pool->all_tail == job) pool->all_tail = prev;
+    job->next_all = NULL;
+}
+
+static void ahoy_jobs_free(struct AhoyPool* pool, struct AhoyJob* job) {
+    if (job == NULL) return;
+    if (pool != NULL) {
+        pthread_mutex_lock(&pool->mutex);
+        ahoy_jobs_unlink_completed(pool, job);
+        ahoy_jobs_unlink_all(pool, job);
+        pthread_mutex_unlock(&pool->mutex);
+    }
+    pthread_mutex_destroy(&job->mutex);
+    pthread_cond_destroy(&job->cond);
+    free(job);
+}
 
 static void* ahoy_job_worker(void* data) {
     struct AhoyPool* pool = (struct AhoyPool*)data;
@@ -11308,6 +11428,15 @@ static void* ahoy_job_worker(void* data) {
         pthread_mutex_unlock(&pool->mutex);
 
         job->result = ((intptr_t(*)(void*, intptr_t))job->fn.fn)(job->fn.env, job->arg);
+
+        /* queue it for drain() before signalling done, so a waiter that sees
+           done is guaranteed the queue entry already exists (or was skipped) */
+        pthread_mutex_lock(&pool->mutex);
+        job->in_completed = 1;
+        job->next_completed = NULL;
+        if (pool->completed_tail) pool->completed_tail->next_completed = job; else pool->completed = job;
+        pool->completed_tail = job;
+        pthread_mutex_unlock(&pool->mutex);
 
         pthread_mutex_lock(&job->mutex);
         job->done = 1;
@@ -11333,30 +11462,66 @@ AhoyJob* ahoy_jobs_submit(AhoyPool* pool, AhoyFn fn, intptr_t arg) {
     AhoyJob* job = (AhoyJob*)calloc(1, sizeof(AhoyJob));
     job->fn = fn;
     job->arg = arg;
+    job->pool = pool;
     pthread_mutex_init(&job->mutex, NULL);
     pthread_cond_init(&job->cond, NULL);
     pthread_mutex_lock(&pool->mutex);
     if (pool->tail) pool->tail->next = job; else pool->head = job;
     pool->tail = job;
+    if (pool->all_tail) pool->all_tail->next_all = job; else pool->all = job;
+    pool->all_tail = job;
     pthread_cond_signal(&pool->work);
     pthread_mutex_unlock(&pool->mutex);
     return job;
 }
 
+/* Blocks for the result and consumes the job: do not use the handle after
+   wait. Jobs are owned by the pool until waited for or drained. */
 intptr_t ahoy_jobs_wait(AhoyJob* job) {
     if (job == NULL) return 0;
+    struct AhoyPool* pool = job->pool;
     pthread_mutex_lock(&job->mutex);
     while (!job->done) pthread_cond_wait(&job->cond, &job->mutex);
     pthread_mutex_unlock(&job->mutex);
+    intptr_t result = job->result;
+    ahoy_jobs_free(pool, job);
+    return result;
+}
+
+/* Non-blocking read; the handle stays valid until waited for or drained. */
+intptr_t ahoy_jobs_result(AhoyJob* job) {
+    if (job == NULL || !job->done) return 0;
     return job->result;
 }
 
-void ahoy_jobs_release(AhoyJob* job) {
-    if (job == NULL) return;
-    ahoy_jobs_wait(job);   /* a still-running task must not touch it after free */
-    pthread_mutex_destroy(&job->mutex);
-    pthread_cond_destroy(&job->cond);
-    free(job);
+int ahoy_jobs_done(AhoyJob* job) {
+    return (job != NULL && job->done) ? 1 : 0;
+}
+
+/* Hand every finished job that nobody waited for to handler(job, context),
+   then consume those jobs. Returns how many were handed out. */
+int ahoy_jobs_drain(AhoyPool* pool, AhoyFn handler, intptr_t context) {
+    if (pool == NULL) return 0;
+    pthread_mutex_lock(&pool->mutex);
+    struct AhoyJob* list = pool->completed;
+    pool->completed = NULL;
+    pool->completed_tail = NULL;
+    for (struct AhoyJob* j = list; j != NULL; j = j->next_completed) {
+        j->in_completed = 0;
+    }
+    pthread_mutex_unlock(&pool->mutex);
+
+    int count = 0;
+    struct AhoyJob* job = list;
+    while (job != NULL) {
+        struct AhoyJob* next = job->next_completed;
+        job->next_completed = NULL;
+        ((void(*)(void*, intptr_t, intptr_t))handler.fn)(handler.env, (intptr_t)job, context);
+        ahoy_jobs_free(pool, job);
+        job = next;
+        count++;
+    }
+    return count;
 }
 
 void ahoy_jobs_stop(AhoyPool* pool) {
@@ -11378,6 +11543,17 @@ void ahoy_jobs_stop(AhoyPool* pool) {
 void ahoy_jobs_destroy(AhoyPool* pool) {
     if (pool == NULL) return;
     ahoy_jobs_stop(pool);
+    /* every job the pool handed out is owned by it until consumed */
+    struct AhoyJob* job = pool->all;
+    while (job != NULL) {
+        struct AhoyJob* next = job->next_all;
+        pthread_mutex_destroy(&job->mutex);
+        pthread_cond_destroy(&job->cond);
+        free(job);
+        job = next;
+    }
+    pool->all = NULL;
+    pool->all_tail = NULL;
     pthread_mutex_destroy(&pool->mutex);
     pthread_cond_destroy(&pool->work);
     free(pool);
