@@ -882,8 +882,15 @@ func (c *checker) checkCall(node *ASTNode) {
 // rejectNestedCall reports a call used as another call's argument. The parser
 // can make sense of `print|len|items||`, but the nested pipes are easy to
 // misread, so the result has to be named first: tmp: len|items| then print|tmp|.
+//
+// A cast is not a call: int(x), float(x), char(x) and string(x) are type
+// conversions. They stay readable inline, so `draw_rectangle|..., int(w * p), ...|`
+// is legal; only a call to a function is rejected.
 func (c *checker) rejectNestedCall(arg *ASTNode, outer string) {
 	if arg == nil {
+		return
+	}
+	if arg.Type == NODE_CALL && isCastName(arg.Value) {
 		return
 	}
 	if arg.Type != NODE_CALL && arg.Type != NODE_METHOD_CALL {
@@ -891,6 +898,17 @@ func (c *checker) rejectNestedCall(arg *ASTNode, outer string) {
 	}
 	c.errorAt(arg, "Function call '%s' is not allowed as an argument to '%s'; assign it to a variable first, then pass that variable",
 		arg.Value, outer)
+}
+
+// isCastName reports whether a call-shaped node with this callee is one of the
+// language's type conversions rather than a call to a function. The parser
+// produces NODE_CALL for both, so the name is what tells them apart.
+func isCastName(name string) bool {
+	switch name {
+	case "int", "float", "char", "string":
+		return true
+	}
+	return false
 }
 
 // checkArguments validates the argument list of a call against a user-defined
