@@ -446,4 +446,3 @@ $
 	wantNoError(t, msgs, "is not declared")
 	wantNoError(t, msgs, "is not defined")
 }
-

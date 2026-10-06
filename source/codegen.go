@@ -144,88 +144,88 @@ type CodeGenerator struct {
 	enumDecls                     strings.Builder // Enum type declarations
 	structDecls                   strings.Builder
 	includes                      map[string]bool
-	orderedIncludes               []string                     // Keep track of include order
-	variables                     map[string]string            // variable name -> type (global scope)
-	functionVars                  map[string]string            // variable name -> type (function scope)
-	nestedScopeVars               map[string]bool              // variables declared in nested scopes (loops/ifs)
-	varDeclIndent                 map[string]int               // variable name -> indent level where it was declared
-	constants                     map[string]string            // constant name -> type
-	declaredConstants             map[string]bool              // constant name -> declared (for duplicate check)
-	enums                         map[string]map[string]bool   // enum name -> {member names}
-	enumOriginalNames             map[string]bool              // tracks original (lowercase) enum names vs aliases
-	enumMemberTypes               map[string]string            // "enumName.memberName" -> type
-	enumTypes                     map[string]string            // enum name -> enum type (int, string, etc.)
-	userFunctions                 map[string]bool              // user-defined function names (keep snake_case)
-	calledFunctions               map[string]bool              // functions that are actually called in the program
-	hasError                      bool                         // Track if error occurred
-	arrayImpls                    bool                         // Track if we've added array implementation
-	arrayMethods                  map[string]bool              // Track which array methods are used
-	stringMethods                 map[string]bool              // Track which string methods are used
-	dictMethods                   map[string]bool              // Track which dict methods are used
-	useJSON                       bool                         // Track if JSON functions are used
-	useJobs                       bool                         // Track if the job system is used
-	jobResultTypes                map[string]string            // job variable -> task result Ahoy type
-	jsonVariables                 map[string]bool              // Track which variables hold JSON data
-	jsonStructs                   map[string]bool              // Track which structs are JSON schemas (not real C structs)
-	loopCounters                  []string                     // Stack of loop counter variable names
-	currentFile                   string                       // Source file of the top-level node being generated
-	currentFunction               string                       // Current function being generated
-	currentFunctionReturnType     string                       // Return type of current function
-	currentFunctionHasMultiReturn bool                         // Whether current function has multiple returns
-	hasMainFunc                   bool                         // Whether there's an Ahoy main function
-	arrayElementTypes             map[string]string            // array variable name -> element type
-	dictLoopValueExpr             map[string]string            // dict-loop value var -> C expression that formats it by its runtime type
-	array2DElementTypes           map[string]string            // 2D array variable name -> nested element type (element type of inner arrays)
-	structs                       map[string]*StructInfo       // struct name -> struct info
-	currentTypeContext            string                       // Current type annotation context (e.g., "array[int]")
-	functionReturnTypes           map[string][]string          // function name -> return types (for inferred functions)
-	deferredStatements            []deferredStmt               // Stack of deferred statements for current function
-	functionParamTypes            map[string][]string          // function name -> parameter types
-	functionParamNames            map[string][]string          // function name -> parameter names
-	functionParamDefaults         map[string][]*ahoy.ASTNode   // function name -> parameter default values
-	closureDecls                  strings.Builder              // hoisted thunks for lambdas and function references
-	funcRefThunks                 map[string]bool              // function names whose reference thunk has been emitted
-	closureCaptures               map[string]string            // captured name -> C expression while generating a thunk body
-	pendingFuncType               string                       // declared fn(...) type of the lambda being initialized
-	pendingCType                  string                       // declared C callback typedef of the value being assigned
-	dictSourcedVars               map[string]string            // variable name -> dict name (for dict-accessed vars)
-	dictSourcedKeys               map[string]string            // variable name -> key (for dict-accessed vars)
-	generatedTypes                map[string]bool              // Track which types have been generated
-	cFunctionNames                map[string]string            // snake_case name -> actual C name
-	cNamespaces                   map[string]map[string]string // namespace -> (snake_case name -> actual C name)
-	cFunctionReturnTypes          map[string]string            // C function name (snake_case) -> return type
-	cNamespaceReturnTypes         map[string]map[string]string // namespace -> (snake_case name -> return type)
-	cTypeDefinitions              map[string]bool              // Track known C types from headers
-	declaredGlobalVars            map[string]bool              // Track global variables that have been declared in C code
-	declaredFunctionVars          map[string]bool              // Track function-local variables that have been declared in C code
-	scopeDeclared                 []map[string]bool            // Stack of open blocks -> names declared in each
-	enableBoundsChecking          bool                         // Enable runtime array bounds checking
-	enableSignalHandler           bool                         // Enable signal handler for crash reporting
-	skipBoundsCheck               bool                         // Temporarily skip bounds check (for lvalue contexts)
-	sourceFilename                string                       // Source filename for error messages
-	heapAllocatedVars             map[string]bool              // Track heap-allocated variables in current function
-	heapVarScopes                 map[string]int               // Track scope depth where each heap var was allocated
-	heapVarTypes                  map[string]string            // Track type of each heap-allocated variable for proper freeing
-	scopeDepth                    int                          // Current scope depth (incremented for loops/ifs/blocks)
-	scopeAllocations              map[int][]string             // scope depth -> list of variables allocated at that scope
-	loopScopeStack                []int                        // Stack of scope depths where loops begin (for break/continue cleanup)
-	escapingVars                  map[string]bool              // Track variables that escape the function (returned or stored)
-	manuallyFreedVars             map[string]bool              // Track variables with manual defer free
-	autoFreedVars                 map[string]bool              // Track variables with automatic defer free
-	functionParameters            map[string]bool              // Track function parameters (never auto-free)
-	cStructFields                 map[string]map[string]string // C struct name -> (field name -> field type)
-	cTypedefs                     map[string]string            // typedef alias -> base type
-	cFunctionParamTypes           map[string][]string          // C function name (snake_case) -> parameter types
+	orderedIncludes               []string                         // Keep track of include order
+	variables                     map[string]string                // variable name -> type (global scope)
+	functionVars                  map[string]string                // variable name -> type (function scope)
+	nestedScopeVars               map[string]bool                  // variables declared in nested scopes (loops/ifs)
+	varDeclIndent                 map[string]int                   // variable name -> indent level where it was declared
+	constants                     map[string]string                // constant name -> type
+	declaredConstants             map[string]bool                  // constant name -> declared (for duplicate check)
+	enums                         map[string]map[string]bool       // enum name -> {member names}
+	enumOriginalNames             map[string]bool                  // tracks original (lowercase) enum names vs aliases
+	enumMemberTypes               map[string]string                // "enumName.memberName" -> type
+	enumTypes                     map[string]string                // enum name -> enum type (int, string, etc.)
+	userFunctions                 map[string]bool                  // user-defined function names (keep snake_case)
+	calledFunctions               map[string]bool                  // functions that are actually called in the program
+	hasError                      bool                             // Track if error occurred
+	arrayImpls                    bool                             // Track if we've added array implementation
+	arrayMethods                  map[string]bool                  // Track which array methods are used
+	stringMethods                 map[string]bool                  // Track which string methods are used
+	dictMethods                   map[string]bool                  // Track which dict methods are used
+	useJSON                       bool                             // Track if JSON functions are used
+	useJobs                       bool                             // Track if the job system is used
+	jobResultTypes                map[string]string                // job variable -> task result Ahoy type
+	jsonVariables                 map[string]bool                  // Track which variables hold JSON data
+	jsonStructs                   map[string]bool                  // Track which structs are JSON schemas (not real C structs)
+	loopCounters                  []string                         // Stack of loop counter variable names
+	currentFile                   string                           // Source file of the top-level node being generated
+	currentFunction               string                           // Current function being generated
+	currentFunctionReturnType     string                           // Return type of current function
+	currentFunctionHasMultiReturn bool                             // Whether current function has multiple returns
+	hasMainFunc                   bool                             // Whether there's an Ahoy main function
+	arrayElementTypes             map[string]string                // array variable name -> element type
+	dictLoopValueExpr             map[string]string                // dict-loop value var -> C expression that formats it by its runtime type
+	array2DElementTypes           map[string]string                // 2D array variable name -> nested element type (element type of inner arrays)
+	structs                       map[string]*StructInfo           // struct name -> struct info
+	currentTypeContext            string                           // Current type annotation context (e.g., "array[int]")
+	functionReturnTypes           map[string][]string              // function name -> return types (for inferred functions)
+	deferredStatements            []deferredStmt                   // Stack of deferred statements for current function
+	functionParamTypes            map[string][]string              // function name -> parameter types
+	functionParamNames            map[string][]string              // function name -> parameter names
+	functionParamDefaults         map[string][]*ahoy.ASTNode       // function name -> parameter default values
+	closureDecls                  strings.Builder                  // hoisted thunks for lambdas and function references
+	funcRefThunks                 map[string]bool                  // function names whose reference thunk has been emitted
+	closureCaptures               map[string]string                // captured name -> C expression while generating a thunk body
+	pendingFuncType               string                           // declared fn(...) type of the lambda being initialized
+	pendingCType                  string                           // declared C callback typedef of the value being assigned
+	dictSourcedVars               map[string]string                // variable name -> dict name (for dict-accessed vars)
+	dictSourcedKeys               map[string]string                // variable name -> key (for dict-accessed vars)
+	generatedTypes                map[string]bool                  // Track which types have been generated
+	cFunctionNames                map[string]string                // snake_case name -> actual C name
+	cNamespaces                   map[string]map[string]string     // namespace -> (snake_case name -> actual C name)
+	cFunctionReturnTypes          map[string]string                // C function name (snake_case) -> return type
+	cNamespaceReturnTypes         map[string]map[string]string     // namespace -> (snake_case name -> return type)
+	cTypeDefinitions              map[string]bool                  // Track known C types from headers
+	declaredGlobalVars            map[string]bool                  // Track global variables that have been declared in C code
+	declaredFunctionVars          map[string]bool                  // Track function-local variables that have been declared in C code
+	scopeDeclared                 []map[string]bool                // Stack of open blocks -> names declared in each
+	enableBoundsChecking          bool                             // Enable runtime array bounds checking
+	enableSignalHandler           bool                             // Enable signal handler for crash reporting
+	skipBoundsCheck               bool                             // Temporarily skip bounds check (for lvalue contexts)
+	sourceFilename                string                           // Source filename for error messages
+	heapAllocatedVars             map[string]bool                  // Track heap-allocated variables in current function
+	heapVarScopes                 map[string]int                   // Track scope depth where each heap var was allocated
+	heapVarTypes                  map[string]string                // Track type of each heap-allocated variable for proper freeing
+	scopeDepth                    int                              // Current scope depth (incremented for loops/ifs/blocks)
+	scopeAllocations              map[int][]string                 // scope depth -> list of variables allocated at that scope
+	loopScopeStack                []int                            // Stack of scope depths where loops begin (for break/continue cleanup)
+	escapingVars                  map[string]bool                  // Track variables that escape the function (returned or stored)
+	manuallyFreedVars             map[string]bool                  // Track variables with manual defer free
+	autoFreedVars                 map[string]bool                  // Track variables with automatic defer free
+	functionParameters            map[string]bool                  // Track function parameters (never auto-free)
+	cStructFields                 map[string]map[string]string     // C struct name -> (field name -> field type)
+	cTypedefs                     map[string]string                // typedef alias -> base type
+	cFunctionParamTypes           map[string][]string              // C function name (snake_case) -> parameter types
 	cFuncPtrTypedefs              map[string]*ahoy.CFuncPtrTypedef // C callback typedef name -> signature
-	parsedCHeaders                map[string]*ahoy.CHeaderInfo // In-memory cache for parsed C headers (path -> info)
-	parsedCHeadersMu              sync.Mutex                   // Mutex for parsedCHeaders
-	enableARC                     bool                         // Enable Automatic Reference Counting
-	arcStructs                    map[string]bool              // Structs that use ARC (have reference counting)
-	weakFields                    map[string]map[string]bool   // struct name -> (field name -> isWeak)
-	parentChildRelations          map[string]map[string]bool   // parent struct -> (child field names)
-	refCountedVars                map[string]bool              // Track variables that need retain/release
-	constantValues                map[string]interface{}       // constant name -> computed value (for const expressions)
-	globalConstantGetters         map[string]ConstantInfo      // constant name -> getter function info for hot reload
+	parsedCHeaders                map[string]*ahoy.CHeaderInfo     // In-memory cache for parsed C headers (path -> info)
+	parsedCHeadersMu              sync.Mutex                       // Mutex for parsedCHeaders
+	enableARC                     bool                             // Enable Automatic Reference Counting
+	arcStructs                    map[string]bool                  // Structs that use ARC (have reference counting)
+	weakFields                    map[string]map[string]bool       // struct name -> (field name -> isWeak)
+	parentChildRelations          map[string]map[string]bool       // parent struct -> (child field names)
+	refCountedVars                map[string]bool                  // Track variables that need retain/release
+	constantValues                map[string]interface{}           // constant name -> computed value (for const expressions)
+	globalConstantGetters         map[string]ConstantInfo          // constant name -> getter function info for hot reload
 }
 
 type ConstantInfo struct {
