@@ -1095,6 +1095,25 @@ func (p *Parser) parseCallArgument() *ASTNode {
 	return p.parseCallArgumentExpression()
 }
 
+// canStartExpression reports whether a token can be the first token of an
+// expression. It disambiguates a pipe that opens a nested or method call from a
+// pipe that closes the enclosing call: an opening pipe is always followed by an
+// argument (or by another pipe, for an empty argument list), while a closing
+// pipe is followed by whatever comes after the call - a newline, `$`, `then`,
+// an operator, a comma, or a closing bracket.
+func canStartExpression(t TokenType) bool {
+	switch t {
+	case TOKEN_NOT, TOKEN_MINUS, TOKEN_CARET, TOKEN_AMPERSAND, TOKEN_BNOT,
+		TOKEN_NUMBER, TOKEN_STRING, TOKEN_RAW_STRING, TOKEN_F_STRING, TOKEN_CHAR,
+		TOKEN_TRUE, TOKEN_FALSE, TOKEN_IDENTIFIER,
+		TOKEN_LBRACE, TOKEN_LANGLE, TOKEN_LBRACKET, TOKEN_LPAREN,
+		TOKEN_SWITCH, TOKEN_INT_TYPE, TOKEN_FLOAT_TYPE, TOKEN_CHAR_TYPE,
+		TOKEN_STRING_TYPE:
+		return true
+	}
+	return false
+}
+
 // tryParseNestedCall parses `name|args|` as a call while the parser is inside
 // another call's argument list, so that print|len|items|| works.
 //
@@ -1102,9 +1121,40 @@ func (p *Parser) parseCallArgument() *ASTNode {
 // followed by another pipe, which can then only be the enclosing call's closing
 // pipe. Anything else is rolled back - position and any diagnostics recorded
 // while trying - so `print|x|` still parses as a plain identifier argument.
-func (p *Parser) tryParseNestedCall(name Token) *ASTNode {
+func (p *Parser) tryParseNestedCall(name Token) (result *ASTNode) {
 	savedPos := p.pos
 	savedErrors := len(p.Errors)
+
+	// This is speculation: the pipe after the name may open a nested call or
+	// it may close the enclosing one. Whatever happens below has to be undone
+	// when the guess is wrong - including a panic, which is how the
+	// code-generation parser reports a token that cannot start an argument
+	// (`if foo|bar| then`, `foo|bar| + 1`). Without the recover those inputs
+	// aborted the whole parse instead of rolling back to `bar` being a plain
+	// identifier argument.
+	savedInFunctionCall := p.inFunctionCall
+	savedInArrayLiteral := p.inArrayLiteral
+	savedInObjectLiteral := p.inObjectLiteral
+	savedInDictLiteral := p.inDictLiteral
+	savedBlockDepth := p.blockDepth
+	savedFunctionDepth := p.functionDepth
+	savedLoopVarScopes := len(p.loopVarScopes)
+	defer func() {
+		if r := recover(); r != nil {
+			p.pos = savedPos
+			p.Errors = p.Errors[:savedErrors]
+			p.inFunctionCall = savedInFunctionCall
+			p.inArrayLiteral = savedInArrayLiteral
+			p.inObjectLiteral = savedInObjectLiteral
+			p.inDictLiteral = savedInDictLiteral
+			p.blockDepth = savedBlockDepth
+			p.functionDepth = savedFunctionDepth
+			if len(p.loopVarScopes) > savedLoopVarScopes {
+				p.loopVarScopes = p.loopVarScopes[:savedLoopVarScopes]
+			}
+			result = nil
+		}
+	}()
 
 	// The caller's current token is the callee name; step past it and past the
 	// opening pipe, so the loop below sees the first argument.
@@ -1116,6 +1166,16 @@ func (p *Parser) tryParseNestedCall(name Token) *ASTNode {
 		Value:  name.Value,
 		Line:   name.Line,
 		Column: name.Column,
+	}
+
+	// An opening pipe is followed by an argument, or by the nested call's own
+	// closing pipe. When the token after it cannot start an expression, the
+	// pipe belonged to the enclosing call - `if foo|bar| then`, `foo|bar| + 1`,
+	// `print|arr.length| $` - and this is not a nested call after all.
+	if p.current().Type != TOKEN_PIPE && !canStartExpression(p.current().Type) {
+		p.pos = savedPos
+		p.Errors = p.Errors[:savedErrors]
+		return nil
 	}
 
 	p.inFunctionCall++

@@ -61,12 +61,14 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 			savedPos := p.pos
 			p.advance() // consume opening pipe
 
-			// If immediately followed by another pipe, it's an empty method call
+			// If immediately followed by another pipe, it's an empty method call.
+			// Otherwise the pipe opens a method call only when the token after it
+			// can start an argument; a `$`, `then` or operator means this pipe
+			// closes the enclosing call instead (`if cond then print|a.length| $`).
 			isMethodCall := false
 			if p.current().Type == TOKEN_PIPE {
 				isMethodCall = true
-			} else if p.current().Type != TOKEN_COMMA && p.current().Type != TOKEN_NEWLINE && p.current().Type != TOKEN_EOF {
-				// There's content between pipes, so it's a method call
+			} else if canStartExpression(p.current().Type) {
 				isMethodCall = true
 			}
 
