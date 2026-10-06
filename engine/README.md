@@ -116,6 +116,20 @@ here because each one cost time to find:
 | `hashMapPutTyped` | fixed in this work — see the commit for details | – |
 | string `is` | was pointer equality, now `strcmp` | – |
 
+## Next slices (towards Godot-style node parity)
+
+1. **3D pass** through the same `Renderer` table: depth, opaque then
+   transparent, `draw_mesh`/`draw_model` entries; nodes already carry `z`.
+2. **Async textures**: the task ABI hands back one `intptr_t`, so a job cannot
+   return a decode buffer yet. A small C glue header (decode on the worker,
+   upload in the drain handler) closes the loop.
+3. **Tree sugar**: parent/child transforms, `node_find|nodes, "path"|`, groups
+   and signals (a list of function values per event).
+4. **Layer sorting** and a scene loader fed by the async text path (JSON level
+   files), so scenes stop being hand-written arrays.
+5. **Hot reload** of the gameplay layer (`-hotreload`) with the engine kept in
+   its own package: scripts are exactly the part that changes.
+
 ## Tests
 
 `test/input/` holds the corpus the compiler test suite runs:
