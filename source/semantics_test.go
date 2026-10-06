@@ -363,3 +363,16 @@ $
 		}
 	}
 }
+
+// A loop's own variable is in scope in its condition: `loop i:0 till i < 5`
+// must not report `i` as undeclared.
+func TestLoopVariableIsInScopeInCondition(t *testing.T) {
+	msgs := diagnosticsFor(`program p
+@ main ||:
+	loop i:0 till i < 5 do
+		print|i|
+	$
+$
+`)
+	wantNoError(t, msgs, "is not declared")
+}

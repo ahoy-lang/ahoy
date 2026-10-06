@@ -525,6 +525,19 @@ func (c *checker) checkStatement(node *ASTNode) {
 		}
 
 	case NODE_WHILE_LOOP:
+		// `loop i:start till condition` and `loop i till condition` carry the
+		// loop variable as the first child; it is in scope in the condition and
+		// the body, so it has to be declared before either is checked.
+		if len(node.Children) >= 3 && node.Children[0].Type == NODE_IDENTIFIER {
+			c.pushScope()
+			c.declare(node.Children[0].Value)
+			for i := 1; i < len(node.Children)-1; i++ {
+				c.checkExpr(childAt(node, i))
+			}
+			c.checkBlock(childAt(node, len(node.Children)-1))
+			c.popScope()
+			return
+		}
 		c.checkExpr(childAt(node, 0))
 		c.checkBlock(childAt(node, 1))
 
