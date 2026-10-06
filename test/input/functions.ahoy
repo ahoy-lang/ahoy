@@ -17,7 +17,7 @@ expected.push|"Alice 1234567890"|
 	return name, phone
 $
 
-@ multiple_infer |name:string,phone| infer:
+@ multiple_infer |name:string,phone| string,int:
 	return name, phone
 $
 
@@ -26,7 +26,7 @@ print|name1,phone2|
 expected.push|"Alice 1234567890"|
 
 ? test_generics infer
-@ test_generics |name,phone,location:generic,postcode| infer:
+@ test_generics |name,phone,location:generic,postcode| string,int,string,int:
 	return name, phone,location,postcode
 $
 
@@ -73,7 +73,7 @@ expected.push|"[1, 2, 3] {\"a\": 1, \"b\": 2}"|
 	return test_dict,test_dict2
 $
 ? Test typed parameters
-@ test_typed_params |arr:array[string], count:int|infer:
+@ test_typed_params |arr:array[string], count:int|dict<string,int>,dict<string,int>:
 	new_dict,new_dict2: test_dictionary||;
 	? defer free|new_dict|
 	? defer free|new_dict2|
@@ -109,11 +109,11 @@ z:30
 screen_height:1080
 screen_width:1920
 ? test param name same and arg name same so should become named argument
-@ implicit_named_args |screen_height:int,screen_width:int,expected| infer:
+@ implicit_named_args |screen_height:int,screen_width:int,expected| void:
 	print|screen_height, screen_width|
 	expected.push|f"1080 1920"|
 $
-@ explicit_named_args |screen_height:int,screen_width:int,expected| infer:
+@ explicit_named_args |screen_height:int,screen_width:int,expected| void:
 	print|screen_height, screen_width|
 	expected.push|f"1080 1920"|
 $

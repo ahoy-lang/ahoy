@@ -342,22 +342,6 @@ func (p *Parser) parseIfStatement() *ASTNode {
 	// Only accept 'then' for if statements
 	if p.current().Type == TOKEN_THEN {
 		p.advance()
-	} else if p.current().Type == TOKEN_NOT {
-		// Check for "not is" error
-		if p.peek(1).Type == TOKEN_IS {
-			p.recordError("expected is not got not is")
-			p.advance() // consume not
-			p.advance() // consume is
-		} else {
-			current := p.current()
-			errMsg := fmt.Sprintf("Expected 'then', got %s at line %d:%d",
-				tokenTypeName(current.Type), current.Line, current.Column)
-			if p.LintMode {
-				p.recordError(errMsg)
-			} else {
-				panic(errMsg)
-			}
-		}
 	} else {
 		current := p.current()
 		errMsg := fmt.Sprintf("Expected 'then', got %s at line %d:%d",

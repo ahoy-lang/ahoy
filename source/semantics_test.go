@@ -271,3 +271,95 @@ $
 	_, errs = ahoy.ParseLintWithPathInProgram(ahoy.Tokenize(mainSrc), "main.ahoy", []string{"helper"})
 	wantNoError(t, fatalMessages(errs), "is not defined")
 }
+
+// allDiagnosticsFor returns every diagnostic, warnings included.
+func allDiagnosticsFor(src string) []ahoy.ParseError {
+	_, errs := ahoy.ParseLintWithPath(ahoy.Tokenize(src), "test.ahoy")
+	return errs
+}
+
+func TestIsNotIsAccepted(t *testing.T) {
+	msgs := diagnosticsFor(`program p
+@ main ||:
+	x: 1
+	y: 2
+	if x is not y then print|"ne"| $
+$
+`)
+	if len(msgs) != 0 {
+		t.Errorf("expected no diagnostics for 'is not', got %v", msgs)
+	}
+}
+
+func TestNotIsIsReported(t *testing.T) {
+	msgs := diagnosticsFor(`program p
+@ main ||:
+	x: 1
+	y: 2
+	if x not is y then print|"ne"| $
+$
+`)
+	wantError(t, msgs, "use 'is not' instead of 'not is'")
+}
+
+func TestInferReturnTypeIsReported(t *testing.T) {
+	msgs := diagnosticsFor(`program p
+@ calc ::|x:int| infer:
+	return x
+$
+`)
+	wantError(t, msgs, "'infer' is not allowed")
+}
+
+func TestNestedCallArgumentIsReported(t *testing.T) {
+	msgs := diagnosticsFor(`program p
+@ g ::|n:int| int:
+	return n
+$
+@ main ||:
+	a: g|g|1||
+	print|a|
+$
+`)
+	wantError(t, msgs, "is not allowed as an argument")
+}
+
+func TestPartialMultiReturnIsWarned(t *testing.T) {
+	errs := allDiagnosticsFor(`program p
+@ pair ::|n:int| int,string:
+	return n, "s"
+$
+@ main ||:
+	a: pair|1|
+	print|a|
+$
+`)
+	warned := false
+	for _, e := range errs {
+		if e.IsWarning() && strings.Contains(e.Message, "returns 2 values but only 1 is captured") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("expected a warning about capturing 1 of 2 returned values, got %v", errs)
+	}
+	// And the warning must not be fatal.
+	wantNoError(t, fatalMessages(errs), "returns 2 values")
+}
+
+func TestFullMultiReturnIsNotWarned(t *testing.T) {
+	errs := allDiagnosticsFor(`program p
+@ pair ::|n:int| int,string:
+	return n, "s"
+$
+@ main ||:
+	a, b : pair|1|
+	print|a, b|
+$
+`)
+	for _, e := range errs {
+		if strings.Contains(e.Message, "values but") {
+			t.Errorf("did not expect a multi-return warning, got %q", e.Message)
+		}
+	}
+}

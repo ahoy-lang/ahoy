@@ -182,7 +182,7 @@ result: a % b       ? or: a mod b
 if x > y then       ? or: x greater_than y
 if x < y then       ? or: x lesser_than y
 if x is y then      ? equality
-if x not is y then  ? inequality
+if x is not y then  ? inequality
 ```
 
 **Ternary Operator** (NEW!):
@@ -265,7 +265,7 @@ msg2: greet|"Bob", "Hi"|                ? Partial override
 msg3: greet|"Charlie", "Hey", "!!!"|   ? All explicit
 
 ? Return type keywords
-@ calculate :: |x:int, y:int| infer:     ? Infer return type
+@ calculate :: |x:int, y:int| int,int:  ? Explicit types; comma-separate multiple returns
     return x * y, x + y
 $
 
@@ -276,6 +276,15 @@ $
 @ log2 :: |message:string|:              ? Implicit void
     ahoy |message|
 $
+
+? A call is not allowed as an argument to another call: name the result first
+count: len|items|
+ahoy |f"items: {count}"|
+
+? Inequality is written 'is not'. 'not is' is rejected.
+if name is not "" then
+    ahoy |"has a name"|
+$
 ```
 
 ### Assert Statements (NEW!)
@@ -284,11 +293,11 @@ $
 ? Basic assertions
 assert x > 0
 assert count is 10
-assert name not is ""
+assert name is not ""
 
 ? Precondition checking
 @ divide :: |a:int, b:int| float:
-    assert b not is 0           ? Prevent division by zero
+    assert b is not 0           ? Prevent division by zero
     return a / b
 $
 
@@ -477,7 +486,7 @@ TIMEOUT::float= 30.0
 ? Function with default arguments, types, assert, and defer
 @ process_data :: |data:dict, timeout:float=TIMEOUT, retries:int=MAX_RETRIES| bool:
     ? Precondition validation
-    assert data not is null
+    assert data is not null
     assert timeout > 0
     assert retries > 0
     
@@ -564,7 +573,6 @@ $
 - `dict` - Dictionaries/maps
 - `vector2` - 2D vectors
 - `color` - Color values
-- `infer` - Inferred return type (functions)
 - `void` - No return value (functions)
 
 ### Programs (Multi-file)
@@ -726,7 +734,7 @@ ahoy-lang/
 - ✅ **Type annotations**: Explicit typing for safety
 - ✅ **Assert statements**: Runtime validation
 - ✅ **Defer statements**: Guaranteed cleanup (like Go)
-- ✅ **infer/void keywords**: Return type control
+- ✅ **void keyword and explicit return types**: Return type control
 - ✅ **LSP support**: Real-time linting and diagnostics
 - ✅ **Multiple return values**: `return x, y`
 - ✅ **Struct/object syntax**: `<name: "Alice", age: 30>`
@@ -750,7 +758,7 @@ ahoy-lang/
 ```ahoy
 ? Good: Type-safe with defaults
 @ process :: |data:dict, timeout:float=30.0| bool:
-    assert data not is null
+    assert data is not null
     defer cleanup||
     ? ... implementation ...
     return true
@@ -773,7 +781,7 @@ $
 ```ahoy
 ? Assert for validation
 @ safe_divide :: |a:int, b:int| float:
-    assert b not is 0
+    assert b is not 0
     return a / b
 $
 

@@ -97,6 +97,50 @@ func (c *checker) errorAt(node *ASTNode, format string, args ...any) {
 	})
 }
 
+// warningAt reports an advisory diagnostic at a node's position. Warnings are
+// printed but never fail a build.
+func (c *checker) warningAt(node *ASTNode, format string, args ...any) {
+	if node == nil {
+		return
+	}
+	line, column := node.Line, node.Column
+	if line <= 0 {
+		if pos := firstPositioned(node); pos != nil {
+			line, column = pos.Line, pos.Column
+		}
+	}
+	c.errors = append(c.errors, ParseError{
+		Message:  fmt.Sprintf(format, args...),
+		Line:     line,
+		Column:   column,
+		Severity: "warning",
+	})
+}
+
+// warnPartialCallResult reports a function that returns several values when
+// they are not all captured. A single-name declaration or assignment captures
+// one; the tuple form captures one value per target.
+func (c *checker) warnPartialCallResult(node *ASTNode, value *ASTNode, captured int) {
+	if value == nil || value.Type != NODE_CALL {
+		return
+	}
+	sig := c.p.functions[value.Value]
+	if sig == nil || sig.IsInfer || len(sig.ReturnTypes) <= 1 {
+		return
+	}
+	returned := len(sig.ReturnTypes)
+	if captured == returned {
+		return
+	}
+	if captured < returned {
+		c.warningAt(node, "Function '%s' returns %d values but only %d is captured; assign them to %d variables (a, b : %s|...|)",
+			value.Value, returned, captured, returned, value.Value)
+	} else {
+		c.warningAt(node, "Function '%s' returns %d values but %d targets are given",
+			value.Value, returned, captured)
+	}
+}
+
 // firstPositioned returns the first node in a subtree that has a source line.
 func firstPositioned(node *ASTNode) *ASTNode {
 	for _, child := range node.Children {
@@ -435,17 +479,22 @@ func (c *checker) checkStatement(node *ASTNode) {
 	switch node.Type {
 	case NODE_VARIABLE_DECLARATION:
 		c.checkExpr(childAt(node, 0))
+		c.warnPartialCallResult(node, childAt(node, 0), 1)
 		c.declare(node.Value)
 
 	case NODE_ASSIGNMENT:
 		// The parser already rejects assignment to an undeclared variable.
 		c.checkExpr(childAt(node, 0))
+		c.warnPartialCallResult(node, childAt(node, 0), 1)
 
 	case NODE_TUPLE_ASSIGNMENT:
 		targets, values := childAt(node, 0), childAt(node, 1)
 		if values != nil {
 			for _, v := range values.Children {
 				c.checkExpr(v)
+			}
+			if len(values.Children) == 1 && targets != nil {
+				c.warnPartialCallResult(node, values.Children[0], len(targets.Children))
 			}
 		}
 		if targets != nil {
@@ -744,16 +793,35 @@ func (c *checker) checkCall(node *ASTNode) {
 	c.checkArguments(node, name, node.Children)
 }
 
+// rejectNestedCall reports a call used as another call's argument. The parser
+// can make sense of `print|len|items||`, but the nested pipes are easy to
+// misread, so the result has to be named first: tmp: len|items| then print|tmp|.
+func (c *checker) rejectNestedCall(arg *ASTNode, outer string) {
+	if arg == nil {
+		return
+	}
+	if arg.Type != NODE_CALL && arg.Type != NODE_METHOD_CALL {
+		return
+	}
+	c.errorAt(arg, "Function call '%s' is not allowed as an argument to '%s'; assign it to a variable first, then pass that variable",
+		arg.Value, outer)
+}
+
 // checkArguments validates the argument list of a call against a user-defined
 // function's parameters. C functions and builtins are not checked: their
 // signatures are not fully known here.
 func (c *checker) checkArguments(node *ASTNode, name string, args []*ASTNode) {
 	for _, arg := range args {
-		if arg.Type == NODE_BINARY_OP && arg.Value == "named_arg" {
-			c.checkExpr(childAt(arg, 1))
-		} else {
-			c.checkExpr(arg)
+		if arg == nil {
+			continue
 		}
+		if arg.Type == NODE_BINARY_OP && arg.Value == "named_arg" {
+			c.rejectNestedCall(childAt(arg, 1), name)
+			c.checkExpr(childAt(arg, 1))
+			continue
+		}
+		c.rejectNestedCall(arg, name)
+		c.checkExpr(arg)
 	}
 
 	sig, ok := c.p.functions[name]

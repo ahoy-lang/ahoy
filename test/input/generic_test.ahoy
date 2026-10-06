@@ -1,8 +1,8 @@
 expected: []
-? Test generic type inference with infer
+? Test generic type inference with explicit return types
 
 ? Function with generic parameters
-@ test_generics |name,phone,location,postcode| infer:
+@ test_generics |name,phone,location,postcode| string,int,string,int:
 return name, phone,location,postcode
 $
 

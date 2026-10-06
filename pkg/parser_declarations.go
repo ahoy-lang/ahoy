@@ -499,8 +499,11 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 	var returnType string
 	var returnTypesArray []string
 	if p.current().Type != TOKEN_ASSIGN {
-		// Check for 'infer' keyword
+		// Check for 'infer' keyword. Inference was removed as a return type: the
+		// LSP, the multi-return checks and every caller want to know exactly what
+		// a function returns.
 		if p.current().Type == TOKEN_INFER {
+			p.recordError("Return type must be explicit: 'infer' is not allowed; write the type (e.g. int, string, void)")
 			returnType = "infer"
 			p.advance()
 		} else if p.current().Type == TOKEN_VOID {
