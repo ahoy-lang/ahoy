@@ -7628,6 +7628,13 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 					}
 				}
 			}
+
+			// Built-in collection property: every array, dict and string has a
+			// length. Without this the fallback below tags it as a string, and
+			// print|arr.length| formats the int with %s.
+			if memberName == "length" {
+				return "int"
+			}
 		}
 		return "char*"
 	default:
