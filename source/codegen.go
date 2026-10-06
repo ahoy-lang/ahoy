@@ -2291,7 +2291,7 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 
 		// Special handling for dict assignment - d<"key">: value
 		if node.Children[0].Type == ahoy.NODE_DICT_ACCESS {
-			dictName := node.Children[0].Value
+			dictName := gen.nameExpr(node.Children[0].Value)
 			keyNode := node.Children[0].Children[0]
 			valueNode := node.Children[1]
 
@@ -6613,6 +6613,20 @@ func (gen *CodeGenerator) generateLambdaValue(node *ahoy.ASTNode) {
 				}
 			}
 		}
+		// A container access carries the variable it reads in Value rather than
+		// in a child identifier (xs[0], d<"k">), so those have to be collected
+		// here too or a closure over an array/dict names a local that does not
+		// exist inside the thunk.
+		if (n.Type == ahoy.NODE_ARRAY_ACCESS || n.Type == ahoy.NODE_DICT_ACCESS) &&
+			!paramNames[n.Value] && !seen[n.Value] && !gen.userFunctions[n.Value] {
+			if _, ok := gen.functionVars[n.Value]; ok {
+				seen[n.Value] = true
+				captures = append(captures, n.Value)
+			} else if _, ok := gen.variables[n.Value]; ok {
+				seen[n.Value] = true
+				captures = append(captures, n.Value)
+			}
+		}
 		for _, c := range n.Children {
 			collect(c)
 		}
@@ -6623,8 +6637,12 @@ func (gen *CodeGenerator) generateLambdaValue(node *ahoy.ASTNode) {
 	gen.varCounter++
 	thunk := fmt.Sprintf("__ahoy_lambda_%d", id)
 
+	// The declared type of the field/variable being initialised wins over the
+	// inferred one: the thunk is called through the declared function pointer,
+	// so a thunk that returns double where the type says int is undefined
+	// behaviour at the call site (the double bits came back as a garbage int).
 	retType := gen.inferType(body)
-	if retType == "" || retType == "unknown" {
+	if declaredRet != "" && declaredRet != "unknown" {
 		retType = declaredRet
 	}
 	if retType == "" || retType == "unknown" {
@@ -6664,8 +6682,12 @@ func (gen *CodeGenerator) generateLambdaValue(node *ahoy.ASTNode) {
 	if retC == "void" {
 		gen.generateNodeInternal(body, false)
 	} else {
-		gen.output.WriteString("return ")
+		// Cast to the thunk's return type so a body that infers differently
+		// (a dict read is double, the declared return is int) still returns
+		// the value the caller's function pointer expects.
+		gen.output.WriteString(fmt.Sprintf("return (%s)(", retC))
 		gen.generateNodeInternal(body, false)
+		gen.output.WriteString(")")
 	}
 	bodyCode := gen.output.String()
 	gen.output = savedOutput
@@ -6684,7 +6706,7 @@ func (gen *CodeGenerator) generateLambdaValue(node *ahoy.ASTNode) {
 	var alloc strings.Builder
 	fmt.Fprintf(&alloc, "({ %s* __e = (%s*)malloc(sizeof(%s)); ", envName, envName, envName)
 	for _, c := range captures {
-		fmt.Fprintf(&alloc, "__e->%s = %s; ", c, c)
+		fmt.Fprintf(&alloc, "__e->%s = %s; ", c, gen.nameExpr(c))
 	}
 	fmt.Fprintf(&alloc, "(AhoyFn){ (void(*)(void))%s, __e }; })", thunk)
 	gen.output.WriteString(alloc.String())
@@ -6865,6 +6887,18 @@ func (gen *CodeGenerator) generateArrayLiteral(node *ahoy.ASTNode) {
 	gen.output.WriteString(fmt.Sprintf("%s; })", arrName))
 }
 
+// nameExpr returns the C expression for a variable reference. Accesses that
+// name their object (xs[0], d<"k">, d<"k">: v) emit that object directly
+// instead of generating the identifier node, so they must ask here: inside a
+// closure thunk a captured local lives in the environment, and the raw name
+// would not compile.
+func (gen *CodeGenerator) nameExpr(name string) string {
+	if expr, isCapture := gen.closureCaptures[name]; isCapture {
+		return expr
+	}
+	return name
+}
+
 func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 	// Check if this is a chained array access (2D array): grid[r][c]
 	// In this case, Value is empty and Children[0] is the inner array access, Children[1] is the outer index
@@ -6874,6 +6908,7 @@ func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 	}
 
 	arrayName := node.Value
+	objExpr := gen.nameExpr(arrayName)
 
 	// Check if the variable type is intptr_t, void*, generic, or any (might need casting to AhoyArray*)
 	needsArrayCast := false
@@ -6897,9 +6932,9 @@ func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 		gen.output.WriteString("; ")
 
 		if needsArrayCast {
-			gen.output.WriteString(fmt.Sprintf("AhoyArray* __arr = (AhoyArray*)%s; ", arrayName))
+			gen.output.WriteString(fmt.Sprintf("AhoyArray* __arr = (AhoyArray*)%s; ", objExpr))
 		} else {
-			gen.output.WriteString(fmt.Sprintf("AhoyArray* __arr = %s; ", arrayName))
+			gen.output.WriteString(fmt.Sprintf("AhoyArray* __arr = %s; ", objExpr))
 		}
 
 		gen.output.WriteString("if (__idx < 0 || __idx >= __arr->length) { ")
@@ -6965,17 +7000,17 @@ func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 			if isCStruct || isAhoyStruct {
 				// Dereference the pointer to get the struct value
 				if needsArrayCast {
-					gen.output.WriteString(fmt.Sprintf("(*(%s*)((AhoyArray*)%s)->data[", cType, arrayName))
+					gen.output.WriteString(fmt.Sprintf("(*(%s*)((AhoyArray*)%s)->data[", cType, objExpr))
 				} else {
-					gen.output.WriteString(fmt.Sprintf("(*(%s*)%s->data[", cType, arrayName))
+					gen.output.WriteString(fmt.Sprintf("(*(%s*)%s->data[", cType, objExpr))
 				}
 				gen.generateNode(node.Children[0])
 				gen.output.WriteString("])")
 			} else {
 				if needsArrayCast {
-					gen.output.WriteString(fmt.Sprintf("((%s)(intptr_t)((AhoyArray*)%s)->data[", cType, arrayName))
+					gen.output.WriteString(fmt.Sprintf("((%s)(intptr_t)((AhoyArray*)%s)->data[", cType, objExpr))
 				} else {
-					gen.output.WriteString(fmt.Sprintf("((%s)(intptr_t)%s->data[", cType, arrayName))
+					gen.output.WriteString(fmt.Sprintf("((%s)(intptr_t)%s->data[", cType, objExpr))
 				}
 				gen.generateNode(node.Children[0])
 				gen.output.WriteString("])")
@@ -6986,9 +7021,9 @@ func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 
 	// Default: no cast for int/intptr_t values to preserve lvalue for assignments
 	if needsArrayCast {
-		gen.output.WriteString(fmt.Sprintf("((AhoyArray*)%s)->data[", arrayName))
+		gen.output.WriteString(fmt.Sprintf("((AhoyArray*)%s)->data[", objExpr))
 	} else {
-		gen.output.WriteString(fmt.Sprintf("%s->data[", arrayName))
+		gen.output.WriteString(fmt.Sprintf("%s->data[", objExpr))
 	}
 	gen.generateNode(node.Children[0])
 	gen.output.WriteString("]")
@@ -7031,6 +7066,7 @@ func (gen *CodeGenerator) generateChainedArrayAssignment(node *ahoy.ASTNode) {
 func (gen *CodeGenerator) generateDictAccess(node *ahoy.ASTNode) {
 	// Check if the dict variable is generic (intptr_t) and needs casting
 	dictName := node.Value
+	dictExpr := gen.nameExpr(dictName)
 	dictType := ""
 
 	// Check variable type
@@ -7044,10 +7080,10 @@ func (gen *CodeGenerator) generateDictAccess(node *ahoy.ASTNode) {
 	// If generic/any, cast to HashMap*
 	if dictType == "generic" || dictType == "any" {
 		gen.output.WriteString("hashMapGetDouble((HashMap*)")
-		gen.output.WriteString(dictName)
+		gen.output.WriteString(dictExpr)
 		gen.output.WriteString(", ")
 	} else {
-		gen.output.WriteString(fmt.Sprintf("hashMapGetDouble(%s, ", dictName))
+		gen.output.WriteString(fmt.Sprintf("hashMapGetDouble(%s, ", dictExpr))
 	}
 
 	gen.generateNode(node.Children[0])
@@ -11163,6 +11199,17 @@ func (gen *CodeGenerator) generateObjectLiteral(node *ahoy.ASTNode) {
 			fieldSet := false
 			for _, prop := range node.Children {
 				if prop.Type == ahoy.NODE_OBJECT_PROPERTY && prop.Value == field.Name {
+					// A lambda stored in a function-typed field needs the field's
+					// signature: the declared type supplies the thunk's parameter
+					// and return types, and without it a body that infers wide
+					// (a dict read is double) is called through the field's
+					// function pointer with the wrong ABI.
+					savedPending := gen.pendingFuncType
+					if ft := field.AhoyType; ahoy.IsFunctionType(ft) {
+						gen.pendingFuncType = ft
+					} else {
+						gen.pendingFuncType = ""
+					}
 					// If the value is an f-string, wrap in strdup (f-strings use static buffers)
 					// This is critical for struct literals that escape or are stored
 					valueNode := prop.Children[0]
@@ -11173,6 +11220,7 @@ func (gen *CodeGenerator) generateObjectLiteral(node *ahoy.ASTNode) {
 					} else {
 						gen.generateNodeInternal(valueNode, false)
 					}
+					gen.pendingFuncType = savedPending
 					fieldSet = true
 					break
 				}

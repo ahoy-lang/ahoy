@@ -1,0 +1,52 @@
+program closure_containers
+
+? A closure may capture an array or a dict, not just scalars. The access
+? nodes carry the variable name themselves (xs[0], d<"k">), so capture
+? collection and code generation both had to look at them; before this the
+? thunk named a local that did not exist and the generated C did not compile.
+
+struct Handler:
+	name: string
+	run: fn(int)->int
+$
+
+@ main ||:
+	expected: []
+
+	xs: array[int] = [10, 20, 30]
+	d: dict<string,int> = <"count": 5>
+	prefix: string = "v"
+
+	h: Handler{name: "h", run: (unused:int): xs[2] + d<"count">}
+	r: h.run|0|
+	print|r|
+	expected.push|"35"|
+
+	? the declared fn(int)->int must win over the inferred body type:
+	? the dict read is a double, and a double-returning thunk called through
+	? an int function pointer read the bit pattern as a garbage int
+	d2: dict<string,int> = <"count": 41>
+	h2: Handler{name: "h2", run: (unused:int): d2<"count"> + 1}
+	r2: h2.run|0|
+	print|r2|
+	expected.push|"42"|
+
+	? captures stay live when the closure is stored in an array
+	hs: array[Handler] = []
+	hs.push|h|
+	hs.push|h2|
+	loop i:0 to hs.length do
+		cur: hs[i]
+		print|cur.name|
+	$
+	? (the values are pushed as literals: an f-string's buffer is reused, so
+	? pushing f"{got}" twice stores the same pointer)
+	got0: h.run|0|
+	got1: h2.run|0|
+	print|got0, got1|
+	expected.push|"h"|
+	expected.push|"h2"|
+	expected.push|"35 42"|
+
+	print|expected|
+$
