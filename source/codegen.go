@@ -452,7 +452,8 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 	result.WriteString("AhoyJob* ahoy_jobs_submit(AhoyPool* pool, AhoyFn fn, intptr_t arg);\n")
 	result.WriteString("intptr_t ahoy_jobs_wait(AhoyJob* job);\n")
 	result.WriteString("void ahoy_jobs_release(AhoyJob* job);\n")
-	result.WriteString("void ahoy_jobs_stop(AhoyPool* pool);\n\n")
+	result.WriteString("void ahoy_jobs_stop(AhoyPool* pool);\n")
+	result.WriteString("void ahoy_jobs_destroy(AhoyPool* pool);\n\n")
 
 	// Write AhoyArray struct definition if arrays are used (must come after AhoyValueType)
 	if gen.arrayImpls || len(gen.arrayMethods) > 0 {
@@ -4267,7 +4268,7 @@ func (gen *CodeGenerator) generateFreeCodeForVar(varName string, varType string)
 		return fmt.Sprintf("    if (%s.env) free(%s.env);\n", varName, varName)
 	}
 	if varType == "pool" {
-		return fmt.Sprintf("    if (%s) ahoy_jobs_stop(%s);\n", varName, varName)
+		return fmt.Sprintf("    if (%s) ahoy_jobs_destroy(%s);\n", varName, varName)
 	}
 	if varType == "job" {
 		return fmt.Sprintf("    if (%s) ahoy_jobs_release(%s);\n", varName, varName)
@@ -11285,6 +11286,7 @@ struct AhoyPool {
     struct AhoyJob* head;
     struct AhoyJob* tail;
     int stop;
+    int stopped;
     pthread_mutex_t mutex;
     pthread_cond_t work;
 };
@@ -11360,11 +11362,24 @@ void ahoy_jobs_release(AhoyJob* job) {
 void ahoy_jobs_stop(AhoyPool* pool) {
     if (pool == NULL) return;
     pthread_mutex_lock(&pool->mutex);
+    if (pool->stopped) {   /* stop is idempotent: explicit stop + scope exit */
+        pthread_mutex_unlock(&pool->mutex);
+        return;
+    }
+    pool->stopped = 1;
     pool->stop = 1;
     pthread_cond_broadcast(&pool->work);
     pthread_mutex_unlock(&pool->mutex);
     for (int i = 0; i < pool->thread_count; i++) pthread_join(pool->threads[i], NULL);
     free(pool->threads);
+    pool->threads = NULL;
+}
+
+void ahoy_jobs_destroy(AhoyPool* pool) {
+    if (pool == NULL) return;
+    ahoy_jobs_stop(pool);
+    pthread_mutex_destroy(&pool->mutex);
+    pthread_cond_destroy(&pool->work);
     free(pool);
 }
 `
