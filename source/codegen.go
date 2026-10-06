@@ -181,10 +181,10 @@ type CodeGenerator struct {
 	functionParamTypes            map[string][]string          // function name -> parameter types
 	functionParamNames            map[string][]string          // function name -> parameter names
 	functionParamDefaults         map[string][]*ahoy.ASTNode   // function name -> parameter default values
-	closureDecls                  strings.Builder             // hoisted thunks for lambdas and function references
-	funcRefThunks                 map[string]bool             // function names whose reference thunk has been emitted
-	closureCaptures               map[string]string           // captured name -> C expression while generating a thunk body
-	pendingFuncType               string                      // declared fn(...) type of the lambda being initialized
+	closureDecls                  strings.Builder              // hoisted thunks for lambdas and function references
+	funcRefThunks                 map[string]bool              // function names whose reference thunk has been emitted
+	closureCaptures               map[string]string            // captured name -> C expression while generating a thunk body
+	pendingFuncType               string                       // declared fn(...) type of the lambda being initialized
 	dictSourcedVars               map[string]string            // variable name -> dict name (for dict-accessed vars)
 	dictSourcedKeys               map[string]string            // variable name -> key (for dict-accessed vars)
 	generatedTypes                map[string]bool              // Track which types have been generated
@@ -213,6 +213,7 @@ type CodeGenerator struct {
 	cStructFields                 map[string]map[string]string // C struct name -> (field name -> field type)
 	cTypedefs                     map[string]string            // typedef alias -> base type
 	cFunctionParamTypes           map[string][]string          // C function name (snake_case) -> parameter types
+	cFuncPtrTypedefs              map[string]bool              // C callback typedef names (fn-pointer typedefs)
 	parsedCHeaders                map[string]*ahoy.CHeaderInfo // In-memory cache for parsed C headers (path -> info)
 	parsedCHeadersMu              sync.Mutex                   // Mutex for parsedCHeaders
 	enableARC                     bool                         // Enable Automatic Reference Counting
@@ -298,6 +299,7 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 		cStructFields:         make(map[string]map[string]string),
 		cTypedefs:             make(map[string]string),
 		cFunctionParamTypes:   make(map[string][]string),
+		cFuncPtrTypedefs:      make(map[string]bool),
 		parsedCHeaders:        make(map[string]*ahoy.CHeaderInfo),
 		enableARC:             enableARC, // Use parameter value
 		arcStructs:            make(map[string]bool),
@@ -1505,12 +1507,19 @@ func escapeCFilename(path string) string {
 	return strings.ReplaceAll(path, "\"", "\\\"")
 }
 
+// isHeapAllocatedType reports whether a declaration of this type owns heap
+// memory that must be released when its scope exits. A fresh function value
+// owns its closure environment; a copy of one does not (the declaration path
+// only registers calls and literals, not identifiers).
 func (gen *CodeGenerator) isHeapAllocatedType(varType string) bool {
 	// Check if a type requires heap allocation
 	if strings.HasPrefix(varType, "array") || varType == "AhoyArray*" {
 		return true
 	}
 	if strings.HasPrefix(varType, "dict") || varType == "HashMap*" {
+		return true
+	}
+	if ahoy.IsFunctionType(varType) {
 		return true
 	}
 	// String methods that return new strings are heap-allocated
@@ -4231,6 +4240,12 @@ func (gen *CodeGenerator) exitScope() string {
 
 // generateFreeCodeForVar generates the appropriate free() code for a variable based on its type
 func (gen *CodeGenerator) generateFreeCodeForVar(varName string, varType string) string {
+	// A function value owns the environment of a capturing closure; the value
+	// itself is a {code, env} pair, so the env is freed, not the variable.
+	if ahoy.IsFunctionType(varType) {
+		return fmt.Sprintf("    if (%s.env) free(%s.env);\n", varName, varName)
+	}
+
 	// Check if this is an ARC-enabled struct - use release instead of free
 	if gen.enableARC {
 		// Remove pointer suffix to get base type
@@ -4496,6 +4511,9 @@ func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
 								paramTypes = append(paramTypes, param.Type)
 							}
 							gen.cFunctionParamTypes[snakeName] = paramTypes
+							for typedefName := range headerInfo.FuncPtrTypedefs {
+								gen.cFuncPtrTypedefs[typedefName] = true
+							}
 						}
 					} else {
 						// No namespace - add to global scope
@@ -4517,6 +4535,9 @@ func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
 								paramTypes = append(paramTypes, param.Type)
 							}
 							gen.cFunctionParamTypes[snakeName] = paramTypes
+							for typedefName := range headerInfo.FuncPtrTypedefs {
+								gen.cFuncPtrTypedefs[typedefName] = true
+							}
 						}
 					}
 				}
@@ -5368,6 +5389,14 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 			for i, arg := range node.Children {
 				if i > 0 {
 					gen.output.WriteString(", ")
+				}
+
+				// An imported function's callback parameter takes a raw C function
+				// pointer, not an AhoyFn.
+				if hasCParamInfo && i < len(cParamTypes) && gen.cFuncPtrTypedefs[cParamTypes[i]] {
+					if gen.emitCCallbackArg(arg) {
+						continue
+					}
 				}
 
 				// Special case: DrawText first parameter expects char*, cast doubles from dict
@@ -6226,6 +6255,38 @@ func (gen *CodeGenerator) generateStructCallbackCall(object *ahoy.ASTNode, field
 		gen.generateNode(arg)
 	}
 	gen.output.WriteString(")")
+}
+
+// emitCCallbackArg writes a raw C function pointer for an argument that lands
+// in an imported function's callback parameter. It reports false when the
+// argument is not a function value, so the normal argument path handles it.
+//
+// Only `&name` and non-capturing values can be handed to C: a capturing
+// closure's environment has nowhere to go in a C callback signature.
+func (gen *CodeGenerator) emitCCallbackArg(arg *ahoy.ASTNode) bool {
+	// &name - a reference to a named Ahoy function
+	if arg.Type == ahoy.NODE_UNARY_OP && arg.Value == "&" && len(arg.Children) == 1 &&
+		arg.Children[0].Type == ahoy.NODE_IDENTIFIER {
+		name := arg.Children[0].Value
+		if gen.userFunctions[name] {
+			if name == "main" {
+				name = "ahoy_main"
+			}
+			gen.output.WriteString(name)
+			return true
+		}
+	}
+
+	// A function-typed variable: pass its code pointer. If it captures, the
+	// environment is silently dropped, so prefer &name for C callbacks.
+	if arg.Type == ahoy.NODE_IDENTIFIER {
+		if _, ok := gen.functionValueType(arg.Value); ok {
+			gen.output.WriteString(arg.Value + ".fn")
+			return true
+		}
+	}
+
+	return false
 }
 
 // functionValueType returns the fn(...) type of a variable, if it holds one.
@@ -10401,6 +10462,12 @@ func (gen *CodeGenerator) writeARCHelperFunctions() {
 		for _, field := range structInfo.Fields {
 			if field.IsWeak {
 				continue // Skip weak references - don't release them
+			}
+
+			// A function-typed field owns its closure environment
+			if ahoy.IsFunctionType(field.AhoyType) {
+				gen.funcDecls.WriteString(fmt.Sprintf("        if (obj->%s.env) free(obj->%s.env);\n", field.Name, field.Name))
+				continue
 			}
 
 			// Only release if it's a pointer field

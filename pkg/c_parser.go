@@ -48,20 +48,20 @@ func ParseCHeader(path string) (*CHeaderInfo, error) {
 		Structs:   make(map[string]*CStruct),
 		Typedefs:  make(map[string]*CTypedef),
 	}
-	
+
 	// Read the header file
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	lines := strings.Split(string(content), "\n")
-	
+
 	// Parse line by line
 	for i, line := range lines {
 		line = strings.TrimSpace(line)
 		lineNum := i + 1
-		
+
 		// Parse RLAPI/RMAPI function declarations
 		if strings.Contains(line, "RLAPI") || strings.Contains(line, "RMAPI") {
 			parseRLAPIFunction(line, lineNum, path, info)
@@ -71,28 +71,38 @@ func ParseCHeader(path string) (*CHeaderInfo, error) {
 			// Try to parse as generic function declaration
 			parseRLAPIFunction(line, lineNum, path, info)
 		}
-		
+
 		// Parse #define constants
 		if strings.HasPrefix(line, "#define") {
 			parseDefine(line, lineNum, path, info)
 		}
-		
+
 		// Parse typedef struct
 		if strings.HasPrefix(line, "typedef struct") {
 			parseStruct(lines, i, path, info)
 		}
-		
+
 		// Parse typedef enum
 		if strings.HasPrefix(line, "typedef enum") {
 			parseEnum(lines, i, path, info)
 		}
-		
-		// Parse simple typedef aliases (e.g., typedef Texture Texture2D;)
-		if strings.HasPrefix(line, "typedef ") && !strings.Contains(line, "{") && strings.HasSuffix(line, ";") {
-			parseTypedefAlias(line, lineNum, path, info)
+
+		// Typedefs often carry a trailing comment; strip it before deciding what
+		// kind of typedef this is.
+		typedefLine := line
+		if idx := strings.Index(typedefLine, "//"); idx != -1 {
+			typedefLine = strings.TrimSpace(typedefLine[:idx])
+		}
+
+		// Parse function pointer typedefs first: the simple-alias branch would
+		// misread `typedef void (*LogCallback)(int);`.
+		if strings.HasPrefix(typedefLine, "typedef ") && strings.Contains(typedefLine, "(*") && strings.HasSuffix(typedefLine, ";") {
+			parseFuncPtrTypedef(typedefLine, lineNum, path, info)
+		} else if strings.HasPrefix(typedefLine, "typedef ") && !strings.Contains(typedefLine, "{") && strings.HasSuffix(typedefLine, ";") {
+			parseTypedefAlias(typedefLine, lineNum, path, info)
 		}
 	}
-	
+
 	return info, nil
 }
 
@@ -105,31 +115,31 @@ func parseRLAPIFunction(line string, lineNum int, filePath string, info *CHeader
 		line = line[:idx]
 	}
 	line = strings.TrimSpace(line)
-	
+
 	// Extract return type and function signature
 	parenIdx := strings.Index(line, "(")
 	if parenIdx == -1 {
 		return
 	}
-	
+
 	beforeParen := strings.TrimSpace(line[:parenIdx])
 	parts := strings.Fields(beforeParen)
 	if len(parts) < 2 {
 		return
 	}
-	
+
 	funcName := parts[len(parts)-1]
 	returnType := strings.Join(parts[:len(parts)-1], " ")
-	
+
 	// Extract parameters
 	endParen := strings.Index(line, ")")
 	if endParen == -1 {
 		return
 	}
-	
+
 	paramStr := line[parenIdx+1 : endParen]
 	params := parseParameters(paramStr)
-	
+
 	info.Functions[funcName] = &CFunction{
 		Name:       funcName,
 		ReturnType: returnType,
@@ -141,38 +151,39 @@ func parseRLAPIFunction(line string, lineNum int, filePath string, info *CHeader
 
 // parseMacroFunction parses function declarations with macro prefixes
 // Examples: CJSON_PUBLIC(cJSON *) cJSON_Parse(const char *value);
-//           SOME_MACRO(void) MyFunction(int x);
+//
+//	SOME_MACRO(void) MyFunction(int x);
 func parseMacroFunction(line string, lineNum int, filePath string, info *CHeaderInfo) bool {
 	// Skip #define lines
 	if strings.HasPrefix(line, "#define") || strings.HasPrefix(line, "typedef") {
 		return false
 	}
-	
+
 	// Remove comments
 	if idx := strings.Index(line, "//"); idx != -1 {
 		line = line[:idx]
 	}
 	line = strings.TrimSpace(line)
-	
+
 	// Must end with ");
 	if !strings.HasSuffix(line, ");") {
 		return false
 	}
-	
+
 	// Look for pattern: MACRO_NAME(return_type) function_name(params);
 	// Find first parenthesis (for macro)
 	firstParen := strings.Index(line, "(")
 	if firstParen == -1 {
 		return false
 	}
-	
+
 	// Check if what's before the first paren looks like a macro name
 	// (all uppercase or contains underscore, no spaces)
 	macroPart := line[:firstParen]
 	if !isMacroName(macroPart) {
 		return false
 	}
-	
+
 	// Find the matching closing paren for the macro
 	depth := 1
 	macroEnd := firstParen + 1
@@ -184,40 +195,40 @@ func parseMacroFunction(line string, lineNum int, filePath string, info *CHeader
 		}
 		macroEnd++
 	}
-	
+
 	if depth != 0 {
 		return false
 	}
-	
+
 	// Extract return type from inside macro parentheses
 	returnType := strings.TrimSpace(line[firstParen+1 : macroEnd-1])
 	if returnType == "" {
 		return false
 	}
-	
+
 	// Now parse the rest as: function_name(params);
 	rest := strings.TrimSpace(line[macroEnd:])
-	
+
 	// Find function name and parameters
 	funcParen := strings.Index(rest, "(")
 	if funcParen == -1 {
 		return false
 	}
-	
+
 	funcName := strings.TrimSpace(rest[:funcParen])
 	if funcName == "" {
 		return false
 	}
-	
+
 	// Extract parameters
 	endParen := strings.LastIndex(rest, ")")
 	if endParen == -1 {
 		return false
 	}
-	
+
 	paramStr := rest[funcParen+1 : endParen]
 	params := parseParameters(paramStr)
-	
+
 	info.Functions[funcName] = &CFunction{
 		Name:       funcName,
 		ReturnType: returnType,
@@ -225,7 +236,7 @@ func parseMacroFunction(line string, lineNum int, filePath string, info *CHeader
 		Line:       lineNum,
 		File:       filePath,
 	}
-	
+
 	return true
 }
 
@@ -236,12 +247,12 @@ func isMacroName(s string) bool {
 	if s == "" {
 		return false
 	}
-	
+
 	// Check for spaces (macros shouldn't have spaces)
 	if strings.Contains(s, " ") {
 		return false
 	}
-	
+
 	// Must contain at least one uppercase letter or underscore
 	hasUpperOrUnderscore := false
 	for _, ch := range s {
@@ -250,18 +261,18 @@ func isMacroName(s string) bool {
 			break
 		}
 	}
-	
+
 	return hasUpperOrUnderscore
 }
 
 // parseParameters parses function parameters
 func parseParameters(paramStr string) []CParameter {
 	var params []CParameter
-	
+
 	if strings.TrimSpace(paramStr) == "" || strings.TrimSpace(paramStr) == "void" {
 		return params
 	}
-	
+
 	// Split by comma
 	parts := strings.Split(paramStr, ",")
 	for _, part := range parts {
@@ -269,13 +280,13 @@ func parseParameters(paramStr string) []CParameter {
 		if part == "" {
 			continue
 		}
-		
+
 		// Extract parameter name and type
 		tokens := strings.Fields(part)
 		if len(tokens) == 0 {
 			continue
 		}
-		
+
 		var paramName, paramType string
 		if len(tokens) == 1 {
 			paramType = tokens[0]
@@ -291,13 +302,13 @@ func parseParameters(paramStr string) []CParameter {
 				paramType = strings.Join(tokens[:len(tokens)-1], " ")
 			}
 		}
-		
+
 		params = append(params, CParameter{
 			Name: paramName,
 			Type: paramType,
 		})
 	}
-	
+
 	return params
 }
 
@@ -306,15 +317,15 @@ func parseDefine(line string, lineNum int, filePath string, info *CHeaderInfo) {
 	if strings.Contains(line, "RAYLIB_VERSION") || strings.Contains(line, "__declspec") {
 		return
 	}
-	
+
 	parts := strings.Fields(line)
 	if len(parts) < 3 {
 		return
 	}
-	
+
 	name := parts[1]
 	value := strings.Join(parts[2:], " ")
-	
+
 	if strings.Contains(value, "CLITERAL(Color)") || strings.Contains(value, "Color{") {
 		info.Defines[name] = &CDefine{
 			Name:  name,
@@ -328,7 +339,7 @@ func parseDefine(line string, lineNum int, filePath string, info *CHeaderInfo) {
 // parseStruct parses typedef struct definitions
 func parseStruct(lines []string, startIdx int, filePath string, info *CHeaderInfo) {
 	line := lines[startIdx]
-	
+
 	var structName string
 	if strings.Contains(line, "{") {
 		parts := strings.Fields(strings.Replace(line, "{", "", 1))
@@ -336,11 +347,11 @@ func parseStruct(lines []string, startIdx int, filePath string, info *CHeaderInf
 			structName = parts[2]
 		}
 	}
-	
+
 	var fields []CStructField
 	for i := startIdx + 1; i < len(lines); i++ {
 		line := strings.TrimSpace(lines[i])
-		
+
 		if strings.HasPrefix(line, "}") {
 			parts := strings.Fields(line)
 			if len(parts) >= 2 && structName == "" {
@@ -348,12 +359,12 @@ func parseStruct(lines []string, startIdx int, filePath string, info *CHeaderInf
 			}
 			break
 		}
-		
+
 		if line != "" && !strings.HasPrefix(line, "//") {
 			parseStructField(line, &fields)
 		}
 	}
-	
+
 	if structName != "" {
 		info.Structs[structName] = &CStruct{
 			Name:   structName,
@@ -371,12 +382,12 @@ func parseStructField(line string, fields *[]CStructField) {
 	}
 	line = strings.TrimSpace(line)
 	line = strings.TrimSuffix(line, ";")
-	
+
 	parts := strings.Fields(line)
 	if len(parts) >= 2 {
 		fieldType := strings.Join(parts[:len(parts)-1], " ")
 		fieldName := parts[len(parts)-1]
-		
+
 		*fields = append(*fields, CStructField{
 			Name: fieldName,
 			Type: fieldType,
@@ -390,10 +401,10 @@ func parseEnum(lines []string, startIdx int, filePath string, info *CHeaderInfo)
 	values := make(map[string]int)
 	valueLines := make(map[string]int)
 	currentValue := 0
-	
+
 	for i := startIdx + 1; i < len(lines); i++ {
 		line := strings.TrimSpace(lines[i])
-		
+
 		if strings.HasPrefix(line, "}") {
 			parts := strings.Fields(line)
 			if len(parts) >= 2 {
@@ -401,12 +412,12 @@ func parseEnum(lines []string, startIdx int, filePath string, info *CHeaderInfo)
 			}
 			break
 		}
-		
+
 		if line != "" && !strings.HasPrefix(line, "//") {
 			parseEnumValue(line, &values, &valueLines, &currentValue, i+1)
 		}
 	}
-	
+
 	if enumName != "" {
 		info.Enums[enumName] = &CEnum{
 			Name:       enumName,
@@ -425,13 +436,13 @@ func parseEnumValue(line string, values *map[string]int, valueLines *map[string]
 	}
 	line = strings.TrimSpace(line)
 	line = strings.TrimSuffix(line, ",")
-	
+
 	parts := strings.Split(line, "=")
 	name := strings.TrimSpace(parts[0])
-	
+
 	if name != "" {
 		(*valueLines)[name] = lineNum
-		
+
 		if len(parts) > 1 {
 			valueStr := strings.TrimSpace(parts[1])
 			// Try parsing as int (supports both decimal and hex with 0x prefix)
@@ -499,19 +510,72 @@ func PascalToSnake(s string) string {
 	return string(result)
 }
 
+// parseFuncPtrTypedef parses a C callback typedef:
+//
+//	typedef void (*TraceLogCallback)(int logLevel, const char *text);
+//
+// The name and signature are kept so a call to an imported function that takes
+// this parameter type can pass a raw C function pointer.
+func parseFuncPtrTypedef(line string, lineNum int, filePath string, info *CHeaderInfo) {
+	open := strings.Index(line, "(*")
+	if open < 0 {
+		return
+	}
+	rest := line[open+2:]
+	closeIdx := strings.Index(rest, ")")
+	if closeIdx < 0 {
+		return
+	}
+	name := strings.TrimSpace(rest[:closeIdx])
+	if name == "" {
+		return
+	}
+
+	// Return type is what sits between `typedef` and the `(*`.
+	ret := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "typedef"))
+	if paren := strings.Index(ret, "("); paren >= 0 {
+		ret = strings.TrimSpace(ret[:paren])
+	}
+
+	rest2 := rest[closeIdx+1:]
+	lp := strings.Index(rest2, "(")
+	rp := strings.LastIndex(rest2, ")")
+	if lp < 0 || rp < lp {
+		return
+	}
+	params := parseParameters(rest2[lp+1 : rp])
+
+	if info.FuncPtrTypedefs == nil {
+		info.FuncPtrTypedefs = make(map[string]*CFuncPtrTypedef)
+	}
+	info.FuncPtrTypedefs[name] = &CFuncPtrTypedef{
+		Name:       name,
+		ReturnType: ret,
+		Parameters: params,
+		Line:       lineNum,
+		File:       filePath,
+	}
+
+	// Treat the name as a known C type as well, so a variable can be declared
+	// with it (the code generator registers struct names as types).
+	if info.Structs[name] == nil {
+		info.Structs[name] = &CStruct{Name: name, Fields: []CStructField{}, Line: lineNum, File: filePath}
+	}
+}
+
 // parseTypedefAlias parses simple typedef aliases like: typedef Texture Texture2D;
 func parseTypedefAlias(line string, lineNum int, filePath string, info *CHeaderInfo) {
 	// Remove typedef and semicolon
 	line = strings.TrimPrefix(line, "typedef")
 	line = strings.TrimSuffix(line, ";")
 	line = strings.TrimSpace(line)
-	
+
 	// Split into base type and alias name
 	parts := strings.Fields(line)
 	if len(parts) == 2 {
 		baseType := parts[0]
 		aliasName := parts[1]
-		
+
 		// Store the alias -> typedef info with line and file
 		if info.Typedefs != nil {
 			info.Typedefs[aliasName] = &CTypedef{
@@ -521,7 +585,7 @@ func parseTypedefAlias(line string, lineNum int, filePath string, info *CHeaderI
 				File:      filePath,
 			}
 		}
-		
+
 		// Store as a struct entry so it's treated as a known C type
 		// We don't need the full struct definition, just the name
 		info.Structs[aliasName] = &CStruct{
@@ -529,7 +593,7 @@ func parseTypedefAlias(line string, lineNum int, filePath string, info *CHeaderI
 			Fields: []CStructField{},
 			Line:   0,
 		}
-		
+
 		// If the base type is also a struct/typedef, copy it
 		if baseStruct, exists := info.Structs[baseType]; exists {
 			info.Structs[aliasName] = &CStruct{

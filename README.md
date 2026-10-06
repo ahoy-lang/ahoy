@@ -334,6 +334,20 @@ carries a small environment with it, so it is only callable from Ahoy. Function
 values must return a single value and named functions used as values need typed
 parameters.
 
+An imported C API that takes a callback typedef can be handed an Ahoy function
+directly:
+
+```ahoy
+import "/path/to/raylib.h"
+
+@ my_log :: |level:int, text:string| void:
+    ahoy |f"log: {text}"|
+$
+
+? raylib.h declares: typedef void (*TraceLogCallback)(int, const char*, va_list);
+set_trace_log_callback|&my_log|
+```
+
 ### Callback Tables (backend contracts)
 
 A struct whose fields are function values is a contract. Each backend fills in
@@ -364,10 +378,20 @@ $
 
 `r.clear|...|` dispatches through the stored function value, so `render_frame`
 never mentions raylib, SDL or Vulkan: swapping the backend is passing a
-different `Renderer`. Backends are selected at build time (different C
-libraries); a `when NAME:` block emits `#ifdef NAME`, but the compiler cannot
-pass `-D` defines to the C compiler yet, so use separate files per backend for
-now.
+different `Renderer`. Backends are selected at build time (they are different C
+libraries): put each behind a compile-time branch and choose it with `-D`.
+
+```ahoy
+? ahoy -f game.ahoy -r -D BACKEND_RAYLIB
+when BACKEND_RAYLIB then
+    use_raylib_backend||
+$
+when BACKEND_VULKAN then
+    use_vulkan_backend||
+$
+```
+
+`-D` accepts several names (repeat the flag or comma-separate them).
 
 ### Assert Statements (NEW!)
 

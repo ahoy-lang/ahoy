@@ -180,12 +180,24 @@ type CTypedef struct {
 	File      string
 }
 
+// CFuncPtrTypedef is a C function-pointer typedef, e.g.
+// typedef void (*TraceLogCallback)(int logLevel, const char *text);
+// It lets an Ahoy function be passed to a C API that takes a callback.
+type CFuncPtrTypedef struct {
+	Name       string
+	ReturnType string
+	Parameters []CParameter
+	Line       int
+	File       string
+}
+
 type CHeaderInfo struct {
-	Functions map[string]*CFunction
-	Enums     map[string]*CEnum
-	Defines   map[string]*CDefine
-	Structs   map[string]*CStruct
-	Typedefs  map[string]*CTypedef // alias name -> typedef info
+	Functions       map[string]*CFunction
+	Enums           map[string]*CEnum
+	Defines         map[string]*CDefine
+	Structs         map[string]*CStruct
+	Typedefs        map[string]*CTypedef        // alias name -> typedef info
+	FuncPtrTypedefs map[string]*CFuncPtrTypedef // callback typedef name -> signature
 }
 
 type Parser struct {

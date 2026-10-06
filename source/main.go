@@ -522,6 +522,7 @@ func buildForTarget(target *CrossCompileTarget, cFile, baseName, sourceDir strin
 	} else {
 		args = append(args, "-lm")
 	}
+	args = withDefines(args)
 
 	// Run compiler
 	cmd := exec.Command(target.Compiler, args...)
@@ -537,6 +538,32 @@ func buildForTarget(target *CrossCompileTarget, cFile, baseName, sourceDir strin
 
 	fmt.Printf("✓ Built %s: %s\n", target.Name, executable)
 	return nil
+}
+
+// defineList collects -D NAME flags. Names are made available to `when NAME:`
+// blocks, which emit #ifdef NAME into the generated C.
+type defineList []string
+
+func (d *defineList) String() string { return strings.Join(*d, ",") }
+
+func (d *defineList) Set(value string) error {
+	for _, part := range strings.Split(value, ",") {
+		if name := strings.TrimSpace(part); name != "" {
+			*d = append(*d, name)
+		}
+	}
+	return nil
+}
+
+// buildDefines is the resolved -D list, appended to every C compile.
+var buildDefines []string
+
+// withDefines appends the -D flags for `when` blocks to a compiler argument list.
+func withDefines(args []string) []string {
+	for _, name := range buildDefines {
+		args = append(args, "-D"+name)
+	}
+	return args
 }
 
 func main() {
@@ -555,9 +582,13 @@ func main() {
 	hotReloadFlag := flag.Bool("hotreload", false, "Enable hot code reloading (keeps window open, reloads on file changes) - development only")
 	coldReloadFlag := flag.Bool("coldreload", false, "Enable cold reload (auto-recompile and restart on file changes) - development only")
 	noSemanticsFlag := flag.Bool("no_semantics", false, "Skip semantic validation (type errors, undeclared names, duplicate definitions)")
+	defines := defineList{}
+	flag.Var(&defines, "D", "Define NAME for `when NAME:` blocks (repeatable, comma-separated)")
 	helpFlag := flag.Bool("h", false, "Show help")
 
 	flag.Parse()
+
+	buildDefines = defines
 
 	// Check for conflicting flags
 	if *hotReloadFlag && *releaseFlag {
@@ -931,6 +962,7 @@ func main() {
 			compileArgs = append(compileArgs, "-lm")
 		}
 
+		compileArgs = withDefines(compileArgs)
 		cmd := exec.Command(compiler, compileArgs...)
 		output, err := cmd.CombinedOutput()
 		if err != nil {
@@ -1369,6 +1401,7 @@ func showHelp() {
 	fmt.Println("  -no_semantics Skip semantic validation (types, undeclared names, duplicates)")
 	fmt.Println("  -gen_stdlib_docs   Generate stdlib API reference as .ahoy file")
 	fmt.Println("  -cache        Enable incremental builds (cache parsed files)")
+	fmt.Println("  -D NAME       Define NAME for `when NAME then` blocks (repeatable, comma-separated)")
 	fmt.Println("  -hotreload    Enable hot code reloading (development only, keeps window open)")
 	fmt.Println("  -coldreload   Enable cold reload (development only, auto-recompile and restart)")
 	fmt.Println("  -h            Show this help message")
@@ -1473,6 +1506,7 @@ func handleHotReload(sourceFile string, ast *ahoy.ASTNode, absPath string, arcFl
 		}
 	}
 
+	libArgs = withDefines(libArgs)
 	cmd := exec.Command(compiler, libArgs...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1738,6 +1772,7 @@ func recompileLibraryHot(sourceFile, libSourceFile, libFile string, arcFlag bool
 		}
 	}
 
+	libArgs = withDefines(libArgs)
 	cmd := exec.Command(compiler, libArgs...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1872,6 +1907,7 @@ func compileAndRunCold(sourceFile string, arcFlag bool, isInitial bool) {
 		}
 	}
 
+	compileArgs = withDefines(compileArgs)
 	cmd := exec.Command(compiler, compileArgs...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
