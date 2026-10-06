@@ -307,6 +307,10 @@ func (c *checker) isCallable(name string) bool {
 	if c.isFunctionTypedVariable(name) {
 		return true
 	}
+	// A variable holding a C callback typedef is called through it too
+	if c.isCallbackTypedefVariable(name) {
+		return true
+	}
 	if c.p.zeroArgFunctions[name] {
 		return true
 	}
@@ -332,6 +336,24 @@ func (c *checker) isFunctionTypedVariable(name string) bool {
 	}
 	if t, ok := c.p.variableTypes[name]; ok && IsFunctionType(t) {
 		return true
+	}
+	return false
+}
+
+// isCallbackTypedefVariable reports whether a variable holds a C callback
+// typedef value (e.g. LogCallback), which is called like a function.
+func (c *checker) isCallbackTypedefVariable(name string) bool {
+	t := c.lookupType(name)
+	if t == "" {
+		t = c.p.variableTypes[name]
+	}
+	if t == "" {
+		return false
+	}
+	for _, h := range c.cHeaders() {
+		if h != nil && h.FuncPtrTypedefs[t] != nil {
+			return true
+		}
 	}
 	return false
 }

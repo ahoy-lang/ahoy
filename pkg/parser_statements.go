@@ -2235,6 +2235,12 @@ func (p *Parser) parseImportStatement() *ASTNode {
 				}
 			} else {
 				// Merge into global
+				if p.cHeaderGlobal.FuncPtrTypedefs == nil {
+					p.cHeaderGlobal.FuncPtrTypedefs = make(map[string]*CFuncPtrTypedef)
+				}
+				for name, td := range headerInfo.FuncPtrTypedefs {
+					p.cHeaderGlobal.FuncPtrTypedefs[name] = td
+				}
 				for name, fn := range headerInfo.Functions {
 					p.cHeaderGlobal.Functions[name] = fn
 					// Register zero-arg functions for O(1) lookup

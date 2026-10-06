@@ -187,6 +187,7 @@ type CodeGenerator struct {
 	funcRefThunks                 map[string]bool              // function names whose reference thunk has been emitted
 	closureCaptures               map[string]string            // captured name -> C expression while generating a thunk body
 	pendingFuncType               string                       // declared fn(...) type of the lambda being initialized
+	pendingCType                  string                       // declared C callback typedef of the value being assigned
 	dictSourcedVars               map[string]string            // variable name -> dict name (for dict-accessed vars)
 	dictSourcedKeys               map[string]string            // variable name -> key (for dict-accessed vars)
 	generatedTypes                map[string]bool              // Track which types have been generated
@@ -215,7 +216,7 @@ type CodeGenerator struct {
 	cStructFields                 map[string]map[string]string // C struct name -> (field name -> field type)
 	cTypedefs                     map[string]string            // typedef alias -> base type
 	cFunctionParamTypes           map[string][]string          // C function name (snake_case) -> parameter types
-	cFuncPtrTypedefs              map[string]bool              // C callback typedef names (fn-pointer typedefs)
+	cFuncPtrTypedefs              map[string]*ahoy.CFuncPtrTypedef // C callback typedef name -> signature
 	parsedCHeaders                map[string]*ahoy.CHeaderInfo // In-memory cache for parsed C headers (path -> info)
 	parsedCHeadersMu              sync.Mutex                   // Mutex for parsedCHeaders
 	enableARC                     bool                         // Enable Automatic Reference Counting
@@ -301,7 +302,7 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 		cStructFields:         make(map[string]map[string]string),
 		cTypedefs:             make(map[string]string),
 		cFunctionParamTypes:   make(map[string][]string),
-		cFuncPtrTypedefs:      make(map[string]bool),
+		cFuncPtrTypedefs:      make(map[string]*ahoy.CFuncPtrTypedef),
 		jobResultTypes:        make(map[string]string),
 		parsedCHeaders:        make(map[string]*ahoy.CHeaderInfo),
 		enableARC:             enableARC, // Use parameter value
@@ -343,6 +344,9 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 	gen.inferAllFunctionReturnTypes(ast)
 
 	// Fifth pass: scan variable declarations to populate type information
+	// Imported C headers first: the variable-type pre-pass needs to know a
+	// callback typedef (LogCallback) before it types a variable holding one.
+	gen.scanCHeaderTypes(ast)
 	gen.scanVariableTypes(ast)
 
 	// Sixth pass: infer parameter types from function call sites
@@ -902,6 +906,49 @@ func (gen *CodeGenerator) scanVariableTypes(node *ahoy.ASTNode) {
 	// Recursively scan children
 	for _, child := range node.Children {
 		gen.scanVariableTypes(child)
+	}
+}
+
+// scanCHeaderTypes parses imported C headers before the variable-type
+// pre-pass, registering callback typedefs and C type names. The generator
+// caches parsed headers, so the real import processing reuses this work.
+func (gen *CodeGenerator) scanCHeaderTypes(node *ahoy.ASTNode) {
+	if node == nil {
+		return
+	}
+	if node.Type == ahoy.NODE_IMPORT_STATEMENT {
+		headerName := node.Value
+		if strings.HasSuffix(headerName, ".h") {
+			resolved := headerName
+			if strings.HasPrefix(headerName, "./") || strings.HasPrefix(headerName, "../") {
+				if abs, err := filepath.Abs(filepath.Join(filepath.Dir(gen.sourceFilename), headerName)); err == nil {
+					if _, statErr := os.Stat(abs); statErr == nil {
+						resolved = abs
+					}
+				}
+			}
+			headerPath := resolved
+			if !strings.HasPrefix(resolved, "/") {
+				for _, loc := range []string{resolved, "/usr/include/" + resolved, "/usr/local/include/" + resolved, "repos/raylib/src/" + resolved} {
+					if _, err := os.Stat(loc); err == nil {
+						headerPath = loc
+						break
+					}
+				}
+			}
+			if info := gen.getOrParseCHeader(headerPath); info != nil {
+				for name, td := range info.FuncPtrTypedefs {
+					gen.cFuncPtrTypedefs[name] = td
+				}
+				for typeName := range info.Structs {
+					gen.cTypeDefinitions[typeName] = true
+					gen.cTypeDefinitions[strings.ToLower(typeName)] = true
+				}
+			}
+		}
+	}
+	for _, child := range node.Children {
+		gen.scanCHeaderTypes(child)
 	}
 }
 
@@ -1627,7 +1674,22 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 			}
 		}
 		gen.recordJobResultType(node)
+		// Storing into a C callback typedef variable: &name must be emitted as
+		// the raw C function pointer the typedef expects.
+		savedCType := gen.pendingCType
+		targetType := node.DataType
+		if targetType == "" {
+			if t, ok := gen.functionVars[node.Value]; ok {
+				targetType = t
+			} else if t, ok := gen.variables[node.Value]; ok {
+				targetType = t
+			}
+		}
+		if _, ok := gen.cFuncPtrTypedefs[targetType]; ok {
+			gen.pendingCType = targetType
+		}
 		gen.generateAssignment(node)
+		gen.pendingCType = savedCType
 		gen.pendingFuncType = savedPending
 
 	case ahoy.NODE_IF_STATEMENT:
@@ -4542,8 +4604,8 @@ func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
 								paramTypes = append(paramTypes, param.Type)
 							}
 							gen.cFunctionParamTypes[snakeName] = paramTypes
-							for typedefName := range headerInfo.FuncPtrTypedefs {
-								gen.cFuncPtrTypedefs[typedefName] = true
+							for typedefName, td := range headerInfo.FuncPtrTypedefs {
+								gen.cFuncPtrTypedefs[typedefName] = td
 							}
 						}
 					} else {
@@ -4566,8 +4628,8 @@ func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
 								paramTypes = append(paramTypes, param.Type)
 							}
 							gen.cFunctionParamTypes[snakeName] = paramTypes
-							for typedefName := range headerInfo.FuncPtrTypedefs {
-								gen.cFuncPtrTypedefs[typedefName] = true
+							for typedefName, td := range headerInfo.FuncPtrTypedefs {
+								gen.cFuncPtrTypedefs[typedefName] = td
 							}
 						}
 					}
@@ -4634,6 +4696,11 @@ func (gen *CodeGenerator) hoistCallArguments(args []*ahoy.ASTNode) []*ahoy.ASTNo
 }
 
 func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
+	// A variable holding a C function pointer is called directly through it.
+	if td, ok := gen.cFuncPtrTypedefVar(node.Value); ok {
+		gen.generateCallbackTypedefCall(node, td)
+		return
+	}
 	// A variable of function type (fn(int)->int) is called indirectly.
 	if ft, ok := gen.functionValueType(node.Value); ok {
 		gen.generateIndirectCall(node, ft)
@@ -5435,7 +5502,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 
 				// An imported function's callback parameter takes a raw C function
 				// pointer, not an AhoyFn.
-				if hasCParamInfo && i < len(cParamTypes) && gen.cFuncPtrTypedefs[cParamTypes[i]] {
+				if hasCParamInfo && i < len(cParamTypes) && gen.cFuncPtrTypedefs[cParamTypes[i]] != nil {
 					if gen.emitCCallbackArg(arg) {
 						continue
 					}
@@ -6374,6 +6441,14 @@ func (gen *CodeGenerator) emitCCallbackArg(arg *ahoy.ASTNode) bool {
 		}
 	}
 
+	// A variable holding a C callback typedef is already a raw pointer.
+	if arg.Type == ahoy.NODE_IDENTIFIER {
+		if _, ok := gen.cFuncPtrTypedefVar(arg.Value); ok {
+			gen.output.WriteString(arg.Value)
+			return true
+		}
+	}
+
 	// A function-typed variable: pass its code pointer. If it captures, the
 	// environment is silently dropped, so prefer &name for C callbacks.
 	if arg.Type == ahoy.NODE_IDENTIFIER {
@@ -6384,6 +6459,34 @@ func (gen *CodeGenerator) emitCCallbackArg(arg *ahoy.ASTNode) bool {
 	}
 
 	return false
+}
+
+// cFuncPtrTypedefVar returns the C callback typedef a variable holds, if any.
+// Such a variable is a raw C function pointer, not an AhoyFn.
+func (gen *CodeGenerator) cFuncPtrTypedefVar(name string) (*ahoy.CFuncPtrTypedef, bool) {
+	t := gen.functionVars[name]
+	if t == "" {
+		t = gen.variables[name]
+	}
+	if t == "" {
+		return nil, false
+	}
+	td := gen.cFuncPtrTypedefs[t]
+	return td, td != nil
+}
+
+// generateCallbackTypedefCall calls a variable that holds a C function pointer:
+// the C call is direct because the value is already a raw pointer.
+func (gen *CodeGenerator) generateCallbackTypedefCall(node *ahoy.ASTNode, td *ahoy.CFuncPtrTypedef) {
+	gen.output.WriteString(node.Value)
+	gen.output.WriteString("(")
+	for i, arg := range node.Children {
+		if i > 0 {
+			gen.output.WriteString(", ")
+		}
+		gen.generateNode(arg)
+	}
+	gen.output.WriteString(")")
 }
 
 // functionValueType returns the fn(...) type of a variable, if it holds one.
@@ -6603,6 +6706,17 @@ func (gen *CodeGenerator) generateUnaryOp(node *ahoy.ASTNode) {
 		// Pointer dereference - convert ^ to *
 		gen.output.WriteString("*")
 	case "&":
+		// A value stored into a C callback typedef variable is a raw C
+		// function pointer, so the reference is the function's C name.
+		if gen.pendingCType != "" && len(node.Children) == 1 && node.Children[0].Type == ahoy.NODE_IDENTIFIER &&
+			gen.userFunctions[node.Children[0].Value] {
+			name := node.Children[0].Value
+			if name == "main" {
+				name = "ahoy_main"
+			}
+			gen.output.WriteString(name)
+			return
+		}
 		// Address-of a variable, or a reference to a named function.
 		if len(node.Children) == 1 && node.Children[0].Type == ahoy.NODE_IDENTIFIER &&
 			gen.userFunctions[node.Children[0].Value] {
@@ -7003,6 +7117,11 @@ func (gen *CodeGenerator) mapType(langType string) string {
 		return "AhoyFn"
 	}
 
+	// A C callback typedef (typedef void (*LogCallback)(int)) is its own type
+	if _, ok := gen.cFuncPtrTypedefs[langType]; ok {
+		return langType
+	}
+
 	// Check for typed collections first
 	if strings.HasPrefix(langType, "array[") {
 		return "AhoyArray*"
@@ -7112,6 +7231,9 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		return "struct"
 	case ahoy.NODE_CALL:
 		// Infer return type of function calls
+		if td, ok := gen.cFuncPtrTypedefVar(node.Value); ok {
+			return td.ReturnType
+		}
 		if node.Value == "jobs" {
 			return "pool"
 		}

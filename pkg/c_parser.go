@@ -536,6 +536,8 @@ func parseFuncPtrTypedef(line string, lineNum int, filePath string, info *CHeade
 	if paren := strings.Index(ret, "("); paren >= 0 {
 		ret = strings.TrimSpace(ret[:paren])
 	}
+	// Normalise pointer spacing so "char *" is the "char*" the type checks expect
+	ret = strings.ReplaceAll(ret, " *", "*")
 
 	rest2 := rest[closeIdx+1:]
 	lp := strings.Index(rest2, "(")

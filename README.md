@@ -348,6 +348,20 @@ $
 set_trace_log_callback|&my_log|
 ```
 
+A C callback typedef can also be a variable's type. The value is a raw C
+function pointer, so it can be called directly and passed to C APIs:
+
+```ahoy
+? raylib.h declares: typedef char *(*LoadFileTextCallback)(const char *fileName);
+@ my_load :: |name:string| string:
+    return "hello from ahoy"
+$
+
+loader: LoadFileTextCallback = &my_load
+text: loader|"file.txt"|              ? a direct call through the pointer
+set_load_file_text_callback|loader|    ? or hand the value to a C API
+```
+
 ### Callback Tables (backend contracts)
 
 A struct whose fields are function values is a contract. Each backend fills in
