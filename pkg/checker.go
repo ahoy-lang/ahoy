@@ -74,6 +74,13 @@ func DeclaredNames(ast *ASTNode) []string {
 			if child.Value != "" {
 				out = append(out, child.Value)
 			}
+		case NODE_WHEN_STATEMENT:
+			// A `when NAME then` body declares real names -- the raylib backend
+			// lives in one -- and the rest of the program has to see them, or
+			// every call into the backend reads as undefined.
+			for _, body := range child.Children {
+				out = append(out, DeclaredNames(body)...)
+			}
 		}
 	}
 	return out
@@ -569,6 +576,17 @@ func (c *checker) checkStatement(node *ASTNode) {
 				}
 			}
 		}
+
+	case NODE_FUNCTION:
+		// A function declared inside a block -- the backend implementation in a
+		// `when NAME then` body, for instance -- needs the same parameter and
+		// body checking as a top-level one. Falling through to checkExpr only
+		// visited its identifiers, so its own parameters read as undeclared.
+		c.checkFunction(node)
+
+	case NODE_CONSTANT_DECLARATION:
+		c.checkExpr(childAt(node, 0))
+		c.declare(node.Value)
 
 	case NODE_BLOCK:
 		c.checkBlock(node)

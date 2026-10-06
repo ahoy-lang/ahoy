@@ -1,0 +1,271 @@
+program demo
+
+? A game on the ahoy engine: only nodes + script functions here, no drawing
+? calls. The engine supplies the loop, the renderer contract and the asset
+? registry; the backend is chosen at build time:
+?
+?   ./ahoy-bin -f demo/main.ahoy -r -D BACKEND_RAYLIB
+?
+? Controls: arrows or WASD move the orb, R restarts the gem timer.
+
+import "/home/lee/Documents/ahoy-lang/ahoy/repos/raylib/src/raylib.h"
+import "../engine"
+
+? --- state shared by scripts ------------------------------------------------
+? Declared in main and passed into the scripts that need it: Ahoy has no
+? globals, and a per-node script would otherwise have to own the score.
+
+? --- scripts ----------------------------------------------------------------
+
+@ player_process |nodes:array[Node], id:int, dt:float, r:Renderer| void:
+	n: nodes[id]
+
+	dx: 0.0
+	dy: 0.0
+	if r.key_down|KEY_LEFT| or r.key_down|KEY_A| then
+		dx = dx - 1.0
+	$
+	if r.key_down|KEY_RIGHT| or r.key_down|KEY_D| then
+		dx = dx + 1.0
+	$
+	if r.key_down|KEY_UP| or r.key_down|KEY_W| then
+		dy = dy - 1.0
+	$
+	if r.key_down|KEY_DOWN| or r.key_down|KEY_S| then
+		dy = dy + 1.0
+	$
+
+	speed: 320.0
+	n.vx = dx * speed
+	n.vy = dy * speed
+	n.x = n.x + n.vx * dt
+	n.y = n.y + n.vy * dt
+
+	? the orb leans into its movement
+	if dx is not 0.0 then
+		n.rot = dx * 12.0
+	$
+	if dx is 0.0 then
+		n.rot = 0.0
+	$
+
+	? keep it on screen
+	w: r.screen_w||
+	h: r.screen_h||
+	if n.x < 20.0 then
+		n.x = 20.0
+	$
+	if n.x > float(w) - 20.0 then
+		n.x = float(w) - 20.0
+	$
+	if n.y < 20.0 then
+		n.y = 20.0
+	$
+	if n.y > float(h) - 20.0 then
+		n.y = float(h) - 20.0
+	$
+
+	nodes[id] = n
+$
+
+@ gem_process |nodes:array[Node], id:int, dt:float, r:Renderer| void:
+	n: nodes[id]
+	n.rot = n.rot + 90.0 * dt
+	n.timer = n.timer + dt
+
+	? bob up and down around its home
+	home: n.data
+	bob: 8.0 * (n.timer * 2.0)
+	? a cheap triangle so the script stays scalar-only
+	phase: int(n.timer * 120.0) % 120
+	offset: float(phase)
+	if offset > 60.0 then
+		offset = 120.0 - offset
+	$
+	n.y = float(home) + offset / 6.0
+	nodes[id] = n
+$
+
+@ gem_draw |nodes:array[Node], id:int, r:Renderer| void:
+	n: nodes[id]
+	r.draw_circle|n.x + n.data * 0.0, n.y + 30.0, 3.0, TINT_GREY|
+$
+
+@ hud_process |nodes:array[Node], id:int, dt:float, r:Renderer| void:
+	n: nodes[id]
+	? f-strings use a static buffer, so build the label fresh every frame.
+	? An expression inside {..} is only substituted when it is a plain name,
+	? so the numbers are computed into locals first.
+	ms: r.frame_time||
+	fps: int(1.0 / dt)
+	ms_total: int(ms * 1000.0)
+	n.text = f"fps {fps}   {ms_total} ms"
+	nodes[id] = n
+$
+
+@ hints_process |nodes:array[Node], id:int, dt:float, r:Renderer| void:
+	n: nodes[id]
+	if r.key_pressed|KEY_R| then
+		n.timer = n.timer + 1.0
+	$
+	nodes[id] = n
+$
+
+@ crate_process |nodes:array[Node], id:int, dt:float, r:Renderer| void:
+	n: nodes[id]
+	n.timer = n.timer + dt
+	if n.timer > 2.0 then
+		n.timer = 0.0
+		n.tint = TINT_GREEN
+	$
+	nodes[id] = n
+$
+
+@ noop_process |nodes:array[Node], id:int, dt:float, r:Renderer| void:
+$
+@ noop_draw |nodes:array[Node], id:int, r:Renderer| void:
+$
+
+? --- setup ------------------------------------------------------------------
+
+@ build_world |r:Renderer, a:Assets| array[Node]:
+	nodes: array[Node] = []
+
+	? textures: the engine registry hands out indices
+	player_tex: assets_load_texture|r, a.textures, a.tex_names, "player", "demo/assets/player.png"|
+	gem_tex: assets_load_texture|r, a.textures, a.tex_names, "gem", "demo/assets/gem.png"|
+	crate_tex: assets_load_texture|r, a.textures, a.tex_names, "crate", "demo/assets/crate.png"|
+
+	? the player script is the engine's node_set_script with a named function
+	p: node_sprite|"player", player_tex|
+	p.x = 200.0
+	p.y = 180.0
+	p.process = &player_process
+	player: node_add|nodes, p|
+
+	g: node_sprite|"gem", gem_tex|
+	g.x = 560.0
+	g.y = 220.0
+	g.data = 220
+	g.process = &gem_process
+	g.draw = &gem_draw
+	node_add|nodes, g|
+
+	? a row of crates to show drawing in list order
+	loop i:0 to 4 do
+		c: node_sprite|f"crate{i}", crate_tex|
+		c.x = 120.0 + float(i) * 48.0
+		c.y = 340.0
+		c.tint = TINT_WHITE
+		c.process = &crate_process
+		node_add|nodes, c|
+	$
+
+	title: node_label|"title", "ahoy engine demo"|
+	title.x = 24.0
+	title.y = 20.0
+	title.font_size = 28
+	title.tint = TINT_WHITE
+	node_add|nodes, title|
+
+	hint: node_label|"hint", "arrows / wasd to move   R to ping the gem   esc to quit"|
+	hint.x = 24.0
+	hint.y = 56.0
+	hint.font_size = 18
+	hint.tint = TINT_GREY
+	node_add|nodes, hint|
+
+	hud: node_label|"hud", ""|
+	hud.x = 24.0
+	hud.y = 84.0
+	hud.font_size = 18
+	hud.tint = TINT_YELLOW
+	hud.process = &hud_process
+	node_add|nodes, hud|
+
+	level: node_label|"level", "loading level text on the job pool..."|
+	level.x = 24.0
+	level.y = 400.0
+	level.font_size = 18
+	level.tint = TINT_GREEN
+	node_add|nodes, level|
+
+	rect: node_rect|"panel", 220.0, 40.0|
+	rect.x = 300.0
+	rect.y = 340.0
+	rect.tint = TINT_RED
+	node_add|nodes, rect|
+
+	return nodes
+$
+
+@ update_loaded_text |nodes:array[Node], texts:array| void:
+	idx: node_find|nodes, "level"|
+	if idx < 0 then
+		return
+	$
+	if texts.length is 0 then
+		return
+	$
+	cur: nodes[idx]
+	if cur.timer < 1.0 then
+		message: texts[0]
+		cur.text = message
+		cur.timer = 1.0
+		nodes[idx] = cur
+	$
+$
+
+@ main ||:
+	nodes: array[Node] = []
+	r: Renderer = make_null_renderer||
+	quit: [0]
+
+	when BACKEND_RAYLIB then
+		r = make_raylib_renderer||
+		engine_open|r, 720, 480, "ahoy engine demo", 60|
+	$
+
+	a: Assets = assets_new||
+	nodes = build_world|r, a|
+
+	? async: two text assets read on worker threads, drained each frame
+	pool: pool = jobs|2|
+	pending: []
+	texts: []
+	assets_request_text|pool, pending, "demo/assets/level1.txt"|
+	assets_request_text|pool, pending, "demo/assets/level2.txt"|
+
+	frames: 0
+	? `loop till COND` loops while COND holds, hence the `not`
+	loop till not (r.should_close|| or quit[0] is 1) do
+		frames = frames + 1
+
+		drained: assets_drain_text|pool, pending, texts|
+		update_loaded_text|nodes, texts|
+
+		engine_frame|nodes, r, a.textures|
+
+		? an automated screenshot for the repo: run with -D DEMO_SHOT
+		when DEMO_SHOT then
+			if frames is 60 then
+				take_screenshot|"demo/shot.png"|
+			$
+			if frames is 90 then
+				quit[0] = 1
+			$
+		$
+	$
+
+	pool.stop||
+	engine_close|r|
+
+	? report what the workers produced before the window closed
+	total: texts.length
+	print|"loaded text assets: ", total|
+	loop i:0 to texts.length do
+		line: texts[i]
+		print|"  ", line|
+	$
+	print|"frames: ", frames|
+$

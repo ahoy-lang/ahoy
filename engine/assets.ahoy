@@ -1,0 +1,129 @@
+program ahoy_engine
+
+import "/home/lee/Documents/ahoy-lang/ahoy/repos/raylib/src/raylib.h"
+
+? ---------------------------------------------------------------------------
+? Assets.
+?
+? A registry of loaded textures and text files, addressed by name, plus an
+? asynchronous text loader built on the job pool.
+?
+? Containers are passed as their own parameters rather than reached through the
+? Assets struct: an array field of a struct is a pointer at runtime, but pushing
+? a C struct (Texture2D) through the field is generated as a plain pointer cast
+? and does not compile, while pushing into a typed parameter or local does. So
+? Assets is a bundle for the common case, and anything that writes to the
+? registry takes the array it writes.
+?
+? Everything here runs on the main thread except the `_async` text helpers:
+? raylib's texture upload needs the GL context, so a job may only read bytes or
+? decode in memory, and the upload has to happen in a drain handler back on the
+? main thread.
+? ---------------------------------------------------------------------------
+
+struct Assets:
+	textures: array[Texture2D]
+	tex_names: array[string]
+	texts: array[string]
+	text_names: array[string]
+$
+
+@ assets_new || Assets:
+	return Assets{textures: [], tex_names: [], texts: [], text_names: []}
+$
+
+? -- textures ---------------------------------------------------------------
+
+@ assets_texture_index |names:array[string], name:string| int:
+	loop i:0 to names.length do
+		if names[i] is name then
+			return i
+		$
+	$
+	return -1
+$
+
+? Loads a texture on the calling thread (main thread only) and returns the
+? registry index a sprite node stores.
+@ assets_load_texture |r:Renderer, textures:array[Texture2D], names:array[string], name:string, path:string| int:
+	existing: assets_texture_index|names, name|
+	if existing >= 0 then
+		return existing
+	$
+	tex: r.load_texture|path|
+	idx: textures.length
+	textures.push|tex|
+	names.push|name|
+	return idx
+$
+
+? A registry lookup by name, for callers that have the bundle.
+@ assets_texture_named |a:Assets, name:string| Texture2D:
+	names: array[string] = a.tex_names
+	textures: array[Texture2D] = a.textures
+	idx: assets_texture_index|names, name|
+	return node_texture|textures, idx|
+$
+
+? -- text files -------------------------------------------------------------
+
+@ assets_text_index |names:array[string], name:string| int:
+	loop i:0 to names.length do
+		if names[i] is name then
+			return i
+		$
+	$
+	return -1
+$
+
+@ assets_add_text |texts:array[string], names:array[string], name:string, text:string| int:
+	existing: assets_text_index|names, name|
+	if existing >= 0 then
+		texts[existing] = text
+		return existing
+	$
+	idx: texts.length
+	texts.push|text|
+	names.push|name|
+	return idx
+$
+
+@ assets_text |texts:array[string], names:array[string], name:string| string:
+	idx: assets_text_index|names, name|
+	if idx < 0 then
+		return ""
+	$
+	return texts[idx]
+$
+
+@ assets_load_text |r:Renderer, texts:array[string], names:array[string], name:string, path:string| int:
+	body: r.load_text_file|path|
+	return assets_add_text|texts, names, name, body|
+$
+
+? -- asynchronous text loading ----------------------------------------------
+?
+? Submit on the main thread, then drain once per frame. Drain runs the handler
+? on the *calling* thread, which is where a real upload would go.
+
+@ asset_read_task |path:string| string:
+	return load_file_text|path|
+$
+
+@ asset_text_ready |j:job, out:array| void:
+	body: j.result||
+	out.push|body|
+$
+
+@ assets_request_text |pool:pool, pending:array, path:string| void:
+	j: job = pool.submit|&asset_read_task, path|
+	pending.push|j|
+$
+
+@ assets_drain_text |pool:pool, pending:array, out:array| int:
+	return pool.drain|&asset_text_ready, out|
+$
+
+@ assets_pending_count |pending:array| int:
+	return pending.length
+$

@@ -313,7 +313,6 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 		constantValues:        make(map[string]interface{}),
 		globalConstantGetters: make(map[string]ConstantInfo),
 	}
-
 	// Add standard includes
 	gen.includes["stdio.h"] = true
 	gen.orderedIncludes = append(gen.orderedIncludes, "stdio.h")
@@ -342,6 +341,12 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 
 	// Fourth pass: infer return types for all functions with infer keyword
 	gen.inferAllFunctionReturnTypes(ast)
+
+	// Fourth-and-a-half pass: record every function's signature. A `&name`
+	// reference to a function defined later in the file needs the parameter
+	// types now; recording them only while generating that function's own body
+	// produced thunks with no parameters at all, which the C compiler rejected.
+	gen.scanFunctionSignatures(ast)
 
 	// Fifth pass: scan variable declarations to populate type information
 	// Imported C headers first: the variable-type pre-pass needs to know a
@@ -1493,6 +1498,50 @@ func (gen *CodeGenerator) scanForMethodCalls(node *ahoy.ASTNode) {
 }
 
 // scanForFunctionCalls scans the AST to track which user-defined functions are actually called
+// scanFunctionSignatures records the parameter and return types of every
+// function before any body is generated. Signatures used to be recorded while
+// generating the function's own body, so a function value (&​name) taken before
+// the definition produced a thunk with no parameters: the C compiler then saw
+// E.g. `null_clear()` for a three-argument function.
+func (gen *CodeGenerator) scanFunctionSignatures(node *ahoy.ASTNode) {
+	if node == nil {
+		return
+	}
+	if node.Type == ahoy.NODE_FUNCTION {
+		funcName := node.Value
+		if len(node.Children) > 0 {
+			params := node.Children[0]
+			if params != nil && params.Type == ahoy.NODE_BLOCK {
+				paramTypes := []string{}
+				paramNames := []string{}
+				paramDefaults := []*ahoy.ASTNode{}
+				for _, param := range params.Children {
+					paramNames = append(paramNames, param.Value)
+					paramDefaults = append(paramDefaults, param.DefaultValue)
+					if param.DataType != "" {
+						paramTypes = append(paramTypes, param.DataType)
+					} else {
+						paramTypes = append(paramTypes, "any")
+					}
+				}
+				gen.functionParamTypes[funcName] = paramTypes
+				gen.functionParamNames[funcName] = paramNames
+				gen.functionParamDefaults[funcName] = paramDefaults
+			}
+		}
+		if node.DataType != "" && node.DataType != "void" && node.DataType != "infer" {
+			if strings.Contains(node.DataType, ",") {
+				gen.functionReturnTypes[funcName] = splitReturnTypes(node.DataType)
+			} else {
+				gen.functionReturnTypes[funcName] = []string{node.DataType}
+			}
+		}
+	}
+	for _, child := range node.Children {
+		gen.scanFunctionSignatures(child)
+	}
+}
+
 func (gen *CodeGenerator) scanForFunctionCalls(node *ahoy.ASTNode) {
 	if node == nil {
 		return
@@ -2221,7 +2270,7 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				} else if cType == "double" || cType == "float" {
 					// For float/double, store via intptr_t cast
 					if gen.enableBoundsChecking {
-						gen.output.WriteString("__arr->data[__idx] = (void*)(intptr_t)(double)")
+						gen.output.WriteString("__arr->data[__idx] = (intptr_t)(intptr_t)(double)")
 					} else {
 						if needsArrayCast {
 							gen.output.WriteString(fmt.Sprintf("((AhoyArray*)%s)->data[", arrayName))
@@ -2236,7 +2285,7 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				} else if cType == "char*" {
 					// For strings, store as pointer
 					if gen.enableBoundsChecking {
-						gen.output.WriteString("__arr->data[__idx] = (void*)")
+						gen.output.WriteString("__arr->data[__idx] = (intptr_t)")
 					} else {
 						if needsArrayCast {
 							gen.output.WriteString(fmt.Sprintf("((AhoyArray*)%s)->data[", arrayName))
@@ -2251,7 +2300,7 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				} else {
 					// For int and other intptr_t-compatible types, direct assignment
 					if gen.enableBoundsChecking {
-						gen.output.WriteString("__arr->data[__idx] = (void*)(intptr_t)")
+						gen.output.WriteString("__arr->data[__idx] = (intptr_t)(intptr_t)")
 					} else {
 						if needsArrayCast {
 							gen.output.WriteString(fmt.Sprintf("((AhoyArray*)%s)->data[", arrayName))
@@ -2267,7 +2316,7 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			} else {
 				// Unknown type - assume intptr_t
 				if gen.enableBoundsChecking {
-					gen.output.WriteString("__arr->data[__idx] = (void*)(intptr_t)")
+					gen.output.WriteString("__arr->data[__idx] = (intptr_t)(intptr_t)")
 				} else {
 					if needsArrayCast {
 						gen.output.WriteString(fmt.Sprintf("((AhoyArray*)%s)->data[", arrayName))
@@ -2502,8 +2551,15 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 
 	// If we're in a deeply nested block (indent > 2) and the indent differs from
 	// where the variable was declared, we're likely in a different block structure
-	// and should declare a new block-local variable
-	if isDeclared && gen.indent > 2 && gen.indent != declIndent {
+	// and should declare a new block-local variable.
+	//
+	// The indent rule alone emitted a shadowing declaration for an ordinary
+	// assignment to an outer variable from inside `loop ... if`: the variable was
+	// still in scope, so the C compiler saw a second `int x = ...` and the outer
+	// value never changed. nameVisibleInOpenScope answers the question directly,
+	// so the indentation guess only applies when it cannot (a name this pass has
+	// not seen declared, such as one from a pre-pass).
+	if isDeclared && gen.indent > 2 && gen.indent != declIndent && !gen.nameVisibleInOpenScope(node.Value) {
 		needsRedeclare = true
 	}
 
@@ -5611,9 +5667,30 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 	}
 }
 
+// isStringExpr reports whether an operand is a string (or a char* from C), so
+// equality on it has to compare contents rather than pointers.
+func (gen *CodeGenerator) isStringExpr(n *ahoy.ASTNode) bool {
+	if n == nil {
+		return false
+	}
+	t := gen.inferType(n)
+	return t == "string" || t == "char*" || t == "const char*"
+}
+
 func (gen *CodeGenerator) generateBinaryOp(node *ahoy.ASTNode) {
 	switch node.Value {
 	case "is":
+		if gen.isStringExpr(node.Children[0]) && gen.isStringExpr(node.Children[1]) {
+			// Strings compare by value. `a is b` on two char* was pointer
+			// equality, so two equal strings read as different and a name
+			// lookup over an array of strings never matched.
+			gen.output.WriteString("(strcmp(")
+			gen.generateNode(node.Children[0])
+			gen.output.WriteString(", ")
+			gen.generateNode(node.Children[1])
+			gen.output.WriteString(") == 0)")
+			return
+		}
 		gen.output.WriteString("(")
 		gen.generateNode(node.Children[0])
 		gen.output.WriteString(" == ")
@@ -7505,6 +7582,20 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		if constType, exists := gen.constants[node.Value]; exists {
 			return constType
 		}
+		// Parameters of the function being generated come first: a parameter
+		// shadows any same-named variable elsewhere in the program, and the flat
+		// variable map is filled from every function's body, so a local `n` in
+		// one script used to decide the type of `n` in another function (a Node
+		// parameter read as int, and pushing it into an array emitted a struct
+		// cast that C rejected).
+		if varType, exists := gen.functionVars[node.Value]; exists {
+			// Normalize dict types
+			if strings.HasPrefix(varType, "dict<") || strings.HasPrefix(varType, "dict[") {
+				return "dict"
+			}
+			// Return full array type including element type
+			return varType
+		}
 		if varType, exists := gen.variables[node.Value]; exists {
 			// Normalize dict types
 			if strings.HasPrefix(varType, "dict<") || strings.HasPrefix(varType, "dict[") {
@@ -7512,14 +7603,6 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			}
 			// Return full array type including element type for proper iteration
 			// DON'T normalize array[ElementType] to just "array"
-			return varType
-		}
-		if varType, exists := gen.functionVars[node.Value]; exists {
-			// Normalize dict types
-			if strings.HasPrefix(varType, "dict<") || strings.HasPrefix(varType, "dict[") {
-				return "dict"
-			}
-			// Return full array type including element type
 			return varType
 		}
 		// Check if this variable is sourced from a dict access
@@ -10707,39 +10790,41 @@ func (gen *CodeGenerator) writeStructHelperFunctions() {
 		}
 
 		// Close with } for all structs
-		gen.funcDecls.WriteString("}\", ")
+		gen.funcDecls.WriteString("}\"")
 
-		// Add field values (only for non-array/dict fields)
-		firstValue := true
+		// Collect field values (arrays and dicts are already in the format string).
+		// The separator must only be written when a value follows: a struct whose
+		// fields are all arrays emitted `sprintf(buffer, "...", )` and the C
+		// compiler rejected the empty expression.
+		var values []string
 		for _, field := range structInfo.Fields {
 			// Skip arrays and dicts - they're already in the format string
 			if field.Type == "AhoyArray*" || field.Type == "HashMap*" {
 				continue
 			}
 
-			if !firstValue {
-				gen.funcDecls.WriteString(", ")
-			}
-			firstValue = false
-
 			// For static fields, access the global variable instead of obj.field
 			if field.IsStatic {
 				staticFieldName := fmt.Sprintf("%s_%s", cStructName, field.Name)
 				if field.Type == "bool" {
-					gen.funcDecls.WriteString(fmt.Sprintf("%s ? \"true\" : \"false\"", staticFieldName))
+					values = append(values, fmt.Sprintf("%s ? \"true\" : \"false\"", staticFieldName))
 				} else {
-					gen.funcDecls.WriteString(staticFieldName)
+					values = append(values, staticFieldName)
 				}
 			} else if field.Type == "bool" {
-				gen.funcDecls.WriteString(fmt.Sprintf("obj.%s ? \"true\" : \"false\"", field.Name))
+				values = append(values, fmt.Sprintf("obj.%s ? \"true\" : \"false\"", field.Name))
 			} else if field.Type == "char*" || field.Type == "const char*" {
-				gen.funcDecls.WriteString(fmt.Sprintf("(obj.%s ? obj.%s : \"\")", field.Name, field.Name))
+				values = append(values, fmt.Sprintf("(obj.%s ? obj.%s : \"\")", field.Name, field.Name))
 			} else if _, isStruct := gen.structs[strings.ToLower(field.Type)]; isStruct {
 				// For struct fields, call their print helper
-				gen.funcDecls.WriteString(fmt.Sprintf("print_struct_helper_%s(obj.%s)", strings.ToLower(field.Type), field.Name))
+				values = append(values, fmt.Sprintf("print_struct_helper_%s(obj.%s)", strings.ToLower(field.Type), field.Name))
 			} else {
-				gen.funcDecls.WriteString(fmt.Sprintf("obj.%s", field.Name))
+				values = append(values, fmt.Sprintf("obj.%s", field.Name))
 			}
+		}
+		if len(values) > 0 {
+			gen.funcDecls.WriteString(", ")
+			gen.funcDecls.WriteString(strings.Join(values, ", "))
 		}
 
 		gen.funcDecls.WriteString(");\n")
@@ -11418,6 +11503,21 @@ func splitReturnTypes(typeStr string) []string {
 // tryResolveEnumMember attempts to resolve a simple identifier to an enum member
 // Returns the fully qualified name (enumName_MEMBER) if found, empty string otherwise
 func (gen *CodeGenerator) tryResolveEnumMember(memberName string) string {
+	// A name that the program actually declares wins over an enum member of the
+	// same name: `rect: node_rect|...|` in a game compiled to NodeKind_rect.x,
+	// the enum member, and the C compiler rejected the assignment.
+	if memberName != "" && memberName[0] != '.' {
+		if _, isVar := gen.functionVars[memberName]; isVar {
+			return ""
+		}
+		if _, isVar := gen.variables[memberName]; isVar {
+			return ""
+		}
+		if gen.userFunctions[memberName] {
+			return ""
+		}
+	}
+
 	// Check if this is a dot-prefixed enum member
 	if len(memberName) > 0 && memberName[0] == '.' {
 		// Extract member name without dot

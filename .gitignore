@@ -11,3 +11,4 @@ repos/
 # agent scratch space
 .scratch/
 .pi/
+demo/shot.png

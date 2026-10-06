@@ -1,0 +1,277 @@
+program ahoy_engine
+
+? ---------------------------------------------------------------------------
+? Renderer contract.
+?
+? Everything the engine draws goes through this table of function values, so a
+? backend is swapped by handing engine_run() a different Renderer. The raylib
+? backend below is selected with -D BACKEND_RAYLIB (see `when` at the bottom);
+? make_null_renderer() gives a valid table whose calls do nothing, so a game can
+? always declare its renderer before the backend is installed.
+?
+? A backend must keep every draw call on the thread that opened the window:
+? raylib/OpenGL state lives there, so jobs only ever decode in memory.
+? ---------------------------------------------------------------------------
+
+import "/home/lee/Documents/ahoy-lang/ahoy/repos/raylib/src/raylib.h"
+
+? Tints are packed 0xRRGGBB; alpha is always opaque.
+TINT_WHITE:: int = 16777215
+TINT_BLACK:: int = 0
+TINT_RED:: int = 16711680
+TINT_GREEN:: int = 65280
+TINT_BLUE:: int = 255
+TINT_YELLOW:: int = 16776960
+TINT_GREY:: int = 8421504
+
+? Key codes are the ones GLFW/raylib use, so a backend can pass them straight
+? through (they are the engine's input vocabulary, not raylib's).
+KEY_ESCAPE:: int = 256
+KEY_ENTER:: int = 257
+KEY_SPACE:: int = 32
+KEY_LEFT:: int = 263
+KEY_RIGHT:: int = 262
+KEY_UP:: int = 265
+KEY_DOWN:: int = 264
+KEY_A:: int = 65
+KEY_D:: int = 68
+KEY_S:: int = 83
+KEY_W:: int = 87
+KEY_R:: int = 82
+MOUSE_LEFT:: int = 0
+MOUSE_RIGHT:: int = 1
+
+struct Renderer:
+	? window and frame
+	open: fn(int, int, string) -> void
+	close: fn() -> void
+	should_close: fn() -> bool
+	begin_frame: fn() -> void
+	end_frame: fn() -> void
+	clear: fn(int, int, int) -> void
+	frame_time: fn() -> float
+	now: fn() -> float
+	screen_w: fn() -> int
+	screen_h: fn() -> int
+	set_target_fps: fn(int) -> void
+	? drawing
+	draw_rect: fn(float, float, float, float, int) -> void
+	draw_rect_lines: fn(float, float, float, float, float, int) -> void
+	draw_line: fn(float, float, float, float, int) -> void
+	draw_circle: fn(float, float, float, int) -> void
+	draw_sprite: fn(Texture2D, float, float, float, float, int) -> void
+	draw_text: fn(string, float, float, int, int) -> void
+	text_width: fn(string, int) -> int
+	? assets and input
+	load_texture: fn(string) -> Texture2D
+	unload_texture: fn(Texture2D) -> void
+	load_text_file: fn(string) -> string
+	file_exists: fn(string) -> bool
+	key_down: fn(int) -> bool
+	key_pressed: fn(int) -> bool
+	mouse_x: fn() -> float
+	mouse_y: fn() -> float
+	mouse_down: fn(int) -> bool
+	random_int: fn(int, int) -> int
+$
+
+? no-op backend ------------------------------------------------------------
+
+@ null_open |w:int, h:int, title:string| void:
+$
+@ null_close || void:
+$
+@ null_false || bool:
+	return false
+$
+@ null_void || void:
+$
+@ null_float || float:
+	return 0.0
+$
+@ null_zero || int:
+	return 0
+$
+@ null_true || bool:
+	return true
+$
+@ null_rect |x:float, y:float, w:float, h:float, tint:int| void:
+$
+@ null_sprite |tex:Texture2D, x:float, y:float, rot:float, scale:float, tint:int| void:
+$
+@ null_text |text:string, x:float, y:float, size:int, tint:int| void:
+$
+@ null_texture |path:string| Texture2D:
+	return Texture2D{id: 0, width: 0, height: 0, mipmaps: 1, format: 0}
+$
+@ null_string || string:
+	return ""
+$
+@ null_rand |lo:int, hi:int| int:
+	return lo
+$
+
+@ make_null_renderer || Renderer:
+	return Renderer{open: &null_open, close: &null_close, should_close: &null_false, begin_frame: &null_void, end_frame: &null_void, clear: &null_clear, frame_time: &null_float, now: &null_float, screen_w: &null_zero, screen_h: &null_zero, set_target_fps: &null_int_void, draw_rect: &null_rect, draw_rect_lines: &null_rect_lines, draw_line: &null_rect, draw_circle: &null_circle, draw_sprite: &null_sprite, draw_text: &null_text, text_width: &null_width, load_texture: &null_texture, unload_texture: &null_unload, load_text_file: &null_string, file_exists: &null_false, key_down: &null_false_int, key_pressed: &null_false_int, mouse_x: &null_float, mouse_y: &null_float, mouse_down: &null_false_int, random_int: &null_rand}
+$
+
+@ null_clear |r:int, g:int, b:int| void:
+$
+@ null_circle |x:float, y:float, radius:float, tint:int| void:
+$
+@ null_width |text:string, size:int| int:
+	return 0
+$
+@ null_unload |tex:Texture2D| void:
+$
+@ null_int_void |v:int| void:
+$
+@ null_false_int |key:int| bool:
+	return false
+$
+@ null_rect_lines |x:float, y:float, w:float, h:float, thick:float, tint:int| void:
+$
+
+? raylib backend -----------------------------------------------------------
+
+when BACKEND_RAYLIB then
+
+	? 0xRRGGBB -> raylib color
+	@ rl_color |rgb:int| color:
+		r: (rgb shr 16) band 255
+		g: (rgb shr 8) band 255
+		b: rgb band 255
+		return color{r: r, g: g, b: b, a: 255}
+	$
+
+	@ rl_open |w:int, h:int, title:string| void:
+		init_window|w, h, title|
+	$
+
+	@ rl_close || void:
+		close_window||
+	$
+
+	@ rl_should_close || bool:
+		return window_should_close||
+	$
+
+	@ rl_begin_frame || void:
+		begin_drawing||
+	$
+
+	@ rl_end_frame || void:
+		end_drawing||
+	$
+
+	@ rl_clear |r:int, g:int, b:int| void:
+		clear_background|color{r: r, g: g, b: b, a: 255}|
+	$
+
+	@ rl_frame_time || float:
+		return get_frame_time||
+	$
+
+	@ rl_now || float:
+		return get_time||
+	$
+
+	@ rl_screen_w || int:
+		return get_screen_width||
+	$
+
+	@ rl_screen_h || int:
+		return get_screen_height||
+	$
+
+	@ rl_set_target_fps |fps:int| void:
+		set_target_fps|fps|
+	$
+
+	@ rl_draw_rect |x:float, y:float, w:float, h:float, tint:int| void:
+		c: color = rl_color|tint|
+		draw_rectangle|int(x), int(y), int(w), int(h), c|
+	$
+
+	@ rl_draw_rect_lines |x:float, y:float, w:float, h:float, thick:float, tint:int| void:
+		c: color = rl_color|tint|
+		draw_rectangle_lines_ex|Rectangle{x: x, y: y, width: w, height: h}, thick, c|
+	$
+
+	@ rl_draw_line |x1:float, y1:float, x2:float, y2:float, tint:int| void:
+		c: color = rl_color|tint|
+		draw_line|int(x1), int(y1), int(x2), int(y2), c|
+	$
+
+	@ rl_draw_circle |x:float, y:float, radius:float, tint:int| void:
+		c: color = rl_color|tint|
+		draw_circle|int(x), int(y), radius, c|
+	$
+
+	? centre-origin, scaled and rotated sprite
+	@ rl_draw_sprite |tex:Texture2D, x:float, y:float, rot:float, scale:float, tint:int| void:
+		tw: float(tex.width) * scale
+		th: float(tex.height) * scale
+		src: Rectangle = Rectangle{x: 0, y: 0, width: float(tex.width), height: float(tex.height)}
+		dst: Rectangle = Rectangle{x: x, y: y, width: tw, height: th}
+		origin: Vector2 = Vector2{x: tw / 2.0, y: th / 2.0}
+		c: color = rl_color|tint|
+		draw_texture_pro|tex, src, dst, origin, rot, c|
+	$
+
+	@ rl_draw_text |text:string, x:float, y:float, size:int, tint:int| void:
+		c: color = rl_color|tint|
+		draw_text|text, int(x), int(y), size, c|
+	$
+
+	@ rl_text_width |text:string, size:int| int:
+		return measure_text|text, size|
+	$
+
+	@ rl_load_texture |path:string| Texture2D:
+		return load_texture|path|
+	$
+
+	@ rl_unload_texture |tex:Texture2D| void:
+		unload_texture|tex|
+	$
+
+	@ rl_load_text_file |path:string| string:
+		return load_file_text|path|
+	$
+
+	@ rl_file_exists |path:string| bool:
+		return file_exists|path|
+	$
+
+	@ rl_key_down |key:int| bool:
+		return is_key_down|key|
+	$
+
+	@ rl_key_pressed |key:int| bool:
+		return is_key_pressed|key|
+	$
+
+	@ rl_mouse_x || float:
+		mx: get_mouse_x||
+		return float(mx)
+	$
+
+	@ rl_mouse_y || float:
+		my: get_mouse_y||
+		return float(my)
+	$
+
+	@ rl_mouse_down |button:int| bool:
+		return is_mouse_button_down|button|
+	$
+
+	@ rl_random_int |lo:int, hi:int| int:
+		return get_random_value|lo, hi|
+	$
+
+	@ make_raylib_renderer || Renderer:
+		return Renderer{open: &rl_open, close: &rl_close, should_close: &rl_should_close, begin_frame: &rl_begin_frame, end_frame: &rl_end_frame, clear: &rl_clear, frame_time: &rl_frame_time, now: &rl_now, screen_w: &rl_screen_w, screen_h: &rl_screen_h, set_target_fps: &rl_set_target_fps, draw_rect: &rl_draw_rect, draw_rect_lines: &rl_draw_rect_lines, draw_line: &rl_draw_line, draw_circle: &rl_draw_circle, draw_sprite: &rl_draw_sprite, draw_text: &rl_draw_text, text_width: &rl_text_width, load_texture: &rl_load_texture, unload_texture: &rl_unload_texture, load_text_file: &rl_load_text_file, file_exists: &rl_file_exists, key_down: &rl_key_down, key_pressed: &rl_key_pressed, mouse_x: &rl_mouse_x, mouse_y: &rl_mouse_y, mouse_down: &rl_mouse_down, random_int: &rl_random_int}
+	$
+
+$

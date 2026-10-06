@@ -1,0 +1,317 @@
+program ahoy_engine
+
+? ---------------------------------------------------------------------------
+? Nodes and the scene.
+?
+? The scene is a flat array[Node]; its index is the node's id. Draw order is
+? list order, and every node carries a script triplet (ready/process/draw) as
+? function values, which is Ahoy's equivalent of a script attached to a node:
+?
+?     @ spin |nodes:array[Node], id:int, dt:float, r:Renderer| void:
+?         n: nodes[id]
+?         n.rot = n.rot + 90.0 * dt
+?         nodes[id] = n          ? arrays hold structs by value: write it back
+?     $
+?
+? Nodes are copied when read out of the array, so a script mutates its node by
+? writing the copy back to nodes[id]. Arrays and dicts inside a Node field share
+? their storage, so those propagate without the write-back.
+?
+? A freed node becomes a tombstone (KIND_DEAD): ids stay stable, which keeps
+? other nodes' parent/child references valid. scene_compact() is the opt-in
+? version that really removes them and therefore renumbers everything.
+? ---------------------------------------------------------------------------
+
+enum:int NodeKind:
+	0 plain
+	1 sprite
+	2 label
+	3 rect
+	4 dead
+$
+
+struct Node:
+	id: int
+	kind: int
+	name: string
+	parent: int
+	? transform (screen space for 2D; x/y/z for 3D backends)
+	x: float
+	y: float
+	z: float
+	rot: float
+	scale: float
+	w: float
+	h: float
+	? presentation
+	visible: bool
+	layer: int
+	tint: int
+	texture: int
+	text: string
+	font_size: int
+	? script state slots: per-node values a script can use without a dict
+	vx: float
+	vy: float
+	hp: float
+	timer: float
+	data: int
+	? script
+	ready: fn(array[Node], int) -> void
+	process: fn(array[Node], int, float, Renderer) -> void
+	draw: fn(array[Node], int, Renderer) -> void
+$
+
+? default script triplet: a node that does nothing --------------------------
+
+@ script_none_ready |nodes:array[Node], id:int| void:
+$
+@ script_none_process |nodes:array[Node], id:int, dt:float, r:Renderer| void:
+$
+@ script_none_draw |nodes:array[Node], id:int, r:Renderer| void:
+$
+
+? node construction ---------------------------------------------------------
+
+@ node_plain |name:string| Node:
+	return node_make|NodeKind.plain, name|
+$
+
+@ node_sprite |name:string, texture:int| Node:
+	n: Node = node_make|NodeKind.sprite, name|
+	n.texture = texture
+	return n
+$
+
+@ node_label |name:string, text:string| Node:
+	n: Node = node_make|NodeKind.label, name|
+	n.text = text
+	return n
+$
+
+@ node_rect |name:string, w:float, h:float| Node:
+	n: Node = node_make|NodeKind.rect, name|
+	n.w = w
+	n.h = h
+	return n
+$
+
+? One constructor every other one funnels through, so a new Node field only
+? needs a default here.
+@ node_make |kind:int, name:string| Node:
+	return Node{id: -1, kind: kind, name: name, parent: -1, x: 0.0, y: 0.0, z: 0.0, rot: 0.0, scale: 1.0, w: 32.0, h: 32.0, visible: true, layer: 0, tint: TINT_WHITE, texture: -1, text: "", font_size: 20, vx: 0.0, vy: 0.0, hp: 0.0, timer: 0.0, data: 0, ready: &script_none_ready, process: &script_none_process, draw: &script_none_draw}
+$
+
+? scene operations ----------------------------------------------------------
+
+@ node_add |nodes:array[Node], n:Node| int:
+	idx: n.id
+	if idx < 0 then
+		idx = nodes.length
+	$
+	n.id = idx
+	nodes.push|n|
+	cur: nodes[idx]
+	cur.ready|nodes, idx|
+	return idx
+$
+
+@ node_find |nodes:array[Node], name:string| int:
+	loop i:0 to nodes.length do
+		cur: nodes[i]
+		if cur.name is name then
+			return i
+		$
+	$
+	return -1
+$
+
+@ node_get |nodes:array[Node], id:int| Node:
+	if id < 0 then
+		return node_make|NodeKind.plain, "missing"|
+	$
+	cur: nodes[id]
+	return cur
+$
+
+@ node_free |nodes:array[Node], id:int| void:
+	if id < 0 then
+		return
+	$
+	cur: nodes[id]
+	cur.kind = NodeKind.dead
+	cur.visible = false
+	nodes[id] = cur
+$
+
+? Drop tombstones and renumber. Node ids change, so scripts must not hold ids
+? across this call.
+@ scene_compact |nodes:array[Node]| void:
+	kept: array[Node] = []
+	loop i:0 to nodes.length do
+		cur: nodes[i]
+		if cur.kind is not NodeKind.dead then
+			kept.push|cur|
+		$
+	$
+	? arrays have no clear() in this build; pop until empty so the caller's
+	? array (a parameter, shared by pointer) is emptied in place
+	? `loop till COND` loops *while* COND holds, so the wait is on `is not 0`
+	loop till nodes.length is not 0 do
+		nodes.pop||
+	$
+	loop i:0 to kept.length do
+		live: kept[i]
+		live.id = i
+		nodes.push|live|
+	$
+$
+
+
+? setters: the write-back pattern in one place ---------------------------------
+
+@ node_set_pos |nodes:array[Node], id:int, x:float, y:float| void:
+	if id < 0 then
+		return
+	$
+	cur: nodes[id]
+	cur.x = x
+	cur.y = y
+	nodes[id] = cur
+$
+
+@ node_move |nodes:array[Node], id:int, dx:float, dy:float| void:
+	if id < 0 then
+		return
+	$
+	cur: nodes[id]
+	cur.x = cur.x + dx
+	cur.y = cur.y + dy
+	nodes[id] = cur
+$
+
+@ node_set_rot |nodes:array[Node], id:int, rot:float| void:
+	if id < 0 then
+		return
+	$
+	cur: nodes[id]
+	cur.rot = rot
+	nodes[id] = cur
+$
+
+@ node_set_scale |nodes:array[Node], id:int, scale:float| void:
+	if id < 0 then
+		return
+	$
+	cur: nodes[id]
+	cur.scale = scale
+	nodes[id] = cur
+$
+
+@ node_set_text |nodes:array[Node], id:int, text:string| void:
+	if id < 0 then
+		return
+	$
+	cur: nodes[id]
+	cur.text = text
+	nodes[id] = cur
+$
+
+@ node_set_tint |nodes:array[Node], id:int, tint:int| void:
+	if id < 0 then
+		return
+	$
+	cur: nodes[id]
+	cur.tint = tint
+	nodes[id] = cur
+$
+
+@ node_set_texture |nodes:array[Node], id:int, texture:int| void:
+	if id < 0 then
+		return
+	$
+	cur: nodes[id]
+	cur.texture = texture
+	nodes[id] = cur
+$
+
+@ node_set_visible |nodes:array[Node], id:int, visible:bool| void:
+	if id < 0 then
+		return
+	$
+	cur: nodes[id]
+	cur.visible = visible
+	nodes[id] = cur
+$
+
+@ node_set_script |nodes:array[Node], id:int, process:fn(array[Node], int, float, Renderer) -> void| void:
+	if id < 0 then
+		return
+	$
+	cur: nodes[id]
+	cur.process = process
+	nodes[id] = cur
+$
+
+? the frame ----------------------------------------------------------------
+
+@ scene_process |nodes:array[Node], dt:float, r:Renderer| void:
+	loop i:0 to nodes.length do
+		cur: nodes[i]
+		if cur.visible and cur.kind is not NodeKind.dead then
+			cur.process|nodes, i, dt, r|
+		$
+	$
+$
+
+@ scene_draw |nodes:array[Node], r:Renderer, textures:array[Texture2D]| void:
+	loop i:0 to nodes.length do
+		cur: nodes[i]
+		if cur.visible and cur.kind is not NodeKind.dead then
+			if cur.kind is NodeKind.sprite then
+				draw_sprite_node|nodes, i, r, textures|
+			$
+			if cur.kind is NodeKind.label then
+				draw_label_node|nodes, i, r|
+			$
+			if cur.kind is NodeKind.rect then
+				draw_rect_node|nodes, i, r|
+			$
+			? a node with a custom draw script draws itself last
+			cur.draw|nodes, i, r|
+		$
+	$
+$
+
+@ draw_sprite_node |nodes:array[Node], id:int, r:Renderer, textures:array[Texture2D]| void:
+	cur: nodes[id]
+	tex: node_texture|textures, cur.texture|
+	if tex.id is 0 then
+		? no texture: draw a placeholder box so the node is visible
+		r.draw_rect|cur.x - 16.0, cur.y - 16.0, 32.0, 32.0, cur.tint|
+		return
+	$
+	r.draw_sprite|tex, cur.x, cur.y, cur.rot, cur.scale, cur.tint|
+$
+
+@ draw_label_node |nodes:array[Node], id:int, r:Renderer| void:
+	cur: nodes[id]
+	r.draw_text|cur.text, cur.x, cur.y, cur.font_size, cur.tint|
+$
+
+@ draw_rect_node |nodes:array[Node], id:int, r:Renderer| void:
+	cur: nodes[id]
+	w: cur.w * cur.scale
+	h: cur.h * cur.scale
+	r.draw_rect|cur.x, cur.y, w, h, cur.tint|
+$
+
+? texture registry: index -> Texture2D (see assets.ahoy, which fills it) -----
+
+@ node_texture |textures:array[Texture2D], index:int| Texture2D:
+	if index < 0 or index >= textures.length then
+		return Texture2D{id: 0, width: 0, height: 0, mipmaps: 1, format: 0}
+	$
+	tex: textures[index]
+	return tex
+$

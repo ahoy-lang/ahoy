@@ -1,0 +1,79 @@
+program nested_assign_strings
+
+? Three code-generation traps found while bringing up the engine.
+? Each printed a wrong value (or did not compile) before the fix.
+
+enum:int shape:
+	0 rect
+	1 circle
+$
+
+struct Item:
+	kind: int
+	label: string
+	value: int
+$
+
+@ bump_all |items:array[Item], amount:int| int:
+	? a parameter whose name is also a local in another function used to be
+	? typed from that other function (the push then failed to compile)
+	loop i:0 to items.length do
+		it: items[i]
+		it.value = it.value + amount
+		items[i] = it
+	$
+	return items.length
+$
+
+@ main ||:
+	expected: []
+
+	? assignment to an outer variable from inside loop -> if used to emit a
+	? shadowing `int x = ...`, so the outer value never changed
+	total: 0
+	loop i:0 to 4 do
+		if i is 2 then
+			total = 42
+		$
+	$
+	print|total|
+	expected.push|"42"|
+
+	? `is` on strings was pointer equality
+	name_a: "engine"
+	name_b: "engine"
+	if name_a is name_b then
+		print|"strings equal"|
+		expected.push|"strings equal"|
+	$
+	other: "world"
+	names: array[string] = ["hello", other]
+	found: -1
+	loop i:0 to names.length do
+		if names[i] is other then
+			found = i
+		$
+	$
+	print|found|
+	expected.push|"1"|
+
+	? a variable named like an enum member (rect) must win over the member:
+	? the generated code used to write shape_rect.x = ...
+	rect: 7
+	print|rect, shape.circle|
+	expected.push|"7 1"|
+
+	? struct type of a parameter
+	items: array[Item] = []
+	one: Item{kind: shape.rect, label: "box", value: 1}
+	two: Item{kind: shape.circle, label: "dot", value: 2}
+	items.push|one|
+	items.push|two|
+	count: bump_all|items, 10|
+	first: items[0]
+	second: items[1]
+	print|count, first.value, second.value|
+	expected.push|"2 11 12"|
+
+	print|expected|
+$

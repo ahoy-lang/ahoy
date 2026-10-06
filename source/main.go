@@ -829,9 +829,33 @@ func main() {
 	// about generated code, or compiles into something that misbehaves at run
 	// time. `-no_semantics` bypasses this if the checks get in the way.
 	if !*noSemanticsFlag {
+		// A file's checks run against the whole program, not just its own
+		// package: an imported package (the engine, for a game) declares names
+		// its callers use. validateProgram can only see one package at load
+		// time, so re-run the pass here with every name the program declares.
+		packages := collectPackages(pkg, imports)
+		allNames := map[string]bool{}
+		for _, p := range packages {
+			for _, file := range p.Files {
+				for _, name := range ahoy.DeclaredNames(file.AST) {
+					allNames[name] = true
+				}
+			}
+		}
+		programNames := make([]string, 0, len(allNames))
+		for name := range allNames {
+			programNames = append(programNames, name)
+		}
+		for _, p := range packages {
+			for i := range p.Files {
+				file := &p.Files[i]
+				file.SemanticErrors = validateSemantics(file.Content, file.Path, programNames)
+			}
+		}
+
 		sources := map[string]string{}
 		var diagnostics []ahoy.ParseError
-		for _, p := range collectPackages(pkg, imports) {
+		for _, p := range packages {
 			for _, file := range p.Files {
 				sources[file.Path] = file.Content
 			}

@@ -128,8 +128,11 @@ func parseRLAPIFunction(line string, lineNum int, filePath string, info *CHeader
 		return
 	}
 
-	funcName := parts[len(parts)-1]
+	funcName, stars := splitCFuncName(parts[len(parts)-1])
 	returnType := strings.Join(parts[:len(parts)-1], " ")
+	if stars != "" {
+		returnType = strings.TrimSpace(returnType + " " + stars)
+	}
 
 	// Extract parameters
 	endParen := strings.Index(line, ")")
@@ -152,6 +155,17 @@ func parseRLAPIFunction(line string, lineNum int, filePath string, info *CHeader
 // parseMacroFunction parses function declarations with macro prefixes
 // Examples: CJSON_PUBLIC(cJSON *) cJSON_Parse(const char *value);
 //
+// splitCFuncName separates a function name from the pointer stars that belong
+// to its return type. raylib declares string-returning functions as
+// `char *LoadFileText(...)`, and taking the last whitespace field verbatim
+// registered the function as "*load_file_text": every Ahoy call to it was then
+// reported as undefined, with "*load_file_text" offered as the suggestion.
+func splitCFuncName(field string) (name string, stars string) {
+	name = strings.TrimLeft(field, "*")
+	stars = strings.Repeat("*", len(field)-len(name))
+	return name, stars
+}
+
 //	SOME_MACRO(void) MyFunction(int x);
 func parseMacroFunction(line string, lineNum int, filePath string, info *CHeaderInfo) bool {
 	// Skip #define lines
@@ -215,9 +229,12 @@ func parseMacroFunction(line string, lineNum int, filePath string, info *CHeader
 		return false
 	}
 
-	funcName := strings.TrimSpace(rest[:funcParen])
+	funcName, stars := splitCFuncName(strings.TrimSpace(rest[:funcParen]))
 	if funcName == "" {
 		return false
+	}
+	if stars != "" {
+		returnType = strings.TrimSpace(returnType + " " + stars)
 	}
 
 	// Extract parameters

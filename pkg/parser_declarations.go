@@ -1218,6 +1218,12 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 	}
 
 	// Parse struct fields
+	// A comment line is emitted as a NEWLINE token, and the loop condition below
+	// only matches a field start, so a comment as the first line of a struct
+	// ended the body before any field was read.
+	for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT {
+		p.advance()
+	}
 	for p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_TYPE ||
 		p.current().Type == TOKEN_HASH ||
 		p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
