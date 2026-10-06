@@ -8,16 +8,21 @@ import "/home/lee/Documents/ahoy-lang/ahoy/repos/raylib/src/raylib.h"
 	set_target_fps|60|
 
 	? >>> EDIT ME: background colour <<<
-	bg_color : color{r: 220, g: 60, b: 60, a: 255};
+	bg_color : color{r: 290, g: 60, b: 60, a: 255};
 	print|"BGCOLOR %d %d %d\n", bg_color.r, bg_color.g, bg_color.b|
 
 	frames: 0
+	x:10
 	loop till not window_should_close do
 		frames = frames + 1
-		begin_drawing||
+		begin_drawing
 		clear_background|bg_color|
-		draw_text|f"frame {frames}", 20, 20, 20, color{r: 255, g: 255, b: 255, a: 255}|
-		end_drawing||
+		draw_text|f"frames {frames}", 20, 20, 20, color{r: 255, g: 255, b: 255, a: 255}|
+		draw_rectangle|300,12,12,12,BLUE|
+		if x is  10 then
+			print|"hello"|
+		$
+		end_drawing
 	$
-	close_window||
+	close_window
 $
