@@ -1,0 +1,38 @@
+program dict_typed_values
+
+? A dict entry written with `d<"key">: value` must store its value type.
+? The untyped putter tagged every value as a string, so reading an int
+? back formatted it as a char* and crashed.
+
+@ main ||:
+	expected: []
+
+	scores: dict<string,int> = <"a": 1>
+	scores<"b">: 2
+	print|scores<"b">|
+	expected.push|"2"|
+
+	? the value type has to follow the expression, not the literal syntax
+	scores<"c">: scores<"a"> + scores<"b"> * 10
+	print|scores<"c">|
+	expected.push|"21"|
+
+	? length/size of a dict is its entry count, not a key lookup
+	print|scores.length|
+	expected.push|"3"|
+
+	? strings keep their type through the same path
+	names: dict<string,string> = <"first": "ada">
+	names<"last">: "lovelace"
+	print|names<"last">|
+	expected.push|"lovelace"|
+
+	? floats are stored as heap doubles by the runtime
+	ratios: dict<string,float> = <"half": 0.5>
+	ratios<"third">: 1.0 / 3.0 + 0.5
+	ratios<"same">: ratios<"half"> + 0.5
+	print|ratios<"same">|
+	expected.push|"1"|
+
+	print|expected|
+$

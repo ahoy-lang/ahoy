@@ -2289,17 +2289,13 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			return
 		}
 
-		// Special handling for dict assignment - use hashMapPut
+		// Special handling for dict assignment - d<"key">: value
 		if node.Children[0].Type == ahoy.NODE_DICT_ACCESS {
 			dictName := node.Children[0].Value
 			keyNode := node.Children[0].Children[0]
 			valueNode := node.Children[1]
 
-			gen.output.WriteString(fmt.Sprintf("hashMapPut(%s, ", dictName))
-			gen.generateNode(keyNode)
-			gen.output.WriteString(", (void*)(intptr_t)")
-			gen.generateNode(valueNode)
-			gen.output.WriteString(");\n")
+			gen.generateDictPutTyped(dictName, keyNode, valueNode)
 			return
 		}
 
@@ -2319,18 +2315,16 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				objectType = varType
 			}
 
-			// If object is dict, HashMap*, generic, any, or intptr_t, use hashMapPut
+			// If object is dict, HashMap*, generic, any, or intptr_t, store the value
+			// through the typed putter (see generateDictPutTyped)
 			if objectType == "dict" || objectType == "HashMap*" || objectType == "generic" || objectType == "any" || objectType == "intptr_t" ||
 				strings.HasPrefix(objectType, "dict[") || strings.HasPrefix(objectType, "dict<") {
-				gen.output.WriteString("hashMapPut(")
-				// Cast generic/any/intptr_t to HashMap*
+				keyNode := &ahoy.ASTNode{Type: ahoy.NODE_STRING, Value: propertyName, Line: node.Line}
+				dictExpr := objectName
 				if objectType == "generic" || objectType == "any" || objectType == "intptr_t" {
-					gen.output.WriteString("(HashMap*)")
+					dictExpr = "(HashMap*)" + objectName
 				}
-				gen.output.WriteString(objectName)
-				gen.output.WriteString(fmt.Sprintf(", \"%s\", (void*)(intptr_t)", propertyName))
-				gen.generateNode(node.Children[1])
-				gen.output.WriteString(");\n")
+				gen.generateDictPutTyped(dictExpr, keyNode, node.Children[1])
 				return
 			}
 		}
@@ -4834,7 +4828,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 
 					// Check if this is HashMap member access or dict access - we can't determine type at codegen time
 					isHashMapAccess := false
-					if arg.Type == ahoy.NODE_MEMBER_ACCESS && len(arg.Children) > 0 {
+					if arg.Type == ahoy.NODE_MEMBER_ACCESS && len(arg.Children) > 0 && !isDictSizeMember(arg.Value) {
 						objType := gen.inferType(arg.Children[0])
 						if objType == "HashMap*" || objType == "dict" {
 							isHashMapAccess = true
@@ -5052,7 +5046,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 							}
 						} else if arg.Type == ahoy.NODE_MEMBER_ACCESS && len(arg.Children) > 0 {
 							objType := gen.inferType(arg.Children[0])
-							if objType == "HashMap*" || objType == "dict" {
+							if (objType == "HashMap*" || objType == "dict") && !isDictSizeMember(arg.Value) {
 								// Use format_dict_value helper
 								gen.output.WriteString("format_dict_value(")
 								gen.generateNode(arg.Children[0])
@@ -7058,6 +7052,36 @@ func (gen *CodeGenerator) generateDictAccess(node *ahoy.ASTNode) {
 
 	gen.generateNode(node.Children[0])
 	gen.output.WriteString(")")
+}
+
+// generateDictPutTyped emits a hashMapPutTyped call for one key/value pair.
+// The runtime tags every entry with its value type, and readers (format_dict_value,
+// hashMapGetDouble) believe that tag, so an int stored through the untyped
+// hashMapPut was read back as a char* and crashed. Floats are heap-allocated
+// because the runtime keeps AHOY_TYPE_FLOAT values as double* (see hashMapGetTyped).
+// dictExpr is emitted verbatim, so a caller that needs a cast must include it.
+func (gen *CodeGenerator) generateDictPutTyped(dictExpr string, keyNode, valueNode *ahoy.ASTNode) {
+	valueType := gen.inferType(valueNode)
+	ahoyTypeEnum := gen.getAhoyTypeEnum(valueType)
+
+	gen.output.WriteString("hashMapPutTyped(")
+	gen.output.WriteString(dictExpr)
+	gen.output.WriteString(", ")
+	gen.generateNode(keyNode)
+	gen.output.WriteString(", ")
+
+	if valueType == "float" || valueType == "double" {
+		floatVar := fmt.Sprintf("__float_ptr_%d", gen.varCounter)
+		gen.varCounter++
+		gen.output.WriteString(fmt.Sprintf("(void*)({ double* %s = malloc(sizeof(double)); *%s = ", floatVar, floatVar))
+		gen.generateNode(valueNode)
+		gen.output.WriteString(fmt.Sprintf("; %s; })", floatVar))
+	} else {
+		gen.output.WriteString("(void*)(intptr_t)")
+		gen.generateNode(valueNode)
+	}
+
+	gen.output.WriteString(fmt.Sprintf(", %s);\n", ahoyTypeEnum))
 }
 
 func (gen *CodeGenerator) generateDictLiteral(node *ahoy.ASTNode) {
@@ -9375,6 +9399,13 @@ func (gen *CodeGenerator) generateNestedStruct(node *ahoy.ASTNode, parentName st
 // Generate method call
 
 // Generate member access
+// isDictSizeMember reports whether a member name asks for a collection's entry
+// count rather than a key stored in it. A dict answers `length`/`size` with
+// HashMap::size; anything else is a key lookup.
+func isDictSizeMember(name string) bool {
+	return name == "length" || name == "size"
+}
+
 func (gen *CodeGenerator) generateMemberAccess(node *ahoy.ASTNode) {
 	object := node.Children[0]
 	memberName := node.Value
@@ -9437,6 +9468,14 @@ func (gen *CodeGenerator) generateMemberAccess(node *ahoy.ASTNode) {
 	}
 
 	if objectType == "HashMap*" || objectType == "dict" {
+		// A dict answers length/size with its entry count. Without this the member
+		// was looked up as a key, which printed an empty value for `d.length`.
+		if isDictSizeMember(memberName) {
+			gen.output.WriteString("(")
+			gen.generateNodeInternal(object, false)
+			gen.output.WriteString(")->size")
+			return
+		}
 		// Anonymous object stored in HashMap - use hashMapGet
 		// Note: returns void*, caller needs to cast appropriately
 		gen.output.WriteString("hashMapGet(")

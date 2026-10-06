@@ -137,6 +137,7 @@ func (p *Parser) parseStatement() *ASTNode {
 			}
 		}
 		stmt := p.parseAssignmentOrExpression()
+		p.trackStatementArrayMutation(stmt)
 		// Validate no function calls at global scope when program is declared
 		if p.LintMode && p.hasProgramDecl && !p.inFunctionBody && stmt != nil {
 			p.validateNoGlobalFunctionCalls(stmt)
@@ -149,7 +150,9 @@ func (p *Parser) parseStatement() *ASTNode {
 		p.advance()
 		return nil
 	default:
-		return p.parseAssignmentOrExpression()
+		stmt := p.parseAssignmentOrExpression()
+		p.trackStatementArrayMutation(stmt)
+		return stmt
 	}
 }
 

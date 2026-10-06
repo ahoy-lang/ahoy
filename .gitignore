@@ -7,3 +7,7 @@ raylib_test
 *.exe
 output/
 repos/
+
+# agent scratch space
+.scratch/
+.pi/

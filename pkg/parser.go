@@ -710,6 +710,27 @@ func (p *Parser) collectionTypeMatches(expectedType, actualType string) bool {
 	return true
 }
 
+// trackStatementArrayMutation records that a bare method-call statement such as
+// `xs.push|1|` or `xs.pop||` changes an array's length. The length is then no
+// longer known: a pop and a conditional or repeated push cannot be bounded
+// statically, and pretending otherwise made every literal index read after a
+// push look out of bounds. Bounds checking still covers arrays that are only
+// ever written by their literal.
+func (p *Parser) trackStatementArrayMutation(stmt *ASTNode) {
+	if stmt == nil || stmt.Type != NODE_METHOD_CALL || len(stmt.Children) == 0 {
+		return
+	}
+	object := stmt.Children[0]
+	if object == nil || object.Type != NODE_IDENTIFIER {
+		return
+	}
+
+	switch stmt.Value {
+	case "push", "pop", "append", "prepend", "remove", "insert", "clear":
+		p.arrayLengths[object.Value] = ArrayInfo{IsKnown: false}
+	}
+}
+
 // trackArrayMethodLength tracks array length after method calls
 func (p *Parser) trackArrayMethodLength(varName string, methodCall *ASTNode) {
 	if len(methodCall.Children) == 0 {
