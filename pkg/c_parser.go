@@ -67,7 +67,7 @@ func ParseCHeader(path string) (*CHeaderInfo, error) {
 			parseRLAPIFunction(line, lineNum, path, info)
 		} else if parseMacroFunction(line, lineNum, path, info) {
 			// Successfully parsed as macro function (like CJSON_PUBLIC)
-		} else if strings.Contains(line, "(") && strings.Contains(line, ");") && !strings.HasPrefix(line, "typedef") && !strings.HasPrefix(line, "#") {
+		} else if strings.Contains(line, "(") && strings.Contains(line, ");") && !strings.HasPrefix(line, "typedef") && !strings.HasPrefix(line, "#") && !looksLikeCStatement(line) {
 			// Try to parse as generic function declaration
 			parseRLAPIFunction(line, lineNum, path, info)
 		}
@@ -104,6 +104,33 @@ func ParseCHeader(path string) (*CHeaderInfo, error) {
 	}
 
 	return info, nil
+}
+
+// looksLikeCStatement reports whether a line that happens to contain "(" and
+// ");" is really a statement rather than a declaration. Header bodies are
+// scanned line by line, so `return ahoy_path_join(dir, name);` inside a
+// function used to be registered as a declaration of ahoy_path_join with the
+// return type "return" -- and overwrote the real signature, which made every
+// variable declared from that call carry the type "return".
+func looksLikeCStatement(line string) bool {
+	if strings.HasPrefix(line, "}") || strings.HasPrefix(line, "{") {
+		return true
+	}
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return true
+	}
+	switch fields[0] {
+	case "return", "if", "else", "while", "for", "switch", "case", "default",
+		"do", "goto", "break", "continue", "sizeof", "assert", "static_assert":
+		return true
+	}
+	// a type followed by an assignment before the first "(" is a body statement
+	paren := strings.Index(line, "(")
+	if paren > 0 && strings.Contains(line[:paren], "=") {
+		return true
+	}
+	return false
 }
 
 // normaliseCReturnType removes the parts of a C return type that do not change
@@ -203,7 +230,7 @@ func splitCFuncName(field string) (name string, stars string) {
 	return name, stars
 }
 
-//	SOME_MACRO(void) MyFunction(int x);
+// SOME_MACRO(void) MyFunction(int x);
 func parseMacroFunction(line string, lineNum int, filePath string, info *CHeaderInfo) bool {
 	// Skip #define lines
 	if strings.HasPrefix(line, "#define") || strings.HasPrefix(line, "typedef") {
