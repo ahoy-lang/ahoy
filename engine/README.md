@@ -8,10 +8,10 @@ engine/
   renderer.ahoy   Renderer contract (a table of function values) + raylib backend
   core.ahoy       Node, the scene array, scripts, node tree, groups, draw passes
   scene_file.ahoy loading nodes from a text level file
-  assets.ahoy     texture and text registry, async text loading on the job pool
+  assets.ahoy     texture/model/text registry, async text loading on the job pool
   runtime.ahoy    the frame loop (2D and 3D)
 demo/             a 2D game: its level comes from a scene file loaded on the pool
-demo3d/           a 3D scene: cubes parented to a pivot node
+demo3d/           cubes parented to a pivot node + spinning .obj meshes
 ```
 
 ## Build and run
@@ -92,8 +92,25 @@ The same nodes and scripts drive both:
   camera, which is why the passes are split.
 - `engine_run_3d|nodes, r, camera, textures|` wraps that loop.
 
-`demo3d/main.ahoy` parents six cubes to a pivot node and orbits them by rotating
-each cube's own local position with `vector3rotate_by_axis_angle` (raymath).
+### Meshes and models
+
+`load_model` reads an .obj/.glb through the renderer and `node_mesh|name, index|`
+puts it in the scene. A mesh node spins around its Y axis by its `rot` (degrees)
+and scales with the node tree:
+
+```ahoy
+pyramid: assets_load_model|r, a.models, a.model_names, "pyramid", "demo3d/assets/pyramid.obj"|
+rock: node_mesh|"rock", pyramid|
+rock.x = 3.4
+rock.process = &spin_process        ? n.rot = n.rot + 70.0 * dt
+node_add|nodes, rock|
+```
+
+Scene files accept `mesh name x y z model=pyramid`.
+
+`demo3d/main.ahoy` parents six cubes to a pivot node, orbits them by rotating
+each cube's own local position with `vector3rotate_by_axis_angle` (raymath), and
+spins two pyramids loaded from `demo3d/assets/pyramid.obj`.
 
 ## Scene files
 
@@ -177,9 +194,8 @@ of locals, and imported-package validation.
 
 ## Next slices (towards Godot-style node parity)
 
-1. **Meshes and models**: `load_model`/`draw_model` entries and a mesh node kind.
-2. **Async textures** via a small C glue header (decode on the worker, upload on
-   the main thread in the drain handler).
+1. **Async textures** via a small C glue header (decode on the worker, upload on
+   the main thread in the drain handler); models load synchronously for now.
 3. **Signals**: an `array[Signal]` per node (a struct holding the handler, since
    calling a function value straight out of an array is rejected) plus `emit`.
 4. **Hot reload** of the gameplay layer (`-hotreload`) with the engine kept in

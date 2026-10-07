@@ -194,7 +194,7 @@ $
 
 		if spawned is 0 and scene_texts.length > 0 then
 			body: scene_texts[0]
-			added: scene_load|nodes, body, a.textures, a.tex_names|
+			added: scene_load|nodes, body, a|
 			attach_scripts|nodes|
 			spawned = added
 		$
@@ -203,7 +203,7 @@ $
 			level_shown = 1
 		$
 
-		engine_frame|nodes, r, a.textures|
+		engine_frame|nodes, r, a|
 
 		when DEMO_SHOT then
 			if frames is 60 then

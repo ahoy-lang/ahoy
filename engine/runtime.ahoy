@@ -18,7 +18,7 @@ $
 $
 
 ? One frame: update every script, then draw the scene in list order.
-@ engine_frame |nodes:array[Node], r:Renderer, textures:array[Texture2D]| float:
+@ engine_frame |nodes:array[Node], r:Renderer, a:Assets| float:
 	dt: r.frame_time||
 	? a long stall (window drag, breakpoint) must not teleport everything
 	if dt > 0.25 then
@@ -28,31 +28,31 @@ $
 
 	r.begin_frame||
 	r.clear|16, 18, 24|
-	scene_draw|nodes, r, textures|
+	scene_draw|nodes, r, a.textures|
 	r.end_frame||
 
 	return dt
 $
 
-@ engine_run |nodes:array[Node], r:Renderer, textures:array[Texture2D]| void:
+@ engine_run |nodes:array[Node], r:Renderer, a:Assets| void:
 	? `loop till COND` runs *while* COND holds; wait for the close flag
 	loop till not r.should_close|| do
-		engine_frame|nodes, r, textures|
+		engine_frame|nodes, r, a|
 	$
 	r.close||
 $
 
 ? Run until a script sets the quit flag, or the window closes. The flag is a
 ? one-element array so the call shares it with scripts (arrays are pointers).
-@ engine_run_until |nodes:array[Node], r:Renderer, textures:array[Texture2D], quit:array| void:
+@ engine_run_until |nodes:array[Node], r:Renderer, a:Assets, quit:array| void:
 	loop till not (r.should_close|| or quit[0] is 1) do
-		engine_frame|nodes, r, textures|
+		engine_frame|nodes, r, a|
 	$
 	r.close||
 $
 
 ? 3D frame: same script pass, then the camera bracket instead of 2D draw.
-@ engine_frame_3d |nodes:array[Node], r:Renderer, camera:Camera3D, textures:array[Texture2D]| float:
+@ engine_frame_3d |nodes:array[Node], r:Renderer, camera:Camera3D, a:Assets| float:
 	dt: r.frame_time||
 	if dt > 0.25 then
 		dt = 0.25
@@ -61,18 +61,18 @@ $
 
 	r.begin_frame||
 	r.clear|14, 16, 24|
-	scene_draw_3d|nodes, r, camera|
+	scene_draw_3d|nodes, r, camera, a.models|
 	? labels, rects and sprites are the overlay: screen space, so they draw
 	? outside the 3D bracket
-	scene_draw_2d|nodes, r, textures|
+	scene_draw_2d|nodes, r, a.textures|
 	r.end_frame||
 
 	return dt
 $
 
-@ engine_run_3d |nodes:array[Node], r:Renderer, camera:Camera3D, textures:array[Texture2D]| void:
+@ engine_run_3d |nodes:array[Node], r:Renderer, camera:Camera3D, a:Assets| void:
 	loop till not r.should_close|| do
-		engine_frame_3d|nodes, r, camera, textures|
+		engine_frame_3d|nodes, r, camera, a|
 	$
 	r.close||
 $

@@ -31,6 +31,7 @@ enum:int NodeKind:
 	5 cube
 	6 sphere
 	7 node3d
+	8 mesh
 $
 
 struct Node:
@@ -53,6 +54,7 @@ struct Node:
 	groups: string
 	tint: int
 	texture: int
+	model: int
 	text: string
 	font_size: int
 	? script state slots: per-node values a script can use without a dict
@@ -111,6 +113,13 @@ $
 
 @ node_3d |name:string| Node:
 	return node_make|NodeKind.node3d, name|
+$
+
+? A loaded mesh/model, drawn spinning around its Y axis by its `rot`.
+@ node_mesh |name:string, model:int| Node:
+	n: Node = node_make|NodeKind.mesh, name|
+	n.model = model
+	return n
 $
 
 @ node_sphere |name:string, radius:float| Node:
@@ -375,6 +384,15 @@ $
 	nodes[id] = cur
 $
 
+@ node_set_model |nodes:array[Node], id:int, model:int| void:
+	if id < 0 then
+		return
+	$
+	cur: nodes[id]
+	cur.model = model
+	nodes[id] = cur
+$
+
 @ node_set_texture |nodes:array[Node], id:int, texture:int| void:
 	if id < 0 then
 		return
@@ -499,17 +517,17 @@ $
 $
 
 ? 3D pass: world (x, y, z) with y up, between the backend's begin3d/end3d.
-@ scene_draw_3d |nodes:array[Node], r:Renderer, camera:Camera3D| void:
+@ scene_draw_3d |nodes:array[Node], r:Renderer, camera:Camera3D, models:array[Model]| void:
 	order: array[int] = build_draw_order|nodes|
 	r.begin3d|camera|
 	r.draw_grid|40, 1.0|
 	loop k:0 to order.length do
-		draw_node_3d|nodes, order[k], r|
+		draw_node_3d|nodes, order[k], r, models|
 	$
 	r.end3d||
 $
 
-@ draw_node_3d |nodes:array[Node], id:int, r:Renderer| void:
+@ draw_node_3d |nodes:array[Node], id:int, r:Renderer, models:array[Model]| void:
 	if id < 0 or id >= nodes.length then
 		return
 	$
@@ -530,6 +548,15 @@ $
 		radius: cur.w * ws
 		r.draw_sphere|pos, radius, cur.tint|
 		r.draw_sphere_wires|pos, radius, 8, 8, TINT_GREY|
+	$
+	if cur.kind is NodeKind.mesh then
+		mesh: node_model|models, cur.model|
+		valid: r.model_valid|mesh|
+		if valid then
+			axis: Vector3 = Vector3{x: 0.0, y: 1.0, z: 0.0}
+			unit: Vector3 = Vector3{x: ws, y: ws, z: ws}
+			r.draw_model_ex|mesh, pos, axis, cur.rot, unit, cur.tint|
+		$
 	$
 	? node3d carries no primitive: its script places whatever it wants
 	if cur.kind is NodeKind.node3d then
@@ -569,6 +596,14 @@ $
 $
 
 ? texture registry: index -> Texture2D (see assets.ahoy, which fills it) -----
+
+@ node_model |models:array[Model], index:int| Model:
+	if index < 0 or index >= models.length then
+		return Model{}
+	$
+	mesh: models[index]
+	return mesh
+$
 
 @ node_texture |textures:array[Texture2D], index:int| Texture2D:
 	if index < 0 or index >= textures.length then

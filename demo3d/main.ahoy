@@ -44,6 +44,18 @@ $
 	nodes[id] = n
 $
 
+@ pyramid_process |nodes:array[Node], id:int, dt:float, r:Renderer| void:
+	n: nodes[id]
+	? rot is the spin angle draw_model_ex uses, in degrees
+	n.rot = n.rot + 70.0 * dt
+	if n.rot > 360.0 then
+		n.rot = n.rot - 360.0
+	$
+	n.timer = n.timer + dt
+	n.y = 0.8 + 0.4 * (n.timer * 0.8)
+	nodes[id] = n
+$
+
 @ hud_process |nodes:array[Node], id:int, dt:float, r:Renderer| void:
 	n: nodes[id]
 	ms: r.frame_time||
@@ -53,7 +65,7 @@ $
 	nodes[id] = n
 $
 
-@ build_world || array[Node]:
+@ build_world |r:Renderer, a:Assets| array[Node]:
 	nodes: array[Node] = []
 
 	? the pivot is a plain node: its children inherit its position
@@ -74,6 +86,24 @@ $
 		orb_id: node_add|nodes, orb|
 		node_add_child|nodes, pivot_id, orb_id|
 	$
+
+	? a model loaded from a plain .obj file, spinning around its Y axis
+	pyramid_model: assets_load_model|r, a.models, a.model_names, "pyramid", "demo3d/assets/pyramid.obj"|
+	rock: node_mesh|"rock", pyramid_model|
+	rock.x = 3.4
+	rock.y = 0.8
+	rock.rot = 0.0
+	rock.tint = TINT_GREEN
+	rock.process = &pyramid_process
+	node_add|nodes, rock|
+
+	rock2: node_mesh|"rock2", pyramid_model|
+	rock2.x = -3.4
+	rock2.y = 0.8
+	rock2.rot = 180.0
+	rock2.tint = TINT_RED
+	rock2.process = &pyramid_process
+	node_add|nodes, rock2|
 
 	ball: node_sphere|"ball", 0.9|
 	ball.tint = TINT_YELLOW
@@ -99,7 +129,7 @@ $
 
 @ main ||:
 	nodes: array[Node] = []
-	textures: array[Texture2D] = []
+	a: Assets = assets_new||
 	r: Renderer = make_null_renderer||
 	quit: [0]
 
@@ -111,13 +141,13 @@ $
 	camera: Camera3D{position: Vector3{x: 0.0, y: 6.5, z: 11.0}, target: Vector3{x: 0.0, y: 1.2, z: 0.0}, up: Vector3{x: 0.0, y: 1.0, z: 0.0}, fovy: 45.0, projection: 0}
 
 	when BACKEND_RAYLIB then
-		nodes = build_world||
+		nodes = build_world|r, a|
 	$
 
 	frames: 0
 	loop till not (r.should_close|| or quit[0] is 1) do
 		frames = frames + 1
-		engine_frame_3d|nodes, r, camera, textures|
+		engine_frame_3d|nodes, r, camera, a|
 
 		when DEMO_SHOT then
 			if frames is 60 then

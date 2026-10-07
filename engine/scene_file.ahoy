@@ -12,6 +12,7 @@ program ahoy_engine
 ?     cube   core   0   1   0   1.4         ? kind name x y z size
 ?     sphere ball   0   2   0   0.9
 ?     node3d rig    0   0   0               ? scripted 3D node
+?     mesh   rock   3   0   0   model=pyramid
 ?
 ? Optional key=value tokens after the positionals: layer=N, group=NAME,
 ? texture=NAME, tint=red|green|blue|yellow|black|grey|white. A label's text is the quoted string:
@@ -27,19 +28,19 @@ program ahoy_engine
 
 ? The loader is defensive on purpose: a scene file is data, so a malformed
 ? line is skipped rather than crashing the game at startup.
-@ scene_load |nodes:array[Node], text:string, textures:array[Texture2D], tex_names:array[string]| int:
+@ scene_load |nodes:array[Node], text:string, a:Assets| int:
 	lines: array[string] = text.split|"\n"|
 	added: 0
 	loop i:0 to lines.length do
-		added = added + scene_load_line|nodes, lines[i], textures, tex_names|
+		added = added + scene_load_line|nodes, lines[i], a|
 	$
 	return added
 $
 
 ? One node per line; returns 1 when a node was added, 0 otherwise.
 ? Positional: kind name x y [size/texture] [z]; then any of layer=N group=NAME
-? texture=NAME. A label's text is the quoted string.
-@ scene_load_line |nodes:array[Node], line:string, textures:array[Texture2D], tex_names:array[string]| int:
+? texture=NAME model=NAME tint=COLOUR. A label's text is the quoted string.
+@ scene_load_line |nodes:array[Node], line:string, a:Assets| int:
 	body: line.strip||
 	if body is "" then
 		return 0
@@ -113,7 +114,7 @@ $
 		if wanted is "" and parts.length >= 5 then
 			wanted = parts[4]
 		$
-		tex_index: assets_texture_index|tex_names, wanted|
+		tex_index: assets_texture_index|a.tex_names, wanted|
 		n = node_sprite|name, tex_index|
 	$
 	if kind is "rect" then
@@ -142,6 +143,17 @@ $
 	$
 	if kind is "node3d" then
 		n = node_3d|name|
+		if parts.length >= 5 then
+			n.z = float(parts[4])
+		$
+	$
+	if kind is "mesh" then
+		wanted_model: tex_name
+		if wanted_model is "" and parts.length >= 5 then
+			wanted_model = parts[4]
+		$
+		model_index: assets_model_index|a.model_names, wanted_model|
+		n = node_mesh|name, model_index|
 		if parts.length >= 5 then
 			n.z = float(parts[4])
 		$

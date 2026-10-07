@@ -24,12 +24,14 @@ import "/home/lee/Documents/ahoy-lang/ahoy/repos/raylib/src/raylib.h"
 struct Assets:
 	textures: array[Texture2D]
 	tex_names: array[string]
+	models: array[Model]
+	model_names: array[string]
 	texts: array[string]
 	text_names: array[string]
 $
 
 @ assets_new || Assets:
-	return Assets{textures: [], tex_names: [], texts: [], text_names: []}
+	return Assets{textures: [], tex_names: [], models: [], model_names: [], texts: [], text_names: []}
 $
 
 ? -- textures ---------------------------------------------------------------
@@ -63,6 +65,33 @@ $
 	textures: array[Texture2D] = a.textures
 	idx: assets_texture_index|names, name|
 	return node_texture|textures, idx|
+$
+
+? -- models -----------------------------------------------------------------
+
+@ assets_model_index |names:array[string], name:string| int:
+	loop i:0 to names.length do
+		if names[i] is name then
+			return i
+		$
+	$
+	return -1
+$
+
+@ assets_load_model |r:Renderer, models:array[Model], names:array[string], name:string, path:string| int:
+	existing: assets_model_index|names, name|
+	if existing >= 0 then
+		return existing
+	$
+	m: r.load_model|path|
+	idx: models.length
+	models.push|m|
+	names.push|name|
+	return idx
+$
+
+@ assets_model_count |a:Assets| int:
+	return a.models.length
 $
 
 ? -- text files -------------------------------------------------------------
