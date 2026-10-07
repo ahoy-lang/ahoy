@@ -116,6 +116,24 @@ $
 	nodes[id] = n
 $
 
+? --- signals ----------------------------------------------------------------
+
+? A handler gets the scene and the assets, so it can use the engine API like
+? any other game code. main owns the button check and emits; the handler spawns.
+@ on_spawn |nodes:array[Node], a:Assets, payload:int| void:
+	slot: nodes.length % 8
+	x: 120.0 + float(slot) * 44.0
+	crate_tex: assets_texture_index|a.tex_names, "crate"|
+	c: node_sprite|"crate_extra", crate_tex|
+	c.x = x
+	c.y = 300.0
+	c.layer = 2
+	c.groups = "props"
+	c.tint = TINT_BLUE
+	c.process = &crate_process
+	node_add|nodes, c|
+$
+
 ? --- scene wiring -----------------------------------------------------------
 
 ? A scene file names nodes; the game decides what they do. Scripts are just
@@ -165,6 +183,8 @@ $
 	$
 
 	a: Assets = assets_new||
+	signals: array[Signal] = signals_new||
+	signal_connect|signals, "spawn", &on_spawn|
 	? textures load on the main thread: uploading needs the GL context
 	assets_load_texture|r, a.textures, a.tex_names, "player", "demo/assets/player.png"|
 	assets_load_texture|r, a.textures, a.tex_names, "gem", "demo/assets/gem.png"|
@@ -203,9 +223,23 @@ $
 			level_shown = 1
 		$
 
+		? immediate-mode UI: the game checks its own button each frame
+		btn: node_find|nodes, "btn"|
+		if btn >= 0 then
+			clicked: ui_button|nodes, btn, r|
+			if clicked then
+				fired: signal_emit|signals, "spawn", nodes, a, 1|
+			$
+		$
+
 		engine_frame|nodes, r, a|
 
 		when DEMO_SHOT then
+			? no mouse in a headless run: drive the button's signal directly so
+			? the screenshot covers the spawn path too
+			if frames is 45 then
+				fired: signal_emit|signals, "spawn", nodes, a, 1|
+			$
 			if frames is 60 then
 				take_screenshot|"demo/shot.png"|
 			$

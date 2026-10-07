@@ -9,6 +9,7 @@ engine/
   core.ahoy       Node, the scene array, scripts, node tree, groups, draw passes
   scene_file.ahoy loading nodes from a text level file
   assets.ahoy     texture/model/text registry, async text loading on the job pool
+  signals.ahoy    named handler lists (connect/emit)
   runtime.ahoy    the frame loop (2D and 3D)
 demo/             a 2D game: its level comes from a scene file loaded on the pool
 demo3d/           cubes parented to a pivot node + spinning .obj meshes
@@ -130,6 +131,41 @@ A label's text is the quoted string. `scene_load` returns how many nodes it
 added and skips malformed lines. Scripts are attached by the game afterwards
 (`node_find` then `node_set_script`).
 
+## UI and signals
+
+Hit testing follows each kind's anchor, matching how it is drawn: a sprite is
+centred on its position, a rect and a label start at it (a label's box is its
+measured text). `node_hit|nodes, id, r, mx, my|`, `node_hovered` and
+`ui_button|nodes, id, r|` (true on the frame the left button goes down inside)
+all use world coordinates, so they follow the node tree.
+
+```ahoy
+btn: node_find|nodes, "btn"|
+clicked: ui_button|nodes, btn, r|
+if clicked then
+    fired: signal_emit|signals, "spawn", nodes, a, 1|
+$
+```
+
+Signals are a named handler list in an array you own
+(`engine/signals.ahoy`): `signals_new`, `signal_connect|signals, "spawn",
+&on_spawn|`, `signal_emit|signals, "spawn", nodes, a, payload|` (returns how many
+handlers ran), `signal_disconnect`, `signal_count`. A handler receives the
+scene, the assets and one int payload:
+
+```ahoy
+@ on_spawn |nodes:array[Node], a:Assets, payload:int| void:
+    crate_tex: assets_texture_index|a.tex_names, "crate"|
+    c: node_sprite|"crate_extra", crate_tex|
+    c.groups = "props"
+    node_add|nodes, c|
+$
+```
+
+Handlers get the scene because a handler that cannot reach it cannot do much,
+and because a closure cannot call a helper (a call inside a lambda body does not
+parse), so lambdas are not an option here.
+
 ## Renderer contract
 
 `Renderer` is a struct of function values: window and frame (`open`, `clear`,
@@ -196,12 +232,12 @@ of locals, and imported-package validation.
 
 1. **Async textures** via a small C glue header (decode on the worker, upload on
    the main thread in the drain handler); models load synchronously for now.
-3. **Signals**: an `array[Signal]` per node (a struct holding the handler, since
-   calling a function value straight out of an array is rejected) plus `emit`.
-4. **Hot reload** of the gameplay layer (`-hotreload`) with the engine kept in
+3. **Hot reload** of the gameplay layer (`-hotreload`) with the engine kept in
    its own package: scripts are exactly the part that changes.
-5. **Text/UI**: raygui widgets behind a small layout layer, mouse hit-testing and
-   a `ui_button` helper.
+4. **Text/UI**: raygui widgets behind a small layout layer, keyboard focus and
+   text entry, anchored layouts instead of absolute positions.
+5. **Signals per node** (today they are a list the game owns) once a node can
+   hold a list of handlers without the struct-field array push limitation.
 
 ## Tests
 

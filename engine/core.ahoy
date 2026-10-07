@@ -447,6 +447,66 @@ $
 	nodes[id] = cur
 $
 
+? -- UI hit testing ----------------------------------------------------------
+?
+? Anchors differ by kind, matching how each is drawn: a sprite is centred on
+? its position and scaled by its texture, while a rect and a label start at
+? the position (a label's box comes from its measured text). Everything uses
+? world coordinates, so hit tests follow the node tree.
+
+@ node_hit |nodes:array[Node], id:int, r:Renderer, mx:float, my:float| bool:
+	if id < 0 or id >= nodes.length then
+		return false
+	$
+	cur: nodes[id]
+	if not cur.visible or cur.kind is NodeKind.dead then
+		return false
+	$
+	wx: node_world_x|nodes, id|
+	wy: node_world_y|nodes, id|
+	ws: node_world_scale|nodes, id|
+	left: wx
+	top: wy
+	w: cur.w * ws
+	h: cur.h * ws
+	if cur.kind is NodeKind.sprite then
+		w = 32.0 * ws
+		h = 32.0 * ws
+		left = wx - w / 2.0
+		top = wy - h / 2.0
+	$
+	if cur.kind is NodeKind.label then
+		text_w: r.text_width|cur.text, cur.font_size|
+		w = float(text_w)
+		h = float(cur.font_size)
+	$
+	if cur.kind is NodeKind.cube or cur.kind is NodeKind.sphere or cur.kind is NodeKind.mesh or cur.kind is NodeKind.node3d then
+		return false
+	$
+	if mx < left or mx > left + w then
+		return false
+	$
+	if my < top or my > top + h then
+		return false
+	$
+	return true
+$
+
+@ node_hovered |nodes:array[Node], id:int, r:Renderer| bool:
+	mx: r.mouse_x||
+	my: r.mouse_y||
+	return node_hit|nodes, id, r, mx, my|
+$
+
+? True on the frame the left button goes down inside the node. Immediate mode:
+? the game draws the button, this tells it whether it was clicked.
+@ ui_button |nodes:array[Node], id:int, r:Renderer| bool:
+	if not node_hovered|nodes, id, r| then
+		return false
+	$
+	return r.mouse_pressed|MOUSE_LEFT|
+$
+
 ? the frame ----------------------------------------------------------------
 
 @ scene_process |nodes:array[Node], dt:float, r:Renderer| void:

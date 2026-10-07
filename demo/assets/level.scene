@@ -13,3 +13,5 @@ label title 24 20 "ahoy engine demo" layer=3
 label hint 24 56 "arrows / wasd to move   R to ping the gem   esc to quit" layer=3
 label hud 24 84 "" layer=3
 label level 24 400 "loading level text on the job pool..." layer=3
+rect btn 540 84 156 26 layer=3 tint=blue
+label btn_label 552 88 "click to spawn a crate" layer=4
