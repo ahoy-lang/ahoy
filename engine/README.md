@@ -131,6 +131,30 @@ A label's text is the quoted string. `scene_load` returns how many nodes it
 added and skips malformed lines. Scripts are attached by the game afterwards
 (`node_find` then `node_set_script`).
 
+## Animation and gameplay helpers
+
+An animated sprite is a horizontal strip of `frame_count` cells; put
+`anim_process` on the node and it advances at `frame_fps` and wraps:
+
+```ahoy
+flame: node_sprite_anim|"flame", flame_tex, 6, 10.0|
+flame.process = &anim_process
+```
+
+Scene files take `frames=6 fps=10` on a `sprite` line. `draw_sprite_region` in
+the renderer is what actually draws one cell (centred and scaled like
+`draw_sprite`).
+
+Gameplay helpers, all world-space and node-tree aware:
+
+- `node_box|nodes, id|` -> `[left, top, w, h]`; sprites default to a 32px box,
+  rects and labels use their own `w`/`h`.
+- `node_overlap|nodes, a, b|` AABB test, `node_overlaps_group|nodes, id, group|`
+  returns the first overlapping group member's id or -1 (the demo turns the orb
+  red while it touches a crate).
+- `node_set_lifetime|nodes, id, seconds|` + `lifetime_process` free a node when
+  its countdown ends, for self-cleaning effects.
+
 ## UI and signals
 
 Hit testing follows each kind's anchor, matching how it is drawn: a sprite is
@@ -236,7 +260,9 @@ of locals, and imported-package validation.
    its own package: scripts are exactly the part that changes.
 4. **Text/UI**: raygui widgets behind a small layout layer, keyboard focus and
    text entry, anchored layouts instead of absolute positions.
-5. **Signals per node** (today they are a list the game owns) once a node can
+5. **Camera2D** for scrolling worlds (`begin2d`/`end2d` entries plus a UI layer
+   split, so the HUD does not move with the world).
+6. **Signals per node** (today they are a list the game owns) once a node can
    hold a list of handlers without the struct-field array push limitation.
 
 ## Tests

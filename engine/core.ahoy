@@ -57,6 +57,10 @@ struct Node:
 	model: int
 	text: string
 	font_size: int
+	? sprite animation: a horizontal strip of frame_count cells
+	frame: int
+	frame_count: int
+	frame_fps: float
 	? script state slots: per-node values a script can use without a dict
 	vx: float
 	vy: float
@@ -87,6 +91,15 @@ $
 @ node_sprite |name:string, texture:int| Node:
 	n: Node = node_make|NodeKind.sprite, name|
 	n.texture = texture
+	return n
+$
+
+? An animated sprite: frame_count cells laid out left to right in the texture,
+? advanced by anim_process at frame_fps.
+@ node_sprite_anim |name:string, texture:int, frames:int, fps:float| Node:
+	n: Node = node_sprite|name, texture|
+	n.frame_count = frames
+	n.frame_fps = fps
 	return n
 $
 
@@ -507,6 +520,103 @@ $
 	return r.mouse_pressed|MOUSE_LEFT|
 $
 
+? -- animation and gameplay helpers -----------------------------------------
+
+? Attach to an animated sprite node: advances its frame and wraps.
+@ anim_process |nodes:array[Node], id:int, dt:float, r:Renderer| void:
+	n: nodes[id]
+	if n.frame_count > 1 then
+		step: 1.0 / n.frame_fps
+		n.timer = n.timer + dt
+		loop till n.timer >= step do
+			n.timer = n.timer - step
+			n.frame = n.frame + 1
+			if n.frame >= n.frame_count then
+				n.frame = 0
+			$
+		$
+	$
+	nodes[id] = n
+$
+
+? Axis-aligned overlap. Sprites are drawn centred with a 32px box unless the
+? node carries w/h; rects and labels use their own box.
+@ node_box |nodes:array[Node], id:int| array:
+	cur: nodes[id]
+	ws: node_world_scale|nodes, id|
+	left: node_world_x|nodes, id|
+	top: node_world_y|nodes, id|
+	w: cur.w * ws
+	h: cur.h * ws
+	if cur.kind is NodeKind.sprite then
+		w = 32.0 * ws
+		h = 32.0 * ws
+		left = left - w / 2.0
+		top = top - h / 2.0
+	$
+	box: []
+	box.push|left|
+	box.push|top|
+	box.push|w|
+	box.push|h|
+	return box
+$
+
+@ node_overlap |nodes:array[Node], a:int, b:int| bool:
+	if a < 0 or b < 0 or a >= nodes.length or b >= nodes.length then
+		return false
+	$
+	box_a: array = node_box|nodes, a|
+	box_b: array = node_box|nodes, b|
+	ax: float(box_a[0])
+	ay: float(box_a[1])
+	aw: float(box_a[2])
+	ah: float(box_a[3])
+	bx: float(box_b[0])
+	by: float(box_b[1])
+	bw: float(box_b[2])
+	bh: float(box_b[3])
+	if ax + aw < bx or bx + bw < ax then
+		return false
+	$
+	if ay + ah < by or by + bh < ay then
+		return false
+	$
+	return true
+$
+
+@ node_overlaps_group |nodes:array[Node], id:int, group:string| int:
+	ids: array = group_find|nodes, group|
+	loop k:0 to ids.length do
+		other: ids[k]
+		if other is not id and node_overlap|nodes, id, other then
+			return other
+		$
+	$
+	return -1
+$
+
+? Countdown: node_set_lifetime arms it, lifetime_process frees the node when it
+? runs out (self-cleaning effects).
+@ node_set_lifetime |nodes:array[Node], id:int, seconds:float| void:
+	if id < 0 then
+		return
+	$
+	cur: nodes[id]
+	cur.timer = seconds
+	nodes[id] = cur
+$
+
+@ lifetime_process |nodes:array[Node], id:int, dt:float, r:Renderer| void:
+	n: nodes[id]
+	n.timer = n.timer - dt
+	if n.timer <= 0.0 then
+		node_free|nodes, id|
+		return
+	$
+	nodes[id] = n
+$
+
 ? the frame ----------------------------------------------------------------
 
 @ scene_process |nodes:array[Node], dt:float, r:Renderer| void:
@@ -633,6 +743,12 @@ $
 	if tex.id is 0 then
 		? no texture: draw a placeholder box so the node is visible
 		r.draw_rect|wx - 16.0, wy - 16.0, 32.0, 32.0, cur.tint|
+		return
+	$
+	if cur.frame_count > 1 then
+		cell: float(tex.width) / float(cur.frame_count)
+		src: Rectangle = Rectangle{x: float(cur.frame) * cell, y: 0.0, width: cell, height: float(tex.height)}
+		r.draw_sprite_region|tex, src, wx, wy, cur.rot, ws, cur.tint|
 		return
 	$
 	r.draw_sprite|tex, wx, wy, cur.rot, ws, cur.tint|

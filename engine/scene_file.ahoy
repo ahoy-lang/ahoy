@@ -71,6 +71,8 @@ $
 	group_list: ""
 	tex_name: ""
 	tint: TINT_WHITE
+	frames: 1
+	frame_fps: 8.0
 	loop k:4 to parts.length do
 		kv: array[string] = parts[k].split|"="|
 		if kv.length is 2 then
@@ -85,6 +87,12 @@ $
 			$
 			if kv[0] is "tint" then
 				tint = scene_tint|kv[1]|
+			$
+			if kv[0] is "frames" then
+				frames = int(kv[1])
+			$
+			if kv[0] is "fps" then
+				frame_fps = float(kv[1])
 			$
 		$
 	$
@@ -115,7 +123,12 @@ $
 			wanted = parts[4]
 		$
 		tex_index: assets_texture_index|a.tex_names, wanted|
-		n = node_sprite|name, tex_index|
+		if frames > 1 then
+			n = node_sprite_anim|name, tex_index, frames, frame_fps|
+		$
+		if frames <= 1 then
+			n = node_sprite|name, tex_index|
+		$
 	$
 	if kind is "rect" then
 		if parts.length < 6 then

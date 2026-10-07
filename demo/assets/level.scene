@@ -5,12 +5,13 @@
 sprite player 200 180 player layer=1
 sprite gem 560 220 gem layer=1
 rect panel 300 340 220 40 layer=0 tint=red
+sprite flame 620 390 flame frames=6 fps=10 layer=1
 sprite crate0 120 340 crate layer=2 group=props tint=green
 sprite crate1 168 340 crate layer=2 group=props
 sprite crate2 216 340 crate layer=2 group=props
 sprite crate3 264 340 crate layer=2 group=props
 label title 24 20 "ahoy engine demo" layer=3
-label hint 24 56 "arrows / wasd to move   R to ping the gem   esc to quit" layer=3
+label hint 24 56 "arrows / wasd to move   touch a crate   click the button" layer=3
 label hud 24 84 "" layer=3
 label level 24 400 "loading level text on the job pool..." layer=3
 rect btn 540 84 156 26 layer=3 tint=blue

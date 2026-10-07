@@ -42,6 +42,16 @@ import "../engine"
 		n.rot = 0.0
 	$
 
+	? AABB against the props group: touching a crate turns the orb red. The
+	? hit test and the group scan are engine helpers, so a script stays short.
+	hit: node_overlaps_group|nodes, id, "props"|
+	if hit >= 0 then
+		n.tint = TINT_RED
+	$
+	if hit < 0 then
+		n.tint = TINT_WHITE
+	$
+
 	? keep it on screen
 	w: r.screen_w||
 	h: r.screen_h||
@@ -153,6 +163,10 @@ $
 	hint_id: node_find|nodes, "hint"|
 	node_set_script|nodes, hint_id, &hints_process|
 
+	? the flame is a 6-frame sprite sheet: anim_process advances it
+	flame_id: node_find|nodes, "flame"|
+	node_set_script|nodes, flame_id, &anim_process|
+
 	? every crate in the group gets the same script
 	crates: array = group_find|nodes, "props"|
 	loop k:0 to crates.length do
@@ -189,6 +203,7 @@ $
 	assets_load_texture|r, a.textures, a.tex_names, "player", "demo/assets/player.png"|
 	assets_load_texture|r, a.textures, a.tex_names, "gem", "demo/assets/gem.png"|
 	assets_load_texture|r, a.textures, a.tex_names, "crate", "demo/assets/crate.png"|
+	assets_load_texture|r, a.textures, a.tex_names, "flame", "demo/assets/flame.png"|
 
 	? One pool per kind of asset: drain() hands out every finished job of the
 	? pool, not just the ones from a given pending list, so two lists sharing a
