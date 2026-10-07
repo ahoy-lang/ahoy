@@ -520,6 +520,10 @@ $
 	return r.mouse_pressed|MOUSE_LEFT|
 $
 
+? Nodes at this layer and above are HUD: a camera frame draws them outside the
+? camera, so they stay put while the world scrolls.
+UI_LAYER:: int = 100
+
 ? -- animation and gameplay helpers -----------------------------------------
 
 ? Attach to an animated sprite node: advances its frame and wraps.
@@ -659,11 +663,17 @@ $
 ? 2D pass. Kinds sprite, label, rect and plain belong to screen space and also
 ? serve as the overlay a 3D scene draws on top (see engine_frame_3d).
 @ scene_draw_2d |nodes:array[Node], r:Renderer, textures:array[Texture2D]| void:
+	scene_draw_2d_range|nodes, r, textures, -100000, 100000|
+$
+
+? Only nodes whose layer is within [min_layer, max_layer]: a camera frame uses
+? this to draw the world inside the camera and the HUD outside it.
+@ scene_draw_2d_range |nodes:array[Node], r:Renderer, textures:array[Texture2D], min_layer:int, max_layer:int| void:
 	order: array[int] = build_draw_order|nodes|
 	loop k:0 to order.length do
 		i: order[k]
 		cur: nodes[i]
-		if cur.visible and cur.kind is not NodeKind.dead then
+		if cur.visible and cur.kind is not NodeKind.dead and cur.layer >= min_layer and cur.layer <= max_layer then
 			if cur.kind is NodeKind.sprite then
 				draw_sprite_node|nodes, i, r, textures|
 			$

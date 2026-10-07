@@ -11,6 +11,10 @@ program demo
 import "/home/lee/Documents/ahoy-lang/ahoy/repos/raylib/src/raylib.h"
 import "../engine"
 
+? the world the camera scrolls over (the window is 720x480)
+WORLD_W:: float = 1500.0
+WORLD_H:: float = 480.0
+
 ? --- scripts ----------------------------------------------------------------
 
 @ player_process |nodes:array[Node], id:int, dt:float, r:Renderer| void:
@@ -52,20 +56,20 @@ import "../engine"
 		n.tint = TINT_WHITE
 	$
 
-	? keep it on screen
-	w: r.screen_w||
-	h: r.screen_h||
+	? keep it inside the world (the camera scrolls over it)
+	w: WORLD_W
+	h: WORLD_H
 	if n.x < 20.0 then
 		n.x = 20.0
 	$
-	if n.x > float(w) - 20.0 then
-		n.x = float(w) - 20.0
+	if n.x > w - 20.0 then
+		n.x = w - 20.0
 	$
 	if n.y < 20.0 then
 		n.y = 20.0
 	$
-	if n.y > float(h) - 20.0 then
-		n.y = float(h) - 20.0
+	if n.y > h - 20.0 then
+		n.y = h - 20.0
 	$
 
 	nodes[id] = n
@@ -144,6 +148,39 @@ $
 	node_add|nodes, c|
 $
 
+@ camera_follow |nodes:array[Node], r:Renderer, camera:Camera2D, dt:float| Camera2D:
+	player_id: node_find|nodes, "player"|
+	view: Camera2D = camera
+	if player_id < 0 then
+		return view
+	$
+	p: nodes[player_id]
+	sw: r.screen_w||
+	sh: r.screen_h||
+	scale: float(sw) / 720.0
+	? aim the eye at the player, then clamp to the world
+	eye_x: p.x
+	eye_y: p.y
+	half_w: float(sw) / 2.0 / scale
+	half_h: float(sh) / 2.0 / scale
+	if eye_x < half_w then
+		eye_x = half_w
+	$
+	if eye_x > WORLD_W - half_w then
+		eye_x = WORLD_W - half_w
+	$
+	if eye_y < half_h then
+		eye_y = half_h
+	$
+	if eye_y > WORLD_H - half_h then
+		eye_y = WORLD_H - half_h
+	$
+	view.target = Vector2{x: eye_x, y: eye_y}
+	view.offset = Vector2{x: float(sw) / 2.0, y: float(sh) / 2.0}
+	view.zoom = scale
+	return view
+$
+
 ? --- scene wiring -----------------------------------------------------------
 
 ? A scene file names nodes; the game decides what they do. Scripts are just
@@ -217,6 +254,8 @@ $
 	assets_request_text|scene_pool, pending_scene, "demo/assets/level.scene"|
 	assets_request_text|text_pool, pending_level, "demo/assets/level1.txt"|
 
+	camera: Camera2D{offset: Vector2{x: 360.0, y: 240.0}, target: Vector2{x: 360.0, y: 240.0}, rotation: 0.0, zoom: 1.0}
+
 	spawned: 0
 	level_shown: 0
 	frames: 0
@@ -238,6 +277,8 @@ $
 			level_shown = 1
 		$
 
+		camera = camera_follow|nodes, r, camera, 0.016|
+
 		? immediate-mode UI: the game checks its own button each frame
 		btn: node_find|nodes, "btn"|
 		if btn >= 0 then
@@ -247,7 +288,7 @@ $
 			$
 		$
 
-		engine_frame|nodes, r, a|
+		engine_frame_camera|nodes, r, camera, a|
 
 		when DEMO_SHOT then
 			? no mouse in a headless run: drive the button's signal directly so

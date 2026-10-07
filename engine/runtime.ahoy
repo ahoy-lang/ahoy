@@ -77,6 +77,33 @@ $
 	r.close||
 $
 
+? 2D frame with a camera: world nodes (layer < UI_LAYER) scroll with it, HUD
+? nodes (layer >= UI_LAYER) draw afterwards in screen space.
+@ engine_frame_camera |nodes:array[Node], r:Renderer, camera:Camera2D, a:Assets| float:
+	dt: r.frame_time||
+	if dt > 0.25 then
+		dt = 0.25
+	$
+	scene_process|nodes, dt, r|
+
+	r.begin_frame||
+	r.clear|16, 18, 24|
+	r.begin2d|camera|
+	scene_draw_2d_range|nodes, r, a.textures, -100000, UI_LAYER - 1|
+	r.end2d||
+	scene_draw_2d_range|nodes, r, a.textures, UI_LAYER, 100000|
+	r.end_frame||
+
+	return dt
+$
+
+@ engine_run_camera |nodes:array[Node], r:Renderer, camera:Camera2D, a:Assets| void:
+	loop till not r.should_close|| do
+		engine_frame_camera|nodes, r, camera, a|
+	$
+	r.close||
+$
+
 @ engine_quit |quit:array| void:
 	quit[0] = 1
 $

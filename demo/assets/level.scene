@@ -10,9 +10,14 @@ sprite crate0 120 340 crate layer=2 group=props tint=green
 sprite crate1 168 340 crate layer=2 group=props
 sprite crate2 216 340 crate layer=2 group=props
 sprite crate3 264 340 crate layer=2 group=props
-label title 24 20 "ahoy engine demo" layer=3
-label hint 24 56 "arrows / wasd to move   touch a crate   click the button" layer=3
-label hud 24 84 "" layer=3
-label level 24 400 "loading level text on the job pool..." layer=3
-rect btn 540 84 156 26 layer=3 tint=blue
-label btn_label 552 88 "click to spawn a crate" layer=4
+sprite crate4 700 300 crate layer=2 group=props
+sprite crate5 748 300 crate layer=2 group=props
+sprite crate6 796 300 crate layer=2 group=props
+rect far_panel 1000 220 260 60 layer=1 tint=green
+label far_label 1010 238 "a wider world: the camera scrolls" layer=2
+label title 24 20 "ahoy engine demo" layer=100
+label hint 24 56 "arrows / wasd to move   touch a crate   click the button" layer=100
+label hud 24 84 "" layer=100
+label level 24 400 "loading level text on the job pool..." layer=100
+rect btn 540 84 156 26 layer=100 tint=blue
+label btn_label 552 88 "click to spawn a crate" layer=101

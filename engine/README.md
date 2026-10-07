@@ -131,6 +131,20 @@ A label's text is the quoted string. `scene_load` returns how many nodes it
 added and skips malformed lines. Scripts are attached by the game afterwards
 (`node_find` then `node_set_script`).
 
+## Camera2D
+
+`engine_frame_camera|nodes, r, camera, a|` draws nodes below `UI_LAYER` (100)
+through a `Camera2D` and nodes at `UI_LAYER` and above in screen space, so a HUD
+stays put while the world scrolls. `engine_run_camera` wraps that loop. The demo
+keeps its HUD labels/button on layer 100 and follows the orb with a clamped
+camera (`camera_follow` in `demo/main.ahoy`).
+
+```ahoy
+cam: Camera2D{offset: Vector2{x: 360.0, y: 240.0}, target: Vector2{x: 360.0, y: 240.0}, rotation: 0.0, zoom: 1.0}
+cam = camera_follow|nodes, r, cam, dt|
+engine_frame_camera|nodes, r, cam, a|
+```
+
 ## Animation and gameplay helpers
 
 An animated sprite is a horizontal strip of `frame_count` cells; put
@@ -260,9 +274,7 @@ of locals, and imported-package validation.
    its own package: scripts are exactly the part that changes.
 4. **Text/UI**: raygui widgets behind a small layout layer, keyboard focus and
    text entry, anchored layouts instead of absolute positions.
-5. **Camera2D** for scrolling worlds (`begin2d`/`end2d` entries plus a UI layer
-   split, so the HUD does not move with the world).
-6. **Signals per node** (today they are a list the game owns) once a node can
+5. **Signals per node** (today they are a list the game owns) once a node can
    hold a list of handlers without the struct-field array push limitation.
 
 ## Tests
