@@ -1092,7 +1092,23 @@ func (p *Parser) parseCallArgument() *ASTNode {
 	// Parse an expression but stop at comma, pipe, or comparison operators
 	// Use parseCallArgumentExpression to avoid treating <> as comparisons; it
 	// still accepts the word bitwise operators and shifts.
-	return p.parseCallArgumentExpression()
+	arg := p.parseCallArgumentExpression()
+	p.markEscapingArrayArgument(arg)
+	return arg
+}
+
+// markEscapingArrayArgument forgets the tracked length of an array handed to a
+// call. Arrays are pointers, so a callee may push into it (assets_drain_text
+// fills its out array), and the bounds check would then report valid literal
+// reads as out of bounds. Losing a check is quiet; a false error stops the
+// build.
+func (p *Parser) markEscapingArrayArgument(arg *ASTNode) {
+	if arg == nil || arg.Type != NODE_IDENTIFIER {
+		return
+	}
+	if _, tracked := p.arrayLengths[arg.Value]; tracked {
+		p.arrayLengths[arg.Value] = ArrayInfo{IsKnown: false}
+	}
 }
 
 // canStartExpression reports whether a token can be the first token of an

@@ -62,6 +62,15 @@ struct Renderer:
 	draw_sprite: fn(Texture2D, float, float, float, float, int) -> void
 	draw_text: fn(string, float, float, int, int) -> void
 	text_width: fn(string, int) -> int
+	? 3D: a camera, a mode bracket and primitives. Meshes/models are next.
+	begin3d: fn(Camera3D) -> void
+	end3d: fn() -> void
+	draw_grid: fn(int, float) -> void
+	draw_cube: fn(Vector3, float, float, float, int) -> void
+	draw_cube_wires: fn(Vector3, float, float, float, int) -> void
+	draw_sphere: fn(Vector3, float, int) -> void
+	draw_sphere_wires: fn(Vector3, float, int, int, int) -> void
+	draw_line3d: fn(Vector3, Vector3, int) -> void
 	? assets and input
 	load_texture: fn(string) -> Texture2D
 	unload_texture: fn(Texture2D) -> void
@@ -101,6 +110,18 @@ $
 $
 @ null_text |text:string, x:float, y:float, size:int, tint:int| void:
 $
+@ null_camera |cam:Camera3D| void:
+$
+@ null_grid |slices:int, spacing:float| void:
+$
+@ null_cube |pos:Vector3, w:float, h:float, d:float, tint:int| void:
+$
+@ null_sphere |pos:Vector3, radius:float, tint:int| void:
+$
+@ null_sphere_wires |pos:Vector3, radius:float, rings:int, slices:int, tint:int| void:
+$
+@ null_line3d |a:Vector3, b:Vector3, tint:int| void:
+$
 @ null_texture |path:string| Texture2D:
 	return Texture2D{id: 0, width: 0, height: 0, mipmaps: 1, format: 0}
 $
@@ -112,7 +133,7 @@ $
 $
 
 @ make_null_renderer || Renderer:
-	return Renderer{open: &null_open, close: &null_close, should_close: &null_false, begin_frame: &null_void, end_frame: &null_void, clear: &null_clear, frame_time: &null_float, now: &null_float, screen_w: &null_zero, screen_h: &null_zero, set_target_fps: &null_int_void, draw_rect: &null_rect, draw_rect_lines: &null_rect_lines, draw_line: &null_rect, draw_circle: &null_circle, draw_sprite: &null_sprite, draw_text: &null_text, text_width: &null_width, load_texture: &null_texture, unload_texture: &null_unload, load_text_file: &null_string, file_exists: &null_false, key_down: &null_false_int, key_pressed: &null_false_int, mouse_x: &null_float, mouse_y: &null_float, mouse_down: &null_false_int, random_int: &null_rand}
+	return Renderer{open: &null_open, close: &null_close, should_close: &null_false, begin_frame: &null_void, end_frame: &null_void, clear: &null_clear, frame_time: &null_float, now: &null_float, screen_w: &null_zero, screen_h: &null_zero, set_target_fps: &null_int_void, draw_rect: &null_rect, draw_rect_lines: &null_rect_lines, draw_line: &null_rect, draw_circle: &null_circle, draw_sprite: &null_sprite, draw_text: &null_text, text_width: &null_width, begin3d: &null_camera, end3d: &null_void, draw_grid: &null_grid, draw_cube: &null_cube, draw_cube_wires: &null_cube, draw_sphere: &null_sphere, draw_sphere_wires: &null_sphere_wires, draw_line3d: &null_line3d, load_texture: &null_texture, unload_texture: &null_unload, load_text_file: &null_string, file_exists: &null_false, key_down: &null_false_int, key_pressed: &null_false_int, mouse_x: &null_float, mouse_y: &null_float, mouse_down: &null_false_int, random_int: &null_rand}
 $
 
 @ null_clear |r:int, g:int, b:int| void:
@@ -270,8 +291,45 @@ when BACKEND_RAYLIB then
 		return get_random_value|lo, hi|
 	$
 
+	@ rl_begin3d |cam:Camera3D| void:
+		begin_mode3d|cam|
+	$
+
+	@ rl_end3d || void:
+		end_mode3d||
+	$
+
+	@ rl_draw_grid |slices:int, spacing:float| void:
+		draw_grid|slices, spacing|
+	$
+
+	@ rl_draw_cube |pos:Vector3, w:float, h:float, d:float, tint:int| void:
+		c: color = rl_color|tint|
+		draw_cube|pos, w, h, d, c|
+	$
+
+	@ rl_draw_cube_wires |pos:Vector3, w:float, h:float, d:float, tint:int| void:
+		c: color = rl_color|tint|
+		draw_cube_wires|pos, w, h, d, c|
+	$
+
+	@ rl_draw_sphere |pos:Vector3, radius:float, tint:int| void:
+		c: color = rl_color|tint|
+		draw_sphere|pos, radius, c|
+	$
+
+	@ rl_draw_sphere_wires |pos:Vector3, radius:float, rings:int, slices:int, tint:int| void:
+		c: color = rl_color|tint|
+		draw_sphere_wires|pos, radius, rings, slices, c|
+	$
+
+	@ rl_draw_line3d |a:Vector3, b:Vector3, tint:int| void:
+		c: color = rl_color|tint|
+		draw_line3d|a, b, c|
+	$
+
 	@ make_raylib_renderer || Renderer:
-		return Renderer{open: &rl_open, close: &rl_close, should_close: &rl_should_close, begin_frame: &rl_begin_frame, end_frame: &rl_end_frame, clear: &rl_clear, frame_time: &rl_frame_time, now: &rl_now, screen_w: &rl_screen_w, screen_h: &rl_screen_h, set_target_fps: &rl_set_target_fps, draw_rect: &rl_draw_rect, draw_rect_lines: &rl_draw_rect_lines, draw_line: &rl_draw_line, draw_circle: &rl_draw_circle, draw_sprite: &rl_draw_sprite, draw_text: &rl_draw_text, text_width: &rl_text_width, load_texture: &rl_load_texture, unload_texture: &rl_unload_texture, load_text_file: &rl_load_text_file, file_exists: &rl_file_exists, key_down: &rl_key_down, key_pressed: &rl_key_pressed, mouse_x: &rl_mouse_x, mouse_y: &rl_mouse_y, mouse_down: &rl_mouse_down, random_int: &rl_random_int}
+		return Renderer{open: &rl_open, close: &rl_close, should_close: &rl_should_close, begin_frame: &rl_begin_frame, end_frame: &rl_end_frame, clear: &rl_clear, frame_time: &rl_frame_time, now: &rl_now, screen_w: &rl_screen_w, screen_h: &rl_screen_h, set_target_fps: &rl_set_target_fps, draw_rect: &rl_draw_rect, draw_rect_lines: &rl_draw_rect_lines, draw_line: &rl_draw_line, draw_circle: &rl_draw_circle, draw_sprite: &rl_draw_sprite, draw_text: &rl_draw_text, text_width: &rl_text_width, begin3d: &rl_begin3d, end3d: &rl_end3d, draw_grid: &rl_draw_grid, draw_cube: &rl_draw_cube, draw_cube_wires: &rl_draw_cube_wires, draw_sphere: &rl_draw_sphere, draw_sphere_wires: &rl_draw_sphere_wires, draw_line3d: &rl_draw_line3d, load_texture: &rl_load_texture, unload_texture: &rl_unload_texture, load_text_file: &rl_load_text_file, file_exists: &rl_file_exists, key_down: &rl_key_down, key_pressed: &rl_key_pressed, mouse_x: &rl_mouse_x, mouse_y: &rl_mouse_y, mouse_down: &rl_mouse_down, random_int: &rl_random_int}
 	$
 
 $

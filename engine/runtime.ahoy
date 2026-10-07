@@ -51,6 +51,32 @@ $
 	r.close||
 $
 
+? 3D frame: same script pass, then the camera bracket instead of 2D draw.
+@ engine_frame_3d |nodes:array[Node], r:Renderer, camera:Camera3D, textures:array[Texture2D]| float:
+	dt: r.frame_time||
+	if dt > 0.25 then
+		dt = 0.25
+	$
+	scene_process|nodes, dt, r|
+
+	r.begin_frame||
+	r.clear|14, 16, 24|
+	scene_draw_3d|nodes, r, camera|
+	? labels, rects and sprites are the overlay: screen space, so they draw
+	? outside the 3D bracket
+	scene_draw_2d|nodes, r, textures|
+	r.end_frame||
+
+	return dt
+$
+
+@ engine_run_3d |nodes:array[Node], r:Renderer, camera:Camera3D, textures:array[Texture2D]| void:
+	loop till not r.should_close|| do
+		engine_frame_3d|nodes, r, camera, textures|
+	$
+	r.close||
+$
+
 @ engine_quit |quit:array| void:
 	quit[0] = 1
 $

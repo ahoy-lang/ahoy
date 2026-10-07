@@ -28,6 +28,9 @@ enum:int NodeKind:
 	2 label
 	3 rect
 	4 dead
+	5 cube
+	6 sphere
+	7 node3d
 $
 
 struct Node:
@@ -43,9 +46,11 @@ struct Node:
 	scale: float
 	w: float
 	h: float
+	d: float
 	? presentation
 	visible: bool
 	layer: int
+	groups: string
 	tint: int
 	texture: int
 	text: string
@@ -96,10 +101,28 @@ $
 	return n
 $
 
+@ node_cube |name:string, size:float| Node:
+	n: Node = node_make|NodeKind.cube, name|
+	n.w = size
+	n.h = size
+	n.d = size
+	return n
+$
+
+@ node_3d |name:string| Node:
+	return node_make|NodeKind.node3d, name|
+$
+
+@ node_sphere |name:string, radius:float| Node:
+	n: Node = node_make|NodeKind.sphere, name|
+	n.w = radius
+	return n
+$
+
 ? One constructor every other one funnels through, so a new Node field only
 ? needs a default here.
 @ node_make |kind:int, name:string| Node:
-	return Node{id: -1, kind: kind, name: name, parent: -1, x: 0.0, y: 0.0, z: 0.0, rot: 0.0, scale: 1.0, w: 32.0, h: 32.0, visible: true, layer: 0, tint: TINT_WHITE, texture: -1, text: "", font_size: 20, vx: 0.0, vy: 0.0, hp: 0.0, timer: 0.0, data: 0, ready: &script_none_ready, process: &script_none_process, draw: &script_none_draw}
+	return Node{id: -1, kind: kind, name: name, parent: -1, x: 0.0, y: 0.0, z: 0.0, rot: 0.0, scale: 1.0, w: 32.0, h: 32.0, d: 32.0, visible: true, layer: 0, groups: "", tint: TINT_WHITE, texture: -1, text: "", font_size: 20, vx: 0.0, vy: 0.0, hp: 0.0, timer: 0.0, data: 0, ready: &script_none_ready, process: &script_none_process, draw: &script_none_draw}
 $
 
 ? scene operations ----------------------------------------------------------
@@ -142,6 +165,132 @@ $
 	cur.kind = NodeKind.dead
 	cur.visible = false
 	nodes[id] = cur
+$
+
+? -- tree ------------------------------------------------------------------
+?
+? A node's x/y/z are local to its parent. Scripts move local values; drawing
+? and 3D placement use the world values below, which walk the parent chain.
+? Parent rotation is not applied to children yet (that needs the trig helpers
+? raymath would bring in); position and scale compose.
+
+@ node_add_child |nodes:array[Node], parent_id:int, child_id:int| void:
+	if child_id < 0 or child_id >= nodes.length then
+		return
+	$
+	cur: nodes[child_id]
+	cur.parent = parent_id
+	nodes[child_id] = cur
+$
+
+@ node_world_x |nodes:array[Node], id:int| float:
+	total: 0.0
+	cur_id: id
+	guard: 0
+	loop till cur_id >= 0 and guard < 64 do
+		n: nodes[cur_id]
+		total = total + n.x
+		cur_id = n.parent
+		guard = guard + 1
+	$
+	return total
+$
+
+@ node_world_y |nodes:array[Node], id:int| float:
+	total: 0.0
+	cur_id: id
+	guard: 0
+	loop till cur_id >= 0 and guard < 64 do
+		n: nodes[cur_id]
+		total = total + n.y
+		cur_id = n.parent
+		guard = guard + 1
+	$
+	return total
+$
+
+@ node_world_z |nodes:array[Node], id:int| float:
+	total: 0.0
+	cur_id: id
+	guard: 0
+	loop till cur_id >= 0 and guard < 64 do
+		n: nodes[cur_id]
+		total = total + n.z
+		cur_id = n.parent
+		guard = guard + 1
+	$
+	return total
+$
+
+@ node_world_scale |nodes:array[Node], id:int| float:
+	total: 1.0
+	cur_id: id
+	guard: 0
+	loop till cur_id >= 0 and guard < 64 do
+		n: nodes[cur_id]
+		total = total * n.scale
+		cur_id = n.parent
+		guard = guard + 1
+	$
+	return total
+$
+
+? "a/b/c" walks names down the chain; "c" finds the first node with that name
+@ node_find_path |nodes:array[Node], path:string| int:
+	segments: array[string] = path.split|"/"|
+	parent_id: -1
+	loop s:0 to segments.length do
+		wanted: segments[s]
+		found: -1
+		loop i:0 to nodes.length do
+			cur: nodes[i]
+			if cur.name is wanted then
+				if parent_id < 0 then
+					found = i
+				$
+				if parent_id >= 0 and cur.parent is parent_id then
+					found = i
+				$
+			$
+		$
+		if found < 0 then
+			return -1
+		$
+		parent_id = found
+	$
+	return parent_id
+$
+
+? -- groups -----------------------------------------------------------------
+
+@ node_in_group |nodes:array[Node], id:int, group:string| bool:
+	if id < 0 or id >= nodes.length then
+		return false
+	$
+	cur: nodes[id]
+	return cur.groups.contains|group|
+$
+
+@ group_find |nodes:array[Node], group:string| array:
+	ids: []
+	loop i:0 to nodes.length do
+		cur: nodes[i]
+		if cur.visible and cur.kind is not NodeKind.dead and cur.groups.contains|group| then
+			ids.push|i|
+		$
+	$
+	return ids
+$
+
+? Runs the process scripts of one group, for turning a whole wave of entities
+? on and off without a per-frame scan in game code.
+@ group_process |nodes:array[Node], group:string, dt:float, r:Renderer| void:
+	ids: array = group_find|nodes, group|
+	loop k:0 to ids.length do
+		i: ids[k]
+		cur: nodes[i]
+		cur.process|nodes, i, dt, r|
+	$
 $
 
 ? Drop tombstones and renumber. Node ids change, so scripts must not hold ids
@@ -235,6 +384,33 @@ $
 	nodes[id] = cur
 $
 
+@ node_set_data |nodes:array[Node], id:int, value:int| void:
+	if id < 0 then
+		return
+	$
+	cur: nodes[id]
+	cur.data = value
+	nodes[id] = cur
+$
+
+@ node_set_groups |nodes:array[Node], id:int, groups:string| void:
+	if id < 0 then
+		return
+	$
+	cur: nodes[id]
+	cur.groups = groups
+	nodes[id] = cur
+$
+
+@ node_set_layer |nodes:array[Node], id:int, layer:int| void:
+	if id < 0 then
+		return
+	$
+	cur: nodes[id]
+	cur.layer = layer
+	nodes[id] = cur
+$
+
 @ node_set_visible |nodes:array[Node], id:int, visible:bool| void:
 	if id < 0 then
 		return
@@ -264,8 +440,40 @@ $
 	$
 $
 
-@ scene_draw |nodes:array[Node], r:Renderer, textures:array[Texture2D]| void:
+? Draw order is (layer, list position): a stable insertion sort over the node
+? indices, so a low layer draws first and same-layer nodes keep list order.
+@ build_draw_order |nodes:array[Node]| array[int]:
+	order: array[int] = []
 	loop i:0 to nodes.length do
+		order.push|i|
+	$
+	loop i:1 to order.length do
+		j: i
+		moving: true
+		loop till moving do
+			moving = false
+			if j > 0 then
+				here: nodes[order[j]]
+				below: nodes[order[j - 1]]
+				if here.layer < below.layer then
+					tmp: order[j]
+					order[j] = order[j - 1]
+					order[j - 1] = tmp
+					j = j - 1
+					moving = true
+				$
+			$
+		$
+	$
+	return order
+$
+
+? 2D pass. Kinds sprite, label, rect and plain belong to screen space and also
+? serve as the overlay a 3D scene draws on top (see engine_frame_3d).
+@ scene_draw_2d |nodes:array[Node], r:Renderer, textures:array[Texture2D]| void:
+	order: array[int] = build_draw_order|nodes|
+	loop k:0 to order.length do
+		i: order[k]
 		cur: nodes[i]
 		if cur.visible and cur.kind is not NodeKind.dead then
 			if cur.kind is NodeKind.sprite then
@@ -277,33 +485,87 @@ $
 			if cur.kind is NodeKind.rect then
 				draw_rect_node|nodes, i, r|
 			$
-			? a node with a custom draw script draws itself last
-			cur.draw|nodes, i, r|
+			if cur.kind is NodeKind.plain then
+				? a plain node has no shape of its own; its script draws it
+				cur.draw|nodes, i, r|
+			$
 		$
+	$
+$
+
+? Name kept for callers that only ever draw 2D.
+@ scene_draw |nodes:array[Node], r:Renderer, textures:array[Texture2D]| void:
+	scene_draw_2d|nodes, r, textures|
+$
+
+? 3D pass: world (x, y, z) with y up, between the backend's begin3d/end3d.
+@ scene_draw_3d |nodes:array[Node], r:Renderer, camera:Camera3D| void:
+	order: array[int] = build_draw_order|nodes|
+	r.begin3d|camera|
+	r.draw_grid|40, 1.0|
+	loop k:0 to order.length do
+		draw_node_3d|nodes, order[k], r|
+	$
+	r.end3d||
+$
+
+@ draw_node_3d |nodes:array[Node], id:int, r:Renderer| void:
+	if id < 0 or id >= nodes.length then
+		return
+	$
+	cur: nodes[id]
+	if not cur.visible or cur.kind is NodeKind.dead then
+		return
+	$
+	wx: node_world_x|nodes, id|
+	wy: node_world_y|nodes, id|
+	wz: node_world_z|nodes, id|
+	ws: node_world_scale|nodes, id|
+	pos: Vector3 = Vector3{x: wx, y: wy, z: wz}
+	if cur.kind is NodeKind.cube then
+		r.draw_cube|pos, cur.w * ws, cur.h * ws, cur.d * ws, cur.tint|
+		r.draw_cube_wires|pos, cur.w * ws, cur.h * ws, cur.d * ws, TINT_GREY|
+	$
+	if cur.kind is NodeKind.sphere then
+		radius: cur.w * ws
+		r.draw_sphere|pos, radius, cur.tint|
+		r.draw_sphere_wires|pos, radius, 8, 8, TINT_GREY|
+	$
+	? node3d carries no primitive: its script places whatever it wants
+	if cur.kind is NodeKind.node3d then
+		cur.draw|nodes, id, r|
 	$
 $
 
 @ draw_sprite_node |nodes:array[Node], id:int, r:Renderer, textures:array[Texture2D]| void:
 	cur: nodes[id]
 	tex: node_texture|textures, cur.texture|
+	wx: node_world_x|nodes, id|
+	wy: node_world_y|nodes, id|
+	ws: node_world_scale|nodes, id|
 	if tex.id is 0 then
 		? no texture: draw a placeholder box so the node is visible
-		r.draw_rect|cur.x - 16.0, cur.y - 16.0, 32.0, 32.0, cur.tint|
+		r.draw_rect|wx - 16.0, wy - 16.0, 32.0, 32.0, cur.tint|
 		return
 	$
-	r.draw_sprite|tex, cur.x, cur.y, cur.rot, cur.scale, cur.tint|
+	r.draw_sprite|tex, wx, wy, cur.rot, ws, cur.tint|
 $
 
 @ draw_label_node |nodes:array[Node], id:int, r:Renderer| void:
 	cur: nodes[id]
-	r.draw_text|cur.text, cur.x, cur.y, cur.font_size, cur.tint|
+	wx: node_world_x|nodes, id|
+	wy: node_world_y|nodes, id|
+	r.draw_text|cur.text, wx, wy, cur.font_size, cur.tint|
 $
 
 @ draw_rect_node |nodes:array[Node], id:int, r:Renderer| void:
 	cur: nodes[id]
-	w: cur.w * cur.scale
-	h: cur.h * cur.scale
-	r.draw_rect|cur.x, cur.y, w, h, cur.tint|
+	wx: node_world_x|nodes, id|
+	wy: node_world_y|nodes, id|
+	ws: node_world_scale|nodes, id|
+	w: cur.w * ws
+	h: cur.h * ws
+	r.draw_rect|wx, wy, w, h, cur.tint|
 $
 
 ? texture registry: index -> Texture2D (see assets.ahoy, which fills it) -----

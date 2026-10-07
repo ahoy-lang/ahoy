@@ -1,0 +1,134 @@
+program demo3d
+
+? A 3D scene on the same engine: nodes, scripts and the Renderer table. The
+? node tree does the work -- one pivot node with six cubes parented to it, each
+? cube's local position rotated in its own process script.
+?
+?   ./ahoy-bin -f demo3d/main.ahoy -r -D BACKEND_RAYLIB -D DEMO_SHOT
+
+import "/home/lee/Documents/ahoy-lang/ahoy/repos/raylib/src/raymath.h"
+import "/home/lee/Documents/ahoy-lang/ahoy/repos/raylib/src/raylib.h"
+import "../engine"
+
+? shared by the orbit scripts (Ahoy has no globals)
+ORBIT_RADIUS:: float = 3.2
+ORBIT_SPEED:: float = 0.9
+
+@ pivot_process |nodes:array[Node], id:int, dt:float, r:Renderer| void:
+	n: nodes[id]
+	n.rot = n.rot + 20.0 * dt
+	nodes[id] = n
+$
+
+@ orbiter_process |nodes:array[Node], id:int, dt:float, r:Renderer| void:
+	n: nodes[id]
+	? local position, rotated around the parent's Y axis
+	offset: Vector3 = Vector3{x: ORBIT_RADIUS, y: 0.0, z: 0.0}
+	axis: Vector3 = Vector3{x: 0.0, y: 1.0, z: 0.0}
+	n.timer = n.timer + dt
+	angle: float = n.timer * ORBIT_SPEED + float(n.data) * 1.0472
+	rotated: Vector3 = vector3rotate_by_axis_angle|offset, axis, angle|
+	n.x = rotated.x
+	n.y = rotated.y + 0.0
+	n.z = rotated.z
+	? each cube also bobs and pulses a little
+	bob: float(n.data) * 0.4
+	n.y = rotated.y + bob + 0.5
+	nodes[id] = n
+$
+
+@ sphere_process |nodes:array[Node], id:int, dt:float, r:Renderer| void:
+	n: nodes[id]
+	n.timer = n.timer + dt
+	n.y = 1.5 + 1.2 * (n.timer * 0.5)
+	nodes[id] = n
+$
+
+@ hud_process |nodes:array[Node], id:int, dt:float, r:Renderer| void:
+	n: nodes[id]
+	ms: r.frame_time||
+	fps: int(1.0 / dt)
+	ms_total: int(ms * 1000.0)
+	n.text = f"3D nodes: fps {fps}   {ms_total} ms"
+	nodes[id] = n
+$
+
+@ build_world || array[Node]:
+	nodes: array[Node] = []
+
+	? the pivot is a plain node: its children inherit its position
+	pivot: node_plain|"pivot"|
+	pivot.y = 1.0
+	pivot.process = &pivot_process
+	pivot_id: node_add|nodes, pivot|
+
+	cube: node_cube|"core", 1.4|
+	cube.tint = TINT_WHITE
+	node_add|nodes, cube|
+
+	loop i:0 to 6 do
+		orb: node_cube|f"orb{i}", 0.7|
+		orb.data = i
+		orb.tint = TINT_BLUE
+		orb.process = &orbiter_process
+		orb_id: node_add|nodes, orb|
+		node_add_child|nodes, pivot_id, orb_id|
+	$
+
+	ball: node_sphere|"ball", 0.9|
+	ball.tint = TINT_YELLOW
+	ball.process = &sphere_process
+	node_add|nodes, ball|
+
+	title: node_label|"title", "ahoy engine 3D - cubes parented to a pivot node"|
+	title.x = 24.0
+	title.y = 20.0
+	title.font_size = 22
+	node_add|nodes, title|
+
+	hud: node_label|"hud", ""|
+	hud.x = 24.0
+	hud.y = 50.0
+	hud.font_size = 18
+	hud.tint = TINT_YELLOW
+	hud.process = &hud_process
+	node_add|nodes, hud|
+
+	return nodes
+$
+
+@ main ||:
+	nodes: array[Node] = []
+	textures: array[Texture2D] = []
+	r: Renderer = make_null_renderer||
+	quit: [0]
+
+	when BACKEND_RAYLIB then
+		r = make_raylib_renderer||
+		engine_open|r, 720, 480, "ahoy engine 3D demo", 60|
+	$
+
+	camera: Camera3D{position: Vector3{x: 0.0, y: 6.5, z: 11.0}, target: Vector3{x: 0.0, y: 1.2, z: 0.0}, up: Vector3{x: 0.0, y: 1.0, z: 0.0}, fovy: 45.0, projection: 0}
+
+	when BACKEND_RAYLIB then
+		nodes = build_world||
+	$
+
+	frames: 0
+	loop till not (r.should_close|| or quit[0] is 1) do
+		frames = frames + 1
+		engine_frame_3d|nodes, r, camera, textures|
+
+		when DEMO_SHOT then
+			if frames is 60 then
+				take_screenshot|"demo3d/shot.png"|
+			$
+			if frames is 90 then
+				quit[0] = 1
+			$
+		$
+	$
+
+	engine_close|r|
+	print|"3d frames: ", frames|
+$

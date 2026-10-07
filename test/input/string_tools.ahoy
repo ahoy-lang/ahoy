@@ -1,0 +1,56 @@
+program string_tools
+
+? Text parsing helpers, each of which produced wrong values (or invalid C)
+? before the fix:
+?   - split returned char** while the expression's type was array
+?   - split's helper was used before it was declared
+?   - int("42") cast the pointer instead of parsing the text
+?   - s.length on a string local emitted `s.length` in C
+?   - an assignment from a container was redeclared in a nested block, so the
+?     outer variable kept its old value
+
+@ main ||:
+	expected: []
+
+	line: "sprite player 200 180 player"
+	parts: array[string] = line.split|" "|
+	print|parts.length|
+	expected.push|"5"|
+	print|parts[0], parts[1], parts[4]|
+	expected.push|"sprite player player"|
+
+	? numbers in the text
+	x: int(parts[2])
+	y: float(parts[3])
+	print|x, y|
+	expected.push|"200 180"|
+
+	? a quoted field carries spaces
+	labelled: "label title 24 20 \"ahoy engine demo\" layer=3"
+	quoted: array[string] = labelled.split|"\""|
+	text: ""
+	if quoted.length > 1 then
+		text = quoted[1]
+	$
+	print|text|
+	expected.push|"ahoy engine demo"|
+
+	? splitting on the key=value tokens
+	raw: array[string] = labelled.split|" "|
+	last: raw[raw.length - 1]
+	kv: array[string] = last.split|"="|
+	print|kv[0], int(kv[1])|
+	expected.push|"layer 3"|
+
+	? lengths
+	print|text.length, line.length|
+	expected.push|"16 28"|
+
+	? an empty piece is kept by split
+	empty: array[string] = "a,,b".split|","|
+	piece: empty[1]
+	print|empty.length, piece.length|
+	expected.push|"3 0"|
+
+	print|expected|
+$

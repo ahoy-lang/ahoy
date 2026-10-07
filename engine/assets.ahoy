@@ -120,7 +120,9 @@ $
 	pending.push|j|
 $
 
-@ assets_drain_text |pool:pool, pending:array, out:array| int:
+? `out` is declared array[string] on purpose: an untyped array reads its
+? elements back as int, which truncates a char* on the way out.
+@ assets_drain_text |pool:pool, pending:array, out:array[string]| int:
 	return pool.drain|&asset_text_ready, out|
 $
 

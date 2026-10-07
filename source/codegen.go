@@ -478,6 +478,29 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 		result.WriteString("    AhoyValueType element_type;  // If is_typed=1, this is the enforced type\n")
 		result.WriteString("} AhoyArray;\n\n")
 
+		// Forward declarations for the string helpers. The helpers are written
+		// after all user functions, so a call site sees only an implicit
+		// declaration: harmless for int returns, a hard error for bool and
+		// pointer returns (the implicit int conflicts with the definition).
+		result.WriteString("char* ahoy_string_dup(const char* src);\n")
+		result.WriteString("int ahoy_string_length(const char* str);\n")
+		result.WriteString("char* ahoy_string_upper(const char* str);\n")
+		result.WriteString("char* ahoy_string_lower(const char* str);\n")
+		result.WriteString("char* ahoy_string_replace(const char* str, const char* old, const char* new_str);\n")
+		result.WriteString("bool ahoy_string_contains(const char* str, const char* substr);\n")
+		result.WriteString("bool ahoy_string_match(const char* str, const char* pattern);\n")
+		result.WriteString("int ahoy_string_count(const char* str, const char* substr);\n")
+		result.WriteString("char* ahoy_string_strip(const char* str);\n")
+		result.WriteString("char* ahoy_string_camel_case(const char* str);\n")
+		result.WriteString("char* ahoy_string_snake_case(const char* str);\n")
+		result.WriteString("char* ahoy_string_pascal_case(const char* str);\n")
+		result.WriteString("char* ahoy_string_kebab_case(const char* str);\n")
+		result.WriteString("char* ahoy_string_lpad(const char* str, int length, const char* pad);\n")
+		result.WriteString("char* ahoy_string_rpad(const char* str, int length, const char* pad);\n")
+		result.WriteString("char* ahoy_string_pad(const char* str, int length, const char* pad);\n")
+		result.WriteString("char* ahoy_string_get_file(const char* path);\n")
+		result.WriteString("AhoyArray* ahoy_string_split_array(const char* str, const char* delim);\n")
+
 		// Add forward declarations for array helper functions
 		if gen.arrayMethods["push"] {
 			result.WriteString("AhoyArray* ahoy_array_push(AhoyArray* arr, intptr_t value, AhoyValueType type);\n")
@@ -2539,7 +2562,13 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 	// Exception: if we're inside the same block chain (deeper indent but contiguous),
 	//    we should reassign not redeclare - but detecting this is hard, so we just
 	//    redeclare when indent differs and we're deep enough
-	isLoopLocalPattern := valueNode.Type == ahoy.NODE_ARRAY_ACCESS || valueNode.Type == ahoy.NODE_DICT_ACCESS
+	// A declaration whose value comes out of a container is per-iteration: each
+	// pass through the block declares its own C variable. An *assignment* from a
+	// container is not: `text = quoted[1]` used to be redeclared too, so the
+	// outer variable kept its old value (a shadowing `char* text = ...` inside
+	// the if body) and every parsed string came back empty.
+	isLoopLocalPattern := node.Type == ahoy.NODE_VARIABLE_DECLARATION &&
+		(valueNode.Type == ahoy.NODE_ARRAY_ACCESS || valueNode.Type == ahoy.NODE_DICT_ACCESS)
 
 	needsRedeclare := false
 
@@ -5279,6 +5308,14 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 
 	// Type casts
 	case "int":
+		// int("42") parses the text. The plain C cast returned the pointer as an
+		// int, so int("42") printed a huge address-like number.
+		if len(node.Children) > 0 && gen.isStringExpr(node.Children[0]) {
+			gen.output.WriteString("atoi(")
+			gen.generateNode(node.Children[0])
+			gen.output.WriteString(")")
+			return
+		}
 		gen.output.WriteString("((int)(")
 		if len(node.Children) > 0 {
 			gen.generateNode(node.Children[0])
@@ -5286,6 +5323,13 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 		gen.output.WriteString("))")
 
 	case "float":
+		// float("1.5") parses the text, like int(string).
+		if len(node.Children) > 0 && gen.isStringExpr(node.Children[0]) {
+			gen.output.WriteString("atof(")
+			gen.generateNode(node.Children[0])
+			gen.output.WriteString(")")
+			return
+		}
 		gen.output.WriteString("((float)(")
 		if len(node.Children) > 0 {
 			gen.generateNode(node.Children[0])
@@ -6294,6 +6338,23 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 	if isStringMethod || (objectType == "char*" && methodName == "length") {
 		// Track which string method is used
 		gen.stringMethods[methodName] = true
+
+		// split's result is indexed and iterated like any array, so it has to be
+		// an AhoyArray*: the helper used to return char** while the type of the
+		// expression was array, and the two were not interchangeable.
+		if methodName == "split" {
+			// The result is a real array, so the AhoyArray runtime has to be in
+			// the output even when nothing else in the program uses arrays.
+			gen.arrayImpls = true
+			gen.output.WriteString("ahoy_string_split_array(")
+			gen.generateNodeInternal(object, false)
+			if len(args.Children) > 0 {
+				gen.output.WriteString(", ")
+				gen.generateNodeInternal(args.Children[0], false)
+			}
+			gen.output.WriteString(")")
+			return
+		}
 
 		// Generate string method function call
 		gen.output.WriteString(fmt.Sprintf("ahoy_string_%s(", methodName))
@@ -9592,6 +9653,16 @@ func (gen *CodeGenerator) generateMemberAccess(node *ahoy.ASTNode) {
 		return
 	}
 
+	// A string answers length/count with its character count. The generic path
+	// below emitted `s.length` in C, which is not a member of char*.
+	if (memberName == "length" || memberName == "count") && gen.isStringExpr(object) {
+		gen.stringMethods["length"] = true
+		gen.output.WriteString("ahoy_string_length(")
+		gen.generateNodeInternal(object, false)
+		gen.output.WriteString(")")
+		return
+	}
+
 	if objectType == "HashMap*" || objectType == "dict" {
 		// A dict answers length/size with its entry count. Without this the member
 		// was looked up as a key, which printed an empty value for `d.length`.
@@ -11206,24 +11277,39 @@ func (gen *CodeGenerator) writeStringHelperFunctions() {
 
 	// split method - returns array of strings (simplified)
 	if gen.stringMethods["split"] {
-		gen.funcDecls.WriteString("// Note: split returns a NULL-terminated array of strings\n")
-		gen.funcDecls.WriteString("char** ahoy_string_split(const char* str, const char* delim) {\n")
-		gen.funcDecls.WriteString("    if (!str || !delim) return NULL;\n")
-		gen.funcDecls.WriteString("    char* str_copy = ahoy_string_dup(str);\n")
-		gen.funcDecls.WriteString("    int count = 1;\n")
-		gen.funcDecls.WriteString("    for (const char* p = str; *p; p++) {\n")
-		gen.funcDecls.WriteString("        if (strstr(p, delim) == p) count++;\n")
+		// Generates elements as an array; an empty piece stays an element:
+		// "a,,b" splits into three. strtok used to collapse runs and returned
+		// char**, which the array-typed result could not use.
+		gen.funcDecls.WriteString("// Note: split returns an AhoyArray of strings\n")
+		gen.funcDecls.WriteString("AhoyArray* ahoy_string_split_array(const char* str, const char* delim) {\n")
+		gen.funcDecls.WriteString("    AhoyArray* arr = (AhoyArray*)malloc(sizeof(AhoyArray));\n")
+		gen.funcDecls.WriteString("    arr->length = 0;\n")
+		gen.funcDecls.WriteString("    arr->capacity = 4;\n")
+		gen.funcDecls.WriteString("    arr->data = (intptr_t*)malloc(4 * sizeof(intptr_t));\n")
+		gen.funcDecls.WriteString("    arr->types = (AhoyValueType*)malloc(4 * sizeof(AhoyValueType));\n")
+		gen.funcDecls.WriteString("    arr->is_typed = 1;\n")
+		gen.funcDecls.WriteString("    arr->element_type = AHOY_TYPE_STRING;\n")
+		gen.funcDecls.WriteString("    if (!str) return arr;\n")
+		gen.funcDecls.WriteString("    size_t dlen = delim ? strlen(delim) : 0;\n")
+		gen.funcDecls.WriteString("    const char* start = str;\n")
+		gen.funcDecls.WriteString("    for (;;) {\n")
+		gen.funcDecls.WriteString("        const char* hit = dlen ? strstr(start, delim) : NULL;\n")
+		gen.funcDecls.WriteString("        size_t len = hit ? (size_t)(hit - start) : strlen(start);\n")
+		gen.funcDecls.WriteString("        char* piece = (char*)malloc(len + 1);\n")
+		gen.funcDecls.WriteString("        memcpy(piece, start, len);\n")
+		gen.funcDecls.WriteString("        piece[len] = '\\0';\n")
+		gen.funcDecls.WriteString("        if (arr->length == arr->capacity) {\n")
+		gen.funcDecls.WriteString("            arr->capacity *= 2;\n")
+		gen.funcDecls.WriteString("            arr->data = (intptr_t*)realloc(arr->data, arr->capacity * sizeof(intptr_t));\n")
+		gen.funcDecls.WriteString("            arr->types = (AhoyValueType*)realloc(arr->types, arr->capacity * sizeof(AhoyValueType));\n")
+		gen.funcDecls.WriteString("        }\n")
+		gen.funcDecls.WriteString("        arr->data[arr->length] = (intptr_t)piece;\n")
+		gen.funcDecls.WriteString("        arr->types[arr->length] = AHOY_TYPE_STRING;\n")
+		gen.funcDecls.WriteString("        arr->length++;\n")
+		gen.funcDecls.WriteString("        if (!hit) break;\n")
+		gen.funcDecls.WriteString("        start = hit + dlen;\n")
 		gen.funcDecls.WriteString("    }\n")
-		gen.funcDecls.WriteString("    char** result = malloc((count + 1) * sizeof(char*));\n")
-		gen.funcDecls.WriteString("    char* token = strtok(str_copy, delim);\n")
-		gen.funcDecls.WriteString("    int i = 0;\n")
-		gen.funcDecls.WriteString("    while (token != NULL) {\n")
-		gen.funcDecls.WriteString("        result[i++] = ahoy_string_dup(token);\n")
-		gen.funcDecls.WriteString("        token = strtok(NULL, delim);\n")
-		gen.funcDecls.WriteString("    }\n")
-		gen.funcDecls.WriteString("    result[i] = NULL;\n")
-		gen.funcDecls.WriteString("    free(str_copy);\n")
-		gen.funcDecls.WriteString("    return result;\n")
+		gen.funcDecls.WriteString("    return arr;\n")
 		gen.funcDecls.WriteString("}\n\n")
 	}
 }
