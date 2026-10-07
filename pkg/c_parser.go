@@ -106,6 +106,30 @@ func ParseCHeader(path string) (*CHeaderInfo, error) {
 	return info, nil
 }
 
+// normaliseCReturnType removes the parts of a C return type that do not change
+// how the value is used. A header's `const char *GetWorkingDirectory(void)` was
+// registered as "const char *", which the type mapping did not recognise as a
+// string, so the result came back as int* and printed a pointer. Space before
+// the star is closed up too, so "char *" and "char*" are the same type.
+func normaliseCReturnType(t string) string {
+	t = strings.TrimSpace(t)
+	for {
+		stripped := false
+		for _, qualifier := range []string{"const ", "volatile ", "restrict ", "struct ", "enum ", "union "} {
+			if strings.HasPrefix(t, qualifier) {
+				t = strings.TrimSpace(t[len(qualifier):])
+				stripped = true
+			}
+		}
+		if !stripped {
+			break
+		}
+	}
+	t = strings.ReplaceAll(t, " *", "*")
+	t = strings.ReplaceAll(t, "  ", " ")
+	return strings.TrimSpace(t)
+}
+
 // parseRLAPIFunction parses a function declaration like: RLAPI void InitWindow(int width, int height, const char *title);
 func parseRLAPIFunction(line string, lineNum int, filePath string, info *CHeaderInfo) {
 	// Remove RLAPI/RMAPI prefix and comments
@@ -129,9 +153,22 @@ func parseRLAPIFunction(line string, lineNum int, filePath string, info *CHeader
 	}
 
 	funcName, stars := splitCFuncName(parts[len(parts)-1])
-	returnType := strings.Join(parts[:len(parts)-1], " ")
+	// A declaration's storage class is not part of the return type. A header
+	// with `static int bell_count(void);` registered the type as "static int",
+	// and a variable declared from that call came out as `static int n = ...`
+	// (a static local cannot take a non-constant initializer), while
+	// `static const char* bell_name(...)` became `int*`.
+	typeFields := []string{}
+	for _, part := range parts[:len(parts)-1] {
+		switch part {
+		case "static", "extern", "inline", "register", "_Noreturn":
+			continue
+		}
+		typeFields = append(typeFields, part)
+	}
+	returnType := normaliseCReturnType(strings.Join(typeFields, " "))
 	if stars != "" {
-		returnType = strings.TrimSpace(returnType + " " + stars)
+		returnType = normaliseCReturnType(returnType + " " + stars)
 	}
 
 	// Extract parameters
@@ -215,7 +252,7 @@ func parseMacroFunction(line string, lineNum int, filePath string, info *CHeader
 	}
 
 	// Extract return type from inside macro parentheses
-	returnType := strings.TrimSpace(line[firstParen+1 : macroEnd-1])
+	returnType := normaliseCReturnType(line[firstParen+1 : macroEnd-1])
 	if returnType == "" {
 		return false
 	}

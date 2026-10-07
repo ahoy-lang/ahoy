@@ -618,6 +618,14 @@ func (p *Parser) checkTypeCompatibility(expectedType, actualType string) bool {
 		return p.checkTypeCompatibility(aliasedType, actualType)
 	}
 
+	// A C function that returns char* hands back the same thing a string is:
+	// glue headers (bell/engine/glue.h) return char* paths and names, and
+	// assigning one to a string variable is not a type error.
+	if (expectedType == "string" && (actualType == "char*" || actualType == "const char*")) ||
+		(actualType == "string" && (expectedType == "char*" || expectedType == "const char*")) {
+		return true
+	}
+
 	// Allow int to float conversion
 	if expectedType == "float" && actualType == "int" {
 		return true

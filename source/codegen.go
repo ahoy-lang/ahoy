@@ -2291,9 +2291,11 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 					gen.generateNode(valueNode)
 					gen.output.WriteString(";")
 				} else if cType == "double" || cType == "float" {
-					// For float/double, store via intptr_t cast
+					// A float element is a heap double: the runtime reads
+					// AHOY_TYPE_FLOAT elements as double*. A numeric cast stored
+					// 4.25 as 4, and the next read dereferenced address 4.
 					if gen.enableBoundsChecking {
-						gen.output.WriteString("__arr->data[__idx] = (intptr_t)(intptr_t)(double)")
+						gen.output.WriteString("__arr->data[__idx] = (intptr_t)({ double* __fp = malloc(sizeof(double)); *__fp = ")
 					} else {
 						if needsArrayCast {
 							gen.output.WriteString(fmt.Sprintf("((AhoyArray*)%s)->data[", arrayName))
@@ -2301,10 +2303,10 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 							gen.output.WriteString(fmt.Sprintf("%s->data[", arrayName))
 						}
 						gen.generateNode(indexNode)
-						gen.output.WriteString("] = (void*)(intptr_t)(double)")
+						gen.output.WriteString("] = (intptr_t)({ double* __fp = malloc(sizeof(double)); *__fp = ")
 					}
 					gen.generateNode(valueNode)
-					gen.output.WriteString(";")
+					gen.output.WriteString("; __fp; });")
 				} else if cType == "char*" {
 					// For strings, store as pointer
 					if gen.enableBoundsChecking {
@@ -6478,44 +6480,53 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 						gen.escapingVars[arg.Value] = true
 					}
 
-					gen.output.WriteString("(intptr_t)")
-
-					// Check if we're pushing a struct value (needs heap allocation)
-					if methodName == "push" {
-						argType := gen.inferType(arg)
-						needsHeapAlloc := false
-						structType := ""
-
-						// For struct literals
-						if arg.Type == ahoy.NODE_OBJECT_LITERAL && arg.Value != "" {
-							needsHeapAlloc = true
-							structType = gen.mapType(arg.Value)
-						} else if _, isStruct := gen.structs[argType]; isStruct {
-							// For Ahoy-defined struct variables
-							needsHeapAlloc = true
-							structType = gen.mapType(argType)
-						} else {
-							// Check if it's a C struct type from imported headers
-							cType := gen.mapType(argType)
-							isCStruct := gen.cTypeDefinitions[cType] && !strings.HasSuffix(cType, "*") &&
-								cType != "int" && cType != "float" && cType != "double" &&
-								cType != "char" && cType != "bool" && cType != "void" &&
-								cType != "char*" && cType != "intptr_t"
-							if isCStruct {
-								needsHeapAlloc = true
-								structType = cType
-							}
-						}
-
-						if needsHeapAlloc {
-							gen.output.WriteString(fmt.Sprintf("({ %s* __tmp = malloc(sizeof(%s)); *__tmp = ", structType, structType))
-							gen.generateNodeInternal(arg, false)
-							gen.output.WriteString("; __tmp; })")
-						} else {
-							gen.generateNodeInternal(arg, false)
-						}
-					} else {
+					// A float goes in as a heap double: the array runtime reads
+					// AHOY_TYPE_FLOAT elements as double* (same as dicts).
+					argValueType := gen.inferType(arg)
+					if methodName == "push" && (argValueType == "float" || argValueType == "double") {
+						gen.output.WriteString("(intptr_t)({ double* __fp = malloc(sizeof(double)); *__fp = ")
 						gen.generateNodeInternal(arg, false)
+						gen.output.WriteString("; __fp; })")
+					} else {
+						gen.output.WriteString("(intptr_t)")
+
+						// Check if we're pushing a struct value (needs heap allocation)
+						if methodName == "push" {
+							argType := gen.inferType(arg)
+							needsHeapAlloc := false
+							structType := ""
+
+							// For struct literals
+							if arg.Type == ahoy.NODE_OBJECT_LITERAL && arg.Value != "" {
+								needsHeapAlloc = true
+								structType = gen.mapType(arg.Value)
+							} else if _, isStruct := gen.structs[argType]; isStruct {
+								// For Ahoy-defined struct variables
+								needsHeapAlloc = true
+								structType = gen.mapType(argType)
+							} else {
+								// Check if it's a C struct type from imported headers
+								cType := gen.mapType(argType)
+								isCStruct := gen.cTypeDefinitions[cType] && !strings.HasSuffix(cType, "*") &&
+									cType != "int" && cType != "float" && cType != "double" &&
+									cType != "char" && cType != "bool" && cType != "void" &&
+									cType != "char*" && cType != "intptr_t"
+								if isCStruct {
+									needsHeapAlloc = true
+									structType = cType
+								}
+							}
+
+							if needsHeapAlloc {
+								gen.output.WriteString(fmt.Sprintf("({ %s* __tmp = malloc(sizeof(%s)); *__tmp = ", structType, structType))
+								gen.generateNodeInternal(arg, false)
+								gen.output.WriteString("; __tmp; })")
+							} else {
+								gen.generateNodeInternal(arg, false)
+							}
+						} else {
+							gen.generateNodeInternal(arg, false)
+						}
 					}
 				} else {
 					gen.generateNodeInternal(arg, false)
@@ -7094,7 +7105,11 @@ func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 		// Check if we know the element type
 		if elemType, exists := gen.arrayElementTypes[arrayName]; exists {
 			cType := gen.mapType(elemType)
-			if cType != "int" {
+			if cType == "double" || cType == "float" {
+				// A float element is a heap double: the runtime stores a pointer
+				// (see print_array_helper), so reading has to dereference it.
+				gen.output.WriteString("(*(double*)(intptr_t)__arr->data[__idx])")
+			} else if cType != "int" {
 				// Check if this is a C struct OR Ahoy struct type stored as pointer
 				isCStruct := gen.cTypeDefinitions[cType] && !strings.HasSuffix(cType, "*") &&
 					cType != "int" && cType != "double" && cType != "char*" && cType != "bool"
@@ -7128,6 +7143,17 @@ func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 	// Check if we know the element type
 	if elemType, exists := gen.arrayElementTypes[arrayName]; exists {
 		cType := gen.mapType(elemType)
+		if cType == "double" || cType == "float" {
+			// A float element is a heap double; dereference the pointer.
+			if needsArrayCast {
+				gen.output.WriteString(fmt.Sprintf("(*(double*)(intptr_t)((AhoyArray*)%s)->data[", objExpr))
+			} else {
+				gen.output.WriteString(fmt.Sprintf("(*(double*)(intptr_t)%s->data[", objExpr))
+			}
+			gen.generateNode(node.Children[0])
+			gen.output.WriteString("])")
+			return
+		}
 		// Cast to the appropriate type for non-int types (need intptr_t intermediate for pointer safety)
 		if cType != "int" {
 			// Check if this is a C struct OR Ahoy struct type stored as pointer
