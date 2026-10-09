@@ -1103,6 +1103,11 @@ func (c *checker) checkBinaryOp(node *ASTNode) {
 	lt := c.p.inferType(left)
 	rt := c.p.inferType(right)
 
+	// String concatenation: + on two strings builds a new string.
+	if (op == "+" || op == "plus") && isStringType(lt) && isStringType(rt) {
+		return
+	}
+
 	if operandsUnusable(lt, rt) {
 		c.errorAt(node, "Operator '%s' cannot be applied to %s and %s", op, lt, rt)
 	}

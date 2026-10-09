@@ -1,0 +1,29 @@
+program string_concat
+
+? + on two strings builds a new string (it used to emit pointer arithmetic
+? and break the C build).
+
+@ main ||:
+	expected: []
+
+	a: "foo"
+	b: "bar"
+	joined: a + b
+	print|joined|
+	expected.push|"foobar"|
+
+	chained: a + b + a
+	print|chained|
+	expected.push|"foobarfoo"|
+
+	lits: "n=" + "5"
+	print|lits|
+	expected.push|"n=5"|
+
+	accum: "count: "
+	accum = accum + "42"
+	print|accum|
+	expected.push|"count: 42"|
+
+	print|expected|
+$

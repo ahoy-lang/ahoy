@@ -70,6 +70,12 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			DataType: "string",
 			Line:     token.Line,
 		}
+		// Pre-parse each {expr} group so codegen emits it through the
+		// normal expression path. Groups that fail keep Children unset and
+		// fall back to the legacy textual handling.
+		if children := p.parseFStringChildren(token.Value, token.Line); children != nil {
+			node.Children = children
+		}
 		// Check for method call on f-string
 		if p.current().Type == TOKEN_DOT {
 			return p.parseMemberAccessChain(node)
@@ -395,11 +401,6 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 							break
 						}
 					}
-				}
-
-				// Check for duplicate arguments in lint mode
-				if p.LintMode && len(call.Children) > 1 {
-					p.checkDuplicateArguments(call, token.Value)
 				}
 
 				// Consume closing pipe

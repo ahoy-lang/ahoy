@@ -478,29 +478,6 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 		result.WriteString("    AhoyValueType element_type;  // If is_typed=1, this is the enforced type\n")
 		result.WriteString("} AhoyArray;\n\n")
 
-		// Forward declarations for the string helpers. The helpers are written
-		// after all user functions, so a call site sees only an implicit
-		// declaration: harmless for int returns, a hard error for bool and
-		// pointer returns (the implicit int conflicts with the definition).
-		result.WriteString("char* ahoy_string_dup(const char* src);\n")
-		result.WriteString("int ahoy_string_length(const char* str);\n")
-		result.WriteString("char* ahoy_string_upper(const char* str);\n")
-		result.WriteString("char* ahoy_string_lower(const char* str);\n")
-		result.WriteString("char* ahoy_string_replace(const char* str, const char* old, const char* new_str);\n")
-		result.WriteString("bool ahoy_string_contains(const char* str, const char* substr);\n")
-		result.WriteString("bool ahoy_string_match(const char* str, const char* pattern);\n")
-		result.WriteString("int ahoy_string_count(const char* str, const char* substr);\n")
-		result.WriteString("char* ahoy_string_strip(const char* str);\n")
-		result.WriteString("char* ahoy_string_camel_case(const char* str);\n")
-		result.WriteString("char* ahoy_string_snake_case(const char* str);\n")
-		result.WriteString("char* ahoy_string_pascal_case(const char* str);\n")
-		result.WriteString("char* ahoy_string_kebab_case(const char* str);\n")
-		result.WriteString("char* ahoy_string_lpad(const char* str, int length, const char* pad);\n")
-		result.WriteString("char* ahoy_string_rpad(const char* str, int length, const char* pad);\n")
-		result.WriteString("char* ahoy_string_pad(const char* str, int length, const char* pad);\n")
-		result.WriteString("char* ahoy_string_get_file(const char* path);\n")
-		result.WriteString("AhoyArray* ahoy_string_split_array(const char* str, const char* delim);\n")
-
 		// Add forward declarations for array helper functions
 		if gen.arrayMethods["push"] {
 			result.WriteString("AhoyArray* ahoy_array_push(AhoyArray* arr, intptr_t value, AhoyValueType type);\n")
@@ -518,8 +495,36 @@ func generateC(ast *ahoy.ASTNode, filename string, enableARC bool) string {
 			result.WriteString("AhoyArray* ahoy_array_remove(AhoyArray* arr, int index);\n")
 		}
 		result.WriteString("char* print_array_helper(AhoyArray* arr);\n")
+		result.WriteString("AhoyArray* ahoy_string_split_array(const char* str, const char* delim);\n")
 		result.WriteString("\n")
 	}
+
+	// String concatenation (+ on two strings) is emitted on demand during
+	// codegen, which runs after this preamble; the prototype is unconditional
+	// so string-only programs (no arrays) still see a declaration.
+	result.WriteString("char* ahoy_str_concat(const char* a, const char* b);\n")
+
+	// Forward declarations for the string helpers. The helpers are written
+	// after all user functions, so a call site sees only an implicit
+	// declaration: harmless for int returns, a hard error for bool and
+	// pointer returns (the implicit int conflicts with the definition).
+	result.WriteString("char* ahoy_string_dup(const char* src);\n")
+	result.WriteString("int ahoy_string_length(const char* str);\n")
+	result.WriteString("char* ahoy_string_upper(const char* str);\n")
+	result.WriteString("char* ahoy_string_lower(const char* str);\n")
+	result.WriteString("char* ahoy_string_replace(const char* str, const char* old, const char* new_str);\n")
+	result.WriteString("bool ahoy_string_contains(const char* str, const char* substr);\n")
+	result.WriteString("bool ahoy_string_match(const char* str, const char* pattern);\n")
+	result.WriteString("int ahoy_string_count(const char* str, const char* substr);\n")
+	result.WriteString("char* ahoy_string_strip(const char* str);\n")
+	result.WriteString("char* ahoy_string_camel_case(const char* str);\n")
+	result.WriteString("char* ahoy_string_snake_case(const char* str);\n")
+	result.WriteString("char* ahoy_string_pascal_case(const char* str);\n")
+	result.WriteString("char* ahoy_string_kebab_case(const char* str);\n")
+	result.WriteString("char* ahoy_string_lpad(const char* str, int length, const char* pad);\n")
+	result.WriteString("char* ahoy_string_rpad(const char* str, int length, const char* pad);\n")
+	result.WriteString("char* ahoy_string_pad(const char* str, int length, const char* pad);\n")
+	result.WriteString("char* ahoy_string_get_file(const char* path);\n")
 
 	// Add forward declarations for dict helper functions if needed
 	if gen.dictMethods["print_dict"] {
@@ -5719,7 +5724,11 @@ func (gen *CodeGenerator) isStringExpr(n *ahoy.ASTNode) bool {
 	if n == nil {
 		return false
 	}
-	t := gen.inferType(n)
+	return isStringTypeName(gen.inferType(n))
+}
+
+// isStringTypeName reports whether an inferred type name is a string type.
+func isStringTypeName(t string) bool {
 	return t == "string" || t == "char*" || t == "const char*"
 }
 
@@ -5812,6 +5821,22 @@ func (gen *CodeGenerator) generateBinaryOp(node *ahoy.ASTNode) {
 		gen.output.WriteString("(")
 		gen.generateNode(node.Children[0])
 		gen.output.WriteString(" >> ")
+		gen.generateNode(node.Children[1])
+		gen.output.WriteString(")")
+	case "+":
+		if len(node.Children) >= 2 && gen.isStringExpr(node.Children[0]) && gen.isStringExpr(node.Children[1]) {
+			// String concatenation: + on two strings builds a new string.
+			gen.stringMethods["concat"] = true
+			gen.output.WriteString("ahoy_str_concat(")
+			gen.generateNode(node.Children[0])
+			gen.output.WriteString(", ")
+			gen.generateNode(node.Children[1])
+			gen.output.WriteString(")")
+			return
+		}
+		gen.output.WriteString("(")
+		gen.generateNode(node.Children[0])
+		gen.output.WriteString(" + ")
 		gen.generateNode(node.Children[1])
 		gen.output.WriteString(")")
 	case "pow", "**":
@@ -7634,6 +7659,9 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		// Simple inference - could be more sophisticated
 		leftType := gen.inferType(node.Children[0])
 		rightType := gen.inferType(node.Children[1])
+		if node.Value == "+" && isStringTypeName(leftType) && isStringTypeName(rightType) {
+			return "string"
+		}
 		if leftType == "float" || rightType == "float" {
 			return "float"
 		}
@@ -8082,6 +8110,12 @@ func (gen *CodeGenerator) nodeToString(node *ahoy.ASTNode) string {
 }
 
 func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
+	// Pre-parsed interpolation groups take the expression path; anything
+	// else keeps the legacy textual handling below.
+	if len(node.Children) > 0 {
+		gen.generateFStringFromChildren(node)
+		return
+	}
 	// Parse f-string and extract variables
 	// Example: "hello{i}" -> format string "hello%d" and variables [i]
 	fstring := node.Value
@@ -11033,6 +11067,19 @@ func (gen *CodeGenerator) writeStringHelperFunctions() {
 	gen.funcDecls.WriteString("    strcpy(dest, src);\n")
 	gen.funcDecls.WriteString("    return dest;\n")
 	gen.funcDecls.WriteString("}\n\n")
+
+	// Concatenation helper (+ on two strings)
+	if gen.stringMethods["concat"] {
+		gen.funcDecls.WriteString("char* ahoy_str_concat(const char* a, const char* b) {\n")
+		gen.funcDecls.WriteString("    if (!a) a = \"\";\n")
+		gen.funcDecls.WriteString("    if (!b) b = \"\";\n")
+		gen.funcDecls.WriteString("    size_t la = strlen(a), lb = strlen(b);\n")
+		gen.funcDecls.WriteString("    char* out = malloc(la + lb + 1);\n")
+		gen.funcDecls.WriteString("    memcpy(out, a, la);\n")
+		gen.funcDecls.WriteString("    memcpy(out + la, b, lb + 1);\n")
+		gen.funcDecls.WriteString("    return out;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
 
 	// length method
 	if gen.stringMethods["length"] {

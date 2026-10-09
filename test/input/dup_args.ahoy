@@ -1,0 +1,19 @@
+program dup_args
+
+? Passing the same variable twice used to abort with a fatal lint error
+? ("duplicate argument"); it is legitimate (same value, two parameters).
+
+@ add3 |a:int, b:int, c:int| int:
+	return a + b + c
+$
+
+@ main ||:
+	expected: []
+
+	pad: 6
+	total: add3|pad, 1, pad|
+	print|total|
+	expected.push|"13"|
+
+	print|expected|
+$

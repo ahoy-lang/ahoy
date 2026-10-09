@@ -1,0 +1,36 @@
+program fstring_exprs
+
+? f-string {..} groups take any expression now (they used to substitute only
+? plain names and emit the rest verbatim into the C, breaking the build).
+
+@ dbl |x:int| int:
+	return x * 2
+$
+
+@ main ||:
+	expected: []
+
+	n: 42
+	a: f"count {n}"
+	print|a|
+	expected.push|"count 42"|
+
+	xs: array[int] = []
+	xs.push|1|
+	xs.push|2|
+	b: f"len {xs.length} first {xs[0]}"
+	print|b|
+	expected.push|"len 2 first 1"|
+
+	y: 3.7
+	c: f"int {int(y)} dbl {dbl|21|}"
+	print|c|
+	expected.push|"int 3 dbl 42"|
+
+	s: "hello"
+	d: f"slen {s.length}"
+	print|d|
+	expected.push|"slen 5"|
+
+	print|expected|
+$
