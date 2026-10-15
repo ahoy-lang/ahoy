@@ -893,7 +893,9 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					p.recordError(errMsg)
 				}
 			} else if isDeclaration {
-				// Declaration - store the type
+				// Declaration - store the type (clone-on-write first: the
+				// target below may be the aliased branch map).
+				p.ensureOwnScope()
 				// If inside a function, store in function scope, otherwise global
 				targetScope := p.variableTypes
 				if p.inFunctionBody && p.functionScope != nil {
@@ -914,6 +916,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 
 				// Track in declaredVars for later reassignment checks (except for _ placeholder)
 				if varName != "_" {
+					p.ensureOwnScope()
 					p.declaredVars[varName] = line
 				}
 
@@ -930,10 +933,8 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 						}
 					}
 
-					// Validate struct initialization
+					// Track object literal properties
 					if value.Type == NODE_OBJECT_LITERAL {
-						p.validateStructInitialization(explicitType, value, line)
-						// Track object literal properties
 						p.trackObjectLiteralProperties(varName, value)
 					}
 
@@ -1539,6 +1540,38 @@ func (p *Parser) parseEqualityExpression() *ASTNode {
 
 		right := p.parseRelationalExpression()
 
+		// Comma sugar for repeated comparisons against the same subject:
+		//   x is A, B      ->  x is A or x is B
+		//   x is not A, B  ->  x is not A and x is not B  (none of)
+		// Inside array/object/dict literals the comma already separates
+		// elements, so the sugar is off there and `[x is A, B]` stays two
+		// elements.
+		if p.current().Type == TOKEN_COMMA &&
+			!p.inArrayLiteral && !p.inObjectLiteral && !p.inDictLiteral {
+			values := []*ASTNode{right}
+			for p.current().Type == TOKEN_COMMA {
+				comma := p.current()
+				p.advance()
+				if !canStartExpression(p.current().Type) {
+					p.recordErrorAtLine("expected a value after ',' in the match list", comma.Line)
+					break
+				}
+				values = append(values, p.parseRelationalExpression())
+			}
+			listValue := op.Value
+			if isNegated {
+				listValue = "is not"
+			}
+			left = &ASTNode{
+				Type:     NODE_IS_LIST,
+				Value:    listValue,
+				Children: append([]*ASTNode{left}, values...),
+				Line:     left.Line,
+				Column:   left.Column,
+			}
+			continue
+		}
+
 		comparison := &ASTNode{
 			Type:     NODE_BINARY_OP,
 			Value:    op.Value,
@@ -1714,6 +1747,23 @@ func (p *Parser) parseUnaryExpression() *ASTNode {
 			Type:     NODE_UNARY_OP,
 			Value:    op.Value,
 			Children: []*ASTNode{expr},
+		}
+	}
+	// `%name` is unique-name scene access (bell): a bare `%` stays the
+	// modulo operator, which the binary layer owns. `%` glued to an
+	// identifier (`%player`, also `%player` after `(`/`,`/`|`/newline) can
+	// only appear where a unary expression starts, so there is no
+	// ambiguity with `a % b` or `a %- 1`.
+	if p.current().Type == TOKEN_MODULO && p.peek(1).Type == TOKEN_IDENTIFIER {
+		pct := p.current()
+		p.advance()
+		name := p.current()
+		p.advance()
+		return &ASTNode{
+			Type:   NODE_UNIQUE_ACCESS,
+			Value:  name.Value,
+			Line:   pct.Line,
+			Column: pct.Column,
 		}
 	}
 

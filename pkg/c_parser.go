@@ -2,9 +2,11 @@ package ahoy
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 )
 
@@ -39,8 +41,63 @@ func ParseCHeadersConcurrently(headers []struct{ Path, Namespace string }) []CHe
 	return results
 }
 
+// headerMemEntry is one cached header parse result with the file identity it
+// was parsed from.
+type headerMemEntry struct {
+	modTime time.Time
+	size    int64
+	info    *CHeaderInfo
+}
+
+// headerMemCache keeps header parses alive for the process. Every Ahoy file
+// that imports raylib.h or glue.h re-parses them during its own parse, and
+// each file is parsed several times (parse + validation passes), so without
+// this the same headers are re-read and re-parsed dozens of times per build.
+// (The on-disk BuildCache in the compiler frontend covers repeated *builds*
+// when -cache is on; this covers repeats *within* one build, which always
+// happen.) Entries are validated by mod time and size, so edited headers are
+// never served stale.
+var headerMemCache = struct {
+	sync.RWMutex
+	m map[string]*headerMemEntry
+}{m: make(map[string]*headerMemEntry)}
+
+// headerCacheKey normalises a header path so relative and absolute spellings
+// of the same file share one cache entry.
+func headerCacheKey(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		return abs
+	}
+	return path
+}
+
 // ParseCHeader parses a C header file and extracts function signatures, enums, defines, and structs
 func ParseCHeader(path string) (*CHeaderInfo, error) {
+	key := headerCacheKey(path)
+	if fi, statErr := os.Stat(path); statErr == nil {
+		headerMemCache.RLock()
+		if e, ok := headerMemCache.m[key]; ok && e.modTime.Equal(fi.ModTime()) && e.size == fi.Size() {
+			info := e.info
+			headerMemCache.RUnlock()
+			return info, nil
+		}
+		headerMemCache.RUnlock()
+	}
+
+	info, err := parseCHeaderUncached(path)
+	if err != nil {
+		return nil, err
+	}
+	if fi, statErr := os.Stat(path); statErr == nil {
+		headerMemCache.Lock()
+		headerMemCache.m[key] = &headerMemEntry{modTime: fi.ModTime(), size: fi.Size(), info: info}
+		headerMemCache.Unlock()
+	}
+	return info, nil
+}
+
+// parseCHeaderUncached does the actual line-by-line header parsing.
+func parseCHeaderUncached(path string) (*CHeaderInfo, error) {
 	info := &CHeaderInfo{
 		Functions: make(map[string]*CFunction),
 		Enums:     make(map[string]*CEnum),
@@ -130,6 +187,28 @@ func looksLikeCStatement(line string) bool {
 	if paren > 0 && strings.Contains(line[:paren], "=") {
 		return true
 	}
+	// a top-level comma before the first "(" is a fragment of a call split
+	// across lines, not a declaration: the argument line of a two-line
+	// fprintf used to register its callee with the argument list as the
+	// return type ("ahoy_perf_frame_no, fps, ms, ..., ahoy_vram_total_kb());"
+	// made every variable declared from ahoy_vram_total_kb carry that list
+	// as its type). Declarations never separate anything with a top-level
+	// comma before the parameter list opens.
+	if paren > 0 {
+		depth := 0
+		for _, ch := range line[:paren] {
+			switch ch {
+			case '(', '[', '{':
+				depth++
+			case ')', ']', '}':
+				depth--
+			case ',':
+				if depth == 0 {
+					return true
+				}
+			}
+		}
+	}
 	return false
 }
 
@@ -201,6 +280,12 @@ func parseRLAPIFunction(line string, lineNum int, filePath string, info *CHeader
 	// Extract parameters
 	endParen := strings.Index(line, ")")
 	if endParen == -1 {
+		return
+	}
+	// A ")" before the first "(" is a continuation fragment of a statement
+	// split across lines (e.g. `!table[i].tex) return commit(slot, data);`),
+	// never a declaration: slicing [parenIdx+1:endParen] would panic.
+	if endParen < parenIdx {
 		return
 	}
 

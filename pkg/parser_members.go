@@ -117,6 +117,9 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 					Value:    member.Value,
 					Line:     member.Line,
 					Children: []*ASTNode{object, args},
+					// Record the receiver type now: parse-time scopes are
+					// accurate, while check/generate-time maps have been reset.
+					RecvType: p.methodReceiverType(object),
 				}
 			} else {
 				// Simple member access - validate in lint mode
@@ -152,6 +155,21 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 					Line:     member.Line,
 					Children: []*ASTNode{object},
 				}
+			}
+		}
+
+		// Indexing into whatever the member chain produced so far
+		// (a.models[i], a.b[i].c): same node shape as chained array
+		// access, so the generator shares that path.
+		for p.current().Type == TOKEN_LBRACKET {
+			p.advance()
+			index := p.parseExpression()
+			p.expect(TOKEN_RBRACKET)
+			object = &ASTNode{
+				Type:     NODE_ARRAY_ACCESS,
+				Value:    "",
+				Children: []*ASTNode{object, index},
+				Line:     object.Line,
 			}
 		}
 	}
@@ -729,6 +747,8 @@ func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int)
 					varType = rightType
 				}
 				if varType != "" {
+					// Clone-on-write: targetScope may be the aliased branch map.
+					p.ensureOwnScope()
 					targetScope := p.variableTypes
 					if p.inFunctionBody && p.functionScope != nil {
 						targetScope = p.functionScope
@@ -800,6 +820,7 @@ func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int)
 		// Register variables with their declared types
 		for _, leftVar := range leftSide.Children {
 			if leftVar.DataType != "" {
+				p.ensureOwnScope()
 				targetScope := p.variableTypes
 				if p.inFunctionBody && p.functionScope != nil {
 					targetScope = p.functionScope
@@ -820,6 +841,7 @@ func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int)
 		if funcSig == nil {
 			// Function not found, try to register variables anyway
 			for _, leftVar := range leftSide.Children {
+				p.ensureOwnScope()
 				targetScope := p.variableTypes
 				if p.inFunctionBody && p.functionScope != nil {
 					targetScope = p.functionScope
@@ -912,6 +934,7 @@ func (p *Parser) validateTupleAssignment(leftSide, rightSide *ASTNode, line int)
 			}
 
 			// Store in appropriate scope
+			p.ensureOwnScope()
 			targetScope := p.variableTypes
 			if p.inFunctionBody && p.functionScope != nil {
 				targetScope = p.functionScope

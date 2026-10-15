@@ -1,0 +1,25 @@
+program reassign_array_loop
+
+? Reassigning an array variable inside a loop and using it afterwards must
+? not dangle. The code generator used to free the new array at the block
+? exit as well as the old one before the assignment, so reads after the
+? loop (or on later iterations) crashed after enough iterations.
+
+@ main ||:
+	expected: []
+	current: array[string] = []
+	p: string = "a,b;c,d;e,f"
+	pairs: array[string] = p.split|";"|
+	loop i:0 to pairs.length do
+		kv: array[string] = pairs[i].split|"="|
+		current = kv[0].split|","|
+	$
+	print|current.length|
+	expected.push|"2"|
+	loop i:0 to 500 do
+		current = ["x", "y"]
+	$
+	print|current.length|
+	expected.push|"2"|
+	print|expected|
+$

@@ -54,7 +54,16 @@ func (p *Parser) parseStatement() *ASTNode {
 		p.advance()
 		return &ASTNode{Type: NODE_NEXT, Line: p.current().Line}
 	case TOKEN_GOTO:
-		return p.parseGotoStatement()
+		// goto was removed: unstructured jumps bypass scope cleanup, so
+		// they leak heap locals (out) or run uninitialized ones (in).
+		// Loops with halt/next, if-chains, switch and early return cover
+		// every structured use.
+		p.recordError("goto is not supported; use loop/if/halt/next, switch, or early return")
+		p.advance()
+		if p.current().Type == TOKEN_IDENTIFIER {
+			p.advance()
+		}
+		return nil
 	case TOKEN_END:
 		// Handle $ block terminator
 		token := p.current()
@@ -125,14 +134,17 @@ func (p *Parser) parseStatement() *ASTNode {
 		if nextType == TOKEN_COMMA {
 			return p.parseTupleAssignment()
 		}
-		// Check for label declaration (name: followed by newline/indent)
+		// Labels were removed with goto (see TOKEN_GOTO): parse the block
+		// for recovery so the rest of the file still checks, then drop it.
 		if nextType == TOKEN_ASSIGN {
 			nextToken := p.peek(1)
 			if nextToken.Value == ":" {
 				// Check if followed by newline/indent (label) or expression (ternary/assignment)
 				afterColon := p.peek(2).Type
 				if afterColon == TOKEN_NEWLINE || afterColon == TOKEN_INDENT {
-					return p.parseLabelDeclaration()
+					p.recordError("labels are not supported; use loop/if/halt/next, switch, or early return")
+					p.parseLabelDeclaration()
+					return nil
 				}
 			}
 		}
@@ -319,6 +331,31 @@ func (p *Parser) parseFunction() *ASTNode {
 	return fn
 }
 
+// ensureOwnScope clones aliased branch maps on first declaration (LintMode
+// only; a no-op otherwise). Branch entries alias the enclosing maps instead
+// of copying them, so a branch that declares nothing costs no copies — this
+// keeps big flat scopes from exploding parse time and memory (previously
+// every if/else arm copied every in-scope variable). Sibling isolation is
+// preserved: writes land in the clone, and each exit restores the saved maps.
+func (p *Parser) ensureOwnScope() {
+	if !p.LintMode || !p.scopeAliased {
+		return
+	}
+	owned := make(map[string]int, len(p.declaredVars))
+	for k, v := range p.declaredVars {
+		owned[k] = v
+	}
+	p.declaredVars = owned
+	if p.functionScope != nil {
+		ownedTypes := make(map[string]string, len(p.functionScope))
+		for k, v := range p.functionScope {
+			ownedTypes[k] = v
+		}
+		p.functionScope = ownedTypes
+	}
+	p.scopeAliased = false
+}
+
 func (p *Parser) parseIfStatement() *ASTNode {
 	startLine := p.current().Line
 	p.expect(TOKEN_IF)
@@ -362,60 +399,35 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		p.advance()
 	}
 
-	// Save parent scope ONCE for entire if/else statement
-	// IMPORTANT: Must make a COPY since maps are reference types
-	var parentScope map[string]int
-	var parentFunctionScope map[string]string
+	// Branch scopes alias the enclosing maps (no copies here); each arm
+	// below re-arms the alias on entry and restores the saved triple on
+	// exit, and ensureOwnScope clones on first declaration inside an arm.
+	// A quirk below is preserved on purpose: after an else arm, functionScope
+	// keeps the else arm's map while declaredVars is restored, matching the
+	// old copy-based behavior exactly.
+	var savedVars map[string]int
+	var savedFVars map[string]string
+	var savedAliased bool
+	sawElse := false
 	if p.LintMode {
-		parentScope = make(map[string]int)
-		for k, v := range p.declaredVars {
-			parentScope[k] = v
-		}
-		// Also save functionScope
-		if p.functionScope != nil {
-			parentFunctionScope = make(map[string]string)
-			for k, v := range p.functionScope {
-				parentFunctionScope[k] = v
-			}
-		}
+		savedVars = p.declaredVars
+		savedFVars = p.functionScope
+		savedAliased = p.scopeAliased
+		p.scopeAliased = true
 	}
 
 	p.skipWhitespace()
 	p.blockDepth++ // Opening a block (inline or multiline)
 
-	// Create branch scope for if (copy of parent)
-	if p.LintMode {
-		branchScope := make(map[string]int)
-		for k, v := range parentScope {
-			branchScope[k] = v
-		}
-		p.declaredVars = branchScope
-
-		// Also create branch function scope
-		if parentFunctionScope != nil {
-			branchFunctionScope := make(map[string]string)
-			for k, v := range parentFunctionScope {
-				branchFunctionScope[k] = v
-			}
-			p.functionScope = branchFunctionScope
-		}
-	}
+	// The if arm runs on the aliased parent maps (set above).
 	ifBody := p.parseBlockUntilEnd("if", startLine)
 
-	// Restore parent scope after if branch (before checking for elseif/else)
-	// Make a COPY since maps are reference types
+	// Restore the saved triple after the if arm so elseif/else and the code
+	// after the statement see the parent maps, never the arm's declares.
 	if p.LintMode {
-		p.declaredVars = make(map[string]int)
-		for k, v := range parentScope {
-			p.declaredVars[k] = v
-		}
-		// Also restore functionScope
-		if parentFunctionScope != nil {
-			p.functionScope = make(map[string]string)
-			for k, v := range parentFunctionScope {
-				p.functionScope[k] = v
-			}
-		}
+		p.declaredVars = savedVars
+		p.functionScope = savedFVars
+		p.scopeAliased = savedAliased
 	}
 
 	ifStmt := &ASTNode{
@@ -456,36 +468,20 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		p.skipWhitespace()
 		p.blockDepth++ // Opening a block (inline or multiline)
 
-		// Create branch scope for elseif (copy of parent)
+		// The elseif arm re-arms the alias on the restored parent maps.
 		if p.LintMode {
-			branchScope := make(map[string]int)
-			for k, v := range parentScope {
-				branchScope[k] = v
-			}
-			p.declaredVars = branchScope
-
-			if parentFunctionScope != nil {
-				branchFunctionScope := make(map[string]string)
-				for k, v := range parentFunctionScope {
-					branchFunctionScope[k] = v
-				}
-				p.functionScope = branchFunctionScope
-			}
+			savedVars = p.declaredVars
+			savedFVars = p.functionScope
+			savedAliased = p.scopeAliased
+			p.scopeAliased = true
 		}
 		elseifBody := p.parseBlockUntilEnd("anif", startLine)
 
-		// Restore parent scope after elseif branch (make a copy)
+		// Restore the saved triple after the elseif arm.
 		if p.LintMode {
-			p.declaredVars = make(map[string]int)
-			for k, v := range parentScope {
-				p.declaredVars[k] = v
-			}
-			if parentFunctionScope != nil {
-				p.functionScope = make(map[string]string)
-				for k, v := range parentFunctionScope {
-					p.functionScope[k] = v
-				}
-			}
+			p.declaredVars = savedVars
+			p.functionScope = savedFVars
+			p.scopeAliased = savedAliased
 		}
 
 		// Add elseif as another condition-body pair
@@ -515,30 +511,27 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		p.skipWhitespace()
 		p.blockDepth++ // Opening a block (inline or multiline)
 
-		// Create branch scope for else (copy of parent)
+		// The else arm re-arms the alias on the restored parent maps.
+		sawElse = true
 		if p.LintMode {
-			branchScope := make(map[string]int)
-			for k, v := range parentScope {
-				branchScope[k] = v
-			}
-			p.declaredVars = branchScope
-
-			if parentFunctionScope != nil {
-				branchFunctionScope := make(map[string]string)
-				for k, v := range parentFunctionScope {
-					branchFunctionScope[k] = v
-				}
-				p.functionScope = branchFunctionScope
-			}
+			savedVars = p.declaredVars
+			savedFVars = p.functionScope
+			savedAliased = p.scopeAliased
+			p.scopeAliased = true
 		}
 		elseBody := p.parseBlockUntilEnd("else", startLine)
 
 		ifStmt.Children = append(ifStmt.Children, elseBody)
 	}
 
-	// Restore parent scope after all branches
+	// Restore parent scope after all branches. functionScope keeps the else
+	// arm's map when there was one (as before); otherwise it is restored.
 	if p.LintMode {
-		p.declaredVars = parentScope
+		p.declaredVars = savedVars
+		if !sawElse {
+			p.functionScope = savedFVars
+		}
+		p.scopeAliased = savedAliased
 	}
 	// Note: parseBlockUntilEnd already consumes the $ and decrements blockDepth
 
@@ -573,20 +566,17 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 		Children: []*ASTNode{expr}, // First child is the switch expression
 	}
 
-	// Save parent scope for all switch cases
-	var switchParentScope map[string]int
-	var switchParentFunctionScope map[string]string
+	// All switch cases alias the enclosing maps (no copies here); each case
+	// below re-arms the alias on entry and restores the saved triple on
+	// exit, so parallel cases stay isolated (same-variable names allowed).
+	var savedVars map[string]int
+	var savedFVars map[string]string
+	var savedAliased bool
 	if p.LintMode {
-		switchParentScope = make(map[string]int)
-		for k, v := range p.declaredVars {
-			switchParentScope[k] = v
-		}
-		if p.functionScope != nil {
-			switchParentFunctionScope = make(map[string]string)
-			for k, v := range p.functionScope {
-				switchParentFunctionScope[k] = v
-			}
-		}
+		savedVars = p.declaredVars
+		savedFVars = p.functionScope
+		savedAliased = p.scopeAliased
+		p.scopeAliased = true
 	}
 
 	// Parse cases: each case starts with 'on' keyword (except default case with '_')
@@ -743,6 +733,16 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 							Type:  NODE_CHAR,
 							Value: tok.Value,
 						}
+					} else if p.current().Type == TOKEN_STRING {
+						// Single-quoted values tokenize as strings (the tokenizer
+						// no longer produces CHAR), and range starts already
+						// accept them - so must range ends (`on 'a' to 'z':`).
+						tok := p.current()
+						p.advance()
+						endValue = &ASTNode{
+							Type:  NODE_STRING,
+							Value: tok.Value,
+						}
 					} else {
 						errMsg := fmt.Sprintf("Expected end value for range at line %d", p.current().Line)
 						if p.LintMode {
@@ -802,21 +802,12 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 		// Parse case body - could be multiple statements or single expression
 		var caseBody *ASTNode
 
-		// Create case scope (copy of parent) - allows same variable names in parallel cases
+		// Each case re-arms the alias on the restored parent maps.
 		if p.LintMode {
-			caseScope := make(map[string]int)
-			for k, v := range switchParentScope {
-				caseScope[k] = v
-			}
-			p.declaredVars = caseScope
-
-			if switchParentFunctionScope != nil {
-				caseFunctionScope := make(map[string]string)
-				for k, v := range switchParentFunctionScope {
-					caseFunctionScope[k] = v
-				}
-				p.functionScope = caseFunctionScope
-			}
+			savedVars = p.declaredVars
+			savedFVars = p.functionScope
+			savedAliased = p.scopeAliased
+			p.scopeAliased = true
 		}
 
 		// Check if we're starting a new case immediately (empty case)
@@ -901,18 +892,11 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 			}
 		}
 
-		// Restore parent scope after case body (for next case)
+		// Restore the saved triple after the case body (for next case).
 		if p.LintMode {
-			p.declaredVars = make(map[string]int)
-			for k, v := range switchParentScope {
-				p.declaredVars[k] = v
-			}
-			if switchParentFunctionScope != nil {
-				p.functionScope = make(map[string]string)
-				for k, v := range switchParentFunctionScope {
-					p.functionScope[k] = v
-				}
-			}
+			p.declaredVars = savedVars
+			p.functionScope = savedFVars
+			p.scopeAliased = savedAliased
 		}
 
 		// Create case node with line number for error reporting
@@ -1623,11 +1607,33 @@ func (p *Parser) parseWhenStatement() *ASTNode {
 	p.blockDepth++ // Opening a block
 	body := p.parseBlockUntilEnd("when", startLine)
 
-	return &ASTNode{
+	whenStmt := &ASTNode{
 		Type:     NODE_WHEN_STATEMENT,
 		Value:    condition.Value,
 		Children: []*ASTNode{body},
 	}
+
+	// Optional else (`else`, `else:` or `else then`, closed by `$` like every
+	// other block): compiles to `#else`. Same skip dance as if/elseif so the
+	// else may sit on the next line at the when's own indent.
+	for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_DEDENT || p.current().Type == TOKEN_SEMICOLON {
+		p.advance()
+	}
+	if p.current().Type == TOKEN_ELSE {
+		p.advance()
+		if p.current().Type == TOKEN_ASSIGN || p.current().Type == TOKEN_THEN {
+			p.advance()
+		}
+		for p.current().Type == TOKEN_NEWLINE {
+			p.advance()
+		}
+		p.skipWhitespace()
+		p.blockDepth++ // Opening a block
+		elseBody := p.parseBlockUntilEnd("else", startLine)
+		whenStmt.Children = append(whenStmt.Children, elseBody)
+	}
+
+	return whenStmt
 }
 
 func (p *Parser) parseAhoyStatement() *ASTNode {
@@ -1960,30 +1966,6 @@ func (p *Parser) parseAssertStatement() *ASTNode {
 		Type:     NODE_ASSERT_STATEMENT,
 		Line:     assertToken.Line,
 		Children: []*ASTNode{condition},
-	}
-}
-
-func (p *Parser) parseGotoStatement() *ASTNode {
-	gotoToken := p.expect(TOKEN_GOTO)
-	line := gotoToken.Line
-
-	// Expect a label name (identifier)
-	if p.current().Type != TOKEN_IDENTIFIER {
-		p.Errors = append(p.Errors, ParseError{
-			Message: "expected label name after 'goto'",
-			Line:    line,
-			Column:  p.current().Column,
-		})
-		return &ASTNode{Type: NODE_GOTO_STATEMENT, Line: line}
-	}
-
-	labelName := p.current().Value
-	p.advance()
-
-	return &ASTNode{
-		Type:  NODE_GOTO_STATEMENT,
-		Value: labelName,
-		Line:  line,
 	}
 }
 
@@ -2374,6 +2356,7 @@ func (p *Parser) parseWalrusAssignment() *ASTNode {
 			errMsg := fmt.Sprintf("Variable '%s' already declared on line %d; use '=' to update variable", name.Value, existingLine)
 			p.recordErrorAtLine(errMsg, line)
 		} else {
+			p.ensureOwnScope()
 			p.declaredVars[name.Value] = line
 		}
 

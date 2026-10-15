@@ -1,0 +1,18 @@
+struct Point:
+	x:float
+	y:float
+$
+
+@ Point.make |x:float,y:float| Point:
+	return Point{x:x,y:y}
+$
+
+@ (p Point) move |dx:float,dy:float| Point:
+	p.x=p.x+dx
+	p.y = p.y + dy
+	return p
+$
+
+@ (p Point) sum || float:
+	return p.x+p.y
+$

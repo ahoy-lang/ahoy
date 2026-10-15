@@ -152,8 +152,16 @@ func writeCMethodDoc(sb *strings.Builder, method StdlibFunc) {
 	}
 	
 	sb.WriteString("/*\n")
-	sb.WriteString(fmt.Sprintf(" * @ %s |%s| %s:\n", funcName, method.Params, method.ReturnType))
-	sb.WriteString(fmt.Sprintf(" * ? %s\n", method.Doc))
+	sb.WriteString(" * @ ")
+	sb.WriteString(funcName)
+	sb.WriteString(" |")
+	sb.WriteString(method.Params)
+	sb.WriteString("| ")
+	sb.WriteString(method.ReturnType)
+	sb.WriteString(":\n")
+	sb.WriteString(" * ? ")
+	sb.WriteString(method.Doc)
+	sb.WriteString("\n")
 	
 	// Write return statement marker based on return type
 	switch method.ReturnType {
@@ -186,7 +194,9 @@ func writeCMethodDoc(sb *strings.Builder, method StdlibFunc) {
 		sb.WriteString(method.Code)
 	} else {
 		// For builtins without code, write a stub
-		sb.WriteString(fmt.Sprintf("/* %s is a compiler builtin */\n", funcName))
+		sb.WriteString("/* ")
+		sb.WriteString(funcName)
+		sb.WriteString(" is a compiler builtin */\n")
 	}
 	sb.WriteString("\n")
 }

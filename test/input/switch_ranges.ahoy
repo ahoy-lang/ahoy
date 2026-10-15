@@ -1,0 +1,112 @@
+program switch_ranges_test
+
+? Switch with range cases - regression test: ranges used to emit one
+? `default:` label each, which is invalid C as soon as two appear.
+
+@ check |x:int| string:
+  out: string = switch x:
+    on 1 to 5: "Small"
+    on 6 to 10: "Medium"
+    on 42: "Answer"
+    on 100, 200: "Big"
+    _: "Other"
+  $
+  return out
+$
+
+@ main || void:
+  expected: []
+  r1: check|3|
+  r2: check|7|
+  r3: check|42|
+  r4: check|100|
+  r5: check|200|
+  r6: check|99|
+  print|r1|
+  print|r2|
+  print|r3|
+  print|r4|
+  print|r5|
+  print|r6|
+  expected.push|"Small"|
+  expected.push|"Medium"|
+  expected.push|"Answer"|
+  expected.push|"Big"|
+  expected.push|"Big"|
+  expected.push|"Other"|
+
+  ? String ranges compare lexicographically
+  c1: 'm'
+  switch c1:
+    on 'a' to 'z': print|"lower"|
+    on 'A' to 'Z': print|"upper"|
+    _: print|"other"|
+  $
+  expected.push|"lower"|
+  c2: 'Q'
+  switch c2:
+    on 'a' to 'z': print|"lower"|
+    on 'A' to 'Z': print|"upper"|
+    _: print|"other"|
+  $
+  expected.push|"upper"|
+  c3: '5'
+  switch c3:
+    on 'a' to 'z': print|"lower"|
+    on 'A' to 'Z': print|"upper"|
+    _: print|"other"|
+  $
+  expected.push|"other"|
+
+  ? Single range with no default
+  n: 2
+  switch n:
+    on 1 to 10: print|"in-range"|
+  $
+  expected.push|"in-range"|
+
+  ? Range boundaries are inclusive
+  b1: check|1|
+  b2: check|5|
+  b3: check|6|
+  b4: check|10|
+  print|b1|
+  print|b2|
+  print|b3|
+  print|b4|
+  expected.push|"Small"|
+  expected.push|"Small"|
+  expected.push|"Medium"|
+  expected.push|"Medium"|
+
+  ? First matching case wins on overlap
+  o1: ov|5|
+  print|o1|
+  expected.push|"first"|
+
+  ? Returning a switch directly evaluates it into a temporary
+  s1: rcheck|2|
+  s2: rcheck|50|
+  print|s1|
+  print|s2|
+  expected.push|"rsmall"|
+  expected.push|"rother"|
+
+  print|expected|
+$
+
+@ rcheck |x:int| string:
+  return switch x:
+    on 1 to 5: "rsmall"
+    _: "rother"
+  $
+$
+
+@ ov |x:int| string:
+  out: string = switch x:
+    on 1 to 10: "first"
+    on 5: "second"
+    _: "neither"
+  $
+  return out
+$

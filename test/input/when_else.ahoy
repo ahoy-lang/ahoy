@@ -1,0 +1,30 @@
+program when_else
+
+? `when NAME then A $ else B $` compiles to #ifdef/#else/#endif. This
+? harness passes no -D flags, so the else side runs; the -D side is
+? covered by manual runs (both print below).
+
+@ pick || int:
+	when NEVER_DEFINED_XYZ then
+		return 1
+	$
+	else
+		return 2
+	$
+$
+
+@ main ||:
+	expected: []
+	when NEVER_DEFINED_XYZ then
+		print|"defined path"|
+		expected.push|"defined path"|
+	$
+	else
+		print|"fallback path"|
+		expected.push|"fallback path"|
+	$
+	v: pick||
+	print|v|
+	expected.push|"2"|
+	print|expected|
+$

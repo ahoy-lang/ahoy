@@ -10,6 +10,28 @@ The Ahoy language supports inline conditionals and uses the `anif` keyword for e
 - One-line statements with `then` or `do` do NOT require `$`
 - Inline statements with semicolons on the same line do NOT require `$`
 
+## Match Lists (comma sugar)
+
+A comma after `is` tests one subject against several values. This is often the
+compact alternative to writing the same subject again with `or`/`and`:
+
+```ahoy
+? any-of: x is A, B, C  ->  x is A or x is B or x is C
+if kind is NodeKind.rect, NodeKind.shape2d, NodeKind.button2d then
+    print|"box"|
+$
+
+? none-of: x is not A, B  ->  x is not A and x is not B
+if cur.kind is not NodeKind.dead, NodeKind.hidden then
+    print|"visible"|
+$
+```
+
+The subject is evaluated once, even when it is a call (`pick|| is 4, 5`), and
+strings compare by value. For whole alternatives prefer `switch` with
+`on A, B:` cases. Inside array/object/dict literals commas separate elements,
+so `[x is A, B]` stays two elements - write `x is A or x is B` there.
+
 ## Features
 
 ### 1. Inline If Statements

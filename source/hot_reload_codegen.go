@@ -9,9 +9,9 @@ import (
 
 // GenerateCWithHotReload generates both a shared library and hot reload host
 // Returns: (libraryCode, hostCode)
-func GenerateCWithHotReload(ast *ahoy.ASTNode, filename string, enableARC bool, hasRaylib bool, raylibPath string) (string, string) {
+func GenerateCWithHotReload(ast *ahoy.ASTNode, filename string, hasRaylib bool, raylibPath string) (string, string) {
 	// Generate the normal C code
-	normalCode := generateC(ast, filename, enableARC)
+	normalCode := generateC(ast, filename)
 
 	// Transform it into a hot-reloadable library
 	libraryCode := transformToLibrary(normalCode, hasRaylib)

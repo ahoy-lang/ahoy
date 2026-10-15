@@ -571,6 +571,32 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			p.inFunctionCall++
 			args := []*ASTNode{}
 			for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
+				if p.current().Type == TOKEN_IDENTIFIER && p.peek(1).Type == TOKEN_PIPE {
+					// A call cannot appear inside a cast's pipe form
+					// (int|helper|x||): speculate exactly like argument
+					// lists do, so a plain variable in the same spot
+					// (int|b|) is left alone. On a real nested call,
+					// name the fix, rewind, consume the inner call
+					// through its closing pipe, then break so the
+					// expect below takes the cast's own close.
+					savedPos := p.pos
+					savedErrors := len(p.Errors)
+					if nested := p.tryParseNestedCall(p.current()); nested != nil {
+						p.pos = savedPos
+						p.Errors = p.Errors[:savedErrors]
+						p.reportCallInCast(p.current())
+						p.advance()
+						p.advance()
+						for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF && p.current().Type != TOKEN_NEWLINE {
+							p.advance()
+						}
+						if p.current().Type == TOKEN_PIPE {
+							p.advance()
+						}
+						args = append(args, &ASTNode{Type: NODE_IDENTIFIER, Value: "error"})
+						break
+					}
+				}
 				arg := p.parseCallArgumentExpression()
 				args = append(args, arg)
 
@@ -607,6 +633,37 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 		// It's a cast - parse the argument in parentheses
 		p.advance() // consume opening (
 
+		if p.current().Type == TOKEN_IDENTIFIER && p.peek(1).Type == TOKEN_PIPE {
+			// A call cannot appear inside a cast's paren form either
+			// (n: int(helper||)): same speculation gate so plain
+			// variables and member access pass through untouched.
+			savedPos := p.pos
+			savedErrors := len(p.Errors)
+			if nested := p.tryParseNestedCall(p.current()); nested != nil {
+				p.pos = savedPos
+				p.Errors = p.Errors[:savedErrors]
+				// Name the fix, then skip to the matching close paren
+				// so the declaration still parses and no cascade follows.
+				p.reportCallInCast(p.current())
+				depth := 1
+				for depth > 0 && p.current().Type != TOKEN_EOF && p.current().Type != TOKEN_NEWLINE {
+					if p.current().Type == TOKEN_LPAREN {
+						depth++
+					}
+					if p.current().Type == TOKEN_RPAREN {
+						depth--
+					}
+					p.advance()
+				}
+				return &ASTNode{
+					Type:     NODE_CALL,
+					Value:    token.Value,
+					Children: []*ASTNode{{Type: NODE_IDENTIFIER, Value: "error"}},
+					Line:     token.Line,
+				}
+			}
+		}
+
 		arg := p.parseExpression()
 
 		p.expect(TOKEN_RPAREN)
@@ -633,6 +690,19 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 		} else {
 			panic(errMsg)
 		}
+	}
+}
+
+// reportCallInCast names the fix when a pipe-call is used where only plain
+// values parse — inside a cast's pipe form (int|helper|x||) or paren form
+// (n: int(helper||)|). Calls are not supported there; the fix is always a
+// temp variable. Lint records and continues, parse raises for the caller.
+func (p *Parser) reportCallInCast(name Token) {
+	errMsg := fmt.Sprintf("function call '%s|...|' cannot be used inside a cast (line %d:%d): assign the result to a variable first, then cast the variable", name.Value, name.Line, name.Column)
+	if p.LintMode {
+		p.recordError(errMsg)
+	} else {
+		panic(errMsg)
 	}
 }
 

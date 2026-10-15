@@ -61,7 +61,7 @@ A modern, expressive programming language with clean syntax and powerful feature
 ### Installation
 
 Requires:
-- Go 1.25+
+- Go 1.27+
 - GCC compiler (for C compilation)
 
 ### Build
@@ -198,6 +198,20 @@ if x < y then       ? or: x lesser_than y
 if x is y then      ? equality
 if x is not y then  ? inequality
 ```
+
+**Match lists** (one subject, many values):
+```ahoy
+? x is A, B, C means x is A or x is B or x is C
+if kind is NodeKind.rect, NodeKind.shape2d, NodeKind.button2d then
+
+? x is not A, B means x is not A and x is not B (none of them)
+if cur.kind is not NodeKind.dead, NodeKind.hidden then
+```
+The subject is evaluated once. Strings still compare by value, so
+`name is "alice", "bob"` is a `strcmp` against each. Inside array/object/dict
+literals commas separate elements, so write `x is A or x is B` there
+(`[x is A, B]` stays two elements). For whole blocks of alternatives prefer
+`switch` with `on A, B:` cases (see docs/SWITCH_STATEMENT.md).
 
 **Ternary Operator** (NEW!):
 ```ahoy
@@ -642,6 +656,41 @@ current_color: Color.RED
 state: Status.ACTIVE
 ```
 
+### Methods
+
+Go-style receivers. A method is a function whose first parameter is the
+receiver; `recv.m|args|` calls the mangled `Type_m` with the receiver
+prepended. Associated functions (`@ T.name`, no receiver) are called as
+`Type.name|args|`:
+
+```ahoy
+struct Point:
+    x: float
+    y: float
+$
+
+@ Point.make |x:float, y:float| Point:
+    return Point{x: x, y: y}
+$
+
+@ (p Point) move |dx:float, dy:float| Point:
+    p.x = p.x + dx
+    p.y = p.y + dy
+    return p
+$
+
+p: Point.make|1.0, 2.0|
+q: p.move|3.0, 4.0|
+```
+
+Rules: the receiver type must be a struct, enum, builtin or compound
+builtin shape (`array[Node]` works, so scene-style `nodes.set_pos|id, …|`
+is expressible); the call resolves against struct callback fields first,
+then user methods, then builtins, and an unknown method on a type with
+methods is a compile error. Value receivers behave like value parameters:
+return the new value (`n = n.moved|dx, dy|`); only handle receivers
+(arrays, pools) mutate in place. See `docs/METHODS.md`.
+
 ### Complete Example
 
 ```ahoy
@@ -724,10 +773,16 @@ switch expression:
         ? code for value1
     on value2, value3:
         ? code for multiple values
+    on 1 to 5:
+        ? code for a range (inclusive, first match wins)
     on _:
         ? default case
 $
 ```
+
+A switch can also produce a value (`out: string = switch x: ...`) or be
+returned directly (`return switch x: ...`). See
+[docs/SWITCH_STATEMENT.md](docs/SWITCH_STATEMENT.md) for the full reference.
 
 ### Type System
 
@@ -817,15 +872,35 @@ The Ahoy LSP provides real-time diagnostics:
 
 ## CLI Reference
 
-```
+```text
 ./ahoy-bin -f <file.ahoy> [options]
 
 Options:
-  -f <file>     Input .ahoy source file (required)
-  -r            Run the compiled program
-  -lint         Run in lint-only mode (check for errors)
-  -h            Show help message
+  -f <file>        Input .ahoy source file (required)
+  -r               Run the compiled program
+  -lint            Run in lint-only mode (check for errors)
+  -D NAME          Define NAME for `when NAME:` blocks (repeatable, comma-separated)
+  -cache           Enable incremental builds (skips re-parse and re-validation when nothing changed)
+  -no_semantics    Skip semantic validation (type errors, undeclared names, duplicate definitions)
+  -format          Format the source file
+  -release         Use optimizing compiler (gcc/clang) for release build
+  -show_leaks      Enable memory leak detection with AddressSanitizer
+  -target <t>      Cross-compile target: linux, windows, web, macos, or all
+  -hotreload       Hot code reloading: keeps window open, reloads on file changes (development only)
+  -coldreload      Cold reload: auto-recompile and restart on file changes (development only)
+  -h               Show help message
 ```
+
+Every build prints a timing breakdown so slow phases are visible:
+
+```text
+Time: token=7.6ms, parse=14.1ms, lint=27.4ms, codegen=12.9ms, cache=0.02ms
+```
+
+- `token` covers tokenizing all files, `parse` the parse plus package
+  loading, `lint` the whole-program semantic validation, `codegen` C
+  generation. With `-cache`, repeat builds with no changes skip re-parse
+  and re-validation entirely.
 
 ## File Extension
 
@@ -860,14 +935,22 @@ All Ahoy source files use the `.ahoy` extension.
 | Loop (dict) | `loop key, val in dict do` | `loop k, v in data do` |
 | Break | `halt` | `if done halt` |
 | Continue | `next` | `if skip next` |
+| Switch | `switch x:` + `on` per case + `$` | `switch x:` / `on 1:` / `_: ...` / `$` |
+| Switch range | `on lo to hi:` (inclusive) | `on 1 to 5:` |
+| Match list | `x is A, B` / `x is not A, B` | `if k is 1, 2, 3 then` |
+| Method | `@ (recv T) name \|…\|` + `recv.name\|…\|` | `@ (p Point) move \|dx\| Point:` / `p.move\|1.0\|` |
+| Associated | `@ T.name \|…\|` + `T.name\|…\|` | `@ Point.make \|x, y\| Point:` / `Point.make\|1.0, 2.0\|` |
+| Switch value | `out: T = switch x: ...` | `out: string = switch day: on 1: "Mon" _: "?" $` |
 
 ## Project Structure
 
 ```
 ahoy-lang/
 ├── ahoy/                    # Core compiler
-│   ├── parser.go            # Syntax analysis
-│   ├── tokenizer.go         # Lexical analysis
+│   ├── source/              # Compiler frontend and codegen (main.go, package.go, codegen.go, ...)
+│   ├── pkg/                 # Language core: tokenizer, parser, checker, C header parsing
+│   ├── test/                # Test corpus (input/*.ahoy) and Go test suites
+│   ├── docs/                # Per-feature language references
 │   ├── ahoy-bin             # Compiled executable
 │   └── README.md            # This file
 ├── ahoy-lsp/                # Language Server Protocol
@@ -877,8 +960,7 @@ ahoy-lang/
 ├── tree-sitter-ahoy/        # Syntax highlighting
 ├── vscode-ahoy/             # VS Code extension
 ├── zed-ahoy/                # Zed editor support
-├── examples/                # Example programs
-└── test_*.ahoy              # Test files
+└── bell/                    # Example raylib engine, games, and scene editor
 ```
 
 ## Features Summary
@@ -980,16 +1062,29 @@ The `zed-ahoy` extension provides:
 
 ## Performance
 
-Ahoy is designed for:
-- Fast compilation
-- Autofree memory management (eventually)
+Ahoy compiles through C, and the frontend reports where every build spends
+its time (`token` / `parse` / `lint` / `codegen`, see CLI Reference). For
+reference, a ~6,000-line multi-file program compiles its frontend in about
+65ms on a development machine. Two properties keep builds fast and
+repeatable:
+
+- **Incremental builds (`-cache`)**: parsed files are cached, and
+  whole-program validation is skipped when no input changed (tracked by a
+  fingerprint over file contents, `-D` defines, and C headers).
+- **Deterministic output**: the generated C is byte-identical across runs
+  for the same inputs, so rebuilds and diffs are trustworthy.
 
 ## Testing
 
 ```bash
-cd ahoy
-go test -v    # Run compiler tests
+cd ahoy/pkg && go test ./...      # Tokenizer, parser, checker unit tests
+cd ahoy/source && go test ./...   # Compiler frontend tests
+cd ahoy/test && go test ./...     # Lint + end-to-end: every input/*.ahoy is compiled with gcc and run
 ```
+
+Test programs live in `ahoy/test/input/`: each declares `expected: []`
+inside `@ main`, pushes expected values as it prints them, and ends with
+`print|expected|` so the runner can compare output line by line.
 
 ## Notes
 

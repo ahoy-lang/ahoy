@@ -85,24 +85,25 @@ func ParseWithPath(tokens []Token, sourceFilePath string) *ASTNode {
 }
 
 func ParseLint(tokens []Token) (*ASTNode, []ParseError) {
-	return parseLint(tokens, "", nil)
+	return parseLint(tokens, "", nil, nil)
 }
 
 func ParseLintWithPath(tokens []Token, sourceFilePath string) (*ASTNode, []ParseError) {
-	return parseLint(tokens, sourceFilePath, nil)
+	return parseLint(tokens, sourceFilePath, nil, nil)
 }
 
 // ParseLintWithPathInProgram is ParseLintWithPath for a file that belongs to a
 // multi-file program. Names declared by the program's other files are treated
 // as already defined, so a function that is used in one file and declared in
-// another is not reported as undefined.
-func ParseLintWithPathInProgram(tokens []Token, sourceFilePath string, programNames []string) (*ASTNode, []ParseError) {
-	return parseLint(tokens, sourceFilePath, programNames)
+// another is not reported as undefined. programMethods carries the other
+// files' methods the same way, so method calls validate across files.
+func ParseLintWithPathInProgram(tokens []Token, sourceFilePath string, programNames []string, programMethods map[string]map[string]*MethodEntry) (*ASTNode, []ParseError) {
+	return parseLint(tokens, sourceFilePath, programNames, programMethods)
 }
 
 // parseLint builds a validation parser, parses, runs the semantic checks, and
 // stamps the source file onto the resulting diagnostics.
-func parseLint(tokens []Token, sourceFilePath string, programNames []string) (*ASTNode, []ParseError) {
+func parseLint(tokens []Token, sourceFilePath string, programNames []string, programMethods map[string]map[string]*MethodEntry) (*ASTNode, []ParseError) {
 	parser := &Parser{
 		tokens:              tokens,
 		pos:                 0,
@@ -135,7 +136,7 @@ func parseLint(tokens []Token, sourceFilePath string, programNames []string) (*A
 		zeroArgFunctions:    make(map[string]bool),
 	}
 	ast := parser.parseProgram()
-	parser.checkSemantics(ast, programNames)
+	parser.checkSemantics(ast, programNames, programMethods)
 	stampErrorFiles(parser.Errors, sourceFilePath)
 	stampNodeFiles(ast, sourceFilePath)
 	return ast, parser.Errors

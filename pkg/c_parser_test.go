@@ -40,3 +40,72 @@ func TestCallbackTypedefIsParsed(t *testing.T) {
 		t.Errorf("callback parameter type not preserved: %+v", f)
 	}
 }
+
+// A call split across two lines must not register its second line as a
+// declaration: the argument list used to become the callee's return type,
+// so every variable declared from that call carried the argument list as
+// its type (real case: a two-line fprintf in bell's perf sidecar poisoned
+// ahoy_vram_total_kb).
+func TestMultilineCallIsNotADeclaration(t *testing.T) {
+	dir := t.TempDir()
+	header := "static int real_total_kb(void);\n" +
+		"static void writer(const char* path) {\n" +
+		"    FILE *f;\n" +
+		"    f = fopen(path, \"w\");\n" +
+		"    fprintf(f, \"{\\\"frames\\\":%ld}\\n\",\n" +
+		"        frame_no, fps, real_total_kb());\n" +
+		"    fclose(f);\n" +
+		"}\n" +
+		"static int real_total_kb(void) {\n" +
+		"    return 42;\n" +
+		"}\n"
+	path := filepath.Join(dir, "multi.h")
+	if err := os.WriteFile(path, []byte(header), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := ParseCHeader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f, ok := info.Functions["real_total_kb"]
+	if !ok {
+		t.Fatalf("real declaration missing: %v", info.Functions)
+	}
+	if f.ReturnType != "int" {
+		t.Errorf("return type poisoned by call fragment: %q", f.ReturnType)
+	}
+	if _, ok := info.Functions["frame_no"]; ok {
+		t.Errorf("call fragment registered as function")
+	}
+}
+
+// A continuation line of a multi-line statement whose first ")" comes
+// before any "(" must be skipped, not sliced: it used to panic the parser
+// with a backwards slice ([51:26]) and would otherwise register the
+// trailing call as a function.
+func TestContinuationFragmentWithCloseParenIsSkipped(t *testing.T) {
+	dir := t.TempDir()
+	header := "static int ok_fn(void);\n" +
+		"static void frag_user(int slot) {\n" +
+		"    if (!table[slot].pos || !table[slot].nrm ||\n" +
+		"        !table[slot].tex) return commit(slot, data);\n" +
+		"}\n"
+	path := filepath.Join(dir, "frag.h")
+	if err := os.WriteFile(path, []byte(header), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := ParseCHeader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := info.Functions["ok_fn"]; !ok {
+		t.Fatalf("real declaration missing: %v", info.Functions)
+	}
+	if _, ok := info.Functions["commit"]; ok {
+		t.Errorf("continuation fragment registered as function")
+	}
+}

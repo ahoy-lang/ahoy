@@ -51,7 +51,9 @@ func (gen *CodeGenerator) generateFStringFromChildren(node *ahoy.ASTNode) {
 		args = append(args, farg{spec: spec, expr: child, dictExpr: dictExpr})
 	}
 	if len(args) == 0 {
-		gen.output.WriteString(fmt.Sprintf("\"%s\"", formatStr.String()))
+		gen.output.WriteString("\"")
+		gen.output.WriteString(formatStr.String())
+		gen.output.WriteString("\"")
 		return
 	}
 	bufferVar := fmt.Sprintf("__fstr_buf_%d", gen.varCounter)
@@ -59,9 +61,15 @@ func (gen *CodeGenerator) generateFStringFromChildren(node *ahoy.ASTNode) {
 	gen.output.WriteString("({\n")
 	gen.indent++
 	gen.writeIndent()
-	gen.output.WriteString(fmt.Sprintf("static char %s[256];\n", bufferVar))
+	gen.output.WriteString("static char ")
+	gen.output.WriteString(bufferVar)
+	gen.output.WriteString("[256];\n")
 	gen.writeIndent()
-	gen.output.WriteString(fmt.Sprintf("sprintf(%s, \"%s\"", bufferVar, formatStr.String()))
+	gen.output.WriteString("sprintf(")
+	gen.output.WriteString(bufferVar)
+	gen.output.WriteString(", \"")
+	gen.output.WriteString(formatStr.String())
+	gen.output.WriteString("\"")
 	for _, a := range args {
 		gen.output.WriteString(", ")
 		if a.dictExpr != "" {

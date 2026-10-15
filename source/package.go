@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"ahoy"
 )
@@ -16,6 +17,10 @@ type PackageFile struct {
 	ProgramName string // Empty if standalone script
 	AST         *ahoy.ASTNode
 	Content     string
+	// Tokens is the file's token stream, kept so validation passes can reuse
+	// it instead of re-tokenizing Content. Nil for cache hits from before this
+	// field existed; use lintTokens() which falls back to tokenizing.
+	Tokens []ahoy.Token
 	// SemanticErrors holds the diagnostics from the semantic pass (types,
 	// undeclared variables, duplicate declarations, const reassignment, ...).
 	// Parsing alone does not run these checks, so without them a broken program
@@ -23,6 +28,15 @@ type PackageFile struct {
 	// binary. They are part of the build cache too (see FileCache), because a
 	// cache hit skips the parse and would otherwise skip validation with it.
 	SemanticErrors []ahoy.ParseError
+}
+
+// lintTokens returns the file's tokens, tokenizing from Content only when the
+// file came from an older cache entry that did not store them.
+func (f *PackageFile) lintTokens() []ahoy.Token {
+	if f.Tokens != nil {
+		return f.Tokens
+	}
+	return ahoy.Tokenize(f.Content)
 }
 
 // Package represents a collection of files with the same program name
@@ -36,13 +50,28 @@ type PackageManager struct {
 	Packages      map[string]*Package // program name -> Package
 	ImportedPaths map[string]*Package // file/dir path -> Package
 	CurrentDir    string
+	// ValidateOnLoad runs the semantic checks as each package loads, using
+	// only the names that package declares. The compiler's normal build turns
+	// this off and validates once afterwards with every name the whole
+	// program (main package plus imports) declares: per-package validation
+	// would otherwise report hundreds of spurious "undefined" errors for
+	// cross-package references, and that first pass's diagnostics are thrown
+	// away and recomputed anyway. Lint flows keep it on. Defaults to true so
+	// existing callers behave exactly as before unless they opt out.
+	ValidateOnLoad bool
+	// TokenizeTime accumulates every Tokenize call LoadFile makes, so the
+	// frontend can report tokenization of all files as one number. LoadFile
+	// runs on goroutines for directory loads, hence the mutex.
+	TokenizeTime time.Duration
+	tokenizeMu   sync.Mutex
 }
 
 func NewPackageManager(currentDir string) *PackageManager {
 	return &PackageManager{
-		Packages:      make(map[string]*Package),
-		ImportedPaths: make(map[string]*Package),
-		CurrentDir:    currentDir,
+		Packages:       make(map[string]*Package),
+		ImportedPaths:  make(map[string]*Package),
+		CurrentDir:     currentDir,
+		ValidateOnLoad: true,
 	}
 }
 
@@ -61,7 +90,11 @@ func (pm *PackageManager) LoadFile(filePath string) (*PackageFile, error) {
 
 	// TEMP: Disable formatter for debugging
 	formattedContent := string(content) // formatSource(string(content))
+	tokenStart := time.Now()
 	tokens := ahoy.Tokenize(formattedContent)
+	pm.tokenizeMu.Lock()
+	pm.TokenizeTime += time.Since(tokenStart)
+	pm.tokenizeMu.Unlock()
 
 	// Protect against parse panics when scanning directories
 	var ast *ahoy.ASTNode
@@ -89,6 +122,7 @@ func (pm *PackageManager) LoadFile(filePath string) (*PackageFile, error) {
 		Path:    filePath,
 		AST:     ast,
 		Content: formattedContent,
+		Tokens:  tokens,
 	}
 
 	// Check if first statement is a program declaration
@@ -112,6 +146,13 @@ func (pm *PackageManager) LoadFile(filePath string) (*PackageFile, error) {
 // loaded, so that a function used in one file and declared in another is not
 // reported as undefined.
 func (pm *PackageManager) validateProgram(pkg *Package) {
+	// The compiler build disables this (see ValidateOnLoad) and validates once
+	// with the whole program's names instead; the per-package pass it replaces
+	// only ever saw one package, so its cross-package "undefined" errors were
+	// spurious and its diagnostics were discarded and recomputed downstream.
+	if !pm.ValidateOnLoad {
+		return
+	}
 	if pkg == nil || len(pkg.Files) == 0 {
 		return
 	}
@@ -127,17 +168,28 @@ func (pm *PackageManager) validateProgram(pkg *Package) {
 		programNames = append(programNames, name)
 	}
 
+	// Method tables from every file, so method calls validate across files
+	// the way free functions do via programNames.
+	asts := make([]*ahoy.ASTNode, 0, len(pkg.Files))
+	for i := range pkg.Files {
+		if pkg.Files[i].AST != nil {
+			asts = append(asts, pkg.Files[i].AST)
+		}
+	}
+	programMethods := ahoy.CollectMethods(asts...)
+
 	for i := range pkg.Files {
 		file := &pkg.Files[i]
-		file.SemanticErrors = validateSemantics(file.Content, file.Path, programNames)
+		file.SemanticErrors = validateSemanticsWithTokens(file.lintTokens(), file.Path, programNames, programMethods)
 	}
 }
 
-// validateSemantics runs the semantic pass over one file of a program and
-// returns its diagnostics. The parser's semantic checks live behind LintMode,
-// which the code-generation path does not use, so this is the only place they
-// run during a normal build.
-func validateSemantics(content, filePath string, programNames []string) (diagnostics []ahoy.ParseError) {
+// validateSemanticsWithTokens is validateSemantics for a file whose tokens
+// are already available (the normal case: LoadFile keeps them on the
+// PackageFile). Tokenizing is a small but measurable cost, and every file used
+// to be tokenized three times per build (load, per-package validation, and the
+// whole-program validation); reusing the stream removes two of the three.
+func validateSemanticsWithTokens(tokens []ahoy.Token, filePath string, programNames []string, programMethods map[string]map[string]*ahoy.MethodEntry) (diagnostics []ahoy.ParseError) {
 	defer func() {
 		if r := recover(); r != nil {
 			// A crash in the validator must not take down compilation; report it
@@ -155,7 +207,7 @@ func validateSemantics(content, filePath string, programNames []string) (diagnos
 	// False positive: the editor's type index goes stale for symbols recently
 	// added to the ahoy module. `gopls check package.go`, `go build -a` and
 	// `go vet` all pass on this call, and source/semantics_test.go covers it.
-	_, diagnostics = ahoy.ParseLintWithPathInProgram(ahoy.Tokenize(content), filePath, programNames)
+	_, diagnostics = ahoy.ParseLintWithPathInProgram(tokens, filePath, programNames, programMethods)
 	return diagnostics
 }
 

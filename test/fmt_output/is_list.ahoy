@@ -1,0 +1,6 @@
+@ check |k: int, name: string| bool:
+  if k is 1, 2, 3 then return true $
+  if k is not 7, 8 then return true $
+  if name is "a", "b" then return true $
+  return false
+$

@@ -1,0 +1,80 @@
+program is_list_test
+
+? Comma sugar for repeated `is` comparisons:
+?   x is A, B      -> x is A or x is B
+?   x is not A, B  -> x is not A and x is not B
+
+enum Kind: RECT, SHAPE2D, BUTTON2D, LABEL
+
+@ pick || int:
+	return 5
+$
+
+@ has_box |k:Kind| bool:
+	return k is Kind.RECT, Kind.SHAPE2D, Kind.BUTTON2D
+$
+
+@ main ||:
+	expected: []
+
+	k: 2
+	name: "bob"
+
+	if k is 1, 2, 3 then
+		print|"any-int"|
+		expected.push|"any-int"|
+	$
+
+	if k is not 4, 5, 6 then
+		print|"none-int"|
+		expected.push|"none-int"|
+	$
+
+	if name is "alice", "bob" then
+		print|"any-str"|
+		expected.push|"any-str"|
+	$
+
+	if name is not "carol", "dave" then
+		print|"none-str"|
+		expected.push|"none-str"|
+	$
+
+	? a call subject must be evaluated only once (see generated C)
+	if pick|| is 4, 5 then
+		print|"call-subject"|
+		expected.push|"call-subject"|
+	$
+
+	box: bool = has_box|Kind.RECT|
+	print|box|
+	expected.push|"1"|
+
+	not_box: bool = has_box|Kind.LABEL|
+	print|not_box|
+	expected.push|"0"|
+
+	? inside array literals commas still separate elements
+	vals:array[bool]= [k is 1, k is 2]
+	print|vals.length|
+	expected.push|"2"|
+
+	? the sugar composes with and/or and normal precedence
+	if k is 1, 2 and name is "bob", "carol" then
+		print|"compose"|
+		expected.push|"compose"|
+	$
+
+	ok: bool = k is 9, 10
+	print|ok|
+	expected.push|"0"|
+
+	i: 0
+	loop till i is not 2, 3 do
+		i = i + 1
+	$
+	print|i|
+	expected.push|"2"|
+
+	print|expected|
+$

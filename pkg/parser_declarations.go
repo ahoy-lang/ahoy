@@ -268,7 +268,7 @@ func (p *Parser) parseConstantDeclaration() *ASTNode {
 		if p.LintMode {
 			p.recordErrorAtLine(errMsg, line)
 			// Still parse it to continue checking for other errors
-			return p.parseFunctionWithDoubleColon(name)
+			return p.parseFunctionWithDoubleColon(name, nil, nil)
 		} else {
 			panic(errMsg)
 		}
@@ -357,27 +357,41 @@ func (p *Parser) parseFunctionDeclaration() *ASTNode {
 		p.recordErrorAtLine(errMsg, startLine)
 	}
 
+	p.functionDepth++                    // Entering function definition
+	defer func() { p.functionDepth-- }() // Exiting function definition
+
+	// Go-style receiver: @ (recv Type) name |params| rettype:
+	if p.current().Type == TOKEN_LPAREN {
+		return p.parseMethodDeclaration()
+	}
+
 	name := p.expect(TOKEN_IDENTIFIER)
+
+	// Associated function: @ Type.name |params| rettype:
+	if p.current().Type == TOKEN_DOT {
+		return p.parseAssociatedDeclaration(name)
+	}
 
 	// Double colon is now optional
 	if p.current().Type == TOKEN_DOUBLE_COLON {
 		p.advance()
 	}
 
-	p.functionDepth++                    // Entering function definition
-	defer func() { p.functionDepth-- }() // Exiting function definition
-
-	result := p.parseFunctionWithDoubleColon(name)
+	result := p.parseFunctionWithDoubleColon(name, nil, nil)
 	return result
 }
 
 // Parse function with :: syntax: name :: |params| type: body
-func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
+// recvParam carries a Go-style receiver (@ (recv T) name), which becomes
+// parameter zero; method describes a method/associated definition and is
+// recorded on the AST node.
+func (p *Parser) parseFunctionWithDoubleColon(name Token, recvParam *ASTNode, method *MethodInfo) *ASTNode {
 	startLine := name.Line
 	fn := &ASTNode{
-		Type:  NODE_FUNCTION,
-		Value: name.Value,
-		Line:  name.Line,
+		Type:   NODE_FUNCTION,
+		Value:  name.Value,
+		Line:   name.Line,
+		Method: method,
 	}
 
 	p.expect(TOKEN_PIPE)
@@ -471,6 +485,9 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 			}
 
 			// Also register in functionScope for type tracking
+			// (ensure first: params of a nested function must not leak
+			// into an aliased enclosing scope).
+			p.ensureOwnScope()
 			if p.functionScope == nil {
 				p.functionScope = make(map[string]string)
 			}
@@ -494,6 +511,25 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 		}
 	}
 	p.expect(TOKEN_PIPE)
+
+	// Go-style receiver: it becomes parameter zero, so the body, the scope
+	// tracking and the signature registration below all treat it like any
+	// other parameter.
+	if recvParam != nil {
+		params.Children = append([]*ASTNode{recvParam}, params.Children...)
+		if p.LintMode {
+			if _, exists := localParamNames[recvParam.Value]; exists {
+				p.recordErrorAtLine(fmt.Sprintf("parameter name '%s' declared twice; rename one of them", recvParam.Value), recvParam.Line)
+			} else {
+				localParamNames[recvParam.Value] = recvParam.Line
+			}
+			p.ensureOwnScope()
+			if p.functionScope == nil {
+				p.functionScope = make(map[string]string)
+			}
+			p.functionScope[recvParam.Value] = recvParam.DataType
+		}
+	}
 
 	// Return type (optional, can be multiple types separated by comma)
 	var returnType string
@@ -553,14 +589,17 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 	var savedInFunctionBody bool
 	var savedFunctionName string
 	var savedDeclaredVars map[string]int
+	var savedAliased bool
 	if p.LintMode {
 		savedFunctionRet = p.currentFunctionRet
 		savedFunctionScope = p.functionScope
 		savedInFunctionBody = p.inFunctionBody
 		savedFunctionName = p.currentFunctionName
+		savedAliased = p.scopeAliased
 		// Save and clear declaredVars for function scope
 		savedDeclaredVars = p.declaredVars
 		p.declaredVars = make(map[string]int)
+		p.scopeAliased = false
 		p.currentFunctionRet = returnType
 		p.currentFunctionName = name.Value // Track current function name for recursion detection
 		p.inFunctionBody = true            // Mark that we're inside function body
@@ -593,6 +632,7 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 		p.currentFunctionName = savedFunctionName
 		// Restore declaredVars
 		p.declaredVars = savedDeclaredVars
+		p.scopeAliased = savedAliased
 
 		// Register function signature for later validation
 		paramInfos := []ParameterInfo{}
@@ -616,9 +656,15 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token) *ASTNode {
 			returnTypesList = returnTypesArray
 		}
 
-		// Check for duplicate function declaration
+		// Check for duplicate function declaration. A method shares the
+		// global namespace under its mangled name, so this one check covers
+		// duplicate methods, method-vs-free-function and method-vs-method
+		// collisions alike.
 		if existing, exists := p.functions[name.Value]; exists {
 			errMsg := fmt.Sprintf("Redeclaration of function '%s' (previously declared at line %d)", name.Value, existing.Line)
+			if method != nil {
+				errMsg = fmt.Sprintf("Duplicate definition of '%s.%s' (previously declared at line %d)", method.Receiver, method.Name, existing.Line)
+			}
 			p.recordErrorAtLine(errMsg, name.Line)
 		}
 		// Check if name conflicts with struct
@@ -781,6 +827,7 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 					errMsg := fmt.Sprintf("Variable '%s' already declared on line %d; use '=' to update variable", varName, existingLine)
 					p.recordErrorAtLine(errMsg, line)
 				} else {
+					p.ensureOwnScope()
 					p.declaredVars[varName] = line
 				}
 			}
@@ -862,6 +909,7 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 
 					// If doesn't exist, declare it
 					if !exists {
+						p.ensureOwnScope()
 						p.declaredVars[varName] = line
 					}
 					// Store existing type for validation (if reassigning)
@@ -884,6 +932,7 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 						errMsg := fmt.Sprintf("Variable '%s' already declared on line %d; use '=' to update variable", varName, existingLine)
 						p.recordErrorAtLine(errMsg, line)
 					} else {
+						p.ensureOwnScope()
 						p.declaredVars[varName] = line
 					}
 				}
@@ -1701,31 +1750,6 @@ func (p *Parser) trackObjectLiteralProperties(varName string, object *ASTNode) {
 		}
 	}
 	p.objectLiterals[varName] = props
-}
-
-// Validate struct initialization
-func (p *Parser) validateStructInitialization(typeName string, value *ASTNode, line int) {
-	if value.Type != NODE_OBJECT_LITERAL {
-		return
-	}
-
-	// Check if it's a struct type
-	structDef, ok := p.structs[typeName]
-	if !ok {
-		return // Not a struct type, could be regular object
-	}
-
-	// Validate each property in the initialization
-	for _, prop := range value.Children {
-		if prop.Type == NODE_OBJECT_PROPERTY {
-			propName := prop.Value
-			if !p.structHasField(typeName, propName) {
-				errMsg := fmt.Sprintf("Invalid property: '%s' does not exist in type '%s' (line %d)",
-					propName, structDef.Name, line)
-				p.recordError(errMsg)
-			}
-		}
-	}
 }
 
 // Validate property assignment

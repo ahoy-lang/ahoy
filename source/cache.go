@@ -43,11 +43,46 @@ type BuildCache struct {
 	ProgramName string                   // Name of the program being cached
 	Files       map[string]*FileCache    // path -> cache entry
 	CHeaders    map[string]*CHeaderCache // path -> C header cache entry
+	// Validation caches one whole-program semantic pass: fingerprint ->
+	// per-file diagnostics. A file's errors can depend on names declared in
+	// any other file, so per-file reuse is unsound on its own; the
+	// fingerprint covers every input, and only an exact match reuses.
+	Validation  *ValidationCache
 	Enabled     bool
 	CacheTime   time.Duration // Total time spent on cache operations
 	CacheHits   int           // Number of cache hits
 	CacheMisses int           // Number of cache misses
 	mu          sync.RWMutex  // Protects concurrent access to cache
+}
+
+// ValidationCache records the diagnostics of one whole-program validation
+// pass, keyed by the fingerprint of every input that pass depended on (see
+// validationFingerprint in main.go). A nil Errors map means nothing stored;
+// a present per-file entry (even nil/empty) means that file validated clean.
+type ValidationCache struct {
+	Fingerprint string
+	Errors      map[string][]ahoy.ParseError // file path -> diagnostics
+}
+
+// GetValidation returns the cached diagnostics when fingerprint matches the
+// stored pass exactly.
+func (bc *BuildCache) GetValidation(fingerprint string) (map[string][]ahoy.ParseError, bool) {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	if !bc.Enabled || bc.Validation == nil || bc.Validation.Fingerprint != fingerprint {
+		return nil, false
+	}
+	return bc.Validation.Errors, true
+}
+
+// SetValidation stores a whole-program validation result for later reuse.
+func (bc *BuildCache) SetValidation(fingerprint string, errors map[string][]ahoy.ParseError) {
+	if !bc.Enabled {
+		return
+	}
+	bc.mu.Lock()
+	bc.Validation = &ValidationCache{Fingerprint: fingerprint, Errors: errors}
+	bc.mu.Unlock()
 }
 
 // NewBuildCache creates a new build cache
@@ -87,15 +122,17 @@ func getCacheDir() string {
 
 // CacheData is the structure saved to disk
 type CacheData struct {
-	Files    map[string]*FileCache
-	CHeaders map[string]*CHeaderCache
+	Files      map[string]*FileCache
+	CHeaders   map[string]*CHeaderCache
+	Validation *ValidationCache
 }
 
 // cacheFormatVersion is bumped whenever the shape of the cached data changes,
 // so entries written by an older compiler are never read back. v2 added
 // PackageFile.SemanticErrors: without this, an existing v1 cache would decode
 // with empty diagnostics and silently skip semantic validation.
-const cacheFormatVersion = 2
+// v3 added the whole-program Validation cache.
+const cacheFormatVersion = 3
 
 // getCacheFileName returns the cache file name for the current program
 func (bc *BuildCache) getCacheFileName() string {
@@ -135,6 +172,9 @@ func (bc *BuildCache) load() {
 	if data.CHeaders != nil {
 		bc.CHeaders = data.CHeaders
 	}
+	if data.Validation != nil {
+		bc.Validation = data.Validation
+	}
 }
 
 // save saves the cache to disk
@@ -156,8 +196,9 @@ func (bc *BuildCache) save() {
 	defer file.Close()
 
 	data := CacheData{
-		Files:    bc.Files,
-		CHeaders: bc.CHeaders,
+		Files:      bc.Files,
+		CHeaders:   bc.CHeaders,
+		Validation: bc.Validation,
 	}
 	encoder := gob.NewEncoder(file)
 	encoder.Encode(data)

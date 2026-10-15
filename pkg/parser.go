@@ -33,6 +33,7 @@ const (
 	NODE_EXPRESSION
 	NODE_BINARY_OP
 	NODE_UNARY_OP
+	NODE_UNIQUE_ACCESS // %name: unique-name scene node lookup (bell engine)
 	NODE_CALL
 	NODE_IDENTIFIER
 	NODE_NUMBER
@@ -68,6 +69,7 @@ const (
 	NODE_OBJECT_PROPERTY
 	NODE_OBJECT_ACCESS
 	NODE_TYPE_PROPERTY // .type property access
+	NODE_IS_LIST       // comma sugar: x is A, B, C (one subject, many values)
 )
 
 type ASTNode struct {
@@ -76,13 +78,15 @@ type ASTNode struct {
 	Children     []*ASTNode
 	DataType     string
 	Line         int
-	Column       int      // Column position in source
-	File         string   // Source file; set on top-level nodes only (see stampNodeFiles)
-	DefaultValue *ASTNode // For default parameter values
-	EnumType     string   // Type of enum (int, string, color, etc.) or "" for mixed
-	IsMutable    bool     // For enum members marked as mutable
-	IsStatic     bool     // For struct fields prefixed with # (static/shared)
-	IsConst      bool     // For struct fields in SCREAMING_SNAKE_CASE (immutable)
+	Column       int         // Column position in source
+	File         string      // Source file; set on top-level nodes only (see stampNodeFiles)
+	DefaultValue *ASTNode    // For default parameter values
+	Method       *MethodInfo // Non-nil for method/associated function declarations
+	RecvType     string      // Method calls: receiver type recorded at parse time ("" if unknown)
+	EnumType     string      // Type of enum (int, string, color, etc.) or "" for mixed
+	IsMutable    bool        // For enum members marked as mutable
+	IsStatic     bool        // For struct fields prefixed with # (static/shared)
+	IsConst      bool        // For struct fields in SCREAMING_SNAKE_CASE (immutable)
 }
 
 // ParseError, its File/Severity fields and stampErrorFiles live in
@@ -246,6 +250,10 @@ type Parser struct {
 	// needs to tell a variable reference from a zero-argument call while it
 	// builds the AST - see nameIsKnownVariable.
 	knownVars map[string]bool
+	// scopeAliased is true while LintMode branch scopes alias the enclosing
+	// maps instead of copying them (see ensureOwnScope). Branches that
+	// declare nothing then cost no copies at all.
+	scopeAliased bool
 }
 
 // The public parse entry points (Parse, ParseWithPath, ParseLint, ...)
@@ -393,6 +401,9 @@ func (p *Parser) inferType(node *ASTNode) string {
 			return varType
 		}
 		return "unknown"
+	case NODE_IS_LIST:
+		// Membership list sugar always produces a bool.
+		return "bool"
 	case NODE_MEMBER_ACCESS:
 		// Handle struct field access: obj.field
 		if len(node.Children) < 1 {
@@ -422,6 +433,33 @@ func (p *Parser) inferType(node *ASTNode) string {
 			}
 		}
 
+		return "unknown"
+	case NODE_ARRAY_ACCESS:
+		// An element takes its array's element type: array[Node] -> Node.
+		// (Single-level strip handles nesting: array[array[int]] -> array[int].)
+		if node.Value == "" {
+			return "unknown"
+		}
+		arrayType := ""
+		for i := len(p.loopVarScopes) - 1; i >= 0; i-- {
+			if varType, ok := p.loopVarScopes[i][node.Value]; ok {
+				arrayType = varType
+				break
+			}
+		}
+		if arrayType == "" && p.functionScope != nil {
+			if varType, ok := p.functionScope[node.Value]; ok {
+				arrayType = varType
+			}
+		}
+		if arrayType == "" {
+			if varType, ok := p.variableTypes[node.Value]; ok {
+				arrayType = varType
+			}
+		}
+		if strings.HasPrefix(arrayType, "array[") && strings.HasSuffix(arrayType, "]") {
+			return strings.TrimSuffix(strings.TrimPrefix(arrayType, "array["), "]")
+		}
 		return "unknown"
 	case NODE_CALL:
 		// Handle function calls - infer return type from function signature

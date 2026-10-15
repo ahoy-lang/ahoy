@@ -1,0 +1,36 @@
+program switch_case_locals
+
+? Regression: a C switch case body starting with a local declaration used to
+? emit `case X:` followed directly by the declaration, which is not valid C
+? (a label may only precede a statement). Case bodies now get their own
+? braces, so a declaration can open a case.
+
+@ label_for |k:int| string:
+	switch k:
+		on 1:
+			one_part: "one"
+			return one_part
+		on 2, 3:
+			few_part: "few"
+			return few_part
+		_: return "many"
+	$
+$
+
+@ main ||:
+	expected: []
+
+	a: string = label_for|1|
+	print|a|
+	expected.push|"one"|
+
+	b: string = label_for|2|
+	print|b|
+	expected.push|"few"|
+
+	c: string = label_for|9|
+	print|c|
+	expected.push|"many"|
+
+	print|expected|
+$

@@ -1,0 +1,32 @@
+program member_float_binop
+
+? A float binop over struct member access must stay float. Member lookup
+? used to miss (or yield "double", which promotion didn't recognise), so
+? `a.x * b.y` inferred int and truncated 2.8 to 2.
+
+struct Pt:
+	x: float
+	y: float
+$
+
+@ main ||:
+	expected: []
+	a: Pt = Pt{x: 0.7, y: 2.0}
+	b: Pt = Pt{x: 3.0, y: 4.0}
+	v: a.x * b.y
+	print|v|
+	expected.push|"2.8"|
+	s: a.x + b.y
+	print|s|
+	expected.push|"4.7"|
+	arr: array[float] = [a.x * b.y]
+	print|arr[0]|
+	expected.push|"2.8"|
+	m: a.x * 2
+	print|m|
+	expected.push|"1.4"|
+	i: 3 * 4
+	print|i|
+	expected.push|"12"|
+	print|expected|
+$

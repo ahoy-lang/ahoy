@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -268,7 +269,7 @@ $
 	wantError(t, fatalMessages(errs), "Function 'helper' is not defined")
 
 	// With them, it resolves.
-	_, errs = ahoy.ParseLintWithPathInProgram(ahoy.Tokenize(mainSrc), "main.ahoy", []string{"helper"})
+	_, errs = ahoy.ParseLintWithPathInProgram(ahoy.Tokenize(mainSrc), "main.ahoy", []string{"helper"}, nil)
 	wantNoError(t, fatalMessages(errs), "is not defined")
 }
 
@@ -501,4 +502,536 @@ $
 `)
 	wantNoError(t, msgs, "is not declared")
 	wantNoError(t, msgs, "is not defined")
+}
+
+// TestLintSeesDirectoryImports mirrors the -lint whole-program pass: a main
+// file importing a directory (the bell engine layout) must resolve the
+// imported names instead of reporting every engine call as undefined.
+func TestLintSeesDirectoryImports(t *testing.T) {
+	dir := t.TempDir()
+	engineDir := dir + "/engine"
+	if err := os.Mkdir(engineDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	engineSrc := "program eng\n@ engine_fn |x:int| int:\n\treturn x\n$\n"
+	if err := os.WriteFile(engineDir+"/engine.ahoy", []byte(engineSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+	mainSrc := "program p\nimport \"./engine\"\n@ main ||:\n\tr: engine_fn|1|\n\tprint|r|\n$\n"
+	mainPath := dir + "/main.ahoy"
+	if err := os.WriteFile(mainPath, []byte(mainSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+	pm := NewPackageManager(dir)
+	pm.ValidateOnLoad = false
+	pkg, err := pm.LoadPackageFromFile(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	imports, err := resolveImports(pkg, pm, mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packages := collectPackages(pkg, imports)
+	allNames := map[string]bool{}
+	for _, p := range packages {
+		for _, file := range p.Files {
+			for _, name := range ahoy.DeclaredNames(file.AST) {
+				allNames[name] = true
+			}
+		}
+	}
+	programNames := make([]string, 0, len(allNames))
+	for name := range allNames {
+		programNames = append(programNames, name)
+	}
+	var methodASTs []*ahoy.ASTNode
+	for _, p := range packages {
+		for i := range p.Files {
+			if p.Files[i].AST != nil {
+				methodASTs = append(methodASTs, p.Files[i].AST)
+			}
+		}
+	}
+	programMethods := ahoy.CollectMethods(methodASTs...)
+	var msgs []string
+	for _, p := range packages {
+		for _, file := range p.Files {
+			_, errs := ahoy.ParseLintWithPathInProgram(file.lintTokens(), file.Path, programNames, programMethods)
+			msgs = append(msgs, fatalMessages(errs)...)
+		}
+	}
+	wantNoError(t, msgs, "engine_fn")
+}
+
+// TestLintStillCatchesUndefinedAcrossImports proves the test above is not
+// vacuous: an unknown name through the same import layout must be reported.
+func TestLintStillCatchesUndefinedAcrossImports(t *testing.T) {
+	dir := t.TempDir()
+	engineDir := dir + "/engine"
+	if err := os.Mkdir(engineDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	engineSrc := "program eng\n@ engine_fn |x:int| int:\n\treturn x\n$\n"
+	if err := os.WriteFile(engineDir+"/engine.ahoy", []byte(engineSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+	mainSrc := "program p\nimport \"./engine\"\n@ main ||:\n\tr: missing_fn_xyz|1|\n\tprint|r|\n$\n"
+	mainPath := dir + "/main.ahoy"
+	if err := os.WriteFile(mainPath, []byte(mainSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+	pm := NewPackageManager(dir)
+	pm.ValidateOnLoad = false
+	pkg, err := pm.LoadPackageFromFile(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	imports, err := resolveImports(pkg, pm, mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packages := collectPackages(pkg, imports)
+	allNames := map[string]bool{}
+	for _, p := range packages {
+		for _, file := range p.Files {
+			for _, name := range ahoy.DeclaredNames(file.AST) {
+				allNames[name] = true
+			}
+		}
+	}
+	programNames := make([]string, 0, len(allNames))
+	for name := range allNames {
+		programNames = append(programNames, name)
+	}
+	var methodASTs []*ahoy.ASTNode
+	for _, p := range packages {
+		for i := range p.Files {
+			if p.Files[i].AST != nil {
+				methodASTs = append(methodASTs, p.Files[i].AST)
+			}
+		}
+	}
+	programMethods := ahoy.CollectMethods(methodASTs...)
+	var msgs []string
+	for _, p := range packages {
+		for _, file := range p.Files {
+			_, errs := ahoy.ParseLintWithPathInProgram(file.lintTokens(), file.Path, programNames, programMethods)
+			msgs = append(msgs, fatalMessages(errs)...)
+		}
+	}
+	wantError(t, msgs, "missing_fn_xyz")
+}
+
+const methodsPrelude = `struct Point:
+	x: float
+	y: float
+$
+
+@ Point.make |x:float, y:float| Point:
+	return Point{x: x, y: y}
+$
+
+@ (p Point) move |dx:float, dy:float| Point:
+	p.x = p.x + dx
+	p.y = p.y + dy
+	return p
+$
+
+@ (p Point) sum || float:
+	return p.x + p.y
+$
+`
+
+func TestUserMethodsValid(t *testing.T) {
+	src := methodsPrelude + `@ main || void:
+	p: Point.make|1.0, 2.0|
+	q: p.move|3.0, 4.0|
+	s: q.sum||
+	print|s|
+$
+`
+	wantNoError(t, diagnosticsFor(src), "method")
+	wantNoError(t, diagnosticsFor(src), "Point_move")
+}
+
+func TestUserMethodsUnknown(t *testing.T) {
+	src := methodsPrelude + `@ main || void:
+	p: Point{x: 1.0, y: 2.0}
+	q: p.nudge|3.0|
+	print|q|
+$
+`
+	wantError(t, diagnosticsFor(src), "has no method 'nudge'")
+}
+
+func TestUserMethodsArity(t *testing.T) {
+	src := methodsPrelude + `@ main || void:
+	p: Point{x: 1.0, y: 2.0}
+	q: p.move|3.0|
+	print|q|
+$
+`
+	wantError(t, diagnosticsFor(src), "expects 3 argument")
+}
+
+func TestUserMethodsAssociatedUnknown(t *testing.T) {
+	src := methodsPrelude + `@ main || void:
+	p: Point.x|1.0|
+	print|p|
+$
+`
+	wantError(t, diagnosticsFor(src), "has no associated function 'x'")
+}
+
+func TestUserMethodsDuplicate(t *testing.T) {
+	src := methodsPrelude + `@ (p Point) move |dx:float| Point:
+	return p
+$
+
+@ main || void:
+	print|"hi"|
+$
+`
+	wantError(t, diagnosticsFor(src), "Duplicate definition of 'Point.move'")
+}
+
+func TestUserMethodsUnknownReceiver(t *testing.T) {
+	src := `struct Point:
+	x: float
+$
+
+@ (p Nope) foo || int:
+	return 1
+$
+
+@ main || void:
+	print|"hi"|
+$
+`
+	wantError(t, diagnosticsFor(src), "Unknown type 'Nope'")
+}
+
+func TestUserMethodsDynamicReceiverStaysPermissive(t *testing.T) {
+	src := `@ f |x| int:
+	q: x.nudge|3.0|
+	return 1
+$
+
+@ main || void:
+	print|"hi"|
+$
+`
+	wantNoError(t, diagnosticsFor(src), "has no method")
+}
+
+func TestUserMethodsAcrossFiles(t *testing.T) {
+	engineSrc := "program eng\n" + methodsPrelude
+	mainSrc := `program eng
+@ main || void:
+	p: Point{x: 1.0, y: 2.0}
+	q: p.move|3.0, 4.0|
+	print|q|
+$
+`
+	engineAST, _ := ahoy.ParseLintWithPath(ahoy.Tokenize(engineSrc), "engine.ahoy")
+	methods := ahoy.CollectMethods(engineAST)
+	_, errs := ahoy.ParseLintWithPathInProgram(ahoy.Tokenize(mainSrc), "main.ahoy",
+		[]string{"Point", "Point_make", "Point_move", "Point_sum"}, methods)
+	wantNoError(t, fatalMessages(errs), "has no method")
+	wantNoError(t, fatalMessages(errs), "expects")
+
+	badSrc := `program eng
+@ main || void:
+	p: Point{x: 1.0, y: 2.0}
+	q: p.nudge|3.0|
+	print|q|
+$
+`
+	_, errs = ahoy.ParseLintWithPathInProgram(ahoy.Tokenize(badSrc), "main.ahoy",
+		[]string{"Point", "Point_make", "Point_move", "Point_sum"}, methods)
+	wantError(t, fatalMessages(errs), "has no method 'nudge'")
+}
+
+const fnrefPrelude = `struct Renderer:
+	clear: fn(int,int,int)->int
+	draw: fn(int,int)->int
+	name: string
+$
+
+@ raylib_clear |r:int, g:int, b:int| int:
+	return 100
+$
+
+@ sdl_draw |x:int| int:
+	return 400
+$
+`
+
+func TestFnRefMismatchInLiteral(t *testing.T) {
+	src := fnrefPrelude + `@ main || void:
+	s: Renderer{clear: &raylib_clear, draw: &sdl_draw, name: "sdl"}
+	print|s.name|
+$
+`
+	warned := false
+	for _, e := range allDiagnosticsFor(src) {
+		if e.IsWarning() && strings.Contains(e.Message, "takes only 1 parameter") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("expected a fewer-parameters warning, got %v", allDiagnosticsFor(src))
+	}
+	wantNoError(t, diagnosticsFor(src), "takes only")
+}
+
+func TestFnRefMatchInLiteral(t *testing.T) {
+	src := fnrefPrelude + `@ sdl_draw2 |x:int, y:int| int:
+	return x + y
+$
+
+@ main || void:
+	s: Renderer{clear: &raylib_clear, draw: &sdl_draw2, name: "sdl"}
+	print|s.name|
+$
+`
+	wantNoError(t, diagnosticsFor(src), "Function reference")
+}
+
+func TestFnRefMissingField(t *testing.T) {
+	src := fnrefPrelude + `@ main || void:
+	r: Renderer{clear: &raylib_clear, name: "raylib"}
+	print|r.name|
+$
+`
+	wantError(t, diagnosticsFor(src), "missing function field 'draw'")
+}
+
+func TestLiteralUnknownFieldInferred(t *testing.T) {
+	// Unknown fields are rejected in inferred literals too (returns,
+	// elements, arguments), not just explicitly annotated declarations.
+	src := fnrefPrelude + `@ make || Renderer:
+	return Renderer{clear: &raylib_clear, name: "x", badfield: 1}
+$
+
+@ main || void:
+	r: make||
+	print|r.name|
+$
+`
+	wantError(t, diagnosticsFor(src), "'badfield' does not exist in type 'Renderer'")
+}
+
+func TestFnRefArgMismatch(t *testing.T) {
+	src := `@ takes_cb |cb:fn(int,int)->int| int:
+	return cb|1, 2|
+$
+
+@ one_arg |x:int| int:
+	return x
+$
+
+@ main || void:
+	y: takes_cb|&one_arg|
+	print|y|
+$
+`
+	warned := false
+	for _, e := range allDiagnosticsFor(src) {
+		if e.IsWarning() && strings.Contains(e.Message, "takes only 1 parameter") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("expected a fewer-parameters warning, got %v", allDiagnosticsFor(src))
+	}
+	wantNoError(t, diagnosticsFor(src), "takes only")
+}
+
+func TestFnRefNeedsMoreArgs(t *testing.T) {
+	src := `@ takes_cb |cb:fn(int,int)->int| int:
+	return cb|1, 2|
+$
+
+@ main || void:
+	y: takes_cb|&needs_two|
+	print|y|
+$
+
+@ needs_two |a:int, b:int, c:int| int:
+	return a + b + c
+$
+`
+	wantError(t, diagnosticsFor(src), "takes at least 3 argument")
+}
+
+func TestFnRefReturnMismatch(t *testing.T) {
+	src := `@ takes_cb |cb:fn(int)->int| int:
+	return cb|1|
+$
+
+@ no_ret |x:int| void:
+	print|x|
+$
+
+@ main || void:
+	y: takes_cb|&no_ret|
+	print|y|
+$
+`
+	wantError(t, diagnosticsFor(src), "returns void but slot")
+}
+
+func TestRepeatedIfSuggestsSwitch(t *testing.T) {
+	src := `@ shape_name |shape:int| string:
+	if shape is 1 then
+		return "circle"
+	$
+	if shape is 2 then
+		return "line"
+	$
+	if shape is 3 then
+		return "outline"
+	$
+	return "rect"
+$
+`
+	warned := false
+	for _, e := range allDiagnosticsFor(src) {
+		if e.IsWarning() && strings.Contains(e.Message, "consider 'switch shape:'") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("expected a switch suggestion warning, got %v", allDiagnosticsFor(src))
+	}
+	wantNoError(t, diagnosticsFor(src), "consider 'switch")
+}
+
+func TestRepeatedIfShortChainSilent(t *testing.T) {
+	src := `@ f |a:int| string:
+	if a is 1 then
+		return "one"
+	$
+	if a is 2 then
+		return "two"
+	$
+	return "other"
+$
+`
+	for _, e := range allDiagnosticsFor(src) {
+		if strings.Contains(e.Message, "consider 'switch") {
+			t.Errorf("did not expect a switch suggestion for two checks, got %q", e.Message)
+		}
+	}
+}
+
+func TestRepeatedIfMixedSilent(t *testing.T) {
+	src := `@ f |a:int, b:int| string:
+	if a is 1 then
+		return "one"
+	$
+	if b is 1 then
+		return "bee-one"
+	$
+	if a is not 2 then
+		return "not-two"
+	$
+	if a is 3 and b is 1 then
+		return "mixed"
+	$
+	return "other"
+$
+`
+	for _, e := range allDiagnosticsFor(src) {
+		if strings.Contains(e.Message, "consider 'switch") {
+			t.Errorf("did not expect a switch suggestion for mixed checks, got %q", e.Message)
+		}
+	}
+}
+
+func TestStoreWarnPushHeap(t *testing.T) {
+	src := `@ main || void:
+	outer: []
+	loop i:0 to 10 do
+		inner: [i]
+		outer.push|inner|
+	$
+	print|outer.length|
+$
+`
+	warned := false
+	for _, e := range allDiagnosticsFor(src) {
+		if e.IsWarning() && strings.Contains(e.Message, "does not free its elements") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("expected a push-store warning, got %v", allDiagnosticsFor(src))
+	}
+	wantNoError(t, diagnosticsFor(src), "does not free")
+}
+
+func TestStoreNoWarnPushPrimitives(t *testing.T) {
+	src := `@ main || void:
+	outer: []
+	loop i:0 to 10 do
+		outer.push|i|
+	$
+	names: []
+	names.push|"hi"|
+	print|outer.length|
+	print|names.length|
+$
+`
+	for _, e := range allDiagnosticsFor(src) {
+		if strings.Contains(e.Message, "does not free") {
+			t.Errorf("did not expect a push warning, got %q", e.Message)
+		}
+	}
+}
+
+func TestStoreWarnFieldHeap(t *testing.T) {
+	src := `struct Card:
+	text: string
+	count: int
+$
+
+@ main || void:
+	n: Card{text: "", count: 0}
+	n.text = n.text + "!"
+	print|n.text|
+$
+`
+	warned := false
+	for _, e := range allDiagnosticsFor(src) {
+		if e.IsWarning() && strings.Contains(e.Message, "previous contents are not freed") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("expected a field-store warning, got %v", allDiagnosticsFor(src))
+	}
+	wantNoError(t, diagnosticsFor(src), "previous contents")
+}
+
+func TestStoreNoWarnFieldLiteral(t *testing.T) {
+	src := `struct Card:
+	text: string
+	count: int
+$
+
+@ main || void:
+	n: Card{text: "", count: 0}
+	n.text = "hello"
+	n.count = 5
+	print|n.text|
+$
+`
+	for _, e := range allDiagnosticsFor(src) {
+		if strings.Contains(e.Message, "previous contents") {
+			t.Errorf("did not expect a field-store warning, got %q", e.Message)
+		}
+	}
 }

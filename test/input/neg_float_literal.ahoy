@@ -1,0 +1,22 @@
+program neg_float_literal
+
+? A negative float literal in a typed float array must be boxed as a
+? float. It used to be stored as a raw int, and reading it back as a
+? boxed double* segfaulted.
+
+@ main ||:
+	expected: []
+	ints: array[int] = [1, -5, 3]
+	print|ints[1]|
+	expected.push|"-5"|
+	vals: array[float] = [1.5, -10.0, 3.0]
+	print|vals[1]|
+	expected.push|"-10"|
+	x: -2.5
+	print|x|
+	expected.push|"-2.5"|
+	y: -7
+	print|y|
+	expected.push|"-7"|
+	print|expected|
+$

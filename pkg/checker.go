@@ -2,8 +2,10 @@ package ahoy
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // Semantic checks that need the whole program rather than a single statement.
@@ -31,15 +33,41 @@ type checker struct {
 	// programNames holds names declared elsewhere in the same program, so a
 	// multi-file program resolves names across its files.
 	programNames map[string]bool
+	// methods holds user-defined methods (this file plus programMethods from
+	// other files), keyed by normalized receiver type, then method name.
+	methods map[string]map[string]*MethodEntry
 
 	funcName   string
 	inFunction bool
+	// funcParams holds the current function's parameter names (nil outside
+	// functions). Push/store warnings skip parameters: the caller owns them.
+	funcParams map[string]bool
+	// freedNames holds locals explicitly freed with free|x| (not deferred).
+	// Any later use warns (use-after-free); rebinding clears the entry.
+	freedNames map[string]bool
+	// inDefer counts enclosing defer statements: free|x| inside one runs at
+	// scope end, so later uses before then are fine and not recorded.
+	inDefer int
+
+	// suggestNames caches the static part of knownNames() for the whole check
+	// run. suggest() is called once per undefined name, and rebuilding the
+	// candidate list (which includes every C header symbol) on each call made
+	// files with many undefined names quadratic. The parser maps, builtins and
+	// C headers are fixed once parsing finishes, so they are snapshotted here;
+	// live block scopes are appended per call (see suggest), which reproduces
+	// exactly the candidate set knownNames() would compute at that moment.
+	// suggestLens holds each candidate's rune length for the length prefilter,
+	// and suggestMaxLen sizes the DP buffers suggest() reuses across candidates.
+	suggestNames  []string
+	suggestLens   []int
+	suggestMaxLen int
 }
 
 // checkSemantics walks a parsed program and appends diagnostics to p.Errors.
 // programNames may be nil; it carries the top-level names declared by the other
-// files of the same program.
-func (p *Parser) checkSemantics(ast *ASTNode, programNames []string) {
+// files of the same program. programMethods carries the other files' methods
+// the same way, so method calls validate across files.
+func (p *Parser) checkSemantics(ast *ASTNode, programNames []string, programMethods map[string]map[string]*MethodEntry) {
 	if ast == nil {
 		return
 	}
@@ -48,9 +76,51 @@ func (p *Parser) checkSemantics(ast *ASTNode, programNames []string) {
 		scopes:       []map[string]bool{{}},
 		scopeTypes:   []map[string]string{{}},
 		programNames: make(map[string]bool, len(programNames)),
+		freedNames:   make(map[string]bool),
 	}
 	for _, name := range programNames {
 		c.programNames[name] = true
+	}
+	c.suggestNames = c.knownNames()
+	c.suggestLens = make([]int, len(c.suggestNames))
+	for i, name := range c.suggestNames {
+		n := utf8.RuneCountInString(name)
+		c.suggestLens[i] = n
+		if n > c.suggestMaxLen {
+			c.suggestMaxLen = n
+		}
+	}
+	// Method tables: this file's methods plus the other files', so method
+	// calls validate across the program the way free functions do via
+	// programNames. Own-file entries win. Cross-file signatures are registered
+	// under their mangled names so the ordinary argument checking applies to
+	// method calls too.
+	c.methods = map[string]map[string]*MethodEntry{}
+	for recv, ms := range programMethods {
+		cp := make(map[string]*MethodEntry, len(ms))
+		for name, e := range ms {
+			cp[name] = e
+		}
+		c.methods[recv] = cp
+	}
+	for recv, ms := range CollectMethods(ast) {
+		if _, ok := c.methods[recv]; !ok {
+			c.methods[recv] = map[string]*MethodEntry{}
+		}
+		for name, e := range ms {
+			c.methods[recv][name] = e
+		}
+	}
+	for recv, ms := range c.methods {
+		for name, e := range ms {
+			if e == nil || e.Sig == nil {
+				continue
+			}
+			mangled := MangleMethodName(recv, name)
+			if _, exists := c.p.functions[mangled]; !exists {
+				c.p.functions[mangled] = e.Sig
+			}
+		}
 	}
 	for _, child := range ast.Children {
 		c.checkTopLevel(child)
@@ -428,24 +498,67 @@ func (c *checker) knownNames() []string {
 }
 
 // suggest returns the closest known name, when it is close enough to be a
-// plausible typo.
+// plausible typo. Candidates come from the precomputed suggestNames list, and
+// each comparison stops early once it cannot beat the current best, so a file
+// with hundreds of undefined names no longer costs hundreds of full scans.
 func (c *checker) suggest(name string) string {
+	// Only suggest genuinely similar names, and never for very short ones.
+	limit := len(name) / 3
+	if limit < 1 {
+		limit = 1
+	}
 	best := ""
-	bestDistance := 1 << 30
-	for _, candidate := range c.knownNames() {
+	bestDistance := limit + 1
+	nameLen := utf8.RuneCountInString(name)
+	nameASCII := isASCII(name)
+	// Row buffers are reused across every candidate; they only need to cover
+	// the shorter side of a comparison, which never exceeds the longest static
+	// name (a longer block-scope name grows them via the buf helpers).
+	prev := make([]int, c.suggestMaxLen+1)
+	curr := make([]int, c.suggestMaxLen+1)
+	consider := func(candidate string, candLen int) {
 		if candidate == name {
-			continue
+			return
 		}
-		d := levenshtein(name, candidate)
+		maxDist := bestDistance - 1
+		// A length gap alone rules the candidate out (edit distance is at
+		// least the length difference).
+		if d := nameLen - candLen; d < 0 {
+			if -d > maxDist {
+				return
+			}
+		} else if d > maxDist {
+			return
+		}
+		var d int
+		if nameASCII && isASCII(candidate) {
+			d = levenshteinBytesBuf(name, candidate, maxDist, prev, curr)
+		} else {
+			d = levenshteinBounded(name, candidate, maxDist)
+		}
 		if d < bestDistance {
 			bestDistance = d
 			best = candidate
 		}
 	}
-	// Only suggest genuinely similar names, and never for very short ones.
-	limit := len(name) / 3
-	if limit < 1 {
-		limit = 1
+	for i, candidate := range c.suggestNames {
+		consider(candidate, c.suggestLens[i])
+		if bestDistance == 0 {
+			break
+		}
+	}
+	// Block scopes change as the walk proceeds, so they are read live: this
+	// keeps the candidate set identical to a fresh knownNames() call.
+	if bestDistance != 0 {
+	outer:
+		for i := range c.scopes {
+			for candidate := range c.scopes[i] {
+				consider(candidate, utf8.RuneCountInString(candidate))
+				if bestDistance == 0 {
+					break outer
+				}
+			}
+		}
 	}
 	if best != "" && bestDistance <= limit {
 		return best
@@ -453,13 +566,116 @@ func (c *checker) suggest(name string) string {
 	return ""
 }
 
-func levenshtein(a, b string) int {
-	ar, br := []rune(a), []rune(b)
+// levenshteinBounded reports the edit distance between a and b, but stops
+// early and returns maxDist+1 once the distance must exceed maxDist. Callers
+// that only care about beating a current best never pay for a full matrix.
+func levenshteinBounded(a, b string, maxDist int) int {
+	if a == b {
+		return 0
+	}
+	if maxDist < 0 {
+		return 0
+	}
+	// A length gap alone can rule the candidate out.
+	if d := utf8.RuneCountInString(a) - utf8.RuneCountInString(b); d < 0 {
+		if -d > maxDist {
+			return maxDist + 1
+		}
+	} else if d > maxDist {
+		return maxDist + 1
+	}
+	// Fast byte path for the usual all-ASCII identifiers.
+	if isASCII(a) && isASCII(b) {
+		return levenshteinBoundedBytes(a, b, maxDist)
+	}
+	return levenshteinBoundedRunes([]rune(a), []rune(b), maxDist)
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+func levenshteinBoundedBytes(a, b string, maxDist int) int {
+	return levenshteinBytesBuf(a, b, maxDist, nil, nil)
+}
+
+// levenshteinBytesBuf is levenshteinBoundedBytes with caller-provided row
+// buffers (sized at least the shorter string + 1); nil buffers are allocated.
+func levenshteinBytesBuf(a, b string, maxDist int, prev, curr []int) int {
+	if len(a) == 0 {
+		if len(b) > maxDist {
+			return maxDist + 1
+		}
+		return len(b)
+	}
+	if len(b) == 0 {
+		if len(a) > maxDist {
+			return maxDist + 1
+		}
+		return len(a)
+	}
+	// Keep the shorter string on the row axis for smaller buffers.
+	if len(b) > len(a) {
+		a, b = b, a
+	}
+	if prev == nil || len(prev) < len(b)+1 {
+		prev = make([]int, len(b)+1)
+	} else {
+		prev = prev[:len(b)+1]
+	}
+	if curr == nil || len(curr) < len(b)+1 {
+		curr = make([]int, len(b)+1)
+	} else {
+		curr = curr[:len(b)+1]
+	}
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		curr[0] = i
+		rowMin := curr[0]
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			v := min(curr[j-1]+1, prev[j]+1, prev[j-1]+cost)
+			curr[j] = v
+			if v < rowMin {
+				rowMin = v
+			}
+		}
+		if rowMin > maxDist {
+			return maxDist + 1
+		}
+		prev, curr = curr, prev
+	}
+	if prev[len(b)] > maxDist {
+		return maxDist + 1
+	}
+	return prev[len(b)]
+}
+
+func levenshteinBoundedRunes(ar, br []rune, maxDist int) int {
 	if len(ar) == 0 {
+		if len(br) > maxDist {
+			return maxDist + 1
+		}
 		return len(br)
 	}
 	if len(br) == 0 {
+		if len(ar) > maxDist {
+			return maxDist + 1
+		}
 		return len(ar)
+	}
+	if len(br) > len(ar) {
+		ar, br = br, ar
 	}
 	prev := make([]int, len(br)+1)
 	curr := make([]int, len(br)+1)
@@ -468,14 +684,25 @@ func levenshtein(a, b string) int {
 	}
 	for i := 1; i <= len(ar); i++ {
 		curr[0] = i
+		rowMin := curr[0]
 		for j := 1; j <= len(br); j++ {
 			cost := 1
 			if ar[i-1] == br[j-1] {
 				cost = 0
 			}
-			curr[j] = min(curr[j-1]+1, prev[j]+1, prev[j-1]+cost)
+			v := min(curr[j-1]+1, prev[j]+1, prev[j-1]+cost)
+			curr[j] = v
+			if v < rowMin {
+				rowMin = v
+			}
+		}
+		if rowMin > maxDist {
+			return maxDist + 1
 		}
 		prev, curr = curr, prev
+	}
+	if prev[len(br)] > maxDist {
+		return maxDist + 1
 	}
 	return prev[len(br)]
 }
@@ -507,24 +734,188 @@ func (c *checker) checkFunction(node *ASTNode) {
 	if len(node.Children) < 2 {
 		return
 	}
+	if node.Method != nil {
+		c.checkMethodDeclaration(node)
+	}
 	params, body := node.Children[0], node.Children[1]
 
 	savedName := c.funcName
 	savedInFunc := c.inFunction
+	savedParams := c.funcParams
+	savedFreed := c.freedNames
 	c.funcName = node.Value
 	c.inFunction = true
+	c.funcParams = map[string]bool{}
+	c.freedNames = map[string]bool{}
 
 	c.pushScope()
 	if params != nil {
 		for _, param := range params.Children {
 			c.declareTyped(param.Value, param.DataType)
+			if param.Value != "" {
+				c.funcParams[param.Value] = true
+			}
 		}
 	}
 	c.checkBlock(body)
 	c.popScope()
 
+	// A function that promises a value must keep its promise on every path:
+	// falling off the end returns whatever garbage the register holds (this
+	// used to compile silently). Void functions may always fall through.
+	if c.functionNeedsReturn(node.Value, body) && !blockAlwaysReturns(body) {
+		c.errorAt(node, "Function '%s' may fall off the end without returning a value; add a return to every path (an `else` or a `_` default case)", node.Value)
+	}
+
 	c.funcName = savedName
 	c.inFunction = savedInFunc
+	c.funcParams = savedParams
+	c.freedNames = savedFreed
+}
+
+// functionNeedsReturn reports whether a function body must return a value on
+// every path: explicit non-void return types always do. (`infer` is rejected
+// as a return type at parse time, so that branch only ever sees
+// already-broken code; it is handled defensively.)
+func (c *checker) functionNeedsReturn(name string, body *ASTNode) bool {
+	sig, ok := c.p.functions[name]
+	if !ok || len(sig.ReturnTypes) == 0 {
+		return false
+	}
+	switch rt := sig.ReturnTypes[0]; rt {
+	case "", "void":
+		return false
+	case "infer":
+		return bodyHasValueReturn(body)
+	default:
+		return true
+	}
+}
+
+// bodyHasValueReturn reports whether any `return <value>` occurs, without
+// crossing into nested functions or lambdas (their returns are not ours).
+func bodyHasValueReturn(node *ASTNode) bool {
+	if node == nil {
+		return false
+	}
+	if node.Type == NODE_FUNCTION || node.Type == NODE_LAMBDA {
+		return false
+	}
+	if node.Type == NODE_RETURN_STATEMENT {
+		return len(node.Children) > 0
+	}
+	for _, child := range node.Children {
+		if bodyHasValueReturn(child) {
+			return true
+		}
+	}
+	return false
+}
+
+// blockAlwaysReturns reports whether execution of a block can never fall off
+// its end: some statement always returns first. Anything unrecognized counts
+// as falling through, so this never claims a return that is not there -
+// at worst it misses an exotic hole, it never invents one.
+func blockAlwaysReturns(node *ASTNode) bool {
+	if node == nil {
+		return false
+	}
+	if node.Type != NODE_BLOCK {
+		return stmtAlwaysReturns(node)
+	}
+	for _, child := range node.Children {
+		if stmtAlwaysReturns(child) {
+			return true
+		}
+	}
+	return false
+}
+
+// stmtAlwaysReturns reports whether a statement never falls through to the
+// next one. Loops may not execute, `halt` only leaves its loop, and calls or
+// assignments always continue - only `return` diverges, plus `if` and
+// `switch` whose every branch (including a required `else`/`_`) diverges.
+func stmtAlwaysReturns(node *ASTNode) bool {
+	if node == nil {
+		return false
+	}
+	switch node.Type {
+	case NODE_RETURN_STATEMENT:
+		return true
+	case NODE_IF_STATEMENT:
+		return ifAlwaysReturns(node)
+	case NODE_WHEN_STATEMENT:
+		return whenAlwaysReturns(node)
+	case NODE_SWITCH_STATEMENT:
+		return switchStmtAlwaysReturns(node)
+	default:
+		return false
+	}
+}
+
+// whenAlwaysReturns: `when NAME then A $ else B $` diverges exactly when
+// both bodies diverge. The C preprocessor compiles precisely one side, so
+// a lone `when` without `else` always falls through (and returns false here).
+// Sound because the checker verifies both bodies unconditionally.
+func whenAlwaysReturns(node *ASTNode) bool {
+	if len(node.Children) < 2 {
+		return false
+	}
+	return blockAlwaysReturns(node.Children[0]) && blockAlwaysReturns(node.Children[1])
+}
+
+// children[1] the then-body, then condition/body pairs for each
+// elseif/anif, and a lone trailing else-body when the remainder is even.
+// Every branch must diverge, and an `else` must exist - otherwise the
+// condition can simply be false.
+func ifAlwaysReturns(node *ASTNode) bool {
+	if len(node.Children) < 2 {
+		return false
+	}
+	rest := node.Children[1:]
+	hasElse := len(rest)%2 == 0
+	end := len(rest)
+	if hasElse {
+		end--
+	}
+	for i := 0; i < end; i += 2 {
+		if !blockAlwaysReturns(rest[i]) {
+			return false
+		}
+	}
+	if !hasElse {
+		return false
+	}
+	return blockAlwaysReturns(rest[len(rest)-1])
+}
+
+// switchStmtAlwaysReturns requires a `_` default (without one a value can
+// match nothing) and a diverging body in every case.
+func switchStmtAlwaysReturns(node *ASTNode) bool {
+	if len(node.Children) < 1 || !switchHasDefault(node) {
+		return false
+	}
+	for _, caseNode := range node.Children[1:] {
+		if caseNode.Type != NODE_SWITCH_CASE || len(caseNode.Children) < 2 {
+			return false
+		}
+		if !blockAlwaysReturns(caseNode.Children[1]) {
+			return false
+		}
+	}
+	return true
+}
+
+// switchHasDefault reports whether a switch has a `_` default case.
+func switchHasDefault(node *ASTNode) bool {
+	for _, caseNode := range node.Children[1:] {
+		if caseNode.Type == NODE_SWITCH_CASE && len(caseNode.Children) > 0 {
+			if v := caseNode.Children[0]; v.Type == NODE_IDENTIFIER && v.Value == "_" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------- statements
@@ -541,6 +932,7 @@ func (c *checker) checkBlock(node *ASTNode) {
 	for _, child := range node.Children {
 		c.checkStatement(child)
 	}
+	c.suggestSwitchForIfChains(node.Children)
 	c.popScope()
 }
 
@@ -552,12 +944,36 @@ func (c *checker) checkStatement(node *ASTNode) {
 	case NODE_VARIABLE_DECLARATION:
 		c.checkExpr(childAt(node, 0))
 		c.warnPartialCallResult(node, childAt(node, 0), 1)
-		c.declareTyped(node.Value, node.DataType)
+		if node.DataType != "" && IsFunctionType(node.DataType) {
+			if refName, ok := fnRefName(childAt(node, 0)); ok {
+				c.checkFnRef(childAt(node, 0), refName, node.DataType, "variable '"+node.Value+"'")
+			}
+		}
+		declType := node.DataType
+		if declType == "" {
+			declType = c.inferVarType(childAt(node, 0))
+		}
+		c.declareTyped(node.Value, declType)
+		// Rebinding heals a freed name: the new value owns fresh storage.
+		delete(c.freedNames, node.Value)
 
 	case NODE_ASSIGNMENT:
 		// The parser already rejects assignment to an undeclared variable.
 		c.checkExpr(childAt(node, 0))
 		c.warnPartialCallResult(node, childAt(node, 0), 1)
+		// Storing heap memory where nobody frees it leaks: struct fields
+		// and dict slots have no cleanup (unlike locals). Warn; the value
+		// may still be fine when the previous contents were static.
+		if target := childAt(node, 0); target != nil &&
+			(target.Type == NODE_MEMBER_ACCESS || target.Type == NODE_OBJECT_ACCESS || target.Type == NODE_DICT_ACCESS) {
+			if value := childAt(node, 1); c.heapStoreValue(value) {
+				c.warningAt(node, "Storing heap value into '%s'; previous contents are not freed", target.Value)
+			}
+		} else if target == nil || (target.Type != NODE_ARRAY_ACCESS && target.Type != NODE_DICT_ACCESS) {
+			// Plain rebind heals a freed name (element stores into a dead
+			// array do not). Uses in the new value already warned above.
+			delete(c.freedNames, node.Value)
+		}
 
 	case NODE_TUPLE_ASSIGNMENT:
 		targets, values := childAt(node, 0), childAt(node, 1)
@@ -683,16 +1099,45 @@ func (c *checker) checkStatement(node *ASTNode) {
 		for _, child := range node.Children {
 			c.checkExpr(child)
 		}
+		// Returning an f-string hands out the shared format buffer: the next
+		// call overwrites what the caller holds. Return a concatenation or
+		// bind-then-return instead (bound f-strings own their copy).
+		for _, child := range node.Children {
+			if child != nil && child.Type == NODE_F_STRING {
+				c.warningAt(child, "Returning an f-string shares the format buffer; bind it to a variable first so the caller owns its value")
+				break
+			}
+		}
+		// A bare `return` in a function that promises a value dies later in
+		// the C compiler; report it here instead. Void and untyped functions
+		// may always return bare.
+		if len(node.Children) == 0 && c.inFunction {
+			if sig, ok := c.p.functions[c.funcName]; ok && len(sig.ReturnTypes) > 0 {
+				rt := sig.ReturnTypes[0]
+				if rt != "" && rt != "void" && rt != "infer" {
+					c.errorAt(node, "Function '%s' returns %s but this return has no value", c.funcName, rt)
+				}
+			}
+		}
 
-	case NODE_ASSERT_STATEMENT, NODE_DEFER_STATEMENT:
+	case NODE_ASSERT_STATEMENT:
 		for _, child := range node.Children {
 			c.checkStatement(child)
 		}
 
-	case NODE_GOTO_STATEMENT, NODE_LABEL_DECLARATION, NODE_HALT, NODE_NEXT,
+	case NODE_DEFER_STATEMENT:
+		// free|x| inside a defer runs at scope end: later uses before then
+		// are fine, so deferred frees are not recorded (see checkCall).
+		c.inDefer++
+		for _, child := range node.Children {
+			c.checkStatement(child)
+		}
+		c.inDefer--
+
+	case NODE_HALT, NODE_NEXT,
 		NODE_IMPORT_STATEMENT, NODE_PROGRAM_DECLARATION, NODE_ALIAS_DECLARATION,
 		NODE_UNION_DECLARATION, NODE_STRUCT_DECLARATION, NODE_ENUM_DECLARATION:
-		// Labels are not variables; type declarations carry no expressions.
+		// Type declarations carry no expressions.
 
 	default:
 		c.checkExpr(node)
@@ -758,6 +1203,16 @@ func (c *checker) checkExpr(node *ASTNode) {
 	case NODE_CALL:
 		c.checkCall(node)
 
+	case NODE_UNIQUE_ACCESS:
+		// `%name` is bell's unique-name scene lookup: it desugars to
+		// `node_unique(nodes, "name")`, so the enclosing scope must have
+		// the scene array under its conventional name and the engine
+		// import must provide node_unique.
+		c.checkNameUse(node, "nodes")
+		if !c.isCallable("node_unique") {
+			c.errorAt(node, "Unique-name access needs 'node_unique' (import the bell engine)")
+		}
+
 	case NODE_METHOD_CALL:
 		c.checkMethodCall(node)
 
@@ -820,6 +1275,7 @@ func (c *checker) checkExpr(node *ASTNode) {
 
 	case NODE_OBJECT_LITERAL:
 		// Value is the struct type; children are field: value pairs.
+		c.checkObjectLiteral(node)
 		for _, prop := range node.Children {
 			c.checkExpr(childAt(prop, 0))
 		}
@@ -833,6 +1289,19 @@ func (c *checker) checkExpr(node *ASTNode) {
 	case NODE_NUMBER, NODE_STRING, NODE_RAW_STRING, NODE_CHAR, NODE_BOOLEAN,
 		NODE_TYPE:
 		// Literals and type names.
+
+	case NODE_SWITCH_STATEMENT:
+		// A switch used for its value must cover every input: without a `_`
+		// default the result is uninitialized garbage when nothing matches
+		// (this used to compile silently). Statement-position switches need
+		// no default - they simply do nothing on no match.
+		c.checkExpr(childAt(node, 0))
+		for _, caseNode := range node.Children[1:] {
+			c.checkSwitchCase(caseNode)
+		}
+		if !switchHasDefault(node) {
+			c.errorAt(node, "switch expression has no default case (' _: ...'); add one so every value is covered")
+		}
 
 	default:
 		for _, child := range node.Children {
@@ -880,6 +1349,9 @@ func (c *checker) checkNameUse(node *ASTNode, name string) {
 	if name == "" || name == "_" {
 		return
 	}
+	if c.freedNames[name] {
+		c.warningAt(node, "Using '%s' after it was freed with free|%s|", name, name)
+	}
 	if c.isDefined(name) {
 		return
 	}
@@ -907,6 +1379,15 @@ func (c *checker) checkCall(node *ASTNode) {
 		return
 	}
 	c.checkArguments(node, name, node.Children)
+	// free|x| frees immediately (recorded after the arguments are checked so
+	// the call itself doesn't warn): any later use of x in this function
+	// dangles. Deferred frees run at scope end and are excluded via inDefer.
+	if name == "free" && c.inDefer == 0 && len(node.Children) == 1 &&
+		node.Children[0] != nil && node.Children[0].Type == NODE_IDENTIFIER {
+		if arg := node.Children[0].Value; arg != "" && arg != "_" {
+			c.freedNames[arg] = true
+		}
+	}
 }
 
 // rejectNestedCall reports a call used as another call's argument. The parser
@@ -996,6 +1477,131 @@ func (c *checker) checkArguments(node *ASTNode, name string, args []*ASTNode) {
 			}
 		}
 	}
+
+	// Function references flowing into fn-typed parameters must fit them.
+	// Only positional and explicitly named &refs are checked; anything else
+	// keeps legacy behavior.
+	posIdx := 0
+	for _, arg := range args {
+		if arg == nil {
+			continue
+		}
+		if arg.Type == NODE_BINARY_OP && arg.Value == "named_arg" {
+			label, value := childAt(arg, 0), childAt(arg, 1)
+			if label != nil {
+				for _, param := range params.Children {
+					if param != nil && param.Value == label.Value && IsFunctionType(param.DataType) {
+						if refName, ok := fnRefName(value); ok {
+							c.checkFnRef(value, refName, param.DataType, "parameter '"+label.Value+"'")
+						}
+						break
+					}
+				}
+			}
+			continue
+		}
+		if posIdx < len(params.Children) {
+			if pnode := params.Children[posIdx]; pnode != nil && IsFunctionType(pnode.DataType) {
+				if refName, ok := fnRefName(arg); ok {
+					c.checkFnRef(arg, refName, pnode.DataType, "parameter '"+pnode.Value+"'")
+				}
+			}
+		}
+		posIdx++
+	}
+}
+
+// isTypeName reports whether name denotes a user type (struct or enum) in
+// this file's tables. Associated calls (Type.m|...|) resolve against these
+// before falling back to legacy behavior.
+func (c *checker) isTypeName(name string) bool {
+	if _, ok := c.p.structs[name]; ok {
+		return true
+	}
+	_, ok := c.p.enums[name]
+	return ok
+}
+
+// checkMethodDeclaration validates the type side of a method or associated
+// definition. The receiver (or associated target) must name something methods
+// can attach to: a struct, an enum, a builtin scalar, a builtin nominal type
+// (pool, job), a compound builtin shape (array[...], dict...), or an imported
+// C struct. Anything else is a typo that would otherwise compile to a method
+// that can never resolve.
+func (c *checker) checkMethodDeclaration(node *ASTNode) {
+	t := node.Method.Receiver
+	if c.isTypeName(t) {
+		return
+	}
+	switch t {
+	case "int", "float", "string", "char", "bool", "any", "pool", "job":
+		return
+	}
+	if strings.HasPrefix(t, "array[") || strings.HasPrefix(t, "dict<") || strings.HasPrefix(t, "dict[") {
+		return
+	}
+	for _, h := range c.p.cHeaders {
+		if h != nil {
+			if _, ok := h.Structs[t]; ok {
+				return
+			}
+		}
+	}
+	if c.p.cHeaderGlobal != nil {
+		if _, ok := c.p.cHeaderGlobal.Structs[t]; ok {
+			return
+		}
+	}
+	what := "method receiver"
+	if node.Method.Associated {
+		what = "associated function target"
+	}
+	c.errorAt(node, "Unknown type '%s' in %s '%s.%s'; methods attach to structs, enums and builtin types", t, what, t, node.Method.Name)
+}
+
+// resolveMethodCall maps recv.m|args| onto the method table. It returns the
+// mangled global name and whether the receiver is passed as the first
+// argument (false for associated calls, which pass none). The receiver type
+// prefers the parse-time record on the call node (scopes are accurate during
+// parsing, reset afterwards), falling back to inference.
+func (c *checker) resolveMethodCall(call *ASTNode) (string, bool, bool) {
+	if call == nil || len(call.Children) < 1 {
+		return "", false, false
+	}
+	object := call.Children[0]
+	method := call.Value
+	// Associated call: the receiver position names a type, not a value.
+	if object != nil && object.Type == NODE_IDENTIFIER && c.isTypeName(object.Value) {
+		if e, ok := c.methods[object.Value][method]; ok && e.Info.Associated {
+			return MangleMethodName(object.Value, method), false, true
+		}
+		return "", false, false
+	}
+	recvType := call.RecvType
+	if recvType == "" {
+		recvType = NormalizeReceiverType(c.p.inferType(object))
+	}
+	if e, ok := c.methods[recvType][method]; ok && !e.Info.Associated {
+		return MangleMethodName(recvType, method), true, true
+	}
+	return "", false, false
+}
+
+// methodHint lists a type's known methods for "no such method" diagnostics.
+func (c *checker) methodHint(recvType string) string {
+	ms, ok := c.methods[recvType]
+	if !ok || len(ms) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(ms))
+	for name := range ms {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) > 8 {
+		names = append(names[:8], "...")
+	}
+	return " (methods: " + strings.Join(names, ", ") + ")"
 }
 
 func (c *checker) checkMethodCall(node *ASTNode) {
@@ -1003,6 +1609,7 @@ func (c *checker) checkMethodCall(node *ASTNode) {
 		return
 	}
 	object := node.Children[0]
+	method := node.Value
 
 	// `namespace.func|..|` - the object is an imported C namespace, not a value.
 	if object != nil && object.Type == NODE_IDENTIFIER {
@@ -1012,11 +1619,198 @@ func (c *checker) checkMethodCall(node *ASTNode) {
 		}
 	}
 
+	// User-defined method or associated function: validate the call with the
+	// receiver prepended (methods) or as written (associated), reusing the
+	// ordinary argument checking (arity, defaults, named arguments).
+	if mangled, withRecv, ok := c.resolveMethodCall(node); ok {
+		var callArgs []*ASTNode
+		if len(node.Children) > 1 && node.Children[1] != nil {
+			callArgs = node.Children[1].Children
+		}
+		if withRecv {
+			callArgs = append([]*ASTNode{object}, callArgs...)
+		}
+		c.checkArguments(node, mangled, callArgs)
+		return
+	}
+
 	c.checkExpr(object)
 	args := node.Children[1]
 	if args != nil {
 		for _, arg := range args.Children {
 			c.checkExpr(arg)
+		}
+	}
+
+	// Storing an f-string into a container keeps the shared format buffer:
+	// every element aliases one static buffer and later evaluations
+	// overwrite earlier ones. Bind to a variable first (bound f-strings own
+	// their copy).
+	if method == "push" || method == "fill" {
+		if args != nil {
+			for _, arg := range args.Children {
+				if arg != nil && arg.Type == NODE_F_STRING {
+					c.warningAt(arg, "Storing an f-string keeps the shared format buffer; bind it to a variable first so each element owns its value")
+					break
+				}
+			}
+		}
+	}
+
+	// A method-shaped call on a type with methods that missed the table is a
+	// typo: without this the call falls through to legacy routing and fails
+	// obscurely in the generated C.
+	if object != nil && object.Type == NODE_IDENTIFIER && c.isTypeName(object.Value) {
+		c.errorAt(node, "Type '%s' has no associated function '%s'", object.Value, method)
+		return
+	}
+	recvType := node.RecvType
+	if recvType == "" {
+		recvType = NormalizeReceiverType(c.p.inferType(object))
+	}
+	if _, hasImpl := c.methods[recvType]; hasImpl {
+		c.errorAt(node, "Type '%s' has no method '%s'%s", recvType, method, c.methodHint(recvType))
+		return
+	}
+	if _, isStruct := c.p.structs[recvType]; isStruct {
+		// A same-named field (notably a callback like ready/process) means
+		// this is a field call, not a method miss.
+		if c.p.structHasField(recvType, method) {
+			return
+		}
+		c.errorAt(node, "Type '%s' has no method '%s'%s", recvType, method, c.methodHint(recvType))
+		return
+	}
+	// Storing heap values in an array that does not free elements leaks
+	// them: struct values are malloc-copied on push (owned) and nested
+	// arrays free their innards, but anything else pushed stays allocated
+	// with no owner.
+	if (method == "push" || method == "fill") && args != nil {
+		c.checkPushStore(object, method, recvType, args)
+	}
+}
+
+// checkPushStore warns when a heap value is pushed into (or used to fill) an
+// array that will not free it.
+func (c *checker) checkPushStore(object *ASTNode, method, recvType string, args *ASTNode) {
+	elem := ""
+	if strings.HasPrefix(recvType, "array[") && strings.HasSuffix(recvType, "]") {
+		elem = NormalizeReceiverType(strings.TrimSuffix(strings.TrimPrefix(recvType, "array["), "]"))
+	}
+	arrName := ""
+	if object != nil && object.Type == NODE_IDENTIFIER {
+		arrName = object.Value
+	} else {
+		arrName = renderSubject(object)
+	}
+	for i, arg := range args.Children {
+		if arg == nil {
+			continue
+		}
+		// fill takes (value, count): only the value is stored.
+		if method == "fill" && i > 0 {
+			continue
+		}
+		// Element, member and dict accesses read storage owned
+		// elsewhere (shared views, not transfers); only fresh values
+		// and named heap values can leak here.
+		if arg.Type == NODE_MEMBER_ACCESS || arg.Type == NODE_OBJECT_ACCESS ||
+			arg.Type == NODE_ARRAY_ACCESS || arg.Type == NODE_DICT_ACCESS {
+			continue
+		}
+		if !c.heapPushValue(arg) {
+			continue
+		}
+		// Struct values are malloc-copied on push: the array owns the
+		// copy, so those are fine. Nested arrays free their innards.
+		// Parameters are caller-owned: pushing one is safe.
+		if elem != "" {
+			argT := NormalizeReceiverType(c.valueStoredType(arg))
+			if argT != "" && argT == elem {
+				if _, isStruct := c.p.structs[argT]; isStruct {
+					continue
+				}
+				if strings.HasPrefix(elem, "array[") && strings.HasPrefix(argT, "array") {
+					continue
+				}
+			}
+		}
+		if arg.Type == NODE_IDENTIFIER && c.funcParams[arg.Value] {
+			continue
+		}
+		c.warningAt(arg, "Storing heap value into array '%s', which does not free its elements", arrName)
+	}
+}
+
+// fnRefName reports whether a value node is a &name function reference, and
+// if so the referenced name. Address-of on variables shares the shape; only
+// references that resolve to a known function are checked by callers.
+func fnRefName(node *ASTNode) (string, bool) {
+	if node == nil || node.Type != NODE_UNARY_OP || node.Value != "&" {
+		return "", false
+	}
+	if len(node.Children) < 1 || node.Children[0] == nil || node.Children[0].Type != NODE_IDENTIFIER {
+		return "", false
+	}
+	return node.Children[0].Value, true
+}
+
+// checkFnRef validates a &name value flowing into an fn-typed slot
+// (slotFnType like `fn(int,int)->int`, slotDesc like `field 'draw'`).
+// Unknown references stay silent here; undefined names are reported where
+// the reference itself is checked.
+func (c *checker) checkFnRef(node *ASTNode, refName, slotFnType, slotDesc string) {
+	sig, ok := c.p.functions[refName]
+	if !ok || sig == nil {
+		return
+	}
+	sev, msg := CheckFnRefAgainstSlot(refName, sig, slotFnType, slotDesc)
+	if sev == "warning" {
+		c.warningAt(node, "%s", msg)
+	} else if sev != "" {
+		c.errorAt(node, "%s", msg)
+	}
+}
+
+// checkObjectLiteral validates a typed struct literal in any position
+// (declarations with or without annotation, returns, elements, arguments):
+// every property must exist on the type, every fn-typed field must be
+// present (a missing one would be a null call), and every &name flowing
+// into an fn-typed field must fit it.
+func (c *checker) checkObjectLiteral(node *ASTNode) {
+	if node == nil || node.Value == "" {
+		return
+	}
+	typeName := NormalizeReceiverType(node.Value)
+	structDef, ok := c.p.structs[typeName]
+	if !ok {
+		return
+	}
+	present := map[string]*ASTNode{}
+	for _, prop := range node.Children {
+		if prop == nil || prop.Type != NODE_OBJECT_PROPERTY {
+			continue
+		}
+		if !c.p.structHasField(typeName, prop.Value) {
+			c.errorAt(prop, "Invalid property: '%s' does not exist in type '%s'", prop.Value, structDef.Name)
+			continue
+		}
+		if len(prop.Children) > 0 {
+			present[prop.Value] = prop.Children[0]
+		}
+	}
+	for _, field := range structDef.Fields {
+		if !IsFunctionType(field.Type) {
+			continue
+		}
+		value, ok := present[field.Name]
+		if !ok {
+			c.errorAt(node, "Struct '%s' literal is missing function field '%s' (%s); calling it would be a null call",
+				structDef.Name, field.Name, field.Type)
+			continue
+		}
+		if refName, ok := fnRefName(value); ok {
+			c.checkFnRef(value, refName, field.Type, "field '"+field.Name+"'")
 		}
 	}
 }

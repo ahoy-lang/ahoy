@@ -321,6 +321,93 @@ func raylibStaticLinkArg(raylibPath string) (arg string, extraLibPath bool) {
 	return "-lraylib", true
 }
 
+// sdlRootFromImport returns the SDL3 source root for an import path shaped
+// like .../SDL3/include/SDL3/<Module>.h (which is how bell vendors it), or
+// "" when the import isn't an SDL3 header. Bell imports SDL3 per-module
+// headers because the C parser does not follow the umbrella SDL.h's
+// angle-bracket includes.
+func sdlRootFromImport(importPath string) string {
+	if !strings.HasSuffix(importPath, ".h") {
+		return ""
+	}
+	if idx := strings.Index(importPath, "/SDL3/"); idx >= 0 {
+		return importPath[:idx+5]
+	}
+	return ""
+}
+
+// sdlRootFromContent finds an SDL3 module import in raw file source. The
+// AST scan above misses imports from directory-pulled engine files, so
+// this line-based fallback keeps backend files like engine/sdl.ahoy
+// self-sufficient (only real import lines match, never ? comments).
+func sdlRootFromContent(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "import ") {
+			continue
+		}
+		p := strings.Trim(strings.TrimPrefix(line, "import "), "\"'")
+		if r := sdlRootFromImport(p); r != "" {
+			return r
+		}
+	}
+	return ""
+}
+
+// detectSDL reports whether any file in the main package or its resolved
+// imports (directory imports included) pulls an SDL3 module header shaped
+// .../SDL3/include/SDL3/<Module>.h, plus the SDL3 root for sdlLinkArgs.
+// pkg.Files alone misses directory imports (e.g. bell's engine/), whose
+// backend files carry the SDL import.
+func detectSDL(pkg *Package, imports map[string]*Package) (bool, string) {
+	for _, file := range pkg.Files {
+		if file.AST != nil {
+			for _, child := range file.AST.Children {
+				if child.Type == ahoy.NODE_IMPORT_STATEMENT {
+					if r := sdlRootFromImport(child.Value); r != "" {
+						return true, r
+					}
+				}
+			}
+		}
+	}
+	for _, file := range pkg.Files {
+		if r := sdlRootFromContent(file.Content); r != "" {
+			return true, r
+		}
+	}
+	for _, importedPkg := range imports {
+		if importedPkg == nil {
+			continue
+		}
+		for _, file := range importedPkg.Files {
+			if r := sdlRootFromContent(file.Content); r != "" {
+				return true, r
+			}
+		}
+	}
+	return false, ""
+}
+
+// sdlLinkArgs returns the include dir, static archive (when built) and
+// platform libraries for an SDL3 root. The X11 extension libs apply on
+// Linux; other platforms get include + archive only (extend as needed).
+func sdlLinkArgs(sdlRoot string) []string {
+	if sdlRoot == "" {
+		return nil
+	}
+	args := []string{"-I" + filepath.Join(sdlRoot, "include")}
+	if _, err := os.Stat(filepath.Join(sdlRoot, "build", "libSDL3.a")); err == nil {
+		args = append(args, filepath.Join(sdlRoot, "build", "libSDL3.a"))
+	} else {
+		args = append(args, "-lSDL3")
+	}
+	if runtime.GOOS == "linux" {
+		args = append(args, "-lX11", "-lXext", "-lXrandr", "-lXcursor", "-lXi", "-lXinerama", "-lXxf86vm", "-lXfixes")
+	}
+	return args
+}
+
 // getRaylibFlags returns the appropriate raylib linker flags for each target platform
 func getRaylibFlags(target *CrossCompileTarget, raylibPath string, sourceDir string) ([]string, error) {
 	var flags []string
@@ -439,6 +526,12 @@ func getRaylibFlags(target *CrossCompileTarget, raylibPath string, sourceDir str
 		flags = append(flags, "-L"+effectivePath)
 		flags = append(flags, "-I"+effectivePath)
 	}
+	// Cross builds stage only the archive into libs/<target>/; the headers
+	// (raylib.h, rlgl.h, raymath.h) still come from the raylib source the
+	// program imports, so its directory stays on the include path too.
+	if !isNativeBuild && raylibPath != "" && raylibPath != effectivePath {
+		flags = append(flags, "-I"+raylibPath)
+	}
 
 	// Native builds link the static archive by path when one was found, so a
 	// libraylib.so kept next to it (for hot reload) is not silently picked
@@ -501,7 +594,7 @@ func getZigTarget(platform string) string {
 }
 
 // buildForTarget compiles for a specific target
-func buildForTarget(target *CrossCompileTarget, cFile, baseName, sourceDir string, hasRaylib bool, raylibPath string) error {
+func buildForTarget(target *CrossCompileTarget, cFile, baseName, sourceDir string, hasRaylib bool, raylibPath string, hasSDL bool, sdlRoot string) error {
 	// Create output directory
 	if err := os.MkdirAll(target.OutputDir, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory: %v", err)
@@ -521,6 +614,50 @@ func buildForTarget(target *CrossCompileTarget, cFile, baseName, sourceDir strin
 		args = append(args, raylibFlags...)
 	} else {
 		args = append(args, "-lm")
+	}
+	// SDL3 headers are needed whenever a backend-capable program imports an
+	// SDL3 module header (bell games always do); the native archive links
+	// only on linux targets, where it was built. Windows cross builds link
+	// a windows-built SDL3 archive staged next to the raylib one; web
+	// builds use emscripten's SDL3 port instead.
+	if hasSDL {
+		if target.Name == "linux" {
+			args = append(args, sdlLinkArgs(sdlRoot)...)
+		} else if sdlRoot != "" {
+			args = append(args, "-I"+filepath.Join(sdlRoot, "include"))
+		}
+		if target.Name == "windows" {
+			sdlWin := filepath.Join(sourceDir, "libs", "windows", "libSDL3.a")
+			if _, err := os.Stat(sdlWin); err == nil {
+				args = append(args, sdlWin)
+				// Static SDL3 on Windows pulls the COM/MM/setup APIs.
+				args = append(args, "-lole32", "-loleaut32", "-luuid", "-lsetupapi", "-limm32", "-lversion", "-ladvapi32", "-lshell32")
+			}
+		}
+		// Emscripten ships SDL3 as a port; bell games always import the
+		// headers, so web builds enable it (the export selects the raylib
+		// backend, but the SDL translation unit still needs its symbols).
+		if target.Name == "web" {
+			args = append(args, "-sUSE_SDL=3")
+		}
+	}
+	// Web builds use the project's own shell page when it has one: the
+	// stock emscripten shell carries http links (blocked as mixed content
+	// on itch) and a fullscreen button that throws inside itch's iframe.
+	// bell's export stages tools/web_shell.html next to the game on first
+	// export; projects can edit their copy freely (it is never overwritten).
+	if target.Name == "web" {
+		shellFile := filepath.Join(sourceDir, "web_shell.html")
+		if _, err := os.Stat(shellFile); err == nil {
+			args = append(args, "--shell-file", shellFile)
+		}
+		// The export stages the packed assets next to the game; preload
+		// the pak itself so the web build unpacks exactly like desktop
+		// (loose sourceDir/assets still preload as before, as fallback).
+		pakFile := filepath.Join(sourceDir, "game.pak")
+		if _, err := os.Stat(pakFile); err == nil {
+			args = append(args, "--preload-file", pakFile+"@/game.pak")
+		}
 	}
 	args = withDefines(args)
 
@@ -575,6 +712,38 @@ func withDefines(args []string) []string {
 	return args
 }
 
+// watchHeapMB samples the Go heap every interval; after two consecutive
+// samples above capMB it calls onFire (in MB) and keeps sampling — the
+// caller decides whether to exit. Two consecutive samples (rather than one)
+// mean a single legitimate spike can't trip it. Returns a stop function.
+func watchHeapMB(capMB int, interval time.Duration, onFire func(mb float64)) func() {
+	capBytes := uint64(capMB) * 1024 * 1024
+	stop := make(chan struct{})
+	go func() {
+		over := 0
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				var m runtime.MemStats
+				runtime.ReadMemStats(&m)
+				if m.HeapAlloc > capBytes {
+					over++
+					if over >= 2 {
+						onFire(float64(m.HeapAlloc) / 1048576.0)
+					}
+				} else {
+					over = 0
+				}
+			}
+		}
+	}()
+	return func() { close(stop) }
+}
+
 func main() {
 	// Define CLI flags
 	fileFlag := flag.String("f", "", "Input .ahoy source file")
@@ -583,9 +752,9 @@ func main() {
 	lintFlag := flag.Bool("lint", false, "Run linter to check for errors without compiling")
 	releaseFlag := flag.Bool("release", false, "Use optimizing compiler (gcc/clang) for release build")
 	debugFlag := flag.Bool("show_leaks", false, "Enable memory leak detection with AddressSanitizer (gcc: -fsanitize=address)")
-	arcFlag := flag.Bool("arc", true, "Enable Automatic Reference Counting (ARC) for memory management")
 	targetFlag := flag.String("target", "", "Cross-compile target: linux, windows, web, macos, or all")
 	incFlag := flag.Bool("cache", false, "Enable incremental builds (cache parsed files)")
+	maxmemFlag := flag.Int("maxmem", 2048, "Abort the build if the compiler heap exceeds this many MB (0 disables)")
 	profCompFlag := flag.Bool("profile_compiler", false, "Enable CPU profiling of compiler (creates pprof file)")
 	genStdlibFlag := flag.Bool("gen_stdlib_docs", false, "Generate stdlib documentation as .ahoy file")
 	hotReloadFlag := flag.Bool("hotreload", false, "Enable hot code reloading (keeps window open, reloads on file changes) - development only")
@@ -616,6 +785,19 @@ func main() {
 		fmt.Println("Error: Cannot use both -hotreload and -coldreload")
 		fmt.Println("Choose one reload mode.")
 		os.Exit(1)
+	}
+
+	// Heap watchdog: abort a runaway build instead of OOMing the machine
+	// (a validation pathology once allocated gigabytes here). Fires only
+	// after two consecutive over-cap samples, so one legitimate spike can't
+	// kill a healthy build. Covers Go-heap phases (parse/lint/codegen);
+	// the C compiler subprocess is outside it. -maxmem 0 disables it.
+	if *maxmemFlag > 0 {
+		stopWatch := watchHeapMB(*maxmemFlag, 200*time.Millisecond, func(mb float64) {
+			fmt.Fprintf(os.Stderr, "fatal: compiler heap %.0f MB exceeds -maxmem %d MB sustained; aborted to protect the system (raise -maxmem if this build legitimately needs more)\n", mb, *maxmemFlag)
+			os.Exit(3)
+		})
+		defer stopWatch()
 	}
 
 	// Start CPU profiling if requested
@@ -687,7 +869,11 @@ func main() {
 		return
 	}
 
-	// tokenize
+	// Upfront checks. The entry file is read and tokenized here only for
+	// --format and --lint, which operate on it directly. A normal build loads
+	// every file (including this one) through the package manager below, so
+	// reading and tokenizing it here would just be thrown away; the manager's
+	// TokenizeTime is reported as token= at the end.
 	tokenStart := time.Now()
 	// Ensure stdlib is in cache (for LSP goto definition support)
 	_ = EnsureStdlibExists()
@@ -705,36 +891,38 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Read source file
-	content, err := os.ReadFile(sourceFile)
-	if err != nil {
-		fmt.Printf("Error reading file: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Format if requested
-	if *formatFlag {
-		formatted := formatSource(string(content))
-		err = os.WriteFile(sourceFile, []byte(formatted), 0644)
+	var lintTokens []ahoy.Token
+	var lintContent string
+	if *formatFlag || *lintFlag {
+		// Read source file
+		content, err := os.ReadFile(sourceFile)
 		if err != nil {
-			fmt.Printf("Error writing formatted file: %v\n", err)
+			fmt.Printf("Error reading file: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Printf("Formatted %s\n", sourceFile)
-		return
+
+		// Format if requested
+		if *formatFlag {
+			formatted := formatSource(string(content))
+			err = os.WriteFile(sourceFile, []byte(formatted), 0644)
+			if err != nil {
+				fmt.Printf("Error writing formatted file: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Formatted %s\n", sourceFile)
+			return
+		}
+
+		// Tokenize for the lint pass below.
+		lintContent = string(content)
+		lintTokens = ahoy.Tokenize(lintContent)
 	}
-
-	// Format source before compiling (tabs to spaces, etc)
-	// formattedContent := string(content)
-
-	// Tokenize
-	tokens := ahoy.Tokenize(string(content))
 	tokenTime := time.Since(tokenStart)
 
 	// Lint mode
 	if *lintFlag {
-		ast, diagnostics := ahoy.ParseLintWithPath(tokens, sourceFile)
-		sources := map[string]string{sourceFile: string(content)}
+		ast, diagnostics := ahoy.ParseLintWithPath(lintTokens, sourceFile)
+		sources := map[string]string{sourceFile: lintContent}
 
 		// Check if this is a multi-file program and validate for duplicates
 		programName := ""
@@ -750,17 +938,54 @@ func main() {
 			}
 		}
 
-		// Multi-file programs: validate the whole program. This pass knows the
-		// names the sibling files declare, so it supersedes the single-file pass
-		// above - otherwise a function declared in another file of the same
-		// program would be reported as undefined.
+		// Multi-file programs: validate the whole program, imports included.
+		// This pass knows every name the program declares (sibling files and
+		// directory/file imports like a game engine), so it supersedes the
+		// single-file pass above - otherwise a function declared in another
+		// file of the same program would be reported as undefined.
 		if programName != "" {
 			if absPath, absErr := filepath.Abs(sourceFile); absErr == nil {
 				pm := NewPackageManager(filepath.Dir(absPath))
+				pm.ValidateOnLoad = false
 				if pkg, pkgErr := pm.LoadPackageFromFile(absPath); pkgErr == nil {
-					diagnostics = diagnosticsFromPackage(pkg)
-					for _, file := range pkg.Files {
-						sources[file.Path] = file.Content
+					imports, impErr := resolveImports(pkg, pm, absPath)
+					if impErr != nil {
+						fmt.Printf("Error resolving imports: %v\n", impErr)
+						os.Exit(1)
+					}
+					packages := collectPackages(pkg, imports)
+					allNames := map[string]bool{}
+					for _, p := range packages {
+						for _, file := range p.Files {
+							for _, name := range ahoy.DeclaredNames(file.AST) {
+								allNames[name] = true
+							}
+						}
+					}
+					programNames := make([]string, 0, len(allNames))
+					for name := range allNames {
+						programNames = append(programNames, name)
+					}
+					// Method tables from every file, so method calls validate across
+					// files the way free functions do via programNames.
+					var methodASTs []*ahoy.ASTNode
+					for _, p := range packages {
+						for i := range p.Files {
+							if p.Files[i].AST != nil {
+								methodASTs = append(methodASTs, p.Files[i].AST)
+							}
+						}
+					}
+					programMethods := ahoy.CollectMethods(methodASTs...)
+					diagnostics = nil
+					for _, p := range packages {
+						for i := range p.Files {
+							file := &p.Files[i]
+							file.SemanticErrors = validateSemanticsWithTokens(file.lintTokens(), file.Path, programNames, programMethods)
+							diagnostics = append(diagnostics, file.SemanticErrors...)
+							sources[file.Path] = file.Content
+						}
+						diagnostics = append(diagnostics, findDuplicateFunctions(p)...)
 					}
 				}
 			}
@@ -785,8 +1010,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Initialize package manager
+	// Initialize package manager. Per-package validation is off on this path:
+	// the whole-program pass below checks every file with all the names the
+	// program declares (main package plus imports). Validating at load time
+	// would run the same checks earlier with only one package's names in
+	// scope, so every cross-package reference would read as undefined -
+	// hundreds of spurious errors whose diagnostics are then discarded and
+	// recomputed below anyway.
 	pm := NewPackageManager(filepath.Dir(absPath))
+	pm.ValidateOnLoad = false
 
 	// Quick pre-parse to get program name for cache loading
 	if *incFlag {
@@ -828,6 +1060,7 @@ func main() {
 	// them a broken program either fails inside the C compiler with a message
 	// about generated code, or compiles into something that misbehaves at run
 	// time. `-no_semantics` bypasses this if the checks get in the way.
+	lintStart := time.Now()
 	if !*noSemanticsFlag {
 		// A file's checks run against the whole program, not just its own
 		// package: an imported package (the engine, for a game) declares names
@@ -846,11 +1079,63 @@ func main() {
 		for name := range allNames {
 			programNames = append(programNames, name)
 		}
+		var methodASTs []*ahoy.ASTNode
 		for _, p := range packages {
 			for i := range p.Files {
-				file := &p.Files[i]
-				file.SemanticErrors = validateSemantics(file.Content, file.Path, programNames)
+				if p.Files[i].AST != nil {
+					methodASTs = append(methodASTs, p.Files[i].AST)
+				}
 			}
+		}
+		programMethods := ahoy.CollectMethods(methodASTs...)
+
+		// With -cache, skip the whole pass when every input is identical to
+		// the last validated build: the fingerprint covers each file's
+		// content, the -D defines, and the C headers validation reads.
+		// Per-file reuse alone would be unsound (one file's errors can name
+		// names declared in another), so only an exact whole-program match
+		// reuses. Any change anywhere revalidates everything.
+		lintReused := false
+		var fingerprint string
+		if *incFlag {
+			fingerprint = validationFingerprint(packages, defines)
+			if cached, ok := GetBuildCache().GetValidation(fingerprint); ok {
+				complete := true
+				for _, p := range packages {
+					for i := range p.Files {
+						file := &p.Files[i]
+						if errs, ok := cached[file.Path]; ok {
+							file.SemanticErrors = errs
+						} else {
+							complete = false
+							break
+						}
+					}
+					if !complete {
+						break
+					}
+				}
+				lintReused = complete
+			}
+		}
+		if !lintReused {
+			for _, p := range packages {
+				for i := range p.Files {
+					file := &p.Files[i]
+					file.SemanticErrors = validateSemanticsWithTokens(file.lintTokens(), file.Path, programNames, programMethods)
+				}
+			}
+			if *incFlag {
+				collected := make(map[string][]ahoy.ParseError)
+				for _, p := range packages {
+					for _, file := range p.Files {
+						collected[file.Path] = file.SemanticErrors
+					}
+				}
+				GetBuildCache().SetValidation(fingerprint, collected)
+			}
+		} else {
+			fmt.Println("✓ Reused cached validation (no changes)")
 		}
 
 		sources := map[string]string{}
@@ -866,6 +1151,7 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	lintTime := time.Since(lintStart)
 
 	// Start merge timing
 	mergeStart := time.Now()
@@ -879,7 +1165,7 @@ func main() {
 	codegenStart := time.Now()
 
 	// Generate C code with source filename for better error messages
-	cCode := generateC(ast, sourceFile, *arcFlag)
+	cCode := generateC(ast, sourceFile)
 
 	codegenTime := time.Since(codegenStart)
 
@@ -907,15 +1193,18 @@ func main() {
 		}
 	}
 
+	// SDL3 opts the binary into includes + libSDL3.a (see sdlLinkArgs).
+	hasSDL, sdlRoot := detectSDL(pkg, imports)
+
 	// Hot reload mode - generate shared library and host
 	if *hotReloadFlag {
-		handleHotReload(sourceFile, ast, absPath, *arcFlag, hasRaylib, raylibPath)
+		handleHotReload(sourceFile, ast, absPath, hasRaylib, raylibPath)
 		return // Hot reload runs indefinitely
 	}
 
 	// Cold reload mode - watch and auto-recompile
 	if *coldReloadFlag {
-		handleColdReload(sourceFile, absPath, *arcFlag)
+		handleColdReload(sourceFile, absPath)
 		return // Cold reload runs indefinitely
 	}
 
@@ -953,15 +1242,17 @@ func main() {
 		return fmt.Sprintf("%.1fms", ms)
 	}
 
-	// Calculate total parse time (load + imports + merge)
+	// Calculate total parse time (load + imports + merge). Validation has its
+	// own counter now so a slow lint pass can no longer hide inside parse=.
 	parseTime := loadTime + importsTime + mergeTime
+	tokenTime += pm.TokenizeTime
 	if len(pkg.Files) > 1 {
 		fmt.Printf("✓ Compiled package '%s' (%d files) to %s\n", pkg.Name, len(pkg.Files), outputFile)
-		fmt.Printf(" Time: token=%s, parse=%s, codegen=%s , cache=%s \n",
-			formatTime(tokenTime), formatTime(parseTime), formatTime(codegenTime), formatTime(cacheTime))
+		fmt.Printf(" Time: token=%s, parse=%s, lint=%s, codegen=%s, cache=%s\n",
+			formatTime(tokenTime), formatTime(parseTime), formatTime(lintTime), formatTime(codegenTime), formatTime(cacheTime))
 	} else {
-		fmt.Printf(" Time: token=%s, parse=%s, codegen=%s , cache=%s \n",
-			formatTime(tokenTime), formatTime(parseTime), formatTime(codegenTime), formatTime(cacheTime))
+		fmt.Printf(" Time: token=%s, parse=%s, lint=%s, codegen=%s, cache=%s\n",
+			formatTime(tokenTime), formatTime(parseTime), formatTime(lintTime), formatTime(codegenTime), formatTime(cacheTime))
 	}
 
 	// Compile C code if run flag is set
@@ -994,6 +1285,9 @@ func main() {
 		} else {
 			compileArgs = append(compileArgs, "-lm")
 			compileArgs = append(compileArgs, pthreadFlags()...)
+		}
+		if hasSDL {
+			compileArgs = append(compileArgs, sdlLinkArgs(sdlRoot)...)
 		}
 
 		compileArgs = withDefines(compileArgs)
@@ -1074,7 +1368,7 @@ func main() {
 				continue
 			}
 
-			if err := buildForTarget(target, outputFile, baseName, sourceDir, hasRaylib, raylibPath); err != nil {
+			if err := buildForTarget(target, outputFile, baseName, sourceDir, hasRaylib, raylibPath, hasSDL, sdlRoot); err != nil {
 				fmt.Printf("✗ %s: %v\n", targetName, err)
 			}
 		}
@@ -1129,8 +1423,17 @@ func MergeWithImports(pkg *Package, imports map[string]*Package) *ahoy.ASTNode {
 	processedStructs := make(map[string]bool)   // Deduplicate structs
 	processedEnums := make(map[string]bool)     // Deduplicate enums
 
-	// First, add all declarations from imported packages
-	for _, importedPkg := range imports {
+	// First, add all declarations from imported packages, in package-name
+	// order: imports arrives as a map, and ranging over it would merge files
+	// in a random order on every build (shuffling forward declarations and
+	// other emitted order around).
+	importNames := make([]string, 0, len(imports))
+	for name := range imports {
+		importNames = append(importNames, name)
+	}
+	sort.Strings(importNames)
+	for _, name := range importNames {
+		importedPkg := imports[name]
 		for _, file := range importedPkg.Files {
 			if file.AST != nil {
 				for _, child := range file.AST.Children {
@@ -1261,6 +1564,64 @@ func getQuickProgramName(filePath string) string {
 		}
 	}
 	return ""
+}
+
+// validationFingerprint hashes every input the whole-program semantic pass
+// depends on: each .ahoy file's path and content, the -D defines (they gate
+// `when` blocks), and the C headers validation reads for signatures. Two
+// builds with equal fingerprints validate identically, so the second may
+// reuse the first's diagnostics instead of re-running the pass.
+func validationFingerprint(packages []*Package, defines defineList) string {
+	var sb strings.Builder
+	paths := make([]string, 0)
+	contents := make(map[string]string)
+	headerSet := make(map[string]bool)
+	for _, p := range packages {
+		for _, file := range p.Files {
+			paths = append(paths, file.Path)
+			contents[file.Path] = file.Content
+			if file.AST == nil {
+				continue
+			}
+			for _, child := range file.AST.Children {
+				if child.Type == ahoy.NODE_IMPORT_STATEMENT && strings.HasSuffix(child.Value, ".h") {
+					h := child.Value
+					if !filepath.IsAbs(h) {
+						h = filepath.Clean(filepath.Join(filepath.Dir(file.Path), h))
+					}
+					headerSet[h] = true
+				}
+			}
+		}
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		sb.WriteString(path)
+		sb.WriteString("\x00")
+		sb.WriteString(computeChecksum(contents[path]))
+		sb.WriteString("\x00")
+	}
+	flagCopy := make([]string, len(defines))
+	copy(flagCopy, defines)
+	sort.Strings(flagCopy)
+	for _, d := range flagCopy {
+		sb.WriteString("D:" + d + "\x00")
+	}
+	headers := make([]string, 0, len(headerSet))
+	for h := range headerSet {
+		headers = append(headers, h)
+	}
+	sort.Strings(headers)
+	for _, h := range headers {
+		sb.WriteString("H:" + h + "\x00")
+		if content, err := os.ReadFile(h); err == nil {
+			sb.WriteString(computeChecksum(string(content)))
+		} else {
+			sb.WriteString("missing")
+		}
+		sb.WriteString("\x00")
+	}
+	return computeChecksum(sb.String())
 }
 
 // collectPackages returns the main package plus every imported package, without
@@ -1428,7 +1789,6 @@ func showHelp() {
 	fmt.Println("  -r            Run the compiled C program")
 	fmt.Println("  -release      Use optimizing compiler (gcc/clang -O3) for release build")
 	fmt.Println("  -show_leaks   Enable memory leak detection with AddressSanitizer")
-	fmt.Println("  -arc=<bool>   Enable/disable Automatic Reference Counting (default: true)")
 	fmt.Println("  -target <t>   Cross-compile to target: linux, windows, macos, web, or all")
 	fmt.Println("  -format       Format the source file")
 	fmt.Println("  -lint         Check for errors without compiling")
@@ -1478,13 +1838,13 @@ func showHelp() {
 
 // handleHotReload compiles the program in hot reload mode
 // This keeps the window open and reloads code on file changes
-func handleHotReload(sourceFile string, ast *ahoy.ASTNode, absPath string, arcFlag bool, hasRaylib bool, raylibPath string) {
+func handleHotReload(sourceFile string, ast *ahoy.ASTNode, absPath string, hasRaylib bool, raylibPath string) {
 	outputDir := "output"
 	sourceDir := filepath.Dir(absPath)
 
 	// Generate library and host code
 	fmt.Println("🔥 Hot Reload Mode - Generating code...")
-	libraryCode, hostCode := GenerateCWithHotReload(ast, sourceFile, arcFlag, hasRaylib, raylibPath)
+	libraryCode, hostCode := GenerateCWithHotReload(ast, sourceFile, hasRaylib, raylibPath)
 
 	// Write files
 	os.MkdirAll(outputDir, 0755)
@@ -1603,11 +1963,11 @@ func handleHotReload(sourceFile string, ast *ahoy.ASTNode, absPath string, arcFl
 	time.Sleep(500 * time.Millisecond)
 
 	// Watch for file changes and recompile
-	watchAndRecompileHot(sourceFile, sourceDir, arcFlag, libSourceFile, libFile, hasRaylib, raylibPath)
+	watchAndRecompileHot(sourceFile, sourceDir, libSourceFile, libFile, hasRaylib, raylibPath)
 }
 
 // handleColdReload watches files and auto-recompiles (restarts program)
-func handleColdReload(sourceFile string, absPath string, arcFlag bool) {
+func handleColdReload(sourceFile string, absPath string) {
 	fmt.Println("\n❄️  Cold Reload Mode - Auto-recompile enabled")
 	fmt.Println("📝 Edit and save to auto-recompile and restart")
 	fmt.Println("⚡ Using fast compilation")
@@ -1617,7 +1977,7 @@ func handleColdReload(sourceFile string, absPath string, arcFlag bool) {
 	sourceDir := filepath.Dir(absPath)
 
 	// Do initial compilation and run
-	compileAndRunCold(sourceFile, arcFlag, true)
+	compileAndRunCold(sourceFile, true)
 
 	// Watch for changes
 	watcher, err := fsnotify.NewWatcher()
@@ -1653,7 +2013,7 @@ func handleColdReload(sourceFile string, absPath string, arcFlag bool) {
 
 				debounceTimer = time.AfterFunc(10*time.Millisecond, func() {
 					fmt.Println("\n📝 Change detected, recompiling...")
-					compileAndRunCold(sourceFile, arcFlag, false)
+					compileAndRunCold(sourceFile, false)
 				})
 			}
 
@@ -1664,7 +2024,7 @@ func handleColdReload(sourceFile string, absPath string, arcFlag bool) {
 }
 
 // watchAndRecompileHot watches for file changes and recompiles the library for hot reload
-func watchAndRecompileHot(sourceFile, sourceDir string, arcFlag bool, libSourceFile, libFile string, hasRaylib bool, raylibPath string) {
+func watchAndRecompileHot(sourceFile, sourceDir string, libSourceFile, libFile string, hasRaylib bool, raylibPath string) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		fmt.Printf("Error creating watcher: %v\n", err)
@@ -1725,7 +2085,7 @@ func watchAndRecompileHot(sourceFile, sourceDir string, arcFlag bool, libSourceF
 
 				debounceTimer = time.AfterFunc(10*time.Millisecond, func() {
 					fmt.Printf("\n📝 %s file changed: %s\n", fileType, fileName)
-					recompileLibraryHot(sourceFile, libSourceFile, libFile, arcFlag, hasRaylib, raylibPath)
+					recompileLibraryHot(sourceFile, libSourceFile, libFile, hasRaylib, raylibPath)
 				})
 			}
 
@@ -1736,7 +2096,7 @@ func watchAndRecompileHot(sourceFile, sourceDir string, arcFlag bool, libSourceF
 }
 
 // recompileLibraryHot recompiles the game library for hot reload
-func recompileLibraryHot(sourceFile, libSourceFile, libFile string, arcFlag bool, hasRaylib bool, raylibPath string) {
+func recompileLibraryHot(sourceFile, libSourceFile, libFile string, hasRaylib bool, raylibPath string) {
 	fmt.Println("\n🔄 Change detected, recompiling...")
 	start := time.Now()
 
@@ -1747,8 +2107,10 @@ func recompileLibraryHot(sourceFile, libSourceFile, libFile string, arcFlag bool
 		return
 	}
 
-	// Load the full package (handles multi-file programs)
+	// Load the full package (handles multi-file programs). Validation is off:
+	// these paths never read the diagnostics and go straight to codegen.
 	pm := NewPackageManager(filepath.Dir(absPath))
+	pm.ValidateOnLoad = false
 	pkg, err := pm.LoadPackageFromFile(absPath)
 	if err != nil {
 		fmt.Printf("❌ Error loading package: %v\n", err)
@@ -1766,7 +2128,7 @@ func recompileLibraryHot(sourceFile, libSourceFile, libFile string, arcFlag bool
 	ast := MergeWithImports(pkg, imports)
 
 	// Regenerate C code
-	libraryCode, _ := GenerateCWithHotReload(ast, sourceFile, arcFlag, hasRaylib, raylibPath)
+	libraryCode, _ := GenerateCWithHotReload(ast, sourceFile, hasRaylib, raylibPath)
 
 	err = os.WriteFile(libSourceFile, []byte(libraryCode), 0644)
 	if err != nil {
@@ -1833,7 +2195,7 @@ func recompileLibraryHot(sourceFile, libSourceFile, libFile string, arcFlag bool
 }
 
 // compileAndRunCold compiles and runs for cold reload mode
-func compileAndRunCold(sourceFile string, arcFlag bool, isInitial bool) {
+func compileAndRunCold(sourceFile string, isInitial bool) {
 	start := time.Now()
 
 	// Get absolute path
@@ -1843,8 +2205,10 @@ func compileAndRunCold(sourceFile string, arcFlag bool, isInitial bool) {
 		return
 	}
 
-	// Load the full package (handles multi-file programs)
+	// Load the full package (handles multi-file programs). Validation is off:
+	// this path never reads the diagnostics and goes straight to codegen.
 	pm := NewPackageManager(filepath.Dir(absPath))
+	pm.ValidateOnLoad = false
 	pkg, err := pm.LoadPackageFromFile(absPath)
 	if err != nil {
 		fmt.Printf("❌ Error loading package: %v\n", err)
@@ -1862,7 +2226,7 @@ func compileAndRunCold(sourceFile string, arcFlag bool, isInitial bool) {
 	ast := MergeWithImports(pkg, imports)
 
 	// Generate C code
-	cCode := generateC(ast, sourceFile, arcFlag)
+	cCode := generateC(ast, sourceFile)
 	if cCode == "" {
 		fmt.Println("❌ Code generation failed")
 		return
@@ -1902,6 +2266,9 @@ func compileAndRunCold(sourceFile string, arcFlag bool, isInitial bool) {
 	}
 
 	var compiler string
+	// Cold reload also honours SDL3 imports (same scan as main).
+	hasSDL, sdlRoot := detectSDL(pkg, imports)
+
 	var compileArgs []string
 
 	// Use TCC for fast compilation in cold reload mode
@@ -1945,6 +2312,9 @@ func compileAndRunCold(sourceFile string, arcFlag bool, isInitial bool) {
 			compileArgs = append(compileArgs, "-lm")
 			compileArgs = append(compileArgs, pthreadFlags()...)
 		}
+	}
+	if hasSDL {
+		compileArgs = append(compileArgs, sdlLinkArgs(sdlRoot)...)
 	}
 
 	compileArgs = withDefines(compileArgs)

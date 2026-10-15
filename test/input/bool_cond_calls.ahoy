@@ -1,0 +1,33 @@
+program bool_cond_calls
+
+? Bool calls in test position route through a bool temporary (some C
+? compilers misread an indirect external _Bool call tested directly).
+? Short-circuit and negation must be preserved exactly.
+
+@ flagit |seen:array, v:bool| bool:
+	seen.push|v|
+	return v
+$
+
+@ main ||:
+	expected: []
+	seen: []
+	if flagit|seen, false| and flagit|seen, true| then
+		print|"both"|
+	$
+	print|seen.length|
+	expected.push|"1"|
+	if flagit|seen, true| or flagit|seen, true| then
+		print|"either"|
+	$
+	expected.push|"either"|
+	print|seen.length|
+	expected.push|"2"|
+	if not flagit|seen, false| then
+		print|"negated"|
+	$
+	expected.push|"negated"|
+	print|seen.length|
+	expected.push|"3"|
+	print|expected|
+$

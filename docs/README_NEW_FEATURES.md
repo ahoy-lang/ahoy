@@ -134,6 +134,52 @@ when PRODUCTION then
 #endif
 ```
 
+An `else` branch (`else`, `else:` or `else then`, closed by `$` like
+every other block) compiles to `#else` — the fallback when the name is
+not defined:
+
+```python
+when VULKAN then
+    use_vulkan_backend||
+else
+    use_opengl_backend||
+```
+
+```c
+#ifdef VULKAN
+    use_vulkan_backend();
+#else
+    use_opengl_backend();
+#endif
+```
+
+Both bodies are parsed and checked regardless of `-D`, so declarations
+inside either branch stay visible (same rule as a lone `when` body).
+A value-returning function whose `when` and `else` bodies both return
+satisfies the must-return check; a lone `when` without `else` still
+falls through and needs its tail return.
+
+### 7. Unique-Name Scene Access (`%name`)
+
+Inside a program that has a scene array called `nodes` in scope (the
+bell engine convention), `%name` reads the first node with that name
+— Godot's `%UniqueName` without the `$` path syntax:
+
+```python
+node_set_visible|nodes, %healthbar, false|
+heal_node|nodes, %player|
+```
+
+It desugars to `node_unique(nodes, "name")` (an integer node id, so it
+composes with every `node_*` helper and with `nodes[%x]` reads), which
+means the bell engine import must provide `node_unique` and a variable
+called `nodes` must be visible, or the checker reports exactly that.
+`%` glued to an identifier only parses where a unary expression can
+start, so `a % b`, `x % 2` and `a %- 1` keep parsing as modulo. Keep
+`%` names unique in a scene (first match wins); the lookup is a plain
+linear scan, so unlike a cache it can never go stale across edits,
+renames and frees.
+
 ## Complete Syntax Reference
 
 ### Variables
