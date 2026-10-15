@@ -21,6 +21,13 @@ import (
 // earlier declaration is no longer visible produces an assignment to a variable
 // C cannot see. That case is reported here rather than left to the C compiler.
 
+// StrictLint gates the -strict lint tier: cheap high-signal warnings for
+// bug classes that segfault at runtime (element-type contradictions,
+// literal division by zero). Default true; -strict=false opts out.
+// Unconditional codegen self-checks (internal errors, never user noise)
+// live separately in source/codegen.go and ignore this flag.
+var StrictLint = true
+
 type checker struct {
 	p      *Parser
 	errors []ParseError
@@ -953,6 +960,19 @@ func (c *checker) checkStatement(node *ASTNode) {
 			declType = c.inferVarType(childAt(node, 0))
 		}
 		c.declareTyped(node.Value, declType)
+		// -strict: an explicit annotation contradicting an array read
+		// (n: int = strs[i]) is shaped exactly like the lines[i]-as-int
+		// segfault. Flowing inference stays silent; only an explicit
+		// claim that disagrees with the array's element type warns.
+		if StrictLint && node.DataType != "" {
+			if rhs := childAt(node, 0); rhs != nil && rhs.Type == NODE_ARRAY_ACCESS && rhs.Value != "" {
+				if arrT := c.lookupType(rhs.Value); arrT != "" {
+					if u, ok := strictArrayElem(arrT); ok && strictElemMismatch(node.DataType, u) {
+						c.warningAt(node, "Assigning array[%s] element to '%s' declared %s; this reads garbage at runtime", u, node.Value, node.DataType)
+					}
+				}
+			}
+		}
 		// Rebinding heals a freed name: the new value owns fresh storage.
 		delete(c.freedNames, node.Value)
 
@@ -2075,9 +2095,68 @@ func (c *checker) checkBinaryOp(node *ASTNode) {
 	if operandsUnusable(lt, rt) {
 		c.errorAt(node, "Operator '%s' cannot be applied to %s and %s", op, lt, rt)
 	}
+	// -strict: integer division/modulo by a literal zero always SIGFPEs.
+	// Float division stays silent (it yields inf, which is legal).
+	if StrictLint && (op == "div" || op == "/" || op == "mod" || op == "%") {
+		if right != nil && right.Type == NODE_NUMBER && strictZeroNumber(right.Value) {
+			floatLHS := lt == "float" || lt == "double"
+			if !floatLHS && left != nil && left.Type == NODE_IDENTIFIER {
+				if t := c.lookupType(left.Value); t == "float" || t == "double" {
+					floatLHS = true
+				}
+			}
+			if !floatLHS {
+				c.warningAt(node, "Division by zero always crashes; guard the divisor")
+			}
+		}
+	}
 }
 
-// operandsUnusable reports whether either operand type makes an arithmetic or
+// strictArrayElem extracts T from array[T].
+func strictArrayElem(t string) (string, bool) {
+	if strings.HasPrefix(t, "array[") && strings.HasSuffix(t, "]") {
+		return strings.TrimSuffix(strings.TrimPrefix(t, "array["), "]"), true
+	}
+	return "", false
+}
+
+// strictElemGroup buckets element types by how a misread behaves: strings
+// and heap-boxed floats are pointers (reading them as int yields garbage
+// addresses; reading ints as them dereferences garbage). any/generic
+// group to "" (never mismatches). Everything else must match exactly.
+func strictElemGroup(t string) string {
+	switch t {
+	case "string", "char*", "const char*":
+		return "ptr-str"
+	case "float", "double":
+		return "ptr-float"
+	case "int", "intptr_t", "bool", "char":
+		return "int"
+	case "any", "generic", "unknown", "":
+		return ""
+	default:
+		return "T:" + t
+	}
+}
+
+func strictElemMismatch(declared, elem string) bool {
+	g1, g2 := strictElemGroup(declared), strictElemGroup(elem)
+	if g1 == "" || g2 == "" {
+		return false
+	}
+	return g1 != g2
+}
+
+// strictZeroNumber reports whether a numeric literal is zero (0, 0.0;
+// hex excluded so 0x10 never counts).
+func strictZeroNumber(s string) bool {
+	t := strings.TrimSpace(s)
+	if t == "" || strings.ContainsAny(t, "xX") {
+		return false
+	}
+	f, err := strconv.ParseFloat(t, 64)
+	return err == nil && f == 0
+}
 // ordering operator meaningless. Anything not confidently known is left alone.
 func operandsUnusable(lt, rt string) bool {
 	if !operandIsKnown(lt) || !operandIsKnown(rt) {

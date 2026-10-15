@@ -966,6 +966,74 @@ $
 	}
 }
 
+// -strict: an explicit annotation contradicting an array read (n: int =
+// strs[i]) warns; flowing inference stays silent.
+func TestStrictArrayElemMismatch(t *testing.T) {
+	src := `@ main || void:
+	strs: ["a", "b"]
+	n: int = strs[0]
+	print|n|
+$
+`
+	warned := false
+	for _, e := range allDiagnosticsFor(src) {
+		if e.IsWarning() && strings.Contains(e.Message, "reads garbage at runtime") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("expected an array-element contradiction warning, got %v", allDiagnosticsFor(src))
+	}
+}
+
+func TestStrictArrayElemMatchSilent(t *testing.T) {
+	src := `@ main || void:
+	strs: ["a", "b"]
+	s: string = strs[0]
+	u: strs[1]
+	print|s, u|
+$
+`
+	for _, e := range allDiagnosticsFor(src) {
+		if strings.Contains(e.Message, "reads garbage at runtime") {
+			t.Errorf("did not expect an array-element warning, got %q", e.Message)
+		}
+	}
+}
+
+// -strict: integer division by a literal zero warns (float stays silent).
+func TestStrictDivByZero(t *testing.T) {
+	src := `@ main || void:
+	x: 10
+	y: x / 0
+	print|y|
+$
+`
+	warned := false
+	for _, e := range allDiagnosticsFor(src) {
+		if e.IsWarning() && strings.Contains(e.Message, "Division by zero") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("expected a division-by-zero warning, got %v", allDiagnosticsFor(src))
+	}
+}
+
+func TestStrictDivByZeroFloatSilent(t *testing.T) {
+	src := `@ main || void:
+	x: 10.0
+	y: x / 0.0
+	print|y|
+$
+`
+	for _, e := range allDiagnosticsFor(src) {
+		if strings.Contains(e.Message, "Division by zero") {
+			t.Errorf("did not expect a division-by-zero warning, got %q", e.Message)
+		}
+	}
+}
+
 func TestStoreNoWarnPushPrimitives(t *testing.T) {
 	src := `@ main || void:
 	outer: []

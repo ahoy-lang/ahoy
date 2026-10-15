@@ -184,6 +184,7 @@ type CodeGenerator struct {
 	currentFunctionHasMultiReturn bool                                    // Whether current function has multiple returns
 	hasMainFunc                   bool                                    // Whether there's an Ahoy main function
 	arrayElementTypes             map[string]string                       // array variable name -> element type
+	reportedElemMismatch          map[string]bool                         // arrays already flagged for tracked-vs-declared element disagreement (dedupes the internal error)
 	dictLoopValueExpr             map[string]string                       // dict-loop value var -> C expression that formats it by its runtime type
 	array2DElementTypes           map[string]string                       // 2D array variable name -> nested element type (element type of inner arrays)
 	structs                       map[string]*StructInfo                  // struct name -> struct info
@@ -220,6 +221,9 @@ type CodeGenerator struct {
 	scopeDepth                    int                                     // Current scope depth (incremented for loops/ifs/blocks)
 	scopeAllocations              map[int][]string                        // scope depth -> list of variables allocated at that scope
 	loopScopeStack                []int                                   // Stack of scope depths where loops begin (for break/continue cleanup)
+	loopEndLabels                 []loopEndLabel                          // User-loop end labels for halt-across-switch (parallel to loopScopeStack, minus generated inner traversals)
+	pendingLoopEndLabel           string                                  // Label stashed by exitLoopScope, emitted by the loop tail (emitLoopEndLabel)
+	switchCaseDepths              []int                                   // Scope depths of open switch-case bodies (halt needs to know a switch intervenes)
 	escapingVars                  map[string]bool                         // Track variables that escape the function (returned or stored)
 	deferredUsers                 map[string]bool                         // Vars mentioned in pending defer statements (must outlive them)
 	aliasEdges                    map[string]map[string]int               // heap var -> aliases declared from it -> scope depth where declared
@@ -260,7 +264,14 @@ type ConstantInfo struct {
 	Value      interface{} // Computed value if available
 }
 
-// GenerateC generates C code from an AST (exported for testing)
+// loopEndLabel tracks one user loop for halt-across-switch: a `halt`
+// directly in a switch case cannot use C `break` (it would only exit the
+// switch), so it jumps to the loop's end label instead.
+type loopEndLabel struct {
+	scopeDepth int    // loopScopeStack depth of this loop (cleanup boundary)
+	label      string // C label after the loop ("" until a halt needs it)
+}
+
 func GenerateC(ast *ahoy.ASTNode) string {
 	return generateC(ast, "<source>")
 }
@@ -324,6 +335,7 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		manuallyFreedVars:     make(map[string]bool),
 		autoFreedVars:         make(map[string]bool),
 		loopScopeStack:        make([]int, 0),
+		loopEndLabels:         make([]loopEndLabel, 0),
 		cStructFields:         make(map[string]map[string]string),
 		cTypedefs:             make(map[string]string),
 		cFunctionParamTypes:   make(map[string][]string),
@@ -2130,17 +2142,59 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 	case ahoy.NODE_STATIC_MEMBER_ACCESS:
 		gen.generateStaticMemberAccess(node)
 	case ahoy.NODE_HALT:
-		// Generate cleanup for variables in nested scopes before breaking
-		// Note: generateEarlyExitCleanup returns code WITH indentation/newlines
-		cleanup := gen.generateEarlyExitCleanup(false)
-		if cleanup != "" {
-			gen.output.WriteString(cleanup)
+		// In-flight block-scoped defers would otherwise be skipped: the
+		// early exit jumps over their block end. Flush them first
+		// (use-then-free), over exactly the scopes being left.
+		if label, ok := gen.loopEndLabelAcrossSwitch(); ok {
+			// A switch-case boundary sits between halt and its loop: plain
+			// `break` would only exit the switch, so clean through the loop
+			// scope and jump to the loop end (cleanup already ran above the
+			// goto — unlike user-level goto, removed for bypassing it).
+			gen.flushBlockScopedDefers(gen.loopScopeStack[len(gen.loopScopeStack)-1])
+			cleanup := gen.generateEarlyExitCleanup(false)
+			if cleanup != "" {
+				gen.output.WriteString(cleanup)
+			}
+			gen.writeIndent()
+			gen.output.WriteString("goto ")
+			gen.output.WriteString(label)
+			gen.output.WriteString(";\n")
+		} else if len(gen.switchCaseDepths) > 0 {
+			// Breaking the switch itself: free only the case (and anything
+			// deeper, e.g. an if around the halt) — never the enclosing
+			// function locals, which outlive the switch.
+			caseDepth := gen.switchCaseDepths[len(gen.switchCaseDepths)-1]
+			gen.flushBlockScopedDefers(caseDepth)
+			cleanup := gen.generateEarlyExitCleanupTo(caseDepth)
+			if cleanup != "" {
+				gen.output.WriteString(cleanup)
+			}
+			gen.writeIndent()
+			gen.output.WriteString("break;\n")
+		} else {
+			// Generate cleanup for variables in nested scopes before breaking
+			// Note: generateEarlyExitCleanup returns code WITH indentation/newlines
+			if len(gen.loopScopeStack) > 0 {
+				gen.flushBlockScopedDefers(gen.loopScopeStack[len(gen.loopScopeStack)-1])
+			}
+			cleanup := gen.generateEarlyExitCleanup(false)
+			if cleanup != "" {
+				gen.output.WriteString(cleanup)
+			}
+			gen.writeIndent()
+			gen.output.WriteString("break;\n")
 		}
-		gen.writeIndent()
-		gen.output.WriteString("break;\n")
 	case ahoy.NODE_NEXT:
 		// Generate cleanup for variables in nested scopes before continuing
-		// Note: generateEarlyExitCleanup returns code WITH indentation/newlines
+		// Note: generateEarlyExitCleanup returns code WITH indentation/newlines.
+		// Like halt, flush in-flight block-scoped defers first: `continue`
+		// also skips their block end (function-level defers still run once
+		// at function end).
+		if len(gen.loopScopeStack) > 0 {
+			gen.flushBlockScopedDefers(gen.loopScopeStack[len(gen.loopScopeStack)-1])
+		} else if len(gen.switchCaseDepths) > 0 {
+			gen.flushBlockScopedDefers(gen.switchCaseDepths[len(gen.switchCaseDepths)-1])
+		}
 		cleanup := gen.generateEarlyExitCleanup(false)
 		if cleanup != "" {
 			gen.output.WriteString(cleanup)
@@ -2342,6 +2396,12 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	gen.dictLoopValueExpr = make(map[string]string)
 	gen.nestedScopeVars = make(map[string]bool)
 	gen.varDeclIndent = make(map[string]int)
+	// Array element types are function-local too: a `lines: array[int]`
+	// parameter (or local) in one function used to poison every later
+	// same-named array program-wide (the stale entry won via the
+	// first-wins guard), miscompiling element accesses into segfaults.
+	gen.arrayElementTypes = make(map[string]string)
+	gen.array2DElementTypes = make(map[string]string)
 
 	// Clear function-local declared variables for this new function
 	gen.declaredFunctionVars = make(map[string]bool)
@@ -2370,6 +2430,10 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	gen.heapVarTypes = make(map[string]string)
 	gen.scopeDepth = 0
 	gen.scopeAllocations = make(map[int][]string)
+	gen.loopScopeStack = make([]int, 0)
+	gen.loopEndLabels = make([]loopEndLabel, 0)
+	gen.pendingLoopEndLabel = ""
+	gen.switchCaseDepths = nil
 	gen.escapingVars = make(map[string]bool)
 	gen.deferredUsers = make(map[string]bool)
 	gen.aliasEdges = make(map[string]map[string]int)
@@ -3183,17 +3247,16 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 
 			// For any variable with array type (from inference or explicit type), track element type
 			// This handles cases like: new_texts: execute_combat_phase|...| where return type is array[FloatingText]
+			// Last write wins (matching functionVars): an earlier same-named
+			// array must not shadow the current declaration's type.
 			if strings.HasPrefix(varType, "array[") && strings.HasSuffix(varType, "]") {
 				elemType := strings.TrimSuffix(strings.TrimPrefix(varType, "array["), "]")
-				// Only set if not already set by array literal handling above
-				if _, exists := gen.arrayElementTypes[node.Value]; !exists {
-					gen.arrayElementTypes[node.Value] = elemType
+				gen.arrayElementTypes[node.Value] = elemType
 
-					// For 2D arrays (array[array[type]]), also extract inner element type
-					if strings.HasPrefix(elemType, "array[") {
-						nestedElemType := strings.TrimSuffix(strings.TrimPrefix(elemType, "array["), "]")
-						gen.array2DElementTypes[node.Value] = nestedElemType
-					}
+				// For 2D arrays (array[array[type]]), also extract inner element type
+				if strings.HasPrefix(elemType, "array[") {
+					nestedElemType := strings.TrimSuffix(strings.TrimPrefix(elemType, "array["), "]")
+					gen.array2DElementTypes[node.Value] = nestedElemType
 				}
 			}
 
@@ -3637,7 +3700,7 @@ func (gen *CodeGenerator) generateRangeCondition(switchExpr *ahoy.ASTNode, switc
 // itself escapes into targetVar (which outlives the case), so its storage
 // is protected exactly like a return value instead of being freed here.
 func (gen *CodeGenerator) generateSwitchCaseAssignment(caseBody *ahoy.ASTNode, targetVar string) {
-	gen.enterScope()
+	gen.enterSwitchCaseScope()
 	valueNode := caseBody
 	// Check if body is a block with multiple statements
 	if caseBody.Type == ahoy.NODE_BLOCK && len(caseBody.Children) > 0 {
@@ -3648,17 +3711,25 @@ func (gen *CodeGenerator) generateSwitchCaseAssignment(caseBody *ahoy.ASTNode, t
 		// Last statement is the return value
 		valueNode = caseBody.Children[len(caseBody.Children)-1]
 	}
-	gen.writeIndent()
-	gen.output.WriteString(targetVar)
-	gen.output.WriteString(" = ")
-	gen.generateNode(valueNode)
-	gen.output.WriteString(";\n")
+	// A halt/next yields no value (control leaves the case): run it as a
+	// statement with no `targetVar = ` prefix, which would be invalid C.
+	// (Like `return` in this position, later uses of targetVar on the
+	// halted path are the author's responsibility.)
+	if valueNode.Type == ahoy.NODE_HALT || valueNode.Type == ahoy.NODE_NEXT {
+		gen.generateNodeInternal(valueNode, true)
+	} else {
+		gen.writeIndent()
+		gen.output.WriteString(targetVar)
+		gen.output.WriteString(" = ")
+		gen.generateNode(valueNode)
+		gen.output.WriteString(";\n")
+	}
 	// Ownership of the yielded value transfers to targetVar: protect its
 	// storage (and its transitive dependencies) like a return value. Anything
 	// else the body allocated is freed by the scope exit below.
 	gen.markReturnedValue(valueNode)
 	gen.markValueDeps(valueNode)
-	if cleanup := gen.exitScope(); cleanup != "" {
+	if cleanup := gen.exitSwitchCaseScope(); cleanup != "" {
 		gen.output.WriteString(cleanup)
 	}
 }
@@ -3841,9 +3912,9 @@ func (gen *CodeGenerator) generateStringSwitchStatement(node *ahoy.ASTNode) {
 
 			gen.output.WriteString(") {\n")
 			gen.indent++
-			gen.enterScope()
+			gen.enterSwitchCaseScope()
 			gen.generateNodeInternal(caseBody, true) // Case body
-			cleanup := gen.exitScope()
+			cleanup := gen.exitSwitchCaseScope()
 			if cleanup != "" {
 				gen.output.WriteString(cleanup)
 			}
@@ -3862,9 +3933,9 @@ func (gen *CodeGenerator) generateStringSwitchStatement(node *ahoy.ASTNode) {
 			gen.output.WriteString("{\n")
 		}
 		gen.indent++
-		gen.enterScope()
+		gen.enterSwitchCaseScope()
 		gen.generateNodeInternal(defaultBody, true) // Default body
-		cleanup := gen.exitScope()
+		cleanup := gen.exitSwitchCaseScope()
 		if cleanup != "" {
 			gen.output.WriteString(cleanup)
 		}
@@ -3912,9 +3983,9 @@ func (gen *CodeGenerator) generateRangeSwitchStatement(node *ahoy.ASTNode) {
 
 			gen.output.WriteString(") {\n")
 			gen.indent++
-			gen.enterScope()
+			gen.enterSwitchCaseScope()
 			gen.generateNodeInternal(caseBody, true) // Case body
-			cleanup := gen.exitScope()
+			cleanup := gen.exitSwitchCaseScope()
 			if cleanup != "" {
 				gen.output.WriteString(cleanup)
 			}
@@ -3933,9 +4004,9 @@ func (gen *CodeGenerator) generateRangeSwitchStatement(node *ahoy.ASTNode) {
 			gen.output.WriteString("{\n")
 		}
 		gen.indent++
-		gen.enterScope()
+		gen.enterSwitchCaseScope()
 		gen.generateNodeInternal(defaultBody, true) // Default body
-		cleanup := gen.exitScope()
+		cleanup := gen.exitSwitchCaseScope()
 		if cleanup != "" {
 			gen.output.WriteString(cleanup)
 		}
@@ -4000,9 +4071,9 @@ func (gen *CodeGenerator) generateSwitchStatement(node *ahoy.ASTNode) {
 				gen.writeIndent()
 				gen.output.WriteString("{\n")
 				gen.indent++
-				gen.enterScope()
+				gen.enterSwitchCaseScope()
 				gen.generateNodeInternal(caseNode.Children[1], true) // Case body
-				cleanup := gen.exitScope()
+				cleanup := gen.exitSwitchCaseScope()
 				if cleanup != "" {
 					gen.output.WriteString(cleanup)
 				}
@@ -4028,9 +4099,9 @@ func (gen *CodeGenerator) generateSwitchStatement(node *ahoy.ASTNode) {
 				}
 
 				gen.indent++
-				gen.enterScope()
+				gen.enterSwitchCaseScope()
 				gen.generateNodeInternal(caseNode.Children[1], true) // Case body
-				cleanup := gen.exitScope()
+				cleanup := gen.exitSwitchCaseScope()
 				if cleanup != "" {
 					gen.output.WriteString(cleanup)
 				}
@@ -4250,6 +4321,9 @@ func (gen *CodeGenerator) generateWhileLoop(node *ahoy.ASTNode) {
 		gen.writeIndent()
 		gen.output.WriteString("}\n")
 	}
+	// A halt directly in a switch case jumps here (plain `break` would only
+	// exit the switch). Emits nothing when no halt needed one.
+	gen.emitLoopEndLabel()
 }
 
 // pushLoopVarType registers a counted-loop variable as int in function scope
@@ -4385,6 +4459,7 @@ func (gen *CodeGenerator) generateForRangeLoop(node *ahoy.ASTNode) {
 
 	gen.writeIndent()
 	gen.output.WriteString("}\n")
+	gen.emitLoopEndLabel()
 }
 
 func (gen *CodeGenerator) generateForLoop(node *ahoy.ASTNode) {
@@ -4444,6 +4519,7 @@ func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 		gen.indent--
 		gen.writeIndent()
 		gen.output.WriteString("}\n")
+		gen.emitLoopEndLabel()
 	} else if len(node.Children) == 2 && node.Children[0].Type == ahoy.NODE_IDENTIFIER {
 		// Old pattern: loop i do (forever loop with explicit variable starting at 0)
 		loopVar := node.Children[0].Value
@@ -4486,6 +4562,7 @@ func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 		gen.indent--
 		gen.writeIndent()
 		gen.output.WriteString("}\n")
+		gen.emitLoopEndLabel()
 	} else if len(node.Children) == 1 || node.Value == "0" {
 		// Pattern 3: Forever loop without explicit variable (loop: or loop do)
 		gen.output.WriteString("for (;;) {\n")
@@ -4503,6 +4580,7 @@ func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 
 		gen.writeIndent()
 		gen.output.WriteString("}\n")
+		gen.emitLoopEndLabel()
 	} else {
 		// Old syntax: standard for loop with init/condition/update
 		gen.output.WriteString("for (")
@@ -4533,6 +4611,7 @@ func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 
 		gen.writeIndent()
 		gen.output.WriteString("}\n")
+		gen.emitLoopEndLabel()
 	}
 }
 
@@ -4626,6 +4705,7 @@ func (gen *CodeGenerator) generateForInArrayLoop(node *ahoy.ASTNode) {
 
 		gen.writeIndent()
 		gen.output.WriteString("}\n")
+		gen.emitLoopEndLabel()
 	} else {
 		// Array iteration
 		loopVar := fmt.Sprintf("__loop_i_%d", gen.varCounter)
@@ -4771,6 +4851,7 @@ func (gen *CodeGenerator) generateForInArrayLoop(node *ahoy.ASTNode) {
 
 		gen.writeIndent()
 		gen.output.WriteString("}\n")
+		gen.emitLoopEndLabel()
 	}
 }
 
@@ -4832,7 +4913,7 @@ func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
 	gen.indent++
 	gen.enterScope()
 	gen.markDeclaredInCurrentScope(valueVar)
-	gen.enterLoopScope() // Inner loop for entry traversal
+	gen.enterInnerLoopScope() // Inner traversal loop: halt/next target the enclosing user loop
 	gen.writeIndent()
 	gen.output.WriteString("const char* ")
 	gen.output.WriteString(keyVar)
@@ -4932,7 +5013,7 @@ func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
 	gen.output.WriteString(entryVar)
 	gen.output.WriteString("->next;\n")
 
-	gen.exitLoopScope() // Exit inner loop scope
+	gen.exitInnerLoopScope() // Exit inner traversal loop
 	innerCleanup := gen.exitScope()
 	if innerCleanup != "" {
 		gen.output.WriteString(innerCleanup)
@@ -4951,6 +5032,7 @@ func (gen *CodeGenerator) generateForInDictLoop(node *ahoy.ASTNode) {
 
 	gen.writeIndent()
 	gen.output.WriteString("}\n")
+	gen.emitLoopEndLabel()
 }
 
 func (gen *CodeGenerator) generateReturnStatement(node *ahoy.ASTNode) {
@@ -5242,36 +5324,129 @@ func (gen *CodeGenerator) nameVisibleInOpenScope(name string) bool {
 	return false
 }
 
-// enterLoopScope marks the current scope as a loop boundary for break/continue handling
+// enterLoopScope marks the current scope as a loop boundary for break/continue handling.
+// It also opens a label slot for halt-across-switch (see loopEndLabelAcrossSwitch).
 func (gen *CodeGenerator) enterLoopScope() {
 	gen.loopScopeStack = append(gen.loopScopeStack, gen.scopeDepth)
+	gen.loopEndLabels = append(gen.loopEndLabels, loopEndLabel{scopeDepth: gen.scopeDepth})
 }
 
-// exitLoopScope removes the loop boundary marker
+// exitLoopScope removes the loop boundary marker, stashing any pending end
+// label for the loop tail (emitLoopEndLabel writes it after the loop's
+// closing brace).
 func (gen *CodeGenerator) exitLoopScope() {
+	if len(gen.loopEndLabels) > 0 {
+		gen.pendingLoopEndLabel = gen.loopEndLabels[len(gen.loopEndLabels)-1].label
+		gen.loopEndLabels = gen.loopEndLabels[:len(gen.loopEndLabels)-1]
+	} else {
+		gen.pendingLoopEndLabel = ""
+	}
 	if len(gen.loopScopeStack) > 0 {
 		gen.loopScopeStack = gen.loopScopeStack[:len(gen.loopScopeStack)-1]
 	}
 }
 
+// enterInnerLoopScope marks a generated (non-user) nested traversal loop —
+// currently the dict entry-while inside the bucket-for. Cleanup still treats
+// it as a boundary, but halt/next target the enclosing user loop, so no
+// separate end label is tracked for it.
+func (gen *CodeGenerator) enterInnerLoopScope() {
+	gen.loopScopeStack = append(gen.loopScopeStack, gen.scopeDepth)
+}
+
+// exitInnerLoopScope removes a generated inner-traversal boundary marker.
+func (gen *CodeGenerator) exitInnerLoopScope() {
+	if len(gen.loopScopeStack) > 0 {
+		gen.loopScopeStack = gen.loopScopeStack[:len(gen.loopScopeStack)-1]
+	}
+}
+
+// flushBlockScopedDefers emits code running pending block-scoped defers for
+// scopes an early exit (halt/next) leaves, from fromDepth upward. Entries
+// stay listed: exactly one runtime path reaches any flush (the early exit
+// skips the block end, all other paths skip this), while block-end, return
+// and function-end handling is unchanged. Function-level defers are never
+// flushed here — the function has not ended. Runs before scope cleanup
+// (use-then-free), mirroring return's deferredUsers protection in reverse.
+func (gen *CodeGenerator) flushBlockScopedDefers(fromDepth int) {
+	for i := len(gen.deferredStatements) - 1; i >= 0; i-- {
+		d := gen.deferredStatements[i]
+		if d.blockScoped && d.depth >= fromDepth {
+			gen.output.WriteString(d.code)
+		}
+	}
+}
+
+// emitLoopEndLabel writes a pending halt-across-switch end label after a
+// loop's closing brace ("" = no halt needed one: emits nothing). The
+// labeled null statement keeps the label valid C even at function end.
+func (gen *CodeGenerator) emitLoopEndLabel() {
+	if gen.pendingLoopEndLabel == "" {
+		return
+	}
+	gen.writeIndent()
+	gen.output.WriteString(gen.pendingLoopEndLabel)
+	gen.output.WriteString(": ;\n")
+	gen.pendingLoopEndLabel = ""
+}
+
+// loopEndLabelAcrossSwitch returns the end label of the innermost user loop
+// when a switch-case scope sits between the halt point and that loop. A
+// plain C `break` there would only exit the switch, so the caller emits a
+// compiler-generated `goto` instead (cleanup already ran above it — unlike
+// user-level goto, which was removed for bypassing cleanup).
+func (gen *CodeGenerator) loopEndLabelAcrossSwitch() (string, bool) {
+	if len(gen.loopEndLabels) == 0 {
+		return "", false
+	}
+	top := &gen.loopEndLabels[len(gen.loopEndLabels)-1]
+	for _, d := range gen.switchCaseDepths {
+		if d > top.scopeDepth {
+			if top.label == "" {
+				top.label = fmt.Sprintf("__ahoy_loop_end_%d", gen.varCounter)
+				gen.varCounter++
+			}
+			return top.label, true
+		}
+	}
+	return "", false
+}
+
+// enterSwitchCaseScope opens the scope of one switch-case body: heap locals
+// are freed when the case ends (see exitScope). The depth is recorded so a
+// `halt` inside knows a switch boundary intervenes (plain `break` would only
+// exit the switch, not the loop).
+func (gen *CodeGenerator) enterSwitchCaseScope() {
+	gen.enterScope()
+	gen.switchCaseDepths = append(gen.switchCaseDepths, gen.scopeDepth)
+}
+
+// exitSwitchCaseScope closes a switch-case scope, returning its cleanup.
+func (gen *CodeGenerator) exitSwitchCaseScope() string {
+	if len(gen.switchCaseDepths) > 0 {
+		gen.switchCaseDepths = gen.switchCaseDepths[:len(gen.switchCaseDepths)-1]
+	}
+	return gen.exitScope()
+}
+
 // generateEarlyExitCleanup generates cleanup code for variables from current scope down to loop scope
 // Used for break/continue/return statements
 func (gen *CodeGenerator) generateEarlyExitCleanup(includeLoopScope bool) string {
-	var cleanup strings.Builder
-
 	// Determine the target depth (where to stop cleaning up)
 	targetDepth := 0
 	if len(gen.loopScopeStack) > 0 {
-		loopScope := gen.loopScopeStack[len(gen.loopScopeStack)-1]
-		if includeLoopScope {
-			// Clean including the loop scope
-			targetDepth = loopScope
-		} else {
-			// Clean down to but not including the loop scope
-			// This means clean the loop scope but not outer scopes
-			targetDepth = loopScope
-		}
+		// Both branches clean through the loop scope; the flag is vestigial.
+		targetDepth = gen.loopScopeStack[len(gen.loopScopeStack)-1]
 	}
+	return gen.generateEarlyExitCleanupTo(targetDepth)
+}
+
+// generateEarlyExitCleanupTo frees heap locals from the current scope down
+// to (and including) targetDepth. Used when an exit leaves an exact scope —
+// a `halt` breaking a switch frees only the case (deeper ifs included),
+// never the function locals the loop-breaking path below must free.
+func (gen *CodeGenerator) generateEarlyExitCleanupTo(targetDepth int) string {
+	var cleanup strings.Builder
 
 	// Clean up from current depth down to target depth (inclusive)
 	for depth := gen.scopeDepth; depth >= targetDepth; depth-- {
@@ -6846,6 +7021,56 @@ func (gen *CodeGenerator) isStringExpr(n *ahoy.ASTNode) bool {
 // isStringTypeName reports whether an inferred type name is a string type.
 func isStringTypeName(t string) bool {
 	return t == "string" || t == "char*" || t == "const char*"
+}
+
+// checkedArrayElem returns the tracked element type for an array variable,
+// verifying it against the variable's declared type. A tracked entry that
+// disagrees with an explicit array[T] declaration means the compiler lost
+// information (the stale-entry class that read string elements as int and
+// segfaulted); that is a loud internal error, never a silent fallback.
+// Genuinely unknown arrays (no entry, untyped/any declarations) still fall
+// through quietly - only provable disagreement aborts. On mismatch the
+// declared type is returned so any further output stays consistent, but
+// compilation always stops via hasError.
+func (gen *CodeGenerator) checkedArrayElem(arrayName string, node *ahoy.ASTNode) (string, bool) {
+	elem, ok := gen.arrayElementTypes[arrayName]
+	if !ok {
+		return "", false
+	}
+	declared := ""
+	if t, exists := gen.functionVars[arrayName]; exists {
+		declared = t
+	} else if t, exists := gen.variables[arrayName]; exists {
+		declared = t
+	}
+	want := ""
+	if strings.HasPrefix(declared, "array[") && strings.HasSuffix(declared, "]") {
+		want = strings.TrimSuffix(strings.TrimPrefix(declared, "array["), "]")
+	}
+	if want == "" || want == "any" || want == "generic" || elem == "any" || elem == "generic" || want == elem {
+		return elem, true
+	}
+	if gen.reportedElemMismatch == nil {
+		gen.reportedElemMismatch = make(map[string]bool)
+	}
+	if !gen.reportedElemMismatch[arrayName] {
+		gen.reportedElemMismatch[arrayName] = true
+		file := ""
+		line := 0
+		if node != nil {
+			file = node.File
+			line = node.Line
+		}
+		if file == "" {
+			file = gen.currentFile
+		}
+		if file == "" {
+			file = gen.sourceFilename
+		}
+		fmt.Printf("\n❌ Internal compiler error at %s:%d: array '%s' is declared %s but tracked as array[%s]; refusing to guess (this stale-entry bug segfaults). Please report this.\n\n", file, line, arrayName, declared, elem)
+		gen.hasError = true
+	}
+	return want, true
 }
 
 func (gen *CodeGenerator) generateBinaryOp(node *ahoy.ASTNode) {
@@ -8591,7 +8816,7 @@ func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 		gen.output.WriteString("} ")
 
 		// Check if we know the element type
-		if elemType, exists := gen.arrayElementTypes[arrayName]; exists {
+		if elemType, exists := gen.checkedArrayElem(arrayName, node); exists {
 			cType := gen.mapType(elemType)
 			if cType == "double" || cType == "float" {
 				// A float element is a heap double: the runtime stores a pointer
@@ -8633,7 +8858,7 @@ func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 	}
 
 	// Check if we know the element type
-	if elemType, exists := gen.arrayElementTypes[arrayName]; exists {
+	if elemType, exists := gen.checkedArrayElem(arrayName, node); exists {
 		cType := gen.mapType(elemType)
 		if cType == "double" || cType == "float" {
 			// A float element is a heap double; dereference the pointer.
@@ -9352,7 +9577,7 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			return "array[" + inner2DType + "]"
 		}
 
-		if elemType, exists := gen.arrayElementTypes[arrayName]; exists {
+		if elemType, exists := gen.checkedArrayElem(arrayName, node); exists {
 			return elemType
 		}
 		// Check if the array itself is a generic parameter

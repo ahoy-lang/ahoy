@@ -983,11 +983,14 @@ func main() {
 	hotReloadFlag := flag.Bool("hotreload", false, "Enable hot code reloading (keeps window open, reloads on file changes) - development only")
 	coldReloadFlag := flag.Bool("coldreload", false, "Enable cold reload (auto-recompile and restart on file changes) - development only")
 	noSemanticsFlag := flag.Bool("no_semantics", false, "Skip semantic validation (type errors, undeclared names, duplicate definitions)")
+	strictFlag := flag.Bool("strict", true, "Extra dev-time warnings for bug classes that segfault (array-type contradictions, literal division by zero)")
 	defines := defineList{}
 	flag.Var(&defines, "D", "Define NAME for `when NAME:` blocks (repeatable, comma-separated)")
 	helpFlag := flag.Bool("h", false, "Show help")
 
 	flag.Parse()
+
+	ahoy.StrictLint = *strictFlag
 
 	buildDefines = defines
 
@@ -2035,6 +2038,7 @@ func showHelp() {
 	fmt.Println("  -format       Format the source file")
 	fmt.Println("  -lint         Check for errors without compiling")
 	fmt.Println("  -no_semantics Skip semantic validation (types, undeclared names, duplicates)")
+	fmt.Println("  -strict=false Disable the strict lint tier (array-type contradictions, division by zero)")
 	fmt.Println("  -gen_stdlib_docs   Generate stdlib API reference as .ahoy file")
 	fmt.Println("  -cache        Enable incremental builds (cache parsed files)")
 	fmt.Println("  -D NAME       Define NAME for `when NAME then` blocks (repeatable, comma-separated)")
