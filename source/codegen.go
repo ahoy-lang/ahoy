@@ -13,6 +13,15 @@ import (
 	"ahoy"
 )
 
+// CrashLineTracking controls whether generated C records the current Ahoy
+// file/line/function in the __ahoy_file/__ahoy_line/__ahoy_func globals
+// before each statement. The crash handler reads them back to report the
+// exact Ahoy location of a segfault/abort instead of a generic message.
+// The stores are volatile (never reordered away) and cost ~2 stores per
+// statement, so main.go disables this for -release builds (zero overhead)
+// while dev builds (tcc, hot/cold reload) keep it on.
+var CrashLineTracking = true
+
 func snakeToPascal(s string) string {
 	// If there are no underscores, return as-is (it's already in the correct format)
 	if !strings.Contains(s, "_") {
@@ -168,7 +177,9 @@ type CodeGenerator struct {
 	jsonStructs                   map[string]bool                         // Track which structs are JSON schemas (not real C structs)
 	loopCounters                  []string                                // Stack of loop counter variable names
 	currentFile                   string                                  // Source file of the top-level node being generated
+	crashPathRoot                 string                                  // Longest common dir of all sources + trailing sep; stripped from crash-location paths so release binaries don't leak absolute build paths
 	currentFunction               string                                  // Current function being generated
+	currentAhoyFunction           string                                  // Ahoy-level name of currentFunction (for crash reports; currentFunction holds the C name)
 	currentFunctionReturnType     string                                  // Return type of current function
 	currentFunctionHasMultiReturn bool                                    // Whether current function has multiple returns
 	hasMainFunc                   bool                                    // Whether there's an Ahoy main function
@@ -374,6 +385,11 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 	// callback typedef (LogCallback) before it types a variable holding one.
 	gen.scanCHeaderTypes(ast)
 	gen.scanVariableTypes(ast)
+
+	// Crash locations are reported relative to the longest common directory
+	// of the program's sources, so shipped binaries don't embed absolute
+	// build-machine paths (and reports read as engine/core.ahoy:4708).
+	gen.crashPathRoot = commonSourceRoot(ast, filename)
 
 	// Sixth pass: infer parameter types from function call sites
 	gen.inferParameterTypesFromCalls(ast)
@@ -938,12 +954,27 @@ func (gen *CodeGenerator) checkForMainFunction(node *ahoy.ASTNode) {
 
 // scanVariableTypes scans all variable declarations to populate type information
 func (gen *CodeGenerator) scanVariableTypes(node *ahoy.ASTNode) {
+	gen.scanVariableTypesInScope(node, false)
+}
+
+// scanVariableTypesInScope is the recursive worker behind scanVariableTypes.
+// Declarations inside function bodies are deliberately NOT recorded in the
+// global variables map: that map is a fallback for names no scope knows, and
+// a local `k: string` in one function used to decide the type of an unrelated
+// `k` (e.g. an int loop counter) in another function - producing atof() on an
+// int and a segfault. Function bodies register their own locals in
+// functionVars as codegen reaches them, so nothing is lost by skipping them
+// here. (recordJobResultType still runs for every node either way.)
+func (gen *CodeGenerator) scanVariableTypesInScope(node *ahoy.ASTNode, inFunction bool) {
 	if node == nil {
 		return
 	}
 
 	// First pass: collect function return types from explicit annotations
 	if node.Type == ahoy.NODE_FUNCTION {
+		// Everything under a function node is function scope, even though the
+		// node itself is visited at top level.
+		inFunction = true
 		funcName := node.Value
 		if node.DataType != "" && node.DataType != "infer" {
 			// Store return type - check if it's a multi-return (contains comma)
@@ -961,14 +992,16 @@ func (gen *CodeGenerator) scanVariableTypes(node *ahoy.ASTNode) {
 		}
 	}
 
-	// Scan for variable declarations and track their types
+	// Scan for variable declarations and track their types. Top-level (true
+	// global) declarations go in the map; function-body locals are skipped
+	// (see above) - except the job-result bookkeeping, which is scope-free.
 	if node.Type == ahoy.NODE_VARIABLE_DECLARATION || node.Type == ahoy.NODE_ASSIGNMENT {
 		varName := node.Value
 		// This pass runs before the body is generated, so a submitted job's
 		// result type has to be recorded here too: otherwise a later
 		// `pool.wait|j|` is typed before the submit has been seen.
 		gen.recordJobResultType(node)
-		if len(node.Children) > 0 {
+		if !inFunction && len(node.Children) > 0 {
 			// Check for explicit type annotation
 			if node.DataType != "" && node.DataType != "generic" && node.DataType != "any" {
 				gen.variables[varName] = node.DataType
@@ -984,8 +1017,53 @@ func (gen *CodeGenerator) scanVariableTypes(node *ahoy.ASTNode) {
 
 	// Recursively scan children
 	for _, child := range node.Children {
-		gen.scanVariableTypes(child)
+		gen.scanVariableTypesInScope(child, inFunction)
 	}
+}
+
+// commonSourceRoot returns the longest common directory (with trailing
+// separator) of the merged program's source files, or "" when there is no
+// usable common root. Only absolute paths participate: relative ones are
+// already leak-free and display as-is.
+func commonSourceRoot(ast *ahoy.ASTNode, filename string) string {
+	var dirs [][]string
+	add := func(f string) {
+		if f == "" || !filepath.IsAbs(f) {
+			return
+		}
+		// Split into components for exact segment matching.
+		clean := filepath.Clean(filepath.Dir(f))
+		dirs = append(dirs, strings.Split(clean, string(filepath.Separator)))
+	}
+	add(filename)
+	if ast != nil {
+		for _, child := range ast.Children {
+			add(child.File)
+		}
+	}
+	if len(dirs) == 0 {
+		return ""
+	}
+	common := dirs[0]
+	for _, d := range dirs[1:] {
+		n := len(common)
+		if len(d) < n {
+			n = len(d)
+		}
+		i := 0
+		for i < n && common[i] == d[i] {
+			i++
+		}
+		common = common[:i]
+	}
+	if len(common) == 0 {
+		return ""
+	}
+	root := strings.Join(common, string(filepath.Separator))
+	if root == "" || root == string(filepath.Separator) {
+		return ""
+	}
+	return root + string(filepath.Separator)
 }
 
 // scanCHeaderTypes parses imported C headers before the variable-type
@@ -1715,6 +1793,53 @@ func escapeCFilename(path string) string {
 	return strings.ReplaceAll(path, "\"", "\\\"")
 }
 
+// emitCrashLocation stores the statement's Ahoy file/line in globals the
+// crash handler reads back. It is emitted next to the #line directive, so it
+// travels with the statement into every buffer bodies are built in (function
+// bodies, switch cases, deferred-statement temporaries). Deferred code keeps
+// its own line, which is correct: if it crashes at function exit, the defer
+// statement is what faulted.
+func (gen *CodeGenerator) emitCrashLocation(node *ahoy.ASTNode) {
+	if node == nil || node.Line <= 0 {
+		return
+	}
+	if !gen.enableSignalHandler || !CrashLineTracking {
+		return
+	}
+	file := node.File
+	if file == "" {
+		// Same inheritance rule as emitLineDirective.
+		file = gen.currentFile
+	}
+	if file == "" {
+		return
+	}
+	// Report paths relative to the project root: absolute build-machine paths
+	// must not leak into shipped binaries, and engine/core.ahoy:4708 reads
+	// better in a gamer's crash report anyway. Files outside the common root
+	// (shouldn't happen) keep their full path.
+	display := file
+	if gen.crashPathRoot != "" && strings.HasPrefix(file, gen.crashPathRoot) {
+		display = file[len(gen.crashPathRoot):]
+	}
+	gen.writeIndent()
+	gen.output.WriteString("__ahoy_file = \"")
+	gen.output.WriteString(escapeCFilename(display))
+	gen.output.WriteString("\"; __ahoy_line = ")
+	gen.output.WriteString(strconv.Itoa(node.Line))
+	gen.output.WriteString(";\n")
+	// The lexically enclosing function travels with the statement too: a
+	// bare entry marker goes stale as soon as the function calls anything
+	// (a crash kept reporting the last-entered callee instead of the
+	// function whose statement faulted). Empty when outside any function.
+	if gen.currentAhoyFunction != "" {
+		gen.writeIndent()
+		gen.output.WriteString("__ahoy_func = \"")
+		gen.output.WriteString(gen.currentAhoyFunction)
+		gen.output.WriteString("\";\n")
+	}
+}
+
 // isHeapAllocatedType reports whether a declaration of this type owns heap
 // memory that must be released when its scope exits. A fresh function value
 // owns its closure environment; a copy of one does not (the declaration path
@@ -1756,9 +1881,11 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 
 	// Statements carry a #line directive so that anything the C compiler,
 	// sanitizers or a debugger report points at the .ahoy source rather than at
-	// the generated C.
+	// the generated C. They also record their Ahoy file/line in globals so a
+	// segfault can be attributed to the exact statement (see emitCrashLocation).
 	if isStatement {
 		gen.emitLineDirective(node)
+		gen.emitCrashLocation(node)
 	}
 
 	switch node.Type {
@@ -2204,6 +2331,7 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 
 	// Store current function info for return statement generation
 	gen.currentFunction = cFuncName
+	gen.currentAhoyFunction = funcName
 	gen.currentFunctionReturnType = returnType
 	gen.currentFunctionHasMultiReturn = len(returnTypes) > 1
 
@@ -2256,6 +2384,16 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 		gen.markDeclaredInCurrentScope(param.Value)
 	}
 
+	// Crash reporting: record which Ahoy function is executing. Per-statement
+	// stores keep file/line current; this covers entry and bodies with no
+	// tracked statements. The Ahoy-level name reads better than the C name.
+	if gen.enableSignalHandler && CrashLineTracking {
+		gen.writeIndent()
+		gen.output.WriteString("__ahoy_func = \"")
+		gen.output.WriteString(funcName)
+		gen.output.WriteString("\";\n")
+	}
+
 	gen.generateNodeInternal(body, false)
 
 	// Add automatic defer free for heap-allocated variables that don't escape
@@ -2274,6 +2412,7 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	gen.indent--
 	gen.output = oldOutput
 	gen.currentFunction = ""
+	gen.currentAhoyFunction = ""
 	gen.currentFunctionReturnType = ""
 	gen.currentFunctionHasMultiReturn = false
 	gen.functionVars = nil                           // Clear function scope
@@ -3303,16 +3442,24 @@ func (gen *CodeGenerator) generateSwitchExpression(node *ahoy.ASTNode, targetVar
 					gen.indent++
 					gen.writeIndent()
 					gen.output.WriteString("case ")
-					gen.generateNode(val)
+					// Resolve constants/dot-enums like statement switches
+					gen.generateSwitchCaseValue(val, switchExprType)
 					gen.output.WriteString(":\n")
 					gen.indent--
 				}
+				// Case bodies get braces: a C label may only precede a statement,
+				// and the braces scope heap locals declared in the body (see
+				// generateSwitchCaseAssignment).
 				gen.indent++
+				gen.writeIndent()
+				gen.output.WriteString("{\n")
 				gen.indent++
 				gen.generateSwitchCaseAssignment(caseBody, targetVar)
 				gen.writeIndent()
 				gen.output.WriteString("break;\n")
 				gen.indent--
+				gen.writeIndent()
+				gen.output.WriteString("}\n")
 				gen.indent--
 			} else {
 				// Single case or default
@@ -3320,11 +3467,12 @@ func (gen *CodeGenerator) generateSwitchExpression(node *ahoy.ASTNode, targetVar
 				gen.writeIndent()
 
 				if caseValue.Type == ahoy.NODE_IDENTIFIER && caseValue.Value == "_" {
-					gen.output.WriteString("default:\n")
+					gen.output.WriteString("default: {\n")
 				} else {
 					gen.output.WriteString("case ")
-					gen.generateNode(caseValue)
-					gen.output.WriteString(":\n")
+					// Resolve constants/dot-enums like statement switches
+					gen.generateSwitchCaseValue(caseValue, switchExprType)
+					gen.output.WriteString(": {\n")
 				}
 
 				gen.indent++
@@ -3332,6 +3480,8 @@ func (gen *CodeGenerator) generateSwitchExpression(node *ahoy.ASTNode, targetVar
 				gen.writeIndent()
 				gen.output.WriteString("break;\n")
 				gen.indent--
+				gen.writeIndent()
+				gen.output.WriteString("}\n")
 				gen.indent--
 			}
 		}
@@ -3480,8 +3630,15 @@ func (gen *CodeGenerator) generateRangeCondition(switchExpr *ahoy.ASTNode, switc
 	gen.generateSwitchCaseValue(caseValue, switchExprType)
 }
 
-// generateSwitchCaseAssignment generates an assignment for a case body
+// generateSwitchCaseAssignment generates an assignment for a case body.
+// The body runs in its own scope: heap locals declared by intermediate
+// statements are freed after the assignment, so the function-end cleanup
+// never names a variable that is already out of scope. The yielded value
+// itself escapes into targetVar (which outlives the case), so its storage
+// is protected exactly like a return value instead of being freed here.
 func (gen *CodeGenerator) generateSwitchCaseAssignment(caseBody *ahoy.ASTNode, targetVar string) {
+	gen.enterScope()
+	valueNode := caseBody
 	// Check if body is a block with multiple statements
 	if caseBody.Type == ahoy.NODE_BLOCK && len(caseBody.Children) > 0 {
 		// Execute all statements except last, then assign last
@@ -3489,19 +3646,20 @@ func (gen *CodeGenerator) generateSwitchCaseAssignment(caseBody *ahoy.ASTNode, t
 			gen.generateNodeInternal(caseBody.Children[i], true)
 		}
 		// Last statement is the return value
-		lastStmt := caseBody.Children[len(caseBody.Children)-1]
-		gen.writeIndent()
-		gen.output.WriteString(targetVar)
-		gen.output.WriteString(" = ")
-		gen.generateNode(lastStmt)
-		gen.output.WriteString(";\n")
-	} else {
-		// Single expression
-		gen.writeIndent()
-		gen.output.WriteString(targetVar)
-		gen.output.WriteString(" = ")
-		gen.generateNode(caseBody)
-		gen.output.WriteString(";\n")
+		valueNode = caseBody.Children[len(caseBody.Children)-1]
+	}
+	gen.writeIndent()
+	gen.output.WriteString(targetVar)
+	gen.output.WriteString(" = ")
+	gen.generateNode(valueNode)
+	gen.output.WriteString(";\n")
+	// Ownership of the yielded value transfers to targetVar: protect its
+	// storage (and its transitive dependencies) like a return value. Anything
+	// else the body allocated is freed by the scope exit below.
+	gen.markReturnedValue(valueNode)
+	gen.markValueDeps(valueNode)
+	if cleanup := gen.exitScope(); cleanup != "" {
+		gen.output.WriteString(cleanup)
 	}
 }
 
@@ -3683,7 +3841,12 @@ func (gen *CodeGenerator) generateStringSwitchStatement(node *ahoy.ASTNode) {
 
 			gen.output.WriteString(") {\n")
 			gen.indent++
+			gen.enterScope()
 			gen.generateNodeInternal(caseBody, true) // Case body
+			cleanup := gen.exitScope()
+			if cleanup != "" {
+				gen.output.WriteString(cleanup)
+			}
 			gen.indent--
 			gen.writeIndent()
 			gen.output.WriteString("}")
@@ -3699,7 +3862,12 @@ func (gen *CodeGenerator) generateStringSwitchStatement(node *ahoy.ASTNode) {
 			gen.output.WriteString("{\n")
 		}
 		gen.indent++
+		gen.enterScope()
 		gen.generateNodeInternal(defaultBody, true) // Default body
+		cleanup := gen.exitScope()
+		if cleanup != "" {
+			gen.output.WriteString(cleanup)
+		}
 		gen.indent--
 		gen.writeIndent()
 		gen.output.WriteString("}\n")
@@ -3744,7 +3912,12 @@ func (gen *CodeGenerator) generateRangeSwitchStatement(node *ahoy.ASTNode) {
 
 			gen.output.WriteString(") {\n")
 			gen.indent++
+			gen.enterScope()
 			gen.generateNodeInternal(caseBody, true) // Case body
+			cleanup := gen.exitScope()
+			if cleanup != "" {
+				gen.output.WriteString(cleanup)
+			}
 			gen.indent--
 			gen.writeIndent()
 			gen.output.WriteString("}")
@@ -3760,7 +3933,12 @@ func (gen *CodeGenerator) generateRangeSwitchStatement(node *ahoy.ASTNode) {
 			gen.output.WriteString("{\n")
 		}
 		gen.indent++
+		gen.enterScope()
 		gen.generateNodeInternal(defaultBody, true) // Default body
+		cleanup := gen.exitScope()
+		if cleanup != "" {
+			gen.output.WriteString(cleanup)
+		}
 		gen.indent--
 		gen.writeIndent()
 		gen.output.WriteString("}\n")
@@ -3814,12 +3992,20 @@ func (gen *CodeGenerator) generateSwitchStatement(node *ahoy.ASTNode) {
 				// Generate body after all case labels. The body gets its own
 				// braces: a C label may only precede a statement, so a case whose
 				// first statement declares a local (a shared sprite branch, say)
-				// would not compile without its own scope.
+				// would not compile without its own scope. The braces are a
+				// scope too: heap locals declared in the body are freed here,
+				// before break, so the function-end cleanup never names a
+				// variable that is already out of scope.
 				gen.indent++
 				gen.writeIndent()
 				gen.output.WriteString("{\n")
 				gen.indent++
+				gen.enterScope()
 				gen.generateNodeInternal(caseNode.Children[1], true) // Case body
+				cleanup := gen.exitScope()
+				if cleanup != "" {
+					gen.output.WriteString(cleanup)
+				}
 				gen.writeIndent()
 				gen.output.WriteString("break;\n")
 				gen.indent--
@@ -3842,7 +4028,12 @@ func (gen *CodeGenerator) generateSwitchStatement(node *ahoy.ASTNode) {
 				}
 
 				gen.indent++
+				gen.enterScope()
 				gen.generateNodeInternal(caseNode.Children[1], true) // Case body
+				cleanup := gen.exitScope()
+				if cleanup != "" {
+					gen.output.WriteString(cleanup)
+				}
 				gen.writeIndent()
 				gen.output.WriteString("break;\n")
 				gen.indent--
@@ -3857,7 +4048,29 @@ func (gen *CodeGenerator) generateSwitchStatement(node *ahoy.ASTNode) {
 	gen.output.WriteString("}\n")
 }
 
-// generateSwitchCaseValue generates a case value, resolving dot-prefixed enum members
+// caseLabelConstant folds a known constant to a C integer literal for use in
+// a `case` label. Only integer (and bool) constants fold; floats, strings
+// and unknown names return false. String switches generate if/else chains
+// where the getter call is valid, so they never need this.
+func (gen *CodeGenerator) caseLabelConstant(name string) (string, bool) {
+	val, ok := gen.constantValues[name]
+	if !ok {
+		return "", false
+	}
+	switch v := val.(type) {
+	case int64:
+		return strconv.FormatInt(v, 10), true
+	case int:
+		return strconv.Itoa(v), true
+	case bool:
+		if v {
+			return "1", true
+		}
+		return "0", true
+	}
+	return "", false
+}
+
 // sortedEnumNames returns the known enum names in sorted order, so that
 // lookups spanning several enums resolve deterministically instead of taking
 // whichever match map iteration finds first.
@@ -3870,7 +4083,19 @@ func (gen *CodeGenerator) sortedEnumNames() []string {
 	return names
 }
 
+// generateSwitchCaseValue generates a case value, resolving dot-prefixed enum members
 func (gen *CodeGenerator) generateSwitchCaseValue(val *ahoy.ASTNode, switchExprType string) {
+	// A known integer constant folds to its literal: ahoy constants emit as
+	// variables/getters (hot reload), which are not valid C `case` labels,
+	// so `on TINT_RED:` must emit the value. C #defines and enum members
+	// pass through untouched. Folding in conditions is equally valid.
+	if val.Type == ahoy.NODE_IDENTIFIER && len(val.Value) > 0 && val.Value[0] != '.' {
+		if lit, ok := gen.caseLabelConstant(val.Value); ok {
+			gen.output.WriteString(lit)
+			return
+		}
+	}
+
 	// Check if this is a dot-prefixed enum member
 	if val.Type == ahoy.NODE_IDENTIFIER && len(val.Value) > 0 && val.Value[0] == '.' {
 		// Extract the member name (without the dot)
@@ -4027,6 +4252,31 @@ func (gen *CodeGenerator) generateWhileLoop(node *ahoy.ASTNode) {
 	}
 }
 
+// pushLoopVarType registers a counted-loop variable as int in function scope
+// so type inference inside the loop body sees the loop variable's type, not
+// whatever same-named local the flat maps remember (a stale string entry made
+// float(k) emit atof(k) - a segfault). Returns the previous entry for restore.
+// The dict/array loop generators already do the same save/restore dance.
+func (gen *CodeGenerator) pushLoopVarType(loopVar string) (string, bool) {
+	if gen.functionVars == nil {
+		return "", false
+	}
+	old, had := gen.functionVars[loopVar]
+	gen.functionVars[loopVar] = "int"
+	return old, had
+}
+
+func (gen *CodeGenerator) popLoopVarType(loopVar string, old string, had bool) {
+	if gen.functionVars == nil {
+		return
+	}
+	if had {
+		gen.functionVars[loopVar] = old
+	} else {
+		delete(gen.functionVars, loopVar)
+	}
+}
+
 func (gen *CodeGenerator) generateForRangeLoop(node *ahoy.ASTNode) {
 	gen.writeIndent()
 
@@ -4057,7 +4307,9 @@ func (gen *CodeGenerator) generateForRangeLoop(node *ahoy.ASTNode) {
 		gen.enterScope()
 		gen.markDeclaredInCurrentScope(loopVar)
 		gen.enterLoopScope()
+		oldLoopType, hadLoopType := gen.pushLoopVarType(loopVar)
 		gen.generateNodeInternal(node.Children[3], false)
+		gen.popLoopVarType(loopVar, oldLoopType, hadLoopType)
 		gen.exitLoopScope()
 		cleanup := gen.exitScope()
 		if cleanup != "" {
@@ -4172,7 +4424,9 @@ func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 		gen.enterScope()
 		gen.markDeclaredInCurrentScope(loopVar)
 		gen.enterLoopScope()
+		oldLoopType, hadLoopType := gen.pushLoopVarType(loopVar)
 		gen.generateNodeInternal(node.Children[2], false)
+		gen.popLoopVarType(loopVar, oldLoopType, hadLoopType)
 		gen.exitLoopScope()
 		cleanup := gen.exitScope()
 		if cleanup != "" {
@@ -4212,7 +4466,9 @@ func (gen *CodeGenerator) generateForCountLoop(node *ahoy.ASTNode) {
 		gen.enterScope()
 		gen.markDeclaredInCurrentScope(loopVar)
 		gen.enterLoopScope()
+		oldLoopType, hadLoopType := gen.pushLoopVarType(loopVar)
 		gen.generateNodeInternal(node.Children[1], false)
+		gen.popLoopVarType(loopVar, oldLoopType, hadLoopType)
 		gen.exitLoopScope()
 		cleanup := gen.exitScope()
 		if cleanup != "" {
@@ -11466,66 +11722,236 @@ func (gen *CodeGenerator) writeTypeEnumToStringHelper() {
 	gen.funcDecls.WriteString("}\n\n")
 }
 
-// Generate signal handler for better crash reporting
+// Generate signal handler for crash reporting.
+//
+// Generated code records the current Ahoy file/line/function in the globals
+// below before every statement (debug builds; see emitCrashLocation). The
+// handler reads them back, so a segfault reports the exact Ahoy location
+// instead of a generic message. All handler output uses write(), never
+// fprintf/malloc, because almost nothing is async-signal-safe. After
+// reporting, the signal is re-raised with default disposition, so the process
+// still dies by signal (exit status 139 for SIGSEGV, core dumps intact).
 func (gen *CodeGenerator) getSignalHandler() string {
-	return `// Signal handler for crash reporting
+	return `// Crash-location tracking: generated code stores the current Ahoy file/line/
+// function here before every statement (debug builds only). Volatile so the C
+// compiler can neither eliminate the stores nor reorder them past each other.
+// NOTE: these are process-global, so a crash in a job thread may report the
+// wrong thread's last statement. Main-thread crashes (the common case) are exact.
+const char* volatile __ahoy_file = "";
+volatile int __ahoy_line = 0;
+const char* volatile __ahoy_func = "";
+
 #include <signal.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
+#include <stdint.h>
+#ifndef _WIN32
+#include <ucontext.h>
+#endif
 
-void ahoy_signal_handler(int sig) {
-    fprintf(stderr, "\n");
-    fprintf(stderr, "========================================\n");
-    fprintf(stderr, "  Ahoy Program Crashed\n");
-    fprintf(stderr, "========================================\n");
-    fprintf(stderr, "\n");
-
-    switch(sig) {
-        case SIGSEGV:
-            fprintf(stderr, "Error: Memory access violation (segmentation fault)\n");
-            fprintf(stderr, "This usually happens when:\n");
-            fprintf(stderr, "  - Accessing memory that doesn't belong to your program\n");
-            fprintf(stderr, "  - Using a null pointer\n");
-            fprintf(stderr, "  - Accessing freed memory\n");
-            break;
-        case SIGABRT:
-            fprintf(stderr, "Error: Program aborted\n");
-            fprintf(stderr, "This usually happens when:\n");
-            fprintf(stderr, "  - An assertion failed\n");
-            fprintf(stderr, "  - A serious error was detected\n");
-            break;
-        case SIGFPE:
-            fprintf(stderr, "Error: Arithmetic error (floating point exception)\n");
-            fprintf(stderr, "This usually happens when:\n");
-            fprintf(stderr, "  - Dividing by zero\n");
-            fprintf(stderr, "  - Integer overflow\n");
-            break;
-        case SIGILL:
-            fprintf(stderr, "Error: Illegal instruction\n");
-            fprintf(stderr, "This usually happens when:\n");
-            fprintf(stderr, "  - Corrupted memory\n");
-            fprintf(stderr, "  - Invalid code execution\n");
-            break;
-        default:
-            fprintf(stderr, "Error: Program received signal %d\n", sig);
-            break;
+static void ahoy_crash_write(const char* s) {
+    size_t n = 0;
+    size_t off = 0;
+    ssize_t w;
+    while (s[n] != '\0') n++;
+    while (off < n) {
+        w = write(STDERR_FILENO, s + off, n - off);
+        if (w <= 0) return;
+        off += (size_t)w;
     }
-
-    fprintf(stderr, "\n");
-    fprintf(stderr, "Tips for debugging:\n");
-    fprintf(stderr, "  - Check array accesses are within bounds\n");
-    fprintf(stderr, "  - Ensure variables are initialized before use\n");
-    fprintf(stderr, "  - Verify pointers are not null\n");
-    fprintf(stderr, "\n");
-    fprintf(stderr, "========================================\n");
-
-    exit(1);
 }
 
-void ahoy_setup_signal_handlers() {
+static void ahoy_crash_write_long(long v) {
+    char buf[24];
+    unsigned long u;
+    int neg = 0;
+    int i = 0;
+    int a, b;
+    char t;
+    size_t off = 0;
+    ssize_t w;
+    if (v < 0) { neg = 1; u = (unsigned long)(-(v + 1)) + 1UL; }
+    else { u = (unsigned long)v; }
+    if (u == 0) buf[i++] = '0';
+    while (u > 0 && i < 23) { buf[i++] = (char)('0' + (u % 10)); u /= 10; }
+    if (neg && i < 23) buf[i++] = '-';
+    for (a = 0, b = i - 1; a < b; a++, b--) { t = buf[a]; buf[a] = buf[b]; buf[b] = t; }
+    while (off < (size_t)i) {
+        w = write(STDERR_FILENO, buf + off, (size_t)i - off);
+        if (w <= 0) return;
+        off += (size_t)w;
+    }
+}
+
+static void ahoy_crash_write_hex(uintptr_t v) {
+    static const char digits[] = "0123456789abcdef";
+    char buf[16];
+    int i = 0;
+    int a, b;
+    char t;
+    size_t off = 0;
+    ssize_t w;
+    if (v == 0) { ahoy_crash_write("0x0"); return; }
+    while (v > 0 && i < 16) { buf[i++] = digits[v & 0xF]; v >>= 4; }
+    ahoy_crash_write("0x");
+    for (a = 0, b = i - 1; a < b; a++, b--) { t = buf[a]; buf[a] = buf[b]; buf[b] = t; }
+    while (off < (size_t)i) {
+        w = write(STDERR_FILENO, buf + off, (size_t)i - off);
+        if (w <= 0) return;
+        off += (size_t)w;
+    }
+}
+
+// have_addr: si_addr available. rw: 1 = write fault, 0 = read fault,
+// 2 = permission fault (SEGV_ACCERR, often a write to read-only memory),
+// -1 = unknown. fpe: si_code for SIGFPE (FPE_INTDIV etc.), 0 otherwise.
+static void ahoy_report_crash(int sig, int have_addr, uintptr_t addr, int rw, int fpe) {
+    const char* file = (const char*)__ahoy_file;
+    int line = __ahoy_line;
+    const char* func = (const char*)__ahoy_func;
+    ahoy_crash_write("\n========================================\n");
+    ahoy_crash_write("  Ahoy Program Crashed (");
+    switch (sig) {
+        case SIGSEGV: ahoy_crash_write("SIGSEGV"); break;
+        case SIGABRT: ahoy_crash_write("SIGABRT"); break;
+        case SIGFPE: ahoy_crash_write("SIGFPE"); break;
+        case SIGILL: ahoy_crash_write("SIGILL"); break;
+#ifdef SIGBUS
+        case SIGBUS: ahoy_crash_write("SIGBUS"); break;
+#endif
+        default: ahoy_crash_write("signal "); ahoy_crash_write_long(sig); break;
+    }
+    ahoy_crash_write(")\n========================================\n\n");
+    if (line > 0 && file[0] != '\0') {
+        ahoy_crash_write("  Location: ");
+        ahoy_crash_write(file);
+        ahoy_crash_write(":");
+        ahoy_crash_write_long(line);
+        if (func[0] != '\0') {
+            ahoy_crash_write(" in ");
+            ahoy_crash_write(func);
+        }
+        ahoy_crash_write("\n");
+    } else {
+        ahoy_crash_write("  Location: (before any tracked Ahoy statement -- likely inside a C library)\n");
+    }
+    if (sig == SIGSEGV
+#ifdef SIGBUS
+        || sig == SIGBUS
+#endif
+    ) {
+        ahoy_crash_write("  Fault: ");
+        if (rw == 1) ahoy_crash_write("write to ");
+        else if (rw == 0) ahoy_crash_write("read of ");
+        else ahoy_crash_write("access to ");
+        if (have_addr) {
+            ahoy_crash_write("address ");
+            ahoy_crash_write_hex(addr);
+            if (rw == 2) {
+                ahoy_crash_write(" -- permission fault (often a write to read-only memory)");
+            } else if (addr < 0x1000) {
+                ahoy_crash_write(" -- null pointer dereference");
+            } else if (addr < 0x10000) {
+                ahoy_crash_write(" -- near-null pointer (small offset from null)");
+            } else {
+                ahoy_crash_write(" -- unmapped or freed memory");
+            }
+        } else {
+            ahoy_crash_write("unmapped memory");
+        }
+        ahoy_crash_write("\n");
+    } else if (sig == SIGABRT) {
+        ahoy_crash_write("  Fault: abort() called -- failed assertion or explicit abort\n");
+    } else if (sig == SIGFPE) {
+        ahoy_crash_write("  Fault: ");
+        if (fpe == FPE_INTDIV) ahoy_crash_write("integer division by zero\n");
+        else if (fpe == FPE_INTOVF) ahoy_crash_write("integer overflow\n");
+#ifdef FPE_FLTDIV
+        else if (fpe == FPE_FLTDIV) ahoy_crash_write("floating-point division by zero\n");
+#endif
+        else ahoy_crash_write("arithmetic fault\n");
+    } else if (sig == SIGILL) {
+        ahoy_crash_write("  Fault: illegal instruction -- corrupted code path or bad jump\n");
+    }
+    ahoy_crash_write("\n  Tips:\n");
+    ahoy_crash_write("  - Check array accesses are within bounds\n");
+    ahoy_crash_write("  - Ensure variables are initialized before use\n");
+    ahoy_crash_write("  - Verify pointers are not null\n");
+    ahoy_crash_write("\n========================================\n");
+}
+
+#ifndef _WIN32
+static void ahoy_signal_handler(int sig, siginfo_t* info, void* uctx) {
+    static volatile sig_atomic_t entered = 0;
+    struct sigaction sa;
+    int have_addr = 0;
+    int rw = -1;
+    int fpe = 0;
+    uintptr_t addr = 0;
+    (void)uctx;
+    if (entered) _exit(134);
+    entered = 1;
+    if ((sig == SIGSEGV
+#ifdef SIGBUS
+        || sig == SIGBUS
+#endif
+    ) && info != 0) {
+        addr = (uintptr_t)info->si_addr;
+        have_addr = 1;
+#if defined(__linux__) && defined(__x86_64__)
+#  ifdef REG_ERR
+        if (uctx != 0) {
+            ucontext_t* uc = (ucontext_t*)uctx;
+            rw = (uc->uc_mcontext.gregs[REG_ERR] & 2) ? 1 : 0;
+        }
+#  endif
+#endif
+        if (rw < 0 && info->si_code == SEGV_ACCERR) rw = 2;
+    }
+    if (sig == SIGFPE && info != 0) fpe = info->si_code;
+    ahoy_report_crash(sig, have_addr, addr, rw, fpe);
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = SIG_DFL;
+    sigemptyset(&sa.sa_mask);
+    sigaction(sig, &sa, 0);
+    raise(sig);
+    _exit(134);
+}
+
+void ahoy_setup_signal_handlers(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sigemptyset(&sa.sa_mask);
+    sa.sa_sigaction = ahoy_signal_handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigaction(SIGSEGV, &sa, 0);
+    sigaction(SIGABRT, &sa, 0);
+    sigaction(SIGFPE, &sa, 0);
+    sigaction(SIGILL, &sa, 0);
+#ifdef SIGBUS
+    sigaction(SIGBUS, &sa, 0);
+#endif
+}
+#else
+// Windows has no sigaction/siginfo: still report the Ahoy location.
+static void ahoy_signal_handler(int sig) {
+    static volatile sig_atomic_t entered = 0;
+    if (entered) _exit(134);
+    entered = 1;
+    ahoy_report_crash(sig, 0, 0, -1, 0);
+    signal(sig, SIG_DFL);
+    raise(sig);
+    _exit(134);
+}
+
+void ahoy_setup_signal_handlers(void) {
     signal(SIGSEGV, ahoy_signal_handler);
     signal(SIGABRT, ahoy_signal_handler);
     signal(SIGFPE, ahoy_signal_handler);
     signal(SIGILL, ahoy_signal_handler);
 }
+#endif
 `
 }
 
