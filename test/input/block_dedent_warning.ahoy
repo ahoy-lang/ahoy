@@ -1,0 +1,20 @@
+program block_dedent_warning
+
+? A same-indent statement after an indented body still belongs to the block:
+? only `$` closes it (the compiler warns about the dedent). This locks in
+? that semantics: the guarded lines below do NOT run, so x stays 5.
+
+@ main ||:
+	expected: []
+	expected.push|"5"|
+
+	x: 5
+	if x is 99 then
+		y: x + 1
+		print|y|
+	x = x + 10
+	print|x|
+	$
+	print|x|
+	print|expected|
+$

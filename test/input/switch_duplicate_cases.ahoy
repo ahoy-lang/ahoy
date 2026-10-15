@@ -1,0 +1,39 @@
+program switch_duplicate_cases
+
+? Duplicate `on` values warn instead of silently changing if-chain semantics:
+? a switch runs only the first match (an if-chain would run every match).
+
+@ pick |k:string| string:
+	switch k:
+		on "a": return "first-a"
+		on "a": return "second-a"
+		_: return "other"
+	$
+$
+
+@ check |x:int| string:
+	out: string = switch x:
+		on 1 to 5: "Small"
+		on 3: "Three"
+		_: "Other"
+	$
+	return out
+$
+
+@ main ||:
+	expected: []
+
+	a: pick|"a"|
+	print|a|
+	expected.push|"first-a"|
+
+	b: check|3|
+	print|b|
+	expected.push|"Small"|
+
+	c: check|9|
+	print|c|
+	expected.push|"Other"|
+
+	print|expected|
+$

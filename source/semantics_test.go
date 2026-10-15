@@ -883,6 +883,7 @@ $
 	wantError(t, diagnosticsFor(src), "returns void but slot")
 }
 
+// If-chains are valid code: no switch suggestion (removed warning).
 func TestRepeatedIfSuggestsSwitch(t *testing.T) {
 	src := `@ shape_name |shape:int| string:
 	if shape is 1 then
@@ -897,16 +898,11 @@ func TestRepeatedIfSuggestsSwitch(t *testing.T) {
 	return "rect"
 $
 `
-	warned := false
 	for _, e := range allDiagnosticsFor(src) {
-		if e.IsWarning() && strings.Contains(e.Message, "consider 'switch shape:'") {
-			warned = true
+		if strings.Contains(e.Message, "consider 'switch") {
+			t.Errorf("did not expect a switch suggestion, got %q", e.Message)
 		}
 	}
-	if !warned {
-		t.Errorf("expected a switch suggestion warning, got %v", allDiagnosticsFor(src))
-	}
-	wantNoError(t, diagnosticsFor(src), "consider 'switch")
 }
 
 func TestRepeatedIfShortChainSilent(t *testing.T) {
@@ -961,16 +957,13 @@ func TestStoreWarnPushHeap(t *testing.T) {
 	print|outer.length|
 $
 `
-	warned := false
+	// Array push intentionally doesn't warn (elements may be static or
+	// caller-owned; leak hunting is -show_leaks' job).
 	for _, e := range allDiagnosticsFor(src) {
-		if e.IsWarning() && strings.Contains(e.Message, "does not free its elements") {
-			warned = true
+		if strings.Contains(e.Message, "does not free") {
+			t.Errorf("did not expect a push-store warning, got %q", e.Message)
 		}
 	}
-	if !warned {
-		t.Errorf("expected a push-store warning, got %v", allDiagnosticsFor(src))
-	}
-	wantNoError(t, diagnosticsFor(src), "does not free")
 }
 
 func TestStoreNoWarnPushPrimitives(t *testing.T) {
@@ -1004,16 +997,14 @@ $
 	print|n.text|
 $
 `
-	warned := false
+	// Field/dict overwrites intentionally don't warn (autofree frees the
+	// old value wherever it can prove it safe; the rest is the safe
+	// direction and not nagged about).
 	for _, e := range allDiagnosticsFor(src) {
-		if e.IsWarning() && strings.Contains(e.Message, "previous contents are not freed") {
-			warned = true
+		if strings.Contains(e.Message, "previous contents") {
+			t.Errorf("did not expect a field-store warning, got %q", e.Message)
 		}
 	}
-	if !warned {
-		t.Errorf("expected a field-store warning, got %v", allDiagnosticsFor(src))
-	}
-	wantNoError(t, diagnosticsFor(src), "previous contents")
 }
 
 func TestStoreNoWarnFieldLiteral(t *testing.T) {

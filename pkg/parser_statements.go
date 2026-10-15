@@ -538,6 +538,48 @@ func (p *Parser) parseIfStatement() *ASTNode {
 	return ifStmt
 }
 
+// isKnownCaseConstant reports whether name resolves to a plain constant or
+// C header symbol (define, struct, typedef, function, enum type or member),
+// all of which are legal bare `on` values in a switch.
+func (p *Parser) isKnownCaseConstant(name string) bool {
+	if _, ok := p.constants[name]; ok {
+		return true
+	}
+	return p.isCHeaderSymbol(name)
+}
+
+// isEnumMemberName reports whether name is a member of a known user-defined
+// enum or an enum from an imported C header.
+func (p *Parser) isEnumMemberName(name string) bool {
+	for _, enum := range p.enums {
+		if enum == nil {
+			continue
+		}
+		for _, m := range enum.Members {
+			if m != nil && m.Value == name {
+				return true
+			}
+		}
+	}
+	headers := make([]*CHeaderInfo, 0, len(p.cHeaders)+1)
+	if p.cHeaderGlobal != nil {
+		headers = append(headers, p.cHeaderGlobal)
+	}
+	for _, h := range p.cHeaders {
+		if h != nil {
+			headers = append(headers, h)
+		}
+	}
+	for _, h := range headers {
+		for _, enum := range h.Enums {
+			if _, ok := enum.Values[name]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (p *Parser) parseSwitchStatement() *ASTNode {
 	startLine := p.current().Line
 	p.expect(TOKEN_SWITCH)
@@ -693,7 +735,13 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 							}
 						}
 					} else {
-						// Just an identifier without prefix - this should now be an error for user-defined enums
+						// Just an identifier without prefix. Bare user-enum
+						// members must be prefixed (EnumName.M or .M), but
+						// SCREAMING_SNAKE names are also plain int constants
+						// (TINT_RED etc.) and C #defines, which are valid
+						// bare case values — only flag names that actually
+						// resolve to an enum member. Anything else is left
+						// for the checker (undeclared names error there).
 						caseValue = &ASTNode{
 							Type:  NODE_IDENTIFIER,
 							Value: tok.Value,
@@ -701,8 +749,9 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 
 						// In lint mode, report error for bare enum members
 						if p.LintMode {
-							// Check if this looks like an enum member (all uppercase)
-							if isScreamingSnakeCase(tok.Value) {
+							if isScreamingSnakeCase(tok.Value) &&
+								!p.isKnownCaseConstant(tok.Value) &&
+								p.isEnumMemberName(tok.Value) {
 								p.recordErrorAtLine(fmt.Sprintf("Enum member '%s' must be prefixed with enum name (e.g., EnumName.%s) or dot (e.g., .%s)", tok.Value, tok.Value, tok.Value), tok.Line)
 							}
 						}
@@ -818,11 +867,18 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 		} else {
 			// Parse statements/expressions until we hit next case or end
 			statements := []*ASTNode{}
+			// Same dedent rule as $-blocks: a statement after a dedent is
+			// still in this case until the next `on`/`_`/`$`.
+			pendingDedent := false
+			caseMinIndent := -1
 
 			for {
 				// Skip cosmetic tokens (including semicolons for inline case statements)
 				for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_INDENT ||
 					p.current().Type == TOKEN_DEDENT || p.current().Type == TOKEN_SEMICOLON {
+					if p.current().Type == TOKEN_DEDENT {
+						pendingDedent = true
+					}
 					p.advance()
 				}
 
@@ -832,6 +888,7 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 					break
 				}
 
+				stmtLine := p.current().Line
 				// Parse one statement/expression
 				var stmt *ASTNode
 				switch p.current().Type {
@@ -862,9 +919,14 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 				// Append statement and check for end of case
 				if stmt != nil {
 					statements = append(statements, stmt)
+					p.trackBlockIndent("switch", pendingDedent, stmtLine, &caseMinIndent)
+					pendingDedent = false
 
 					// Skip trailing cosmetic tokens (including semicolons)
 					for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_DEDENT || p.current().Type == TOKEN_SEMICOLON {
+						if p.current().Type == TOKEN_DEDENT {
+							pendingDedent = true
+						}
 						p.advance()
 					}
 

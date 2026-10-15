@@ -2,6 +2,7 @@ package ahoy
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -254,6 +255,11 @@ type Parser struct {
 	// maps instead of copying them (see ensureOwnScope). Branches that
 	// declare nothing then cost no copies at all.
 	scopeAliased bool
+	// sourceLines caches the raw source file (split by newline) for
+	// indentation measurements backing the dedent-swallowed-statement
+	// warning. sourceLinesReady marks the load attempt (lint parses only).
+	sourceLines      []string
+	sourceLinesReady bool
 }
 
 // The public parse entry points (Parse, ParseWithPath, ParseLint, ...)
@@ -289,7 +295,69 @@ func (p *Parser) recordError(message string) {
 	})
 }
 
-// recordErrorAtLine records an error at a specific line number
+// recordWarningAtLine records an advisory (non-fatal) diagnostic at a
+// specific line. Warnings are printed but never fail a build.
+func (p *Parser) recordWarningAtLine(message string, line int, column int) {
+	p.Errors = append(p.Errors, ParseError{
+		Message:  message,
+		Line:     line,
+		Column:   column,
+		Severity: "warning",
+	})
+}
+
+// sourceLineIndent returns the indentation width (spaces, tabs count as 2 to
+// match the tokenizer) of a 1-based source line, or -1 when the source is
+// unavailable (non-lint parses, stdin, unreadable files). It backs the
+// dedent-swallowed-statement warning: token columns are relative to the
+// trimmed line, so only the raw source reveals real indentation.
+func (p *Parser) sourceLineIndent(line int) int {
+	if !p.LintMode || line <= 0 {
+		return -1
+	}
+	if !p.sourceLinesReady {
+		p.sourceLinesReady = true
+		if p.sourceFilePath != "" {
+			if data, err := os.ReadFile(p.sourceFilePath); err == nil {
+				p.sourceLines = strings.Split(string(data), "\n")
+			}
+		}
+	}
+	if line > len(p.sourceLines) {
+		return -1
+	}
+	text := p.sourceLines[line-1]
+	width := 0
+	for _, ch := range text {
+		if ch == ' ' {
+			width++
+		} else if ch == '\t' {
+			width += 2
+		} else {
+			break
+		}
+	}
+	return width
+}
+
+// trackBlockIndent records a $-block statement's indentation and warns when
+// a statement following a dedent sits below every statement seen so far in
+// the block. Indentation is cosmetic in ahoy — only `$` closes a block — so
+// such a statement still belongs to the block even though it looks escaped.
+// minIndent holds the running minimum (-1 until the first statement); it is
+// updated in place.
+func (p *Parser) trackBlockIndent(construct string, sawDedent bool, stmtLine int, minIndent *int) {
+	indent := p.sourceLineIndent(stmtLine)
+	if indent < 0 {
+		return
+	}
+	if *minIndent < 0 || indent < *minIndent {
+		if sawDedent && *minIndent >= 0 {
+			p.recordWarningAtLine(fmt.Sprintf("Statement is dedented below the '%s' block body but still belongs to it (only '$' closes a block); indent it to column %d or move it after '$'", construct, *minIndent), stmtLine, indent+1)
+		}
+		*minIndent = indent
+	}
+}
 func (p *Parser) recordErrorAtLine(message string, line int) {
 	p.Errors = append(p.Errors, ParseError{
 		Message: message,

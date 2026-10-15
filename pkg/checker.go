@@ -932,7 +932,6 @@ func (c *checker) checkBlock(node *ASTNode) {
 	for _, child := range node.Children {
 		c.checkStatement(child)
 	}
-	c.suggestSwitchForIfChains(node.Children)
 	c.popScope()
 }
 
@@ -961,15 +960,12 @@ func (c *checker) checkStatement(node *ASTNode) {
 		// The parser already rejects assignment to an undeclared variable.
 		c.checkExpr(childAt(node, 0))
 		c.warnPartialCallResult(node, childAt(node, 0), 1)
-		// Storing heap memory where nobody frees it leaks: struct fields
-		// and dict slots have no cleanup (unlike locals). Warn; the value
-		// may still be fine when the previous contents were static.
-		if target := childAt(node, 0); target != nil &&
-			(target.Type == NODE_MEMBER_ACCESS || target.Type == NODE_OBJECT_ACCESS || target.Type == NODE_DICT_ACCESS) {
-			if value := childAt(node, 1); c.heapStoreValue(value) {
-				c.warningAt(node, "Storing heap value into '%s'; previous contents are not freed", target.Value)
-			}
-		} else if target == nil || (target.Type != NODE_ARRAY_ACCESS && target.Type != NODE_DICT_ACCESS) {
+		// Heap stores into struct fields or dict slots may leak the previous
+		// contents when autofree can't prove the store safe - but that is the
+		// safe direction (vs dangling), and high-level code is not nagged
+		// about ownership it cannot observe. Leak hunting is -show_leaks'
+		// job (ASan), not the default build's.
+		if target := childAt(node, 0); target == nil || (target.Type != NODE_ARRAY_ACCESS && target.Type != NODE_DICT_ACCESS) {
 			// Plain rebind heals a freed name (element stores into a dead
 			// array do not). Uses in the new value already warned above.
 			delete(c.freedNames, node.Value)
@@ -1094,6 +1090,7 @@ func (c *checker) checkStatement(node *ASTNode) {
 		for _, caseNode := range node.Children[1:] {
 			c.checkSwitchCase(caseNode)
 		}
+		c.checkSwitchDuplicates(node)
 
 	case NODE_RETURN_STATEMENT:
 		for _, child := range node.Children {
@@ -1188,6 +1185,233 @@ func (c *checker) checkCaseValue(node *ASTNode) {
 	default:
 		c.checkExpr(node)
 	}
+}
+
+// checkSwitchDuplicates warns on `on` labels that can never match because
+// an earlier case already matches them. C switches reject duplicate labels,
+// but string/range switches compile to if/else chains where a second match
+// is silently dead ("first match wins"), and int switches otherwise fail
+// much later in the C compiler with no source context. This is a warning,
+// not an error: the code is valid, just unlikely to mean what an if-chain
+// conversion would (an if-chain runs every matching body, a switch runs
+// only the first).
+func (c *checker) checkSwitchDuplicates(node *ASTNode) {
+	if node == nil || len(node.Children) < 2 {
+		return
+	}
+	seen := map[string]bool{}
+	var intervals []caseNumInterval
+	for _, caseNode := range node.Children[1:] {
+		if caseNode == nil || caseNode.Type != NODE_SWITCH_CASE || len(caseNode.Children) < 2 {
+			continue
+		}
+		val := caseNode.Children[0]
+		// Exact duplicates (lists expand to one key per element).
+		warned := false
+		for _, key := range c.caseValueKeys(val) {
+			if seen[key] && !warned {
+				c.warningAt(caseNode, "Duplicate switch case value %s; only the first matching 'on' runs", caseKeyDisplay(key))
+				warned = true
+			}
+		}
+		for _, key := range c.caseValueKeys(val) {
+			seen[key] = true
+		}
+		// Numeric overlap: singles are points, ranges are intervals. Pairs
+		// already reported as exact duplicates are skipped, as is any
+		// further overlap report for a case that already has an exact-
+		// duplicate warning (the duplicate is the actionable signal).
+		cur := numericIntervals(val, caseNode)
+		if !warned {
+			for _, n := range cur {
+				for _, prev := range intervals {
+					if n.lo <= prev.hi && prev.lo <= n.hi &&
+						!(n.lo == prev.lo && n.hi == prev.hi) {
+						c.warningAt(caseNode, "Switch case %s overlaps earlier case %s; only the first matching 'on' runs", n.label, prev.label)
+						break
+					}
+				}
+			}
+		}
+		intervals = append(intervals, cur...)
+	}
+}
+
+// caseValueKeys returns one canonical key per value an `on` label matches:
+// singles yield one key, lists yield one per element, ranges yield a single
+// lo..hi key. Unkeyable shapes (member chains, expressions) yield nothing.
+func (c *checker) caseValueKeys(val *ASTNode) []string {
+	if val == nil {
+		return nil
+	}
+	switch val.Type {
+	case NODE_SWITCH_CASE_LIST:
+		var out []string
+		for _, child := range val.Children {
+			out = append(out, c.caseValueKeys(child)...)
+		}
+		return out
+	case NODE_SWITCH_CASE_RANGE:
+		if len(val.Children) == 2 {
+			if lo, ok := c.caseAtomKey(val.Children[0]); ok {
+				if hi, ok := c.caseAtomKey(val.Children[1]); ok {
+					return []string{"range:" + lo + ".." + hi}
+				}
+			}
+		}
+		return nil
+	default:
+		if key, ok := c.caseAtomKey(val); ok {
+			return []string{key}
+		}
+		return nil
+	}
+}
+
+// caseAtomKey canonicalizes a single case value. Enum spellings that resolve
+// to the same member (`.UP` and `Direction.UP`) share a key; everything
+// else keys by its written form.
+func (c *checker) caseAtomKey(val *ASTNode) (string, bool) {
+	switch val.Type {
+	case NODE_NUMBER:
+		return "num:" + val.Value, true
+	case NODE_STRING:
+		return "str:" + val.Value, true
+	case NODE_CHAR:
+		return "char:" + val.Value, true
+	case NODE_IDENTIFIER:
+		if val.Value == "_" {
+			return "default:", true
+		}
+		if strings.HasPrefix(val.Value, ".") {
+			if enumName := c.enumForMember(val.Value[1:]); enumName != "" {
+				return "enum:" + enumName + "." + val.Value[1:], true
+			}
+			return "id:" + val.Value, true
+		}
+		return "id:" + val.Value, true
+	case NODE_MEMBER_ACCESS:
+		if len(val.Children) > 0 && val.Children[0].Type == NODE_IDENTIFIER {
+			return "enum:" + val.Children[0].Value + "." + val.Value, true
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// enumForMember finds the (deterministically first, alphabetically) user
+// enum holding this member, or "" when none does.
+func (c *checker) enumForMember(member string) string {
+	names := make([]string, 0, len(c.p.enums))
+	for name := range c.p.enums {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		enum := c.p.enums[name]
+		if enum == nil {
+			continue
+		}
+		for _, m := range enum.Members {
+			if m != nil && m.Value == member {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+// caseKeyDisplay renders a canonical key back into source-like text.
+func caseKeyDisplay(key string) string {
+	if strings.HasPrefix(key, "num:") || strings.HasPrefix(key, "char:") {
+		return "'" + strings.TrimPrefix(strings.TrimPrefix(key, "num:"), "char:") + "'"
+	}
+	if strings.HasPrefix(key, "str:") {
+		return `"` + strings.TrimPrefix(key, "str:") + `"`
+	}
+	if strings.HasPrefix(key, "range:") {
+		bounds := strings.SplitN(strings.TrimPrefix(key, "range:"), "..", 2)
+		if len(bounds) == 2 {
+			return caseKeyDisplay(bounds[0]) + " to " + caseKeyDisplay(bounds[1])
+		}
+	}
+	if strings.HasPrefix(key, "enum:") {
+		return strings.TrimPrefix(key, "enum:")
+	}
+	if strings.HasPrefix(key, "default:") {
+		return "'_' (default)"
+	}
+	return "'" + strings.TrimPrefix(key, "id:") + "'"
+}
+
+// caseNumInterval is a numeric case value for overlap detection: singles
+// are points (lo == hi), ranges are intervals.
+type caseNumInterval struct {
+	lo, hi float64
+	label  string
+	node   *ASTNode
+}
+
+// numericIntervals extracts numeric points/ranges from a case value for
+// overlap detection. Non-numeric values yield nothing.
+func numericIntervals(val *ASTNode, caseNode *ASTNode) []caseNumInterval {
+	if val == nil {
+		return nil
+	}
+	if val.Type == NODE_SWITCH_CASE_LIST {
+		var out []caseNumInterval
+		for _, child := range val.Children {
+			out = append(out, numericIntervals(child, caseNode)...)
+		}
+		return out
+	}
+	if val.Type == NODE_SWITCH_CASE_RANGE && len(val.Children) == 2 {
+		lo, okLo := caseNumber(val.Children[0])
+		hi, okHi := caseNumber(val.Children[1])
+		if okLo && okHi {
+			if lo > hi {
+				lo, hi = hi, lo
+			}
+			return []caseNumInterval{{lo: lo, hi: hi, label: caseValueText(val.Children[0]) + " to " + caseValueText(val.Children[1]), node: caseNode}}
+		}
+		return nil
+	}
+	if v, ok := caseNumber(val); ok {
+		return []caseNumInterval{{lo: v, hi: v, label: caseValueText(val), node: caseNode}}
+	}
+	return nil
+}
+
+// caseNumber parses an integer or float case bound.
+func caseNumber(val *ASTNode) (float64, bool) {
+	if val == nil || val.Type != NODE_NUMBER {
+		return 0, false
+	}
+	if f, err := strconv.ParseFloat(val.Value, 64); err == nil {
+		return f, true
+	}
+	return 0, false
+}
+
+// caseValueText renders a case bound in source-like form.
+func caseValueText(val *ASTNode) string {
+	if val == nil {
+		return "?"
+	}
+	switch val.Type {
+	case NODE_NUMBER, NODE_CHAR:
+		return "'" + val.Value + "'"
+	case NODE_STRING:
+		return `"` + val.Value + `"`
+	case NODE_IDENTIFIER:
+		return val.Value
+	case NODE_MEMBER_ACCESS:
+		if len(val.Children) > 0 && val.Children[0].Type == NODE_IDENTIFIER {
+			return val.Children[0].Value + "." + val.Value
+		}
+		return val.Value
+	}
+	return val.Value
 }
 
 // ---------------------------------------------------------------- expressions
@@ -1299,6 +1523,7 @@ func (c *checker) checkExpr(node *ASTNode) {
 		for _, caseNode := range node.Children[1:] {
 			c.checkSwitchCase(caseNode)
 		}
+		c.checkSwitchDuplicates(node)
 		if !switchHasDefault(node) {
 			c.errorAt(node, "switch expression has no default case (' _: ...'); add one so every value is covered")
 		}
@@ -1681,65 +1906,10 @@ func (c *checker) checkMethodCall(node *ASTNode) {
 		c.errorAt(node, "Type '%s' has no method '%s'%s", recvType, method, c.methodHint(recvType))
 		return
 	}
-	// Storing heap values in an array that does not free elements leaks
-	// them: struct values are malloc-copied on push (owned) and nested
-	// arrays free their innards, but anything else pushed stays allocated
-	// with no owner.
-	if (method == "push" || method == "fill") && args != nil {
-		c.checkPushStore(object, method, recvType, args)
-	}
-}
-
-// checkPushStore warns when a heap value is pushed into (or used to fill) an
-// array that will not free it.
-func (c *checker) checkPushStore(object *ASTNode, method, recvType string, args *ASTNode) {
-	elem := ""
-	if strings.HasPrefix(recvType, "array[") && strings.HasSuffix(recvType, "]") {
-		elem = NormalizeReceiverType(strings.TrimSuffix(strings.TrimPrefix(recvType, "array["), "]"))
-	}
-	arrName := ""
-	if object != nil && object.Type == NODE_IDENTIFIER {
-		arrName = object.Value
-	} else {
-		arrName = renderSubject(object)
-	}
-	for i, arg := range args.Children {
-		if arg == nil {
-			continue
-		}
-		// fill takes (value, count): only the value is stored.
-		if method == "fill" && i > 0 {
-			continue
-		}
-		// Element, member and dict accesses read storage owned
-		// elsewhere (shared views, not transfers); only fresh values
-		// and named heap values can leak here.
-		if arg.Type == NODE_MEMBER_ACCESS || arg.Type == NODE_OBJECT_ACCESS ||
-			arg.Type == NODE_ARRAY_ACCESS || arg.Type == NODE_DICT_ACCESS {
-			continue
-		}
-		if !c.heapPushValue(arg) {
-			continue
-		}
-		// Struct values are malloc-copied on push: the array owns the
-		// copy, so those are fine. Nested arrays free their innards.
-		// Parameters are caller-owned: pushing one is safe.
-		if elem != "" {
-			argT := NormalizeReceiverType(c.valueStoredType(arg))
-			if argT != "" && argT == elem {
-				if _, isStruct := c.p.structs[argT]; isStruct {
-					continue
-				}
-				if strings.HasPrefix(elem, "array[") && strings.HasPrefix(argT, "array") {
-					continue
-				}
-			}
-		}
-		if arg.Type == NODE_IDENTIFIER && c.funcParams[arg.Value] {
-			continue
-		}
-		c.warningAt(arg, "Storing heap value into array '%s', which does not free its elements", arrName)
-	}
+	// Array push/fill intentionally don't warn: elements may be static
+	// (literals) or caller-owned, so autofree cannot free them safely, and
+	// long-lived log-style arrays would nag on every push. Same policy as
+	// field stores above.
 }
 
 // fnRefName reports whether a value node is a &name function reference, and

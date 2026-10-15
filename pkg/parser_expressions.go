@@ -1267,6 +1267,12 @@ func (p *Parser) parseBlockUntilEnd(constructName string, startLine int) *ASTNod
 
 	maxIterations := 10000 // Safety limit to prevent infinite loops
 	iterations := 0
+	// pendingDedent remembers DEDENTs skipped between statements: indentation
+	// is cosmetic (only `$` closes a block), so a statement after a dedent
+	// still belongs here. minIndent is the running statement-indent minimum
+	// backing that warning (see trackBlockIndent).
+	pendingDedent := false
+	minIndent := -1
 
 	for p.current().Type != TOKEN_END && p.current().Type != TOKEN_EOF {
 		// Check if a nested $#N closed this block
@@ -1300,13 +1306,19 @@ func (p *Parser) parseBlockUntilEnd(constructName string, startLine int) *ASTNod
 		oldPos := p.pos
 
 		if p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_DEDENT {
+			if p.current().Type == TOKEN_DEDENT {
+				pendingDedent = true
+			}
 			p.advance()
 			continue
 		}
+		stmtLine := p.current().Line
 		stmt := p.parseStatement()
 		if stmt != nil {
 			block.Children = append(block.Children, stmt)
+			p.trackBlockIndent(constructName, pendingDedent, stmtLine, &minIndent)
 		}
+		pendingDedent = false
 
 		// Safety check: if position hasn't advanced, force advance to prevent infinite loop
 		if p.pos == oldPos && p.current().Type != TOKEN_EOF && p.current().Type == TOKEN_END {

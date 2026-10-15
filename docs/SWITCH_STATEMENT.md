@@ -93,3 +93,55 @@ $
 - For an inline test (not a block) the same comma list reads
   `x is A, B` (`x is not A, B` for none-of); see the Comparison section in
   the README.
+
+## Case bodies own their locals
+
+Heap values declared inside a case (`colw: array[float] = []`, built
+strings, dicts) are scoped to that case: they compile in every switch form
+(statement, expression, string/range chains) and are freed when the case
+ends, so hoisting them above the switch is no longer needed. A case that
+yields a local by name (`on 1: tmp: "a" + "b"; tmp`) transfers ownership
+to the switch result, like a `return`.
+
+## Constants as case values
+
+Bare integer constants work as case values and fold to literals in C
+labels (constants otherwise emit as variables/getters, which C rejects
+there):
+
+```ahoy
+TINT_RED: 1
+switch c:
+  on TINT_RED: print|"red"|
+  _: print|"other"|
+$
+```
+
+Only names that actually resolve to an enum member are told to add a
+prefix; unknown SCREAMING names still error as undeclared. Prefixed
+(`Color.RED`) and dot (`.RED`) spellings keep working.
+
+## Duplicate and overlapping cases warn
+
+A switch runs only the first match, so a repeated value or an overlapping
+range/label after an earlier match is dead code. The compiler warns (the
+build still succeeds):
+
+```text
+warning: Duplicate switch case value "a"; only the first matching 'on' runs
+warning: Switch case '3' overlaps earlier case '1' to '5'; only the first matching 'on' runs
+```
+
+This also catches if-chain conversions that relied on multi-fire (two
+branches appending for one value): split those into separate switches.
+
+## Dedented lines still belong to the block
+
+Indentation is cosmetic: only `$` closes a block. A statement dedented
+below the block body still runs as part of it, and the compiler warns:
+
+```text
+warning: Statement is dedented below the 'if' block body but still belongs to it (only '$' closes a block); indent it to column 4 or move it after '$'
+```
+
+Applies to `$` blocks and `switch` case bodies alike.

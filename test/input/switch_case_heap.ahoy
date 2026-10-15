@@ -1,0 +1,81 @@
+program switch_case_heap
+
+? Heap locals declared in case bodies are scoped to the case: they compile
+? (no 'undeclared identifier' from function-end cleanup) and free at case end.
+
+@ stmt_pick |k:int| string:
+	switch k:
+		on 1:
+			colw: array[float] = []
+			colw.push|1.5|
+			return "one"
+		_: return "other"
+	$
+$
+
+@ expr_pick |k:int| int:
+	out: int = switch k:
+		on 1:
+			colw: array[float] = []
+			colw.push|2.5|
+			7
+		_: 0
+	$
+	return out
+$
+
+@ str_pick |k:string| string:
+	switch k:
+		on "a":
+			s: "x" + "y"
+			return s
+		_: return "z"
+	$
+$
+
+@ range_pick |k:int| string:
+	switch k:
+		on 1 to 5:
+			t: "low" + "!"
+			return t
+		_: return "high"
+	$
+$
+
+@ main ||:
+	expected: []
+
+	a: stmt_pick|1|
+	print|a|
+	expected.push|"one"|
+
+	b: stmt_pick|9|
+	print|b|
+	expected.push|"other"|
+
+	c: expr_pick|1|
+	print|c|
+	expected.push|"7"|
+
+	d: expr_pick|9|
+	print|d|
+	expected.push|"0"|
+
+	e: str_pick|"a"|
+	print|e|
+	expected.push|"xy"|
+
+	f: str_pick|"q"|
+	print|f|
+	expected.push|"z"|
+
+	g: range_pick|3|
+	print|g|
+	expected.push|"low!"|
+
+	h: range_pick|9|
+	print|h|
+	expected.push|"high"|
+
+	print|expected|
+$

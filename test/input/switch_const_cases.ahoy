@@ -1,0 +1,33 @@
+program switch_const_cases
+
+? Bare int constants are valid `on` values: they fold to literals in C case
+? labels (constants emit as variables/getters, which C rejects there).
+
+TINT_RED: 1
+TINT_GREEN: 2
+
+@ color_name |c:int| string:
+	switch c:
+		on TINT_RED: return "red"
+		on TINT_GREEN: return "green"
+		_: return "other"
+	$
+$
+
+@ main ||:
+	expected: []
+
+	a: color_name|1|
+	print|a|
+	expected.push|"red"|
+
+	b: color_name|2|
+	print|b|
+	expected.push|"green"|
+
+	c: color_name|9|
+	print|c|
+	expected.push|"other"|
+
+	print|expected|
+$
