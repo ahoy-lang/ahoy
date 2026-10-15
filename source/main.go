@@ -485,7 +485,7 @@ func box2dStaticArchive(box2dRoot string) string {
 	if box2dRoot == "" {
 		return ""
 	}
-		p := filepath.Join(box2dRoot, "lib", "linux", "libbox2d.a")
+	p := filepath.Join(box2dRoot, "lib", "linux", "libbox2d.a")
 	if _, err := os.Stat(p); err == nil {
 		return p
 	}
@@ -505,6 +505,108 @@ func box2dLinkArgs(box2dRoot string) []string {
 		args = append(args, lib)
 	} else {
 		args = append(args, "-lbox2d")
+	}
+	return args
+}
+
+// box3dRootFromImport returns the box3d vendor root for an import path shaped
+// like .../box3d/phys3d_abi.h or .../box3d/include/box3d/<Header>.h (which is
+// how bell vendors it: gcc-prebuilt libbox3d.a + headers under
+// bell/repos/box3d, Task 7), or "" when the import isn't a box3d header.
+// Ahoy code imports the parser-safe phys3d_abi.h, never the real box3d
+// headers (their macro/type surface is not parser-safe); the C side of the
+// bridge in bell/engine/glue.h includes the real headers directly.
+func box3dRootFromImport(importPath string) string {
+	if !strings.HasSuffix(importPath, ".h") {
+		return ""
+	}
+	if idx := strings.Index(importPath, "/box3d/"); idx >= 0 {
+		return importPath[:idx+7]
+	}
+	return ""
+}
+
+// box3dRootFromContent finds a box3d header import in raw file source. Same
+// line-based fallback as sdlRootFromContent: the AST scan misses imports
+// from directory-pulled engine files (e.g. bell's engine/physics3d.ahoy).
+func box3dRootFromContent(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "import ") {
+			continue
+		}
+		p := strings.Trim(strings.TrimPrefix(line, "import "), "\"'")
+		if r := box3dRootFromImport(p); r != "" {
+			return r
+		}
+	}
+	return ""
+}
+
+// detectBox3D reports whether any file in the main package or its resolved
+// imports pulls a box3d header, plus the vendor root for box3dLinkArgs.
+// imports may be nil (hot-reload recompile path reuses the threaded root).
+func detectBox3D(pkg *Package, imports map[string]*Package) (bool, string) {
+	for _, file := range pkg.Files {
+		if file.AST != nil {
+			for _, child := range file.AST.Children {
+				if child.Type == ahoy.NODE_IMPORT_STATEMENT {
+					if r := box3dRootFromImport(child.Value); r != "" {
+						return true, r
+					}
+				}
+			}
+		}
+	}
+	for _, file := range pkg.Files {
+		if r := box3dRootFromContent(file.Content); r != "" {
+			return true, r
+		}
+	}
+	for _, importedPkg := range imports {
+		if importedPkg == nil {
+			continue
+		}
+		for _, file := range importedPkg.Files {
+			if r := box3dRootFromContent(file.Content); r != "" {
+				return true, r
+			}
+		}
+	}
+	return false, ""
+}
+
+// box3dIncludeDir returns the header dir for a box3d vendor root.
+func box3dIncludeDir(box3dRoot string) string {
+	return filepath.Join(box3dRoot, "include")
+}
+
+// box3dStaticArchive returns the gcc-prebuilt archive when staged, or "".
+func box3dStaticArchive(box3dRoot string) string {
+	if box3dRoot == "" {
+		return ""
+	}
+	p := filepath.Join(box3dRoot, "lib", "linux", "libbox3d.a")
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	return ""
+}
+
+// box3dLinkArgs returns the include dir plus the prebuilt static archive
+// for a box3d vendor root (linux native builds). Same by-path archive
+// convention as box2dLinkArgs; without a staged archive it falls back to
+// -lbox3d. The archive's pthread refs resolve via the -lpthread every
+// native link already carries (see pthreadFlags and the raylib branches).
+func box3dLinkArgs(box3dRoot string) []string {
+	if box3dRoot == "" {
+		return nil
+	}
+	args := []string{"-I" + box3dIncludeDir(box3dRoot)}
+	if lib := box3dStaticArchive(box3dRoot); lib != "" {
+		args = append(args, lib)
+	} else {
+		args = append(args, "-lbox3d")
 	}
 	return args
 }
@@ -695,7 +797,7 @@ func getZigTarget(platform string) string {
 }
 
 // buildForTarget compiles for a specific target
-func buildForTarget(target *CrossCompileTarget, cFile, baseName, sourceDir string, hasRaylib bool, raylibPath string, hasSDL bool, sdlRoot string, hasBox2D bool, box2dRoot string) error {
+func buildForTarget(target *CrossCompileTarget, cFile, baseName, sourceDir string, hasRaylib bool, raylibPath string, hasSDL bool, sdlRoot string, hasBox2D bool, box2dRoot string, hasBox3D bool, box3dRoot string) error {
 	// Create output directory
 	if err := os.MkdirAll(target.OutputDir, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory: %v", err)
@@ -750,6 +852,16 @@ func buildForTarget(target *CrossCompileTarget, cFile, baseName, sourceDir strin
 			args = append(args, box2dLinkArgs(box2dRoot)...)
 		} else if box2dRoot != "" {
 			args = append(args, "-I"+box2dIncludeDir(box2dRoot))
+		}
+	}
+	// box3d (Task 7): same linux-only archive rule as Box2D above; other
+	// targets get the headers so the translation unit still parses, and a
+	// platform archive can be staged later under bell/repos/box3d/lib.
+	if hasBox3D {
+		if target.Name == "linux" {
+			args = append(args, box3dLinkArgs(box3dRoot)...)
+		} else if box3dRoot != "" {
+			args = append(args, "-I"+box3dIncludeDir(box3dRoot))
 		}
 	}
 	// Web builds use the project's own shell page when it has one: the
@@ -1310,9 +1422,12 @@ func main() {
 	// Box2D opts the binary into includes + libbox2d.a (see box2dLinkArgs).
 	hasBox2D, box2dRoot := detectBox2D(pkg, imports)
 
+	// box3d opts the binary into includes + libbox3d.a (see box3dLinkArgs).
+	hasBox3D, box3dRoot := detectBox3D(pkg, imports)
+
 	// Hot reload mode - generate shared library and host
 	if *hotReloadFlag {
-		handleHotReload(sourceFile, ast, absPath, hasRaylib, raylibPath, hasSDL, sdlRoot, hasBox2D, box2dRoot)
+		handleHotReload(sourceFile, ast, absPath, hasRaylib, raylibPath, hasSDL, sdlRoot, hasBox2D, box2dRoot, hasBox3D, box3dRoot)
 		return // Hot reload runs indefinitely
 	}
 
@@ -1406,6 +1521,9 @@ func main() {
 		if hasBox2D {
 			compileArgs = append(compileArgs, box2dLinkArgs(box2dRoot)...)
 		}
+		if hasBox3D {
+			compileArgs = append(compileArgs, box3dLinkArgs(box3dRoot)...)
+		}
 
 		compileArgs = withDefines(compileArgs)
 		cmd := exec.Command(compiler, compileArgs...)
@@ -1485,7 +1603,7 @@ func main() {
 				continue
 			}
 
-			if err := buildForTarget(target, outputFile, baseName, sourceDir, hasRaylib, raylibPath, hasSDL, sdlRoot, hasBox2D, box2dRoot); err != nil {
+			if err := buildForTarget(target, outputFile, baseName, sourceDir, hasRaylib, raylibPath, hasSDL, sdlRoot, hasBox2D, box2dRoot, hasBox3D, box3dRoot); err != nil {
 				fmt.Printf("✗ %s: %v\n", targetName, err)
 			}
 		}
@@ -1955,7 +2073,7 @@ func showHelp() {
 
 // handleHotReload compiles the program in hot reload mode
 // This keeps the window open and reloads code on file changes
-func handleHotReload(sourceFile string, ast *ahoy.ASTNode, absPath string, hasRaylib bool, raylibPath string, hasSDL bool, sdlRoot string, hasBox2D bool, box2dRoot string) {
+func handleHotReload(sourceFile string, ast *ahoy.ASTNode, absPath string, hasRaylib bool, raylibPath string, hasSDL bool, sdlRoot string, hasBox2D bool, box2dRoot string, hasBox3D bool, box3dRoot string) {
 	outputDir := "output"
 	sourceDir := filepath.Dir(absPath)
 
@@ -2026,6 +2144,9 @@ func handleHotReload(sourceFile string, ast *ahoy.ASTNode, absPath string, hasRa
 	if hasBox2D {
 		libArgs = append(libArgs, box2dLinkArgs(box2dRoot)...)
 	}
+	if hasBox3D {
+		libArgs = append(libArgs, box3dLinkArgs(box3dRoot)...)
+	}
 	cmd := exec.Command(compiler, libArgs...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -2086,7 +2207,7 @@ func handleHotReload(sourceFile string, ast *ahoy.ASTNode, absPath string, hasRa
 	time.Sleep(500 * time.Millisecond)
 
 	// Watch for file changes and recompile
-	watchAndRecompileHot(sourceFile, sourceDir, libSourceFile, libFile, hasRaylib, raylibPath, hasSDL, sdlRoot, hasBox2D, box2dRoot)
+	watchAndRecompileHot(sourceFile, sourceDir, libSourceFile, libFile, hasRaylib, raylibPath, hasSDL, sdlRoot, hasBox2D, box2dRoot, hasBox3D, box3dRoot)
 }
 
 // handleColdReload watches files and auto-recompiles (restarts program)
@@ -2147,7 +2268,7 @@ func handleColdReload(sourceFile string, absPath string) {
 }
 
 // watchAndRecompileHot watches for file changes and recompiles the library for hot reload
-func watchAndRecompileHot(sourceFile, sourceDir string, libSourceFile, libFile string, hasRaylib bool, raylibPath string, hasSDL bool, sdlRoot string, hasBox2D bool, box2dRoot string) {
+func watchAndRecompileHot(sourceFile, sourceDir string, libSourceFile, libFile string, hasRaylib bool, raylibPath string, hasSDL bool, sdlRoot string, hasBox2D bool, box2dRoot string, hasBox3D bool, box3dRoot string) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		fmt.Printf("Error creating watcher: %v\n", err)
@@ -2208,7 +2329,7 @@ func watchAndRecompileHot(sourceFile, sourceDir string, libSourceFile, libFile s
 
 				debounceTimer = time.AfterFunc(10*time.Millisecond, func() {
 					fmt.Printf("\n📝 %s file changed: %s\n", fileType, fileName)
-					recompileLibraryHot(sourceFile, libSourceFile, libFile, hasRaylib, raylibPath, hasSDL, sdlRoot, hasBox2D, box2dRoot)
+					recompileLibraryHot(sourceFile, libSourceFile, libFile, hasRaylib, raylibPath, hasSDL, sdlRoot, hasBox2D, box2dRoot, hasBox3D, box3dRoot)
 				})
 			}
 
@@ -2219,7 +2340,7 @@ func watchAndRecompileHot(sourceFile, sourceDir string, libSourceFile, libFile s
 }
 
 // recompileLibraryHot recompiles the game library for hot reload
-func recompileLibraryHot(sourceFile, libSourceFile, libFile string, hasRaylib bool, raylibPath string, hasSDL bool, sdlRoot string, hasBox2D bool, box2dRoot string) {
+func recompileLibraryHot(sourceFile, libSourceFile, libFile string, hasRaylib bool, raylibPath string, hasSDL bool, sdlRoot string, hasBox2D bool, box2dRoot string, hasBox3D bool, box3dRoot string) {
 	fmt.Println("\n🔄 Change detected, recompiling...")
 	start := time.Now()
 
@@ -2301,6 +2422,9 @@ func recompileLibraryHot(sourceFile, libSourceFile, libFile string, hasRaylib bo
 	}
 	if hasBox2D {
 		libArgs = append(libArgs, box2dLinkArgs(box2dRoot)...)
+	}
+	if hasBox3D {
+		libArgs = append(libArgs, box3dLinkArgs(box3dRoot)...)
 	}
 	cmd := exec.Command(compiler, libArgs...)
 	output, err := cmd.CombinedOutput()
@@ -2399,6 +2523,8 @@ func compileAndRunCold(sourceFile string, isInitial bool) {
 	hasSDL, sdlRoot := detectSDL(pkg, imports)
 	// Box2D likewise (Task 5): includes + libbox2d.a on every cold link.
 	hasBox2D, box2dRoot := detectBox2D(pkg, imports)
+	// box3d likewise (Task 7): includes + libbox3d.a on every cold link.
+	hasBox3D, box3dRoot := detectBox3D(pkg, imports)
 
 	var compileArgs []string
 
@@ -2449,6 +2575,9 @@ func compileAndRunCold(sourceFile string, isInitial bool) {
 	}
 	if hasBox2D {
 		compileArgs = append(compileArgs, box2dLinkArgs(box2dRoot)...)
+	}
+	if hasBox3D {
+		compileArgs = append(compileArgs, box3dLinkArgs(box3dRoot)...)
 	}
 
 	compileArgs = withDefines(compileArgs)
