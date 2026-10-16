@@ -1724,11 +1724,29 @@ func (p *Parser) parseShiftExpression() *ASTNode {
 	return left
 }
 
+// Symbol equivalent of a removed arithmetic word operator (plus/minus/
+// times/div/mod were removed; only symbols remain). Empty when name
+// is not one.
+func removedWordOp(name string) string {
+	switch name {
+	case "plus":
+		return "+"
+	case "minus":
+		return "-"
+	case "times":
+		return "*"
+	case "div":
+		return "/"
+	case "mod":
+		return "%"
+	}
+	return ""
+}
+
 func (p *Parser) parseAdditiveExpression() *ASTNode {
 	left := p.parseMultiplicativeExpression()
 
-	for p.current().Type == TOKEN_PLUS || p.current().Type == TOKEN_MINUS ||
-		p.current().Type == TOKEN_PLUS_WORD || p.current().Type == TOKEN_MINUS_WORD {
+	for p.current().Type == TOKEN_PLUS || p.current().Type == TOKEN_MINUS {
 		op := p.current()
 		p.advance()
 		right := p.parseMultiplicativeExpression()
@@ -1739,6 +1757,24 @@ func (p *Parser) parseAdditiveExpression() *ASTNode {
 		}
 	}
 
+	// Removed word operators error clearly, then parse as the symbol so
+	// only one diagnostic fires.
+	if p.current().Type == TOKEN_IDENTIFIER {
+		if sym := removedWordOp(p.current().Value); sym == "+" || sym == "-" {
+			if !p.LintMode {
+				panic(fmt.Sprintf("`%s` was removed; write `%s` instead (line %d)", p.current().Value, sym, p.current().Line))
+			}
+			p.recordError(fmt.Sprintf("`%s` was removed; write `%s` instead", p.current().Value, sym))
+			p.advance()
+			right := p.parseMultiplicativeExpression()
+			left = &ASTNode{
+				Type:     NODE_BINARY_OP,
+				Value:    sym,
+				Children: []*ASTNode{left, right},
+			}
+		}
+	}
+
 	return left
 }
 
@@ -1746,8 +1782,7 @@ func (p *Parser) parseMultiplicativeExpression() *ASTNode {
 	left := p.parsePowerExpression()
 
 	for p.current().Type == TOKEN_MULTIPLY || p.current().Type == TOKEN_DIVIDE ||
-		p.current().Type == TOKEN_MODULO || p.current().Type == TOKEN_TIMES_WORD ||
-		p.current().Type == TOKEN_DIV_WORD || p.current().Type == TOKEN_MOD_WORD {
+		p.current().Type == TOKEN_MODULO {
 		op := p.current()
 		p.advance()
 		right := p.parsePowerExpression()
@@ -1755,6 +1790,24 @@ func (p *Parser) parseMultiplicativeExpression() *ASTNode {
 			Type:     NODE_BINARY_OP,
 			Value:    op.Value,
 			Children: []*ASTNode{left, right},
+		}
+	}
+
+	// Removed word operators error clearly, then parse as the symbol so
+	// only one diagnostic fires.
+	if p.current().Type == TOKEN_IDENTIFIER {
+		if sym := removedWordOp(p.current().Value); sym == "*" || sym == "/" || sym == "%" {
+			if !p.LintMode {
+				panic(fmt.Sprintf("`%s` was removed; write `%s` instead (line %d)", p.current().Value, sym, p.current().Line))
+			}
+			p.recordError(fmt.Sprintf("`%s` was removed; write `%s` instead", p.current().Value, sym))
+			p.advance()
+			right := p.parsePowerExpression()
+			left = &ASTNode{
+				Type:     NODE_BINARY_OP,
+				Value:    sym,
+				Children: []*ASTNode{left, right},
+			}
 		}
 	}
 
