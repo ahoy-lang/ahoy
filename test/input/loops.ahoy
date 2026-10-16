@@ -63,7 +63,7 @@ expected.push|"Value: 4"|
 
 ? Loop conditional with symbol operators
 number:2
-loop while number <= 5:
+loop while number <= 5 do
     ahoy|f"Count {number}"|
     number= number + 1
 $
@@ -87,10 +87,7 @@ expected.push|"Value: 7"|
 expected.push|"Value: 8"|
 expected.push|"Value: 9"|
 
-? TODO: Loop forever with explicit counter - syntax needs review
-? loop i:0:
-?   print|f"Loop {i}\n"|
-?   if i is 5 do halt
+? Loop forever with explicit counter: loop i:0 do (bare loop i: was removed).
 
 ? Alternative syntax (also works)
 loop i:0 while i less_than 5 do
