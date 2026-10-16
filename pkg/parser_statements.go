@@ -1262,6 +1262,34 @@ func (p *Parser) parseLoop() *ASTNode {
 	if p.current().Type == TOKEN_ASSIGN && loopVar != nil {
 		// New syntax: loop i:start ...
 		p.advance() // consume ':'
+		// A colon with no start value (`loop i:`) was removed: a counter
+		// loop that never ends says `loop i do` (counter starts at 0).
+		// Recover as exactly that, so only one diagnostic fires.
+		if p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_END || p.current().Type == TOKEN_EOF {
+			if !p.LintMode {
+				panic(fmt.Sprintf("`loop i:` was removed; write `loop i do` instead (line %d)", p.current().Line))
+			}
+			p.recordError("`loop i:` was removed; write `loop i do` instead")
+			for p.current().Type == TOKEN_NEWLINE {
+				p.advance()
+			}
+			p.skipWhitespace()
+			p.blockDepth++
+			body := p.parseBlockUntilEnd("loop", startLine)
+			loopVarNode := &ASTNode{
+				Type:   NODE_IDENTIFIER,
+				Value:  loopVar.Value,
+				Line:   loopVar.Line,
+				Column: loopVar.Column,
+				}
+			zeroNode := &ASTNode{Type: NODE_NUMBER, Value: "0"}
+			return &ASTNode{
+				Type:     NODE_FOR_COUNT_LOOP,
+				Value:    loopVar.Value,
+				Children: []*ASTNode{loopVarNode, zeroNode, body},
+				Line:     startLine,
+				}
+		}
 		startExpr := p.parseExpression()
 
 		if p.current().Type == TOKEN_TO {

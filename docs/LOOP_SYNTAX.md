@@ -11,7 +11,7 @@ This document describes the new loop syntax that has been implemented in Ahoy.
 - `loop i to 5:` - Range loop with explicit start and end
 - `loop i to 5:` - Range loop from 0 to end
 - `loop i while condition:` - Conditional loop with explicit counter variable
-- `loop i:0:` - Forever loop with explicit counter (use with halt)
+- `loop i do` - Forever loop with explicit counter (use with halt)
 - `loop do` - Forever loop without counter (`loop while true do` says so explicitly; bare `loop:` was removed)
 - `loop while COND do` - Condition loop: runs while COND holds
 - `loop i while COND do` - Counter (from 0) plus condition
