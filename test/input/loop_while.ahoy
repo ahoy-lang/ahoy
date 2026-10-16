@@ -1,7 +1,7 @@
 program loop_while
 
 ? `loop while COND do` is the one condition-loop form: it runs while the
-? condition holds. Counter form `loop i while COND do` counts from 0 while
+? condition holds. Counter form `loop i:0 while COND do` counts from 0 while
 ? the condition holds.
 
 @ main ||:
@@ -15,7 +15,7 @@ program loop_while
 		print|m|
 		m = m - 1
 	$
-	loop i while i < 2 do
+	loop i:0 while i < 2 do
 		print|i|
 	$
 	print|["0", "1", "2", "10", "9", "0", "1"]|

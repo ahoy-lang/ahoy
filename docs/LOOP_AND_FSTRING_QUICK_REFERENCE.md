@@ -18,10 +18,10 @@ loop j:0 to 10 do print|f"j = {j}\n"|
 
 ```ahoy
 ? Loop with explicit counter and condition
-loop k while k less_than 10 do print|f"k = {k}\n"|
+loop k:0 while k less_than 10 do print|f"k = {k}\n"|
 
 ? Using comparison operators
-loop m while m <= 5 do ahoy|"Still going\n"|
+loop m:0 while m <= 5 do ahoy|"Still going\n"|
 ```
 
 **Generated:** C `while` loop with auto-increment of counter variable
@@ -30,7 +30,7 @@ loop m while m <= 5 do ahoy|"Still going\n"|
 
 ```ahoy
 ? Forever loop with counter (must use break)
-loop n do
+loop n:0 do
     print|f"Iteration {n}\n"|
     if n is 5 do halt
 $
@@ -140,7 +140,7 @@ average: total div 5
 print|f"Average: {average}\n"|
 
 ? Grade determination
-loop i while i is 1 do
+loop i:0 while i is 1 do
   if average greater_than 90 do
       print|f"Grade: A\n"|
   anif average greater_than 80 do
@@ -177,7 +177,7 @@ loop x in arr do
 ### 3. Break out of infinite loops
 ```ahoy
 ? Good
-loop counter do
+loop counter:0 do
     print|f"{counter}\n"|
     if counter is 100 do break
 
@@ -202,7 +202,7 @@ loop:1 to 10 then
 | Feature              | Old Syntax             | New Syntax              |
 |----------------------|------------------------|-------------------------|
 | Range loop           | `loop:1 to 10 then`    | `loop i from 1 to 10 do`|
-| While loop           | `loop:x < 10 then`     | `loop x while x < 10 do` |
+| While loop           | `loop:x < 10 then`     | `loop x:0 while x < 10 do` |
 | Forever loop         | `loop:0 then`          | `loop do` or `loop i:`  |
 | If statement         | `if x is 5 then`       | `if x is 5 do`          |
 | String interpolation | `ahoy|"x=%d\n", x|`    | `print|f"x={x}\n"|`     |

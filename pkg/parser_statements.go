@@ -1395,13 +1395,37 @@ func (p *Parser) parseLoop() *ASTNode {
 				Children: []*ASTNode{loopVarNode, startExpr, condition, body},
 				Line:     startLine,
 			}
+		} else if p.current().Type == TOKEN_DO {
+			// loop i:start do - infinite loop with an explicit counter start
+			p.advance() // consume 'do'
+
+			// Both inline and multiline now require $ to close
+			for p.current().Type == TOKEN_NEWLINE {
+				p.advance()
+			}
+			p.skipWhitespace()
+			p.blockDepth++
+			body := p.parseBlockUntilEnd("loop", startLine)
+
+			loopVarNode := &ASTNode{
+				Type:   NODE_IDENTIFIER,
+				Value:  loopVar.Value,
+				Line:   loopVar.Line,
+				Column: loopVar.Column,
+				}
+			return &ASTNode{
+				Type:     NODE_FOR_COUNT_LOOP,
+				Value:    loopVar.Value,
+				Children: []*ASTNode{loopVarNode, startExpr, body},
+				Line:     startLine,
+				}
 		} else if p.current().Type == TOKEN_ASSIGN {
 			// `loop i:start:` was removed: a counter loop that never ends
-			// says `loop i do` (counter starts at 0 like every loop i form).
+			// says `loop i:START do` with an explicit start.
 			if !p.LintMode {
-				panic(fmt.Sprintf("`loop i:start:` was removed; write `loop i do` instead (line %d)", p.current().Line))
+				panic(fmt.Sprintf("`loop i:start:` was removed; write `loop i:START do` instead (line %d)", p.current().Line))
 			}
-			p.recordError("`loop i:start:` was removed; write `loop i do` instead")
+			p.recordError("`loop i:start:` was removed; write `loop i:START do` instead")
 			p.advance() // consume ':' so the body still parses
 
 			// Both inline and multiline now require $ to close
@@ -1507,6 +1531,13 @@ func (p *Parser) parseLoop() *ASTNode {
 		return &ASTNode{Type: NODE_WHILE_LOOP, Children: []*ASTNode{}}
 	} else if p.current().Type == TOKEN_WHILE {
 		// loop [i] while condition
+		// (`loop i while` without a start was removed: say `loop i:0 while`.)
+		if loopVar != nil {
+			if !p.LintMode {
+				panic(fmt.Sprintf("`loop i while` needs an explicit start; write `loop i:0 while` instead (line %d)", p.current().Line))
+			}
+			p.recordError("`loop i while` needs an explicit start; write `loop i:0 while` instead")
+		}
 		p.advance() // consume 'while'
 		condition := p.parseExpression()
 
@@ -1667,6 +1698,13 @@ func (p *Parser) parseLoop() *ASTNode {
 		}
 	} else if p.current().Type == TOKEN_DO {
 		// loop [i] do - infinite loop, optionally with counter
+		// (`loop i do` without a start was removed: say `loop i:0 do`.)
+		if loopVar != nil {
+			if !p.LintMode {
+				panic(fmt.Sprintf("`loop i do` needs an explicit start; write `loop i:0 do` instead (line %d)", p.current().Line))
+			}
+			p.recordError("`loop i do` needs an explicit start; write `loop i:0 do` instead")
+		}
 		p.advance() // consume 'do'
 
 		// Both inline and multiline now require $ to close

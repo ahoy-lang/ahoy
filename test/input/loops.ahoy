@@ -103,7 +103,7 @@ expected.push|"Count 3"|
 expected.push|"Count 4"|
 
 ? Alternative syntax (also works)
-loop i while i < 2 do
+loop i:0 while i < 2 do
   ahoy|f"Count {i}"|
 $
 expected.push|"Count 0"|
