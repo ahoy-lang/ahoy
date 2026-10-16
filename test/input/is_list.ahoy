@@ -70,7 +70,7 @@ $
 	expected.push|"0"|
 
 	i: 0
-	loop till i is not 2, 3 do
+	loop while i is not 2, 3 do
 		i = i + 1
 	$
 	print|i|

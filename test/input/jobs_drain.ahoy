@@ -21,7 +21,7 @@ $
 	$
 	acc: []
 	got: 0
-	loop till got is not 5 do
+	loop while got is not 5 do
 		got = got + pool.drain|&collect, acc|
 	$
 	total: acc.sum||
@@ -30,7 +30,7 @@ $
 
 	? j.done|| polls without consuming; pool.wait consumes the job
 	jw: job = pool.submit|&square, 9|
-	loop till jw.done|| is not 1 do
+	loop while jw.done|| is not 1 do
 	$
 	finished: jw.done||
 	print|finished|

@@ -34,8 +34,6 @@ func (p *Parser) parseStatement() *ASTNode {
 		return p.parseSwitchStatement()
 	case TOKEN_LOOP:
 		return p.parseLoop()
-	case TOKEN_WHILE:
-		return p.parseWhile()
 	case TOKEN_WHEN:
 		return p.parseWhenStatement()
 	case TOKEN_AHOY:
@@ -1230,37 +1228,6 @@ func (p *Parser) inferCaseBodyType(body *ASTNode) string {
 	}
 }
 
-func (p *Parser) parseWhile() *ASTNode {
-	startLine := p.current().Line
-	p.expect(TOKEN_WHILE)
-	condition := p.parseExpression()
-
-	// Only accept 'do'
-	if p.current().Type == TOKEN_DO {
-		p.advance()
-	} else {
-		if !p.LintMode {
-			panic(fmt.Sprintf("Expected 'do' after while condition at line %d", p.current().Line))
-		}
-		p.recordError("Expected 'do' after while condition")
-	}
-
-	// Both inline and multiline now require $ to close
-	for p.current().Type == TOKEN_NEWLINE {
-		p.advance()
-	}
-	p.skipWhitespace()
-	p.blockDepth++
-	body := p.parseBlockUntilEnd("while", startLine)
-
-	// Same shape as bare `loop till`: [condition, body]
-	return &ASTNode{
-		Type:     NODE_WHILE_LOOP,
-		Children: []*ASTNode{condition, body},
-		Line:     startLine,
-	}
-}
-
 func (p *Parser) parseLoop() *ASTNode {
 	startLine := p.current().Line
 	p.expect(TOKEN_LOOP)
@@ -1329,8 +1296,15 @@ func (p *Parser) parseLoop() *ASTNode {
 				Line:     startLine,
 			}
 		} else if p.current().Type == TOKEN_TILL {
-			// loop i:start till condition
-			p.advance() // consume 'till'
+			// `till` was removed: condition loops are `loop while COND do`.
+			if !p.LintMode {
+				panic(fmt.Sprintf("`till` was removed; write `loop while COND do` instead (line %d)", p.current().Line))
+			}
+			p.recordError("`till` was removed; write `loop while COND do` instead")
+			return &ASTNode{Type: NODE_WHILE_LOOP, Children: []*ASTNode{}}
+		} else if p.current().Type == TOKEN_WHILE {
+			// loop i:start while condition
+			p.advance() // consume 'while'
 			condition := p.parseExpression()
 
 			// Only accept 'do'
@@ -1398,9 +1372,9 @@ func (p *Parser) parseLoop() *ASTNode {
 			}
 		} else {
 			if !p.LintMode {
-				panic(fmt.Sprintf("Expected 'to', 'till', or ':' after loop variable initialization at line %d", p.current().Line))
+				panic(fmt.Sprintf("Expected 'to', 'while', or ':' after loop variable initialization at line %d", p.current().Line))
 			}
-			p.recordError("Expected 'to', 'till', or ':' after loop variable initialization")
+			p.recordError("Expected 'to', 'while', or ':' after loop variable initialization")
 			return &ASTNode{Type: NODE_WHILE_LOOP, Children: []*ASTNode{}}
 		}
 	} else if p.current().Type == TOKEN_TO && loopVar != nil {
@@ -1467,8 +1441,15 @@ func (p *Parser) parseLoop() *ASTNode {
 			Children: []*ASTNode{loopVarNode, zeroNode, endExpr, body},
 		}
 	} else if p.current().Type == TOKEN_TILL {
-		// loop [i] till condition
-		p.advance() // consume 'till'
+		// `till` was removed: condition loops are `loop while COND do`.
+		if !p.LintMode {
+			panic(fmt.Sprintf("`till` was removed; write `loop while COND do` instead (line %d)", p.current().Line))
+		}
+		p.recordError("`till` was removed; write `loop while COND do` instead")
+		return &ASTNode{Type: NODE_WHILE_LOOP, Children: []*ASTNode{}}
+	} else if p.current().Type == TOKEN_WHILE {
+		// loop [i] while condition
+		p.advance() // consume 'while'
 		condition := p.parseExpression()
 
 		// Only accept 'do'
@@ -1661,7 +1642,7 @@ func (p *Parser) parseLoop() *ASTNode {
 	} else {
 		// Unexpected token
 		if !p.LintMode {
-			panic(fmt.Sprintf("Expected 'to', 'till', 'in', 'do', or ':' after loop%s at line %d",
+			panic(fmt.Sprintf("Expected 'to', 'while', 'in', 'do', or ':' after loop%s at line %d",
 				func() string {
 					if loopVar != nil {
 						return " " + loopVar.Value
@@ -1671,7 +1652,7 @@ func (p *Parser) parseLoop() *ASTNode {
 				}(),
 				p.current().Line))
 		}
-		p.recordError("Expected 'to', 'till', 'in', 'do', or ':' after loop")
+		p.recordError("Expected 'to', 'while', 'in', 'do', or ':' after loop")
 		return &ASTNode{Type: NODE_WHILE_LOOP, Children: []*ASTNode{}}
 	}
 }

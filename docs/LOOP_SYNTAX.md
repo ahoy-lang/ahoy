@@ -10,16 +10,16 @@ This document describes the new loop syntax that has been implemented in Ahoy.
 ### Working Features ✓
 - `loop i to 5:` - Range loop with explicit start and end
 - `loop i to 5:` - Range loop from 0 to end
-- `loop i till condition:` - Conditional loop with explicit counter variable
+- `loop i while condition:` - Conditional loop with explicit counter variable
 - `loop i:0:` - Forever loop with explicit counter (use with halt)
 - `loop:` or `loop do` - Forever loop without counter
-- `while COND do` - Plain while-true loop (same as bare `loop till`)
+- `loop while COND do` - Condition loop: runs while COND holds
+- `loop i while COND do` - Counter (from 0) plus condition
 
-> `till` keeps its historical semantics (it runs *while* the condition
-> holds: `loop till k >= n` runs while `k >= n`, so count-up loops are
-> written `loop till not (k >= n)`). When that reads backwards, prefer
-> `while`: `while k < n do` means exactly what it says. Both compile to
-> the same code; existing `till` loops keep working unchanged.
+> There is one loop keyword: `loop`. The old `till` condition word was
+> removed (it read as *until* but ran as *while*): `loop till` is a
+> parse error pointing at `loop while`. Bare `while` is not a statement;
+> conditions always hang off `loop`.
 - F-strings: `print|f"hello{i}\n"|` - String interpolation with variables
 - Support for both `then` keywords in if statements
 
@@ -27,7 +27,7 @@ This document describes the new loop syntax that has been implemented in Ahoy.
 
 **One-line loops with `do` keyword do NOT require `$`:**
 ```ahoy
-loop i:0 till i < 5 do print|f"Value: {i}\n"|
+loop i:0 while i < 5 do print|f"Value: {i}\n"|
 ```
 
 **Multi-line loops with `:` (colon) REQUIRE `$`:**
@@ -66,11 +66,11 @@ loop i:0 to 5:
 $
 
 ? Loop conditional with word operators
-loop i:0 till i < 5 do print|f"Value: {i}\n"|
+loop i:0 while i < 5 do print|f"Value: {i}\n"|
 
 ? Loop conditional with symbol operators
 number:2
-loop till number <= 5:
+loop while number <= 5:
     ahoy|"Count\n"|
     number+=1
 
@@ -88,11 +88,11 @@ loop:
     ahoy|"Forever!\n"|
 
 ? Alternative syntax (also works)
-loop i:0 till i less_than 5 do
+loop i:0 while i less_than 5 do
     ahoy|"Count\n"|
 
 ? Alternative syntax (also works)
-loop i till i < 5 do
+loop i while i < 5 do
     ahoy|"Count\n"|
 
 ? Array iteration (TODO: Fix type mismatch)

@@ -262,7 +262,7 @@ loop i:0 to 10 do
 $
 
 ? loops till condition met
-loop i:0 till i is 5 do
+loop i:0 while i is 5 do
     print|i|
 $
 
@@ -460,7 +460,7 @@ $
 
 acc: []
 got: 0
-loop till got is not 5 do
+loop while got is not 5 do
     got = got + pool.drain|&collect, acc|
 $
 ```
