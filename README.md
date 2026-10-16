@@ -261,8 +261,8 @@ loop i:0 to 10 do
     ahoy |f"i = {i}"|
 $
 
-? loops till condition met
-loop i:0 while i is 5 do
+? Loops till condition met
+loop i:0 until i is 5 do
     print|i|
 $
 
