@@ -9490,6 +9490,12 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		if leftType == "float" || leftType == "double" || rightType == "float" || rightType == "double" {
 			return "float"
 		}
+		// Power always yields float: codegen emits C pow(), which returns
+		// double. Inferring int here miscompiled every consumer that trusts
+		// the type (print used %d on a double and showed garbage).
+		if node.Value == "pow" || node.Value == "**" {
+			return "float"
+		}
 		return "int"
 	case ahoy.NODE_TERNARY:
 		// Ternary returns the type of its branches (assume both branches have same type)
