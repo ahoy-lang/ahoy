@@ -90,7 +90,7 @@ expected.push|"Value: 9"|
 ? Loop forever with explicit counter: loop i:0 do (bare loop i: was removed).
 
 ? Alternative syntax (also works)
-loop i:0 while i less_than 5 do
+loop i:0 while i < 5 do
     ahoy|f"Count {i}"|
 $
 expected.push|"Count 0"|

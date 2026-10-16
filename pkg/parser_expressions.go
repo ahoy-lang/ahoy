@@ -1281,9 +1281,9 @@ func (p *Parser) parseBlockUntilEnd(constructName string, startLine int) *ASTNod
 			return block
 		}
 
-		// Stop if we encounter else/anif/elseif (for if statements)
-		if constructName == "if" || constructName == "anif" {
-			if p.current().Type == TOKEN_ELSE || p.current().Type == TOKEN_ANIF || p.current().Type == TOKEN_ELSEIF {
+		// Stop if we encounter else/elif (for if statements)
+		if constructName == "if" || constructName == "elif" {
+			if p.current().Type == TOKEN_ELSE || p.current().Type == TOKEN_ELIF {
 				// Decrement blockDepth since we're not consuming $ here
 				// The else/anif will increment it again
 				p.blockDepth--
@@ -1476,7 +1476,6 @@ func (p *Parser) parseExpressionContinuation(leftNode *ASTNode) *ASTNode {
 	// Check for relational operators that might follow
 	for p.current().Type == TOKEN_LANGLE || p.current().Type == TOKEN_RANGLE ||
 		p.current().Type == TOKEN_LESS_EQUAL || p.current().Type == TOKEN_GREATER_EQUAL ||
-		p.current().Type == TOKEN_LESSER_WORD || p.current().Type == TOKEN_GREATER_WORD ||
 		p.current().Type == TOKEN_IS {
 		op := p.current()
 		p.advance()
@@ -1485,6 +1484,24 @@ func (p *Parser) parseExpressionContinuation(leftNode *ASTNode) *ASTNode {
 			Type:     NODE_BINARY_OP,
 			Value:    op.Value,
 			Children: []*ASTNode{left, right},
+		}
+	}
+
+	// Removed comparison words error clearly, then parse as the symbol so
+	// only one diagnostic fires.
+	if p.current().Type == TOKEN_IDENTIFIER {
+		if sym := removedCmpOp(p.current().Value); sym != "" {
+			if !p.LintMode {
+				panic(fmt.Sprintf("`%s` was removed; write `%s` instead (line %d)", p.current().Value, sym, p.current().Line))
+			}
+			p.recordError(fmt.Sprintf("`%s` was removed; write `%s` instead", p.current().Value, sym))
+			p.advance()
+			right := p.parseAdditiveExpression()
+			left = &ASTNode{
+				Type:     NODE_BINARY_OP,
+				Value:    sym,
+				Children: []*ASTNode{left, right},
+			}
 		}
 	}
 
@@ -1649,8 +1666,7 @@ func (p *Parser) parseRelationalExpression() *ASTNode {
 	left := p.parseShiftExpression()
 
 	for p.current().Type == TOKEN_LANGLE || p.current().Type == TOKEN_RANGLE ||
-		p.current().Type == TOKEN_LESS_EQUAL || p.current().Type == TOKEN_GREATER_EQUAL ||
-		p.current().Type == TOKEN_LESSER_WORD || p.current().Type == TOKEN_GREATER_WORD {
+		p.current().Type == TOKEN_LESS_EQUAL || p.current().Type == TOKEN_GREATER_EQUAL {
 
 		// Check if this is dict access (identifier<"key">) instead of comparison
 		if p.current().Type == TOKEN_LANGLE && left.Type == NODE_IDENTIFIER {
@@ -1708,6 +1724,24 @@ func (p *Parser) parseRelationalExpression() *ASTNode {
 		}
 	}
 
+	// Removed comparison words error clearly, then parse as the symbol so
+	// only one diagnostic fires.
+	if p.current().Type == TOKEN_IDENTIFIER {
+		if sym := removedCmpOp(p.current().Value); sym != "" {
+			if !p.LintMode {
+				panic(fmt.Sprintf("`%s` was removed; write `%s` instead (line %d)", p.current().Value, sym, p.current().Line))
+			}
+			p.recordError(fmt.Sprintf("`%s` was removed; write `%s` instead", p.current().Value, sym))
+			p.advance()
+			right := p.parseShiftExpression()
+			left = &ASTNode{
+				Type:     NODE_BINARY_OP,
+				Value:    sym,
+				Children: []*ASTNode{left, right},
+			}
+		}
+	}
+
 	return left
 }
 
@@ -1727,6 +1761,18 @@ func (p *Parser) parseShiftExpression() *ASTNode {
 // Symbol equivalent of a removed arithmetic word operator (plus/minus/
 // times/div/mod were removed; only symbols remain). Empty when name
 // is not one.
+// Symbol equivalent of a removed comparison word (less_than etc. were
+// removed; only symbols remain). Empty when name is not one.
+func removedCmpOp(name string) string {
+	switch name {
+	case "less_than", "lesser_than", "lesser":
+		return "<"
+	case "greater_than", "greater":
+		return ">"
+	}
+	return ""
+}
+
 func removedWordOp(name string) string {
 	switch name {
 	case "plus":
@@ -1818,7 +1864,7 @@ func (p *Parser) parsePowerExpression() *ASTNode {
 	left := p.parseUnaryExpression()
 
 	// Power operator is right-associative (2 ** 3 ** 2 = 2 ** 9 = 512)
-	for p.current().Type == TOKEN_POWER || p.current().Type == TOKEN_POW_WORD {
+	for p.current().Type == TOKEN_POWER {
 		op := p.current()
 		p.advance()
 		right := p.parsePowerExpression() // Right-associative recursion
@@ -1828,6 +1874,22 @@ func (p *Parser) parsePowerExpression() *ASTNode {
 			Children: []*ASTNode{left, right},
 		}
 		_ = op // Suppress unused warning
+	}
+
+	// Removed `pow` word errors clearly, then parses as `**` (right-assoc)
+	// so only one diagnostic fires.
+	if p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "pow" {
+		if !p.LintMode {
+			panic(fmt.Sprintf("`pow` was removed; write `**` instead (line %d)", p.current().Line))
+		}
+		p.recordError("`pow` was removed; write `**` instead")
+		p.advance()
+		right := p.parsePowerExpression() // Right-associative recursion
+		left = &ASTNode{
+			Type:     NODE_BINARY_OP,
+			Value:    "pow",
+			Children: []*ASTNode{left, right},
+		}
 	}
 
 	return left

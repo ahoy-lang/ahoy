@@ -25,8 +25,9 @@ const (
 	TOKEN_ON       // on (for switch statements)
 	TOKEN_IF
 	TOKEN_ELSE
-	TOKEN_ELSEIF
-	TOKEN_ANIF // anif (alternative to elseif)
+	TOKEN_ELSEIF // kept for the removal error; elseif was removed, use elif
+	TOKEN_ELIF   // elif (the one else-if spelling)
+	TOKEN_ANIF // kept for the removal error; anif was removed, use elif
 	TOKEN_SWITCH
 	TOKEN_LOOP  // loop (replaces while/for)
 	TOKEN_IN    // in (for loop element in array)
@@ -135,8 +136,7 @@ type Token struct {
 var keywords = map[string]TokenType{
 	"if":           TOKEN_IF,
 	"else":         TOKEN_ELSE,
-	"elseif":       TOKEN_ELSEIF,
-	"anif":         TOKEN_ANIF,
+	"elif":         TOKEN_ELIF,
 	"switch":       TOKEN_SWITCH,
 	"loop":         TOKEN_LOOP,
 	"in":           TOKEN_IN,
@@ -157,7 +157,6 @@ var keywords = map[string]TokenType{
 	"and":          TOKEN_AND,
 	"then":         TOKEN_THEN,
 	"on":           TOKEN_ON,
-	"pow":          TOKEN_POW_WORD,
 	"fn":           TOKEN_FN,
 	"band":         TOKEN_BAND,
 	"bor":          TOKEN_BOR,
@@ -165,9 +164,6 @@ var keywords = map[string]TokenType{
 	"bnot":         TOKEN_BNOT,
 	"shl":          TOKEN_SHL,
 	"shr":          TOKEN_SHR,
-	"greater_than": TOKEN_GREATER_WORD,
-	"lesser_than":  TOKEN_LESSER_WORD,
-	"less_than":    TOKEN_LESSER_WORD,
 	"int":          TOKEN_INT_TYPE,
 	"float":        TOKEN_FLOAT_TYPE,
 	"string":       TOKEN_STRING_TYPE,

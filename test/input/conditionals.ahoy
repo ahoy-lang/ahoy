@@ -7,7 +7,7 @@ x:int= 10
 if x is 10 then print|"ten"| expected.push|"ten"| $
 ? If-else
 y: int = 5
-if y greater_than 10 then print|"big"|; expected.push|"big"|;
+if y > 10 then print|"big"|; expected.push|"big"|;
 else print|"small"| expected.push|"small"|
 $
 
@@ -47,7 +47,7 @@ expected.push|"EXCELLENT 1"|
 ? testing if else if chain with anif
 grade= 'B'
 if grade is 'A' then print|"You did great!"| expected.push|"You did great!"|
-anif grade is 'B' then print|"You did good!"| expected.push|"You did good!"|
+elif grade is 'B' then print|"You did good!"| expected.push|"You did good!"|
 else print|"Keep trying!"| expected.push|"Keep trying!"|
 $
 

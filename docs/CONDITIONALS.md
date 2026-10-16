@@ -1,12 +1,12 @@
-# Inline Conditionals and anif Keyword
+# Inline Conditionals and elif Keyword
 
 ## Overview
-The Ahoy language supports inline conditionals and uses the `anif` keyword for else-if statements.
+The Ahoy language supports inline conditionals and uses the `elif` keyword for else-if statements.
 
 ## Block Terminator Rules
 
 **The `$` terminator is required for multi-line blocks using `:` (colon syntax):**
-- Multi-line if/anif/else blocks with `:` require `$`
+- Multi-line if/elif/else blocks with `:` require `$`
 - One-line statements with `then` or `do` do NOT require `$`
 - Inline statements with semicolons on the same line do NOT require `$`
 
@@ -43,16 +43,16 @@ if x is 10 then ahoy|"x is 10\n"|$
 ### 2. Inline If-Else
 Chain if and else on a single line:
 ```ahoy
-if y greater 10 then ahoy|"Big\n"| else ahoy|"Small\n"|$
+if y > 10 then ahoy|"Big\n"| else ahoy|"Small\n"|$
 ```
 
-### 3. The anif Keyword
-Use `anif` for else-if statements (no more `elseif`):
+### 3. The elif Keyword
+Use `elif` for else-if statements (no more `elif`):
 ```ahoy
-if score greater 90 then ahoy|"A\n"| anif score greater 80 then ahoy|"B\n"| else ahoy|"C\n"|
+if score > 90 then ahoy|"A\n"| elif score > 80 then ahoy|"B\n"| else ahoy|"C\n"|
 ```
 
-**Note:** Only `anif` is supported for else-if statements. The keyword `elseif` is not available.
+**Note:** Only `elif` is supported for else-if statements. The keyword `elif` is not available.
 
 ### 4. Multi-line with Colon Syntax (Requires `$`)
 Multi-line blocks using `:` require a `$` terminator:
@@ -62,9 +62,9 @@ if x is 10:
     print|"multi-line block\n"|
 $
 
-if score greater 90:
+if score > 90:
     print|"Grade A\n"|
-anif score greater 80:
+elif score > 80:
     print|"Grade B\n"|
 else:
     print|"Grade F\n"|
@@ -76,17 +76,17 @@ $
 ### Before (Multi-line only):
 ```ahoy
 score: 85
-if score greater_than 90: ahoy|"Grade: A\n"|;
-anif score greater_than 80: ahoy|"Grade: B\n"|;
-anif score greater_than 70: ahoy|"Grade: C\n"|;
+if score > 90: ahoy|"Grade: A\n"|;
+elif score > 80: ahoy|"Grade: B\n"|;
+elif score > 70: ahoy|"Grade: C\n"|;
 else ahoy|"Grade: F\n"|;
 $
 ```
 
-### After (Inline with anif):
+### After (Inline with elif):
 ```ahoy
 score: 85
-if score greater_than 90 then ahoy|"Grade: A\n"| anif score greater_than 80 then ahoy|"Grade: B\n"| anif score greater_than 70 then ahoy|"Grade: C\n"| else ahoy|"Grade: F\n"|
+if score > 90 then ahoy|"Grade: A\n"| elif score > 80 then ahoy|"Grade: B\n"| elif score > 70 then ahoy|"Grade: C\n"| else ahoy|"Grade: F\n"|
 ```
 
 ### Mixed Style:
@@ -95,14 +95,14 @@ if score greater_than 90 then ahoy|"Grade: A\n"| anif score greater_than 80 then
 if size is 10 then ahoy|"Exactly 10\n"|
 
 ? Multi-line with : - $ required
-if size less_than 20:
+if size < 20:
     ahoy|"Between 10 and 20\n"|
     ahoy|"Size is: %d\n", size|
 $
 
 ? Inline with semicolons - no $ needed
 if x is 10: print|"yes"|;
-anif x is 20: print|"maybe"|;
+elif x is 20: print|"maybe"|;
 else: print|"no"|;
 ```
 
@@ -128,5 +128,5 @@ One-line conditionals stay on one line, multi-line conditionals stay multi-line.
 
 ## Compatibility
 - Fully backward compatible with most code
-- Only `anif` is supported for else-if (not `elseif`)
+- Only `elif` is supported for else-if (not `elif`)
 - Multi-line format still fully supported

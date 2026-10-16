@@ -6,7 +6,7 @@
 - Structs
 - Enums
 - Multi-line functions
-- Multi-line if/anif/else with `:`
+- Multi-line if/elif/else with `:`
 - Multi-line loops with `:`
 - Multi-line switch with `on`
 

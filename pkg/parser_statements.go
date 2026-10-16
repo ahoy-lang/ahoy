@@ -435,17 +435,24 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		Children: []*ASTNode{condition, ifBody},
 	}
 
-	// Skip any newlines, semicolons, or dedents before checking for anif/elseif
+	// Skip any newlines, semicolons, or dedents before checking for elif
 	for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_DEDENT || p.current().Type == TOKEN_SEMICOLON {
 		p.advance()
 	}
 
-	// Handle elseif/anif chains
-	for p.current().Type == TOKEN_ELSEIF || p.current().Type == TOKEN_ANIF {
+	// Handle elif chains (`elseif` and `anif` were removed: use `elif`)
+	for p.current().Type == TOKEN_ELIF ||
+		(p.current().Type == TOKEN_IDENTIFIER && (p.current().Value == "elseif" || p.current().Value == "anif")) {
+		if p.current().Type == TOKEN_IDENTIFIER {
+			if !p.LintMode {
+				panic(fmt.Sprintf("`%s` was removed; write `elif` instead (line %d)", p.current().Value, p.current().Line))
+			}
+			p.recordError(fmt.Sprintf("`%s` was removed; write `elif` instead", p.current().Value))
+		}
 		p.advance()
 		elseifCondition := p.parseExpression()
 
-		// Only accept 'then' for elseif
+		// Only accept 'then' for elif
 		if p.current().Type == TOKEN_THEN {
 			p.advance()
 		} else {
@@ -468,26 +475,26 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		p.skipWhitespace()
 		p.blockDepth++ // Opening a block (inline or multiline)
 
-		// The elseif arm re-arms the alias on the restored parent maps.
+		// The elif arm re-arms the alias on the restored parent maps.
 		if p.LintMode {
 			savedVars = p.declaredVars
 			savedFVars = p.functionScope
 			savedAliased = p.scopeAliased
 			p.scopeAliased = true
 		}
-		elseifBody := p.parseBlockUntilEnd("anif", startLine)
+		elseifBody := p.parseBlockUntilEnd("elif", startLine)
 
-		// Restore the saved triple after the elseif arm.
+		// Restore the saved triple after the elif arm.
 		if p.LintMode {
 			p.declaredVars = savedVars
 			p.functionScope = savedFVars
 			p.scopeAliased = savedAliased
 		}
 
-		// Add elseif as another condition-body pair
+		// Add elif as another condition-body pair
 		ifStmt.Children = append(ifStmt.Children, elseifCondition, elseifBody)
 
-		// Skip any newlines, semicolons, or dedents before checking for next anif/elseif
+		// Skip any newlines, semicolons, or dedents before checking for next elif
 		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_DEDENT || p.current().Type == TOKEN_SEMICOLON {
 			p.advance()
 		}
@@ -1412,13 +1419,13 @@ func (p *Parser) parseLoop() *ASTNode {
 				Value:  loopVar.Value,
 				Line:   loopVar.Line,
 				Column: loopVar.Column,
-				}
+			}
 			return &ASTNode{
 				Type:     NODE_FOR_COUNT_LOOP,
 				Value:    loopVar.Value,
 				Children: []*ASTNode{loopVarNode, startExpr, body},
 				Line:     startLine,
-				}
+			}
 		} else if p.current().Type == TOKEN_ASSIGN {
 			// `loop i:start:` was removed: a counter loop that never ends
 			// says `loop i:START do` with an explicit start.

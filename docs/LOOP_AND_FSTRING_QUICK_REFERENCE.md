@@ -18,7 +18,7 @@ loop j:0 to 10 do print|f"j = {j}\n"|
 
 ```ahoy
 ? Loop with explicit counter and condition
-loop k:0 while k less_than 10 do print|f"k = {k}\n"|
+loop k:0 while k < 10 do print|f"k = {k}\n"|
 
 ? Using comparison operators
 loop m:0 while m <= 5 do ahoy|"Still going\n"|
@@ -141,9 +141,9 @@ print|f"Average: {average}\n"|
 
 ? Grade determination
 loop i:0 while i is 1 do
-  if average greater_than 90 do
+  if average > 90 do
       print|f"Grade: A\n"|
-  anif average greater_than 80 do
+  elif average > 80 do
       print|f"Grade: B\n"|
   else
       print|f"Grade: C\n"|
