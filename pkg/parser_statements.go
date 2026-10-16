@@ -1281,14 +1281,14 @@ func (p *Parser) parseLoop() *ASTNode {
 				Value:  loopVar.Value,
 				Line:   loopVar.Line,
 				Column: loopVar.Column,
-				}
+			}
 			zeroNode := &ASTNode{Type: NODE_NUMBER, Value: "0"}
 			return &ASTNode{
 				Type:     NODE_FOR_COUNT_LOOP,
 				Value:    loopVar.Value,
 				Children: []*ASTNode{loopVarNode, zeroNode, body},
 				Line:     startLine,
-				}
+			}
 		}
 		startExpr := p.parseExpression()
 
@@ -1422,13 +1422,19 @@ func (p *Parser) parseLoop() *ASTNode {
 			}
 		} else {
 			if !p.LintMode {
-				panic(fmt.Sprintf("Expected 'to', 'while', or ':' after loop variable initialization at line %d", p.current().Line))
+				panic(fmt.Sprintf("Expected 'to' or 'while' after loop variable initialization at line %d", p.current().Line))
 			}
-			p.recordError("Expected 'to', 'while', or ':' after loop variable initialization")
+			p.recordError("Expected 'to' or 'while' after loop variable initialization")
 			return &ASTNode{Type: NODE_WHILE_LOOP, Children: []*ASTNode{}}
 		}
 	} else if p.current().Type == TOKEN_TO && loopVar != nil {
-		// loop i to end (starts at 0)
+		// `loop i to` without a start was removed: say `loop i:0 to`
+		// (ranges are 0-based: start-inclusive, end-exclusive). Recovers
+		// as exactly that, so only one diagnostic fires.
+		if !p.LintMode {
+			panic(fmt.Sprintf("`loop i to` needs an explicit start; write `loop i:0 to` instead (line %d)", p.current().Line))
+		}
+		p.recordError("`loop i to` needs an explicit start; write `loop i:0 to` instead")
 		p.advance() // consume 'to'
 		endExpr := p.parseExpression()
 

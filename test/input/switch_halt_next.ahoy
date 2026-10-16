@@ -1,0 +1,36 @@
+program switch_halt_next
+
+? halt/next work directly in case bodies. halt exits the enclosing loop
+? (a compiler-generated jump: plain `break` would only exit the switch);
+? next continues it. halt in a switch outside any loop just ends the case.
+
+@ main ||:
+	expected: []
+
+	loop i:0 to 6 do
+		switch i:
+			on 1:
+				next
+			on 4:
+				tmp: "bye" + "!"
+				print|tmp|
+				expected.push|"bye!"|
+				halt
+			_:
+				print|i|
+				expected.push|i|
+		$
+	$
+	expected.push|"loop-done"|
+	print|"loop-done"|
+
+	switch 9:
+		on 9:
+			print|"nine"|
+			expected.push|"nine"|
+			halt
+			print|"unreached"|
+		_: print|"other"|
+	$
+	print|expected|
+$

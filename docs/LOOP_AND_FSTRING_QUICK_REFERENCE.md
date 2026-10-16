@@ -9,7 +9,7 @@
 loop i:0 1 to 5 do print|f"i = {i}\n"|
 
 ? Loop from 0 to 10 (implicit start at 0)
-loop j to 10 do print|f"j = {j}\n"|
+loop j:0 to 10 do print|f"j = {j}\n"|
 ```
 
 **Generated:** Standard C `for` loop with counter increment
@@ -102,7 +102,7 @@ print|f"x={x}, y={y}, sum={result}\n"|
 ### In Loops
 
 ```ahoy
-loop i to 5 do print|f"Iteration #{i}\n"|
+loop i:0 to 5 do print|f"Iteration #{i}\n"|
 ```
 
 ## If Statement Flexibility
@@ -165,12 +165,12 @@ print|f"Hello {name}"|
 ### 2. Use descriptive loop variable names
 ```ahoy
 ? Good
-loop index to 10 do
+loop index:0 to 10 do
 loop item in items do
 loop key, value in dict do
 
 ? Less clear
-loop i to 10 do
+loop i:0 to 10 do
 loop x in arr do
 ```
 
@@ -219,14 +219,14 @@ print|f"Blast off!\n"|
 ### Accumulation
 ```ahoy
 total: 0
-loop i to 100 do total: total plus i
+loop i:0 to 100 do total: total plus i
 print|f"Sum: {total}\n"|
 ```
 
 ### Search with Early Exit
 ```ahoy
 found: false
-loop i to 100 do
+loop i:0 to 100 do
   if i is target:
       found: true
       halt
@@ -238,8 +238,8 @@ $
 
 ### Nested Loops
 ```ahoy
-loop row to 3 do
-    loop col to 3 do
+loop row:0 to 3 do
+    loop col:0 to 3 do
         print|f"({row},{col}) "|
     ahoy|"\n"|
   $

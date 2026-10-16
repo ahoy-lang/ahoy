@@ -33,7 +33,7 @@ expected.push|"3"|
 expected.push|"4"|
 
 ? Loop range from 0 to 5
-loop i to 5 do print|f"Count {i}"| $
+loop i:0 to 5 do print|f"Count {i}"| $
 expected.push|"Count 0"|
 expected.push|"Count 1"|
 expected.push|"Count 2"|

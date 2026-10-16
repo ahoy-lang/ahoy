@@ -8,8 +8,8 @@ This document describes the new loop syntax that has been implemented in Ahoy.
 **Implementation Complete**: The new loop syntax and f-strings have been successfully implemented.
 
 ### Working Features ✓
-- `loop i to 5:` - Range loop with explicit start and end
-- `loop i to 5:` - Range loop from 0 to end
+- `loop i:0 to 5:` - Range loop with explicit start and end
+- `loop i:0 to 5:` - Range loop from 0 to end
 - `loop i while condition:` - Conditional loop with explicit counter variable
 - `loop i do` - Forever loop with explicit counter (use with halt)
 - `loop do` - Forever loop without counter (`loop while true do` says so explicitly; bare `loop:` was removed)
@@ -32,7 +32,7 @@ loop i:0 while i < 5 do print|f"Value: {i}\n"|
 
 **Multi-line loops with `:` (colon) REQUIRE `$`:**
 ```ahoy
-loop i to 5 do
+loop i:0 to 5 do
     print|f"Count {i}\n"|
 $
 ```
@@ -56,7 +56,7 @@ struct test:
 $
 
 ? Loop range from 0 to 5
-loop i to 5 do
+loop i:0 to 5 do
     print|f"Count {i}\n"|
 $
 

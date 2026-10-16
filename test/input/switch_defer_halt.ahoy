@@ -1,0 +1,23 @@
+program switch_defer_halt
+
+? Block-scoped defers pending at halt/next still run: the early exit jumps
+? over their block end, so halt/next flush them first (exactly once — every
+? other path skips the flush and uses the block end as before).
+
+@ main ||:
+	expected: []
+	loop i:0 to 4 do
+		tmp: "v" + "!"
+		defer print|tmp|
+		if i is 2 then
+			expected.push|"v!"|
+			halt
+		$
+		print|tmp|
+		expected.push|"v!"|
+		expected.push|"v!"|
+	$
+	expected.push|"after"|
+	print|"after"|
+	print|expected|
+$
