@@ -1242,6 +1242,14 @@ func (p *Parser) parseLoop() *ASTNode {
 	}
 
 	// Now check what follows
+	if p.current().Type == TOKEN_ASSIGN && loopVar == nil {
+		// Bare `loop:` was removed: an infinite loop says so explicitly.
+		if !p.LintMode {
+			panic(fmt.Sprintf("bare `loop:` was removed; write `loop while true do` (or `loop do`) for an infinite loop (line %d)", p.current().Line))
+		}
+		p.recordError("bare `loop:` was removed; write `loop while true do` (or `loop do`) for an infinite loop")
+		return &ASTNode{Type: NODE_FOR_COUNT_LOOP, Value: "0", Children: []*ASTNode{}}
+	}
 	if p.current().Type == TOKEN_ASSIGN && loopVar != nil {
 		// New syntax: loop i:start ...
 		p.advance() // consume ':'
