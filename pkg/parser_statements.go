@@ -2058,9 +2058,10 @@ func (p *Parser) parseReturnStatement() *ASTNode {
 
 	ret := &ASTNode{Type: NODE_RETURN_STATEMENT, Line: line}
 
-	// Parse return values
+	// Parse return values (a `$` right after `return` is a bare return,
+	// the same as a newline there: one-line `if x then return $` bodies).
 	returnValues := []*ASTNode{}
-	if p.current().Type != TOKEN_NEWLINE {
+	if p.current().Type != TOKEN_NEWLINE && p.current().Type != TOKEN_END {
 		// Parse first expression
 		expr := p.parseOrExpression() // Use parseOrExpression to avoid consuming comma as part of expression
 		ret.Children = append(ret.Children, expr)
@@ -2081,7 +2082,7 @@ func (p *Parser) parseReturnStatement() *ASTNode {
 		for _, returnVal := range returnValues {
 			if returnVal.Type == NODE_IDENTIFIER && returnVal.Value == p.currentFunctionName {
 				p.Errors = append(p.Errors, ParseError{
-					Message: fmt.Sprintf("recursion not allowed: cannot return function '%s' itself; use a loop till condition instead", p.currentFunctionName),
+					Message: fmt.Sprintf("recursion not allowed: cannot return function '%s' itself; use a loop while condition instead", p.currentFunctionName),
 					Line:    line,
 					Column:  returnVal.Column,
 				})
