@@ -34,6 +34,8 @@ func (p *Parser) parseStatement() *ASTNode {
 		return p.parseSwitchStatement()
 	case TOKEN_LOOP:
 		return p.parseLoop()
+	case TOKEN_WHILE:
+		return p.parseWhile()
 	case TOKEN_WHEN:
 		return p.parseWhenStatement()
 	case TOKEN_AHOY:
@@ -1225,6 +1227,37 @@ func (p *Parser) inferCaseBodyType(body *ASTNode) string {
 		return "void"
 	default:
 		return p.inferType(body)
+	}
+}
+
+func (p *Parser) parseWhile() *ASTNode {
+	startLine := p.current().Line
+	p.expect(TOKEN_WHILE)
+	condition := p.parseExpression()
+
+	// Only accept 'do'
+	if p.current().Type == TOKEN_DO {
+		p.advance()
+	} else {
+		if !p.LintMode {
+			panic(fmt.Sprintf("Expected 'do' after while condition at line %d", p.current().Line))
+		}
+		p.recordError("Expected 'do' after while condition")
+	}
+
+	// Both inline and multiline now require $ to close
+	for p.current().Type == TOKEN_NEWLINE {
+		p.advance()
+	}
+	p.skipWhitespace()
+	p.blockDepth++
+	body := p.parseBlockUntilEnd("while", startLine)
+
+	// Same shape as bare `loop till`: [condition, body]
+	return &ASTNode{
+		Type:     NODE_WHILE_LOOP,
+		Children: []*ASTNode{condition, body},
+		Line:     startLine,
 	}
 }
 

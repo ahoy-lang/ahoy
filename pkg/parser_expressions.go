@@ -1312,6 +1312,43 @@ func (p *Parser) parseBlockUntilEnd(constructName string, startLine int) *ASTNod
 			p.advance()
 			continue
 		}
+		// An INDENT mid-block means the next statement sits deeper than
+		// the current depth. A block-opening keyword legitimately
+		// starts a nested block here and parses as before; anything
+		// else is an over-indented simple statement. Indentation is
+		// cosmetic (only `$` closes a block), so it still belongs to
+		// THIS block: warn plainly and parse it here instead of
+		// failing later with a bare "Unexpected token indent".
+		if p.current().Type == TOKEN_INDENT {
+			stmtLine2 := p.current().Line
+			j := p.pos
+			for j < len(p.tokens) && p.tokens[j].Type == TOKEN_INDENT {
+				j++
+			}
+			opensBlock := false
+			silent := false
+			if j < len(p.tokens) {
+				switch p.tokens[j].Type {
+				case TOKEN_IF, TOKEN_LOOP, TOKEN_WHILE, TOKEN_SWITCH, TOKEN_FUNC,
+					TOKEN_STRUCT, TOKEN_ENUM, TOKEN_ALIAS, TOKEN_UNION, TOKEN_WHEN:
+					opensBlock = true
+				case TOKEN_NEWLINE, TOKEN_END, TOKEN_EOF, TOKEN_DEDENT:
+					silent = true
+				}
+			}
+			if !opensBlock && !silent && minIndent >= 0 {
+				indent := p.sourceLineIndent(stmtLine2)
+				col := indent + 1
+				if col < 1 {
+					col = 1
+				}
+				p.recordWarningAtLine(fmt.Sprintf("Statement is indented deeper than the '%s' block body but still belongs to it (only '$' closes a block); if it belongs inside the block above, move it before that block's '$'", constructName), stmtLine2, col)
+			}
+			for p.current().Type == TOKEN_INDENT {
+				p.advance()
+			}
+			continue
+		}
 		stmtLine := p.current().Line
 		stmt := p.parseStatement()
 		if stmt != nil {

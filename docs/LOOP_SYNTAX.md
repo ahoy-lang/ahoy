@@ -13,6 +13,13 @@ This document describes the new loop syntax that has been implemented in Ahoy.
 - `loop i till condition:` - Conditional loop with explicit counter variable
 - `loop i:0:` - Forever loop with explicit counter (use with halt)
 - `loop:` or `loop do` - Forever loop without counter
+- `while COND do` - Plain while-true loop (same as bare `loop till`)
+
+> `till` keeps its historical semantics (it runs *while* the condition
+> holds: `loop till k >= n` runs while `k >= n`, so count-up loops are
+> written `loop till not (k >= n)`). When that reads backwards, prefer
+> `while`: `while k < n do` means exactly what it says. Both compile to
+> the same code; existing `till` loops keep working unchanged.
 - F-strings: `print|f"hello{i}\n"|` - String interpolation with variables
 - Support for both `then` keywords in if statements
 

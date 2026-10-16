@@ -2412,6 +2412,14 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 		if param.DataType != "" {
 			gen.functionVars[param.Value] = param.DataType
 
+			// Parameters arrive declared (they are C function parameters):
+			// an assignment to one must emit a plain store. Without these
+			// marks the assign path treated params as undeclared and
+			// emitted a fresh C declaration, which collided with the
+			// parameter (or silently shadowed it).
+			gen.declaredFunctionVars[param.Value] = true
+			gen.markDeclaredInCurrentScope(param.Value)
+
 			// Track array element types for typed array parameters
 			if strings.HasPrefix(param.DataType, "array[") {
 				elemType := strings.TrimSuffix(strings.TrimPrefix(param.DataType, "array["), "]")
@@ -2420,6 +2428,8 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 		} else {
 			// Parameters without explicit type are any (generic)
 			gen.functionVars[param.Value] = "any"
+			gen.declaredFunctionVars[param.Value] = true
+			gen.markDeclaredInCurrentScope(param.Value)
 		}
 	}
 
@@ -9416,9 +9426,9 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		if node.Value == "contains" || node.Value == "match" {
 			return "bool"
 		}
-		// String method split returns array
+		// String method split always yields strings.
 		if node.Value == "split" {
-			return "array"
+			return "array[string]"
 		}
 
 		// Dictionary-specific methods

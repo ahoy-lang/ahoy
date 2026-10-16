@@ -1,0 +1,19 @@
+program over_indent_warning
+
+? An over-indented statement after a closed block still belongs to the
+? enclosing block (only `$` closes it); the compiler warns about the
+? indent instead of failing with "Unexpected token indent". The guarded
+? line below runs in the main body (not inside the if), so x becomes 15.
+
+@ main ||:
+	expected: []
+	expected.push|"15"|
+
+	x: 5
+	if x is 99 then
+		x = 99
+	$
+		x = x + 10
+	print|x|
+	print|expected|
+$

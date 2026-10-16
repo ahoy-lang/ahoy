@@ -1,0 +1,22 @@
+program param_reassign
+
+? Function parameters are mutable locals: assigning to one stores into
+? the local (C by-value semantics — the caller never sees it). This used
+? to emit a fresh C declaration that collided with the parameter.
+
+@ bump |n:int| int:
+	n = n + 1
+	return n
+$
+
+@ main ||:
+	expected: []
+	expected.push|"5"|
+	expected.push|"6"|
+
+	x: 5
+	y: bump|x|
+	print|x|
+	print|y|
+	print|expected|
+$

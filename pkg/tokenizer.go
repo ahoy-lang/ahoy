@@ -28,10 +28,11 @@ const (
 	TOKEN_ELSEIF
 	TOKEN_ANIF // anif (alternative to elseif)
 	TOKEN_SWITCH
-	TOKEN_LOOP // loop (replaces while/for)
-	TOKEN_IN   // in (for loop element in array)
-	TOKEN_TO   // to (for loop range)
-	TOKEN_TILL // till (for loop condition)
+	TOKEN_LOOP  // loop (replaces while/for)
+	TOKEN_IN    // in (for loop element in array)
+	TOKEN_TO    // to (for loop range)
+	TOKEN_TILL  // till (for loop condition)
+	TOKEN_WHILE // while (plain while-true loop; same AST as bare loop-till)
 	TOKEN_FUNC
 	TOKEN_FN // fn (function type, e.g. fn(int)->int)
 	TOKEN_RETURN
@@ -141,6 +142,7 @@ var keywords = map[string]TokenType{
 	"in":           TOKEN_IN,
 	"to":           TOKEN_TO,
 	"till":         TOKEN_TILL,
+	"while":        TOKEN_WHILE,
 	"return":       TOKEN_RETURN,
 	"import":       TOKEN_IMPORT,
 	"program":      TOKEN_PROGRAM,
