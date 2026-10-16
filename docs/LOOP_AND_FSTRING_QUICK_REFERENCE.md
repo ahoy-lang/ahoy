@@ -30,13 +30,13 @@ loop m while m <= 5 do ahoy|"Still going\n"|
 
 ```ahoy
 ? Forever loop with counter (must use break)
-loop n:
+loop n do
     print|f"Iteration {n}\n"|
     if n is 5 do halt
 $
 
 ? Forever loop break first loop though
-loop:
+loop do
     ahoy|"Infinite!\n"|
     halt
 $
@@ -140,7 +140,7 @@ average: total div 5
 print|f"Average: {average}\n"|
 
 ? Grade determination
-loop i while i is 1:
+loop i while i is 1 do
   if average greater_than 90 do
       print|f"Grade: A\n"|
   anif average greater_than 80 do
@@ -177,7 +177,7 @@ loop x in arr do
 ### 3. Break out of infinite loops
 ```ahoy
 ? Good
-loop counter:
+loop counter do
     print|f"{counter}\n"|
     if counter is 100 do break
 
@@ -226,7 +226,7 @@ print|f"Sum: {total}\n"|
 ### Search with Early Exit
 ```ahoy
 found: false
-loop i to 100:
+loop i to 100 do
   if i is target:
       found: true
       halt
@@ -238,8 +238,8 @@ $
 
 ### Nested Loops
 ```ahoy
-loop row to 3:
-    loop col to 3:
+loop row to 3 do
+    loop col to 3 do
         print|f"({row},{col}) "|
     ahoy|"\n"|
   $

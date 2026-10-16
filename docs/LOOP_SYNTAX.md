@@ -32,7 +32,7 @@ loop i:0 while i < 5 do print|f"Value: {i}\n"|
 
 **Multi-line loops with `:` (colon) REQUIRE `$`:**
 ```ahoy
-loop i to 5:
+loop i to 5 do
     print|f"Count {i}\n"|
 $
 ```
@@ -46,7 +46,7 @@ $
 
 ```ahoy
 ? Loop range from 1 to 5
-loop i:1 to 5:
+loop i:1 to 5 do
     print|f"Iteration {i}\n"|
 $
 
@@ -56,12 +56,12 @@ struct test:
 $
 
 ? Loop range from 0 to 5
-loop i to 5:
+loop i to 5 do
     print|f"Count {i}\n"|
 $
 
 ? Loop range from 0 to 5
-loop i:0 to 5:
+loop i:0 to 5 do
     print|f"Count {i}\n"|
 $
 
@@ -70,7 +70,7 @@ loop i:0 while i < 5 do print|f"Value: {i}\n"|
 
 ? Loop conditional with symbol operators
 number:2
-loop while number <= 5:
+loop while number <= 5 do
     ahoy|"Count\n"|
     number+=1
 
@@ -79,12 +79,12 @@ loop val:0 to values.length
     print|f"Value: {val}\n"|
 
 ? Loop forever with explicit counter dont run this as it will infinite loop
-loop i:0:
+loop i:0 do
     print|f"Loop {i}\n"|
     if i is 5 do halt
 
 ? Loop forever without counter; dont run this
-loop:
+loop do
     ahoy|"Forever!\n"|
 
 ? Alternative syntax (also works)

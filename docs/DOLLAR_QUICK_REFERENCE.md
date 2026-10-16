@@ -34,7 +34,7 @@ $
 loop i to 5 do print|f"i={i}\n"|
 
 ? Multi-line - needs $
-loop i to 5:
+loop i to 5 do
     print|f"i={i}\n"|
 $
 ```
@@ -43,7 +43,7 @@ $
 ```ahoy
 ? Traditional way:
 if outer:
-    loop i to 5:
+    loop i to 5 do
         if inner:
             action||
         $
@@ -52,7 +52,7 @@ $
 
 ? Using $#N:
 if outer:
-    loop i to 5:
+    loop i to 5 do
         if inner:
             action||
 $#3  ? Close all 3 blocks

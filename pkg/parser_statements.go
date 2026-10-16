@@ -1228,6 +1228,15 @@ func (p *Parser) inferCaseBodyType(body *ASTNode) string {
 	}
 }
 
+// `:` never opens a loop block: only `do` does. Records the error but
+// consumes the colon so the body still parses and only one diagnostic fires.
+func (p *Parser) loopColonError() {
+	if !p.LintMode {
+		panic(fmt.Sprintf("`:` does not open a loop block; write `do` instead (line %d)", p.current().Line))
+	}
+	p.recordError("`:` does not open a loop block; write `do` instead")
+}
+
 func (p *Parser) parseLoop() *ASTNode {
 	startLine := p.current().Line
 	p.expect(TOKEN_LOOP)
@@ -1359,8 +1368,13 @@ func (p *Parser) parseLoop() *ASTNode {
 				Line:     startLine,
 			}
 		} else if p.current().Type == TOKEN_ASSIGN {
-			// loop i:start: (forever loop with counter starting at start)
-			p.advance() // consume second ':'
+			// `loop i:start:` was removed: a counter loop that never ends
+			// says `loop i do` (counter starts at 0 like every loop i form).
+			if !p.LintMode {
+				panic(fmt.Sprintf("`loop i:start:` was removed; write `loop i do` instead (line %d)", p.current().Line))
+			}
+			p.recordError("`loop i:start:` was removed; write `loop i do` instead")
+			p.advance() // consume ':' so the body still parses
 
 			// Both inline and multiline now require $ to close
 			// Skip optional newlines after second colon
@@ -1394,6 +1408,7 @@ func (p *Parser) parseLoop() *ASTNode {
 		if p.current().Type == TOKEN_DO {
 			p.advance()
 		} else if p.current().Type == TOKEN_ASSIGN {
+			p.loopColonError()
 			p.advance()
 		} else {
 			if !p.LintMode {
@@ -1425,6 +1440,7 @@ func (p *Parser) parseLoop() *ASTNode {
 		if p.current().Type == TOKEN_DO {
 			p.advance()
 		} else if p.current().Type == TOKEN_ASSIGN {
+			p.loopColonError()
 			p.advance()
 		} else {
 			if !p.LintMode {
@@ -1464,6 +1480,7 @@ func (p *Parser) parseLoop() *ASTNode {
 		if p.current().Type == TOKEN_DO {
 			p.advance()
 		} else if p.current().Type == TOKEN_ASSIGN {
+			p.loopColonError()
 			p.advance()
 		} else {
 			if !p.LintMode {
@@ -1522,6 +1539,7 @@ func (p *Parser) parseLoop() *ASTNode {
 		if p.current().Type == TOKEN_DO {
 			p.advance()
 		} else if p.current().Type == TOKEN_ASSIGN {
+			p.loopColonError()
 			p.advance()
 		} else {
 			if !p.LintMode {
@@ -1579,6 +1597,7 @@ func (p *Parser) parseLoop() *ASTNode {
 		if p.current().Type == TOKEN_DO {
 			p.advance()
 		} else if p.current().Type == TOKEN_ASSIGN {
+			p.loopColonError()
 			p.advance()
 		} else {
 			if !p.LintMode {
@@ -1612,9 +1631,9 @@ func (p *Parser) parseLoop() *ASTNode {
 			Children: []*ASTNode{keyNode, valueNode, dictExpr, body},
 			Line:     startLine,
 		}
-	} else if p.current().Type == TOKEN_DO || p.current().Type == TOKEN_ASSIGN {
-		// loop [i] do or loop [i] : - infinite loop, optionally with counter
-		p.advance() // consume 'do' or ':'
+	} else if p.current().Type == TOKEN_DO {
+		// loop [i] do - infinite loop, optionally with counter
+		p.advance() // consume 'do'
 
 		// Both inline and multiline now require $ to close
 		for p.current().Type == TOKEN_NEWLINE {
