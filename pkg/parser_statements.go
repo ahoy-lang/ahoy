@@ -1354,10 +1354,15 @@ func (p *Parser) parseLoop() *ASTNode {
 			}
 			p.recordError("`till` was removed; write `loop while COND do` instead")
 			return &ASTNode{Type: NODE_WHILE_LOOP, Children: []*ASTNode{}}
-		} else if p.current().Type == TOKEN_WHILE {
-			// loop i:start while condition
-			p.advance() // consume 'while'
+		} else if p.current().Type == TOKEN_WHILE || p.current().Type == TOKEN_UNTIL {
+			// loop i:start while condition / loop i:start until condition
+			// (until runs till the condition holds: desugared to while-not).
+			isUntil := p.current().Type == TOKEN_UNTIL
+			p.advance() // consume 'while' / 'until'
 			condition := p.parseExpression()
+			if isUntil {
+				condition = &ASTNode{Type: NODE_UNARY_OP, Value: "not", Children: []*ASTNode{condition}}
+			}
 
 			// Only accept 'do'
 			if p.current().Type == TOKEN_DO {
@@ -1536,17 +1541,22 @@ func (p *Parser) parseLoop() *ASTNode {
 		}
 		p.recordError("`till` was removed; write `loop while COND do` instead")
 		return &ASTNode{Type: NODE_WHILE_LOOP, Children: []*ASTNode{}}
-	} else if p.current().Type == TOKEN_WHILE {
-		// loop [i] while condition
+	} else if p.current().Type == TOKEN_WHILE || p.current().Type == TOKEN_UNTIL {
+		// loop [i] while condition / loop [i] until condition
+		// (until runs till the condition holds: desugared to while-not).
 		// (`loop i while` without a start was removed: say `loop i:0 while`.)
+		isUntil := p.current().Type == TOKEN_UNTIL
 		if loopVar != nil {
 			if !p.LintMode {
 				panic(fmt.Sprintf("`loop i while` needs an explicit start; write `loop i:0 while` instead (line %d)", p.current().Line))
 			}
 			p.recordError("`loop i while` needs an explicit start; write `loop i:0 while` instead")
 		}
-		p.advance() // consume 'while'
+		p.advance() // consume 'while' / 'until'
 		condition := p.parseExpression()
+		if isUntil {
+			condition = &ASTNode{Type: NODE_UNARY_OP, Value: "not", Children: []*ASTNode{condition}}
+		}
 
 		// Only accept 'do'
 		if p.current().Type == TOKEN_DO {

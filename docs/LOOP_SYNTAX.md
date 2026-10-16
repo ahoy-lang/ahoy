@@ -14,6 +14,7 @@ This document describes the new loop syntax that has been implemented in Ahoy.
 - `loop i:0 do` - Forever loop with explicit counter (use with halt)
 - `loop do` - Forever loop without counter (`loop while true do` says so explicitly; bare `loop:` was removed)
 - `loop while COND do` - Condition loop: runs while COND holds
+- `loop until COND do` - Runs till COND holds (clearer than negating by hand)
 - `loop i:0 while COND do` - Counter (from 0) plus condition
 
 > There is one loop keyword: `loop`. The old `till` condition word was

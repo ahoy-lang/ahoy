@@ -32,8 +32,9 @@ const (
 	TOKEN_LOOP  // loop (replaces while/for)
 	TOKEN_IN    // in (for loop element in array)
 	TOKEN_TO    // to (for loop range)
-	TOKEN_TILL  // till (for loop condition)
+	TOKEN_TILL  // till (removed; kept so use sites get the removal error)
 	TOKEN_WHILE // while (plain while-true loop; same AST as bare loop-till)
+	TOKEN_UNTIL // until (run-until loop; desugars to while-not)
 	TOKEN_FUNC
 	TOKEN_FN // fn (function type, e.g. fn(int)->int)
 	TOKEN_RETURN
@@ -143,6 +144,7 @@ var keywords = map[string]TokenType{
 	"to":       TOKEN_TO,
 	"till":     TOKEN_TILL,
 	"while":    TOKEN_WHILE,
+	"until":    TOKEN_UNTIL,
 	"return":   TOKEN_RETURN,
 	"import":   TOKEN_IMPORT,
 	"program":  TOKEN_PROGRAM,

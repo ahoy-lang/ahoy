@@ -861,7 +861,7 @@ func tokenTypeName(t TokenType) string {
 		TOKEN_ON: "'on'", TOKEN_IF: "'if'", TOKEN_ELSE: "'else'",
 		TOKEN_ELSEIF: "'elseif'", TOKEN_ANIF: "'anif'", TOKEN_SWITCH: "'switch'",
 		TOKEN_LOOP: "'loop'", TOKEN_IN: "'in'", TOKEN_TO: "'to'",
-		TOKEN_TILL: "'till'", TOKEN_WHILE: "'while'", TOKEN_FUNC: "'func'",
+		TOKEN_TILL: "'till'", TOKEN_WHILE: "'while'", TOKEN_UNTIL: "'until'", TOKEN_FUNC: "'func'",
 		TOKEN_RETURN: "'return'", TOKEN_IMPORT: "'import'", TOKEN_PROGRAM: "'program'", TOKEN_WHEN: "'when'",
 		TOKEN_AHOY: "'ahoy'", TOKEN_PRINT: "'print'", TOKEN_LOG: "'log'", TOKEN_PANIC: "'panic'", TOKEN_PLUS: "'+'",
 		TOKEN_MINUS: "'-'", TOKEN_MULTIPLY: "'*'", TOKEN_DIVIDE: "'/'",
