@@ -1566,13 +1566,16 @@ func (p *Parser) parseEqualityExpression() *ASTNode {
 	left := p.parseRelationalExpression()
 
 	// Equality is spelled `x is y`; its negation is `x is not y`. The older
-	// `x not is y` is still parsed so the whole condition is consumed, but it is
-	// reported: leaving it unparsed stranded the parser at a dangling `is`.
+	// `x not is y` is rejected: the words are consumed so parsing can
+	// continue, but it no longer compiles.
 	for p.current().Type == TOKEN_IS ||
 		(p.current().Type == TOKEN_NOT && p.peek(1).Type == TOKEN_IS) {
 
 		wrongSpelling := p.current().Type == TOKEN_NOT
 		if wrongSpelling {
+			if !p.LintMode {
+				panic(fmt.Sprintf("use 'is not' instead of 'not is' (line %d)", p.current().Line))
+			}
 			p.recordError("use 'is not' instead of 'not is'")
 			p.advance() // 'not'
 		}
