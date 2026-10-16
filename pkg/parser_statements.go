@@ -24,6 +24,8 @@ func (p *Parser) parseStatement() *ASTNode {
 		return p.parseStructDeclaration()
 	case TOKEN_ALIAS:
 		return p.parseAliasDeclaration()
+	case TOKEN_DISTINCT:
+		return p.parseDistinctDeclaration()
 	case TOKEN_UNION:
 		return p.parseUnionDeclaration()
 	case TOKEN_FUNC:
@@ -2136,7 +2138,7 @@ func (p *Parser) parseReturnStatement() *ASTNode {
 			} else {
 				// Check each type
 				for i := 0; i < len(expectedTypes); i++ {
-					if !p.checkTypeCompatibility(expectedTypes[i], actualTypes[i]) {
+					if !p.checkTypeCompatibility(expectedTypes[i], actualTypes[i], returnValues[i]) {
 						errMsg := fmt.Sprintf("Return type mismatch at position %d: expected %s but got %s",
 							i+1, expectedTypes[i], actualTypes[i])
 						p.recordError(errMsg)

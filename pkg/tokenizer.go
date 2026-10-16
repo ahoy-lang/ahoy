@@ -97,6 +97,7 @@ const (
 	TOKEN_STRUCT
 	TOKEN_TYPE
 	TOKEN_ALIAS // alias (type alias)
+	TOKEN_DISTINCT // distinct (newtype: same layout, checked strictly)
 	TOKEN_UNION // union (union types)
 	TOKEN_DO
 	TOKEN_HALT            // halt (break from loop)
@@ -179,6 +180,7 @@ var keywords = map[string]TokenType{
 	"struct":   TOKEN_STRUCT,
 	"type":     TOKEN_TYPE,
 	"alias":    TOKEN_ALIAS,
+	"distinct": TOKEN_DISTINCT,
 	"union":    TOKEN_UNION,
 	"do":       TOKEN_DO,
 	"halt":     TOKEN_HALT,

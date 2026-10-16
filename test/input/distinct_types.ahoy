@@ -1,0 +1,30 @@
+program distinct_types
+
+? Distinct newtypes share their base's layout but check strictly: only
+? the same distinct name, a literal of the base kind, or an explicit
+? Name(value) conversion flows in. Anything else is a compile error.
+
+distinct NodeId: int
+
+@ take_node |id:NodeId| NodeId:
+	return id
+$
+
+@ main ||:
+	expected: []
+	expected.push|"5"|
+	expected.push|"5"|
+	expected.push|"7"|
+	expected.push|"10"|
+
+	a: NodeId = 5
+	print|a|
+	b: take_node|a|
+	print|b|
+	c: NodeId = NodeId|7|
+	print|c|
+	d: NodeId = 9
+	d = NodeId|10|
+	print|d|
+	print|expected|
+$

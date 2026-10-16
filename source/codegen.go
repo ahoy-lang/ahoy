@@ -184,6 +184,7 @@ type CodeGenerator struct {
 	currentFunctionHasMultiReturn bool                                    // Whether current function has multiple returns
 	hasMainFunc                   bool                                    // Whether there's an Ahoy main function
 	arrayElementTypes             map[string]string                       // array variable name -> element type
+	distinctTypes                map[string]string                       // distinct newtype name -> base Ahoy type
 	reportedElemMismatch          map[string]bool                         // arrays already flagged for tracked-vs-declared element disagreement (dedupes the internal error)
 	dictLoopValueExpr             map[string]string                       // dict-loop value var -> C expression that formats it by its runtime type
 	array2DElementTypes           map[string]string                       // 2D array variable name -> nested element type (element type of inner arrays)
@@ -301,6 +302,7 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		dictMethods:           make(map[string]bool),
 		hasMainFunc:           false,
 		arrayElementTypes:     make(map[string]string),
+		distinctTypes:        make(map[string]string),
 		array2DElementTypes:   make(map[string]string),
 		structs:               make(map[string]*StructInfo),
 		functionReturnTypes:   make(map[string][]string),
@@ -2123,6 +2125,13 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 		gen.generateStruct(node)
 	case ahoy.NODE_ALIAS_DECLARATION:
 		// Type aliases are compile-time only, no C code needed
+		return
+	case ahoy.NODE_DISTINCT_DECLARATION:
+		// Distinct newtypes share the base layout: record base for mapType.
+		// DataType carries the base (set by parseDistinctDeclaration).
+		if node.Value != "" && node.DataType != "" {
+			gen.distinctTypes[node.Value] = node.DataType
+		}
 		return
 	case ahoy.NODE_UNION_DECLARATION:
 		// Union types are compile-time only, no C code needed
@@ -6053,6 +6062,15 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 		return
 	}
 
+	// A distinct type name converts with one argument: same layout as the
+	// base, so emit the argument directly (checked at parse/check time).
+	if _, ok := gen.distinctTypes[node.Value]; ok {
+		if len(node.Children) > 0 {
+			gen.generateNode(node.Children[0])
+		}
+		return
+	}
+
 	// Keep user-defined functions as snake_case
 	// Convert C library functions to their original names
 	funcName := node.Value
@@ -9189,6 +9207,11 @@ func (gen *CodeGenerator) mapType(langType string) string {
 		return toCStructName(langType)
 	}
 
+	// Distinct newtypes share their base's C layout: resolve and map on.
+	if base, ok := gen.distinctTypes[langType]; ok {
+		return gen.mapType(base)
+	}
+
 	// Handle known types first before pointer logic
 	switch langType {
 	case "generic", "any":
@@ -9295,6 +9318,10 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		// Infer return type of function calls
 		if td, ok := gen.cFuncPtrTypedefVar(node.Value); ok {
 			return td.ReturnType
+		}
+		// A distinct conversion yields the distinct type.
+		if _, ok := gen.distinctTypes[node.Value]; ok {
+			return node.Value
 		}
 		if node.Value == "jobs" {
 			return "pool"

@@ -54,6 +54,7 @@ const (
 	NODE_TUPLE_ASSIGNMENT
 	NODE_STRUCT_DECLARATION
 	NODE_ALIAS_DECLARATION
+	NODE_DISTINCT_DECLARATION
 	NODE_UNION_DECLARATION
 	NODE_METHOD_CALL
 	NODE_MEMBER_ACCESS
@@ -223,6 +224,7 @@ type Parser struct {
 	structs             map[string]*StructDefinition  // Track struct definitions
 	enums               map[string]*EnumDefinition    // Track enum definitions
 	typeAliases         map[string]string             // Track type aliases
+	distinctTypes        map[string]string            // Distinct newtypes: name -> base type
 	unionTypes          map[string][]string           // Track union types
 	objectLiterals      map[string]map[string]bool    // Track object literal properties by variable name
 	currentFunctionRet  string                        // Track current function return type
@@ -533,6 +535,12 @@ func (p *Parser) inferType(node *ASTNode) string {
 		// Handle function calls - infer return type from function signature
 		funcName := node.Value
 
+		// A distinct type name called with one argument is an explicit
+		// conversion: the result has the distinct type.
+		if _, isDistinct := p.distinctTypes[funcName]; isDistinct {
+			return funcName
+		}
+
 		// First check C headers (global namespace)
 		if p.cHeaderGlobal != nil {
 			if cFunc, exists := p.cHeaderGlobal.Functions[funcName]; exists {
@@ -573,7 +581,21 @@ func (p *Parser) inferType(node *ASTNode) string {
 }
 
 // checkTypeCompatibility checks if a value type is compatible with expected type
-func (p *Parser) checkTypeCompatibility(expectedType, actualType string) bool {
+// isLiteralNode reports whether n is a literal value (number, string,
+// boolean, char) as opposed to a computed expression. F-strings do not
+// count: their interpolations are runtime values.
+func isLiteralNode(n *ASTNode) bool {
+	if n == nil {
+		return false
+	}
+	switch n.Type {
+	case NODE_NUMBER, NODE_STRING, NODE_RAW_STRING, NODE_BOOLEAN, NODE_CHAR:
+		return true
+	}
+	return false
+}
+
+func (p *Parser) checkTypeCompatibility(expectedType, actualType string, actualNode ...*ASTNode) bool {
 	if expectedType == "unknown" || actualType == "unknown" {
 		return true // Can't check unknown types
 	}
@@ -582,6 +604,25 @@ func (p *Parser) checkTypeCompatibility(expectedType, actualType string) bool {
 	if expectedType == "generic" || actualType == "generic" ||
 		expectedType == "any" || actualType == "any" {
 		return true
+	}
+
+	// Distinct newtypes are exact: only the same distinct name flows in,
+	// except a literal of the base kind (so `x: NodeId = 5` works but
+	// `x: NodeId = someInt` does not). Anything else needs an explicit
+	// `Name(value)` conversion.
+	if base, isDistinct := p.distinctTypes[expectedType]; isDistinct {
+		if actualType == expectedType {
+			return true
+		}
+		if len(actualNode) > 0 && isLiteralNode(actualNode[0]) && p.checkTypeCompatibility(base, actualType) {
+			return true
+		}
+		return false
+	}
+	// Mirror: a distinct value never flows implicitly into anything else,
+	// not even its own base type. That is the whole point of distinct.
+	if _, actualIsDistinct := p.distinctTypes[actualType]; actualIsDistinct {
+		return actualType == expectedType
 	}
 
 	// Check if expectedType is a union type

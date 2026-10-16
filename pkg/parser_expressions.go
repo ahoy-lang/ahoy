@@ -505,7 +505,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					value := p.parseExpression()
 					inferredType := p.inferType(value)
 
-					if existingType != "" && inferredType != "unknown" && !p.checkTypeCompatibility(existingType, inferredType) {
+					if existingType != "" && inferredType != "unknown" && !p.checkTypeCompatibility(existingType, inferredType, value) {
 						errMsg := fmt.Sprintf("Type mismatch: can't reassign %s (type %s) with value of type %s", varName, existingType, inferredType)
 						p.recordErrorAtLine(errMsg, line)
 					}
@@ -887,7 +887,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					}
 				}
 
-				if !p.checkTypeCompatibility(expectedType, inferredType) {
+				if !p.checkTypeCompatibility(expectedType, inferredType, value) {
 					errMsg := fmt.Sprintf("Type mismatch (line %d): can't use %s:%s as %s",
 						line, varName, existingType, inferredType)
 					p.recordError(errMsg)
@@ -929,6 +929,17 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					if explicitType == "bool" && value.Type == NODE_NUMBER {
 						if value.Value == "0" || value.Value == "1" {
 							errMsg := fmt.Sprintf("Boolean variable '%s' should use 'true' or 'false', not '%s' (line %d)", varName, value.Value, line)
+							p.recordError(errMsg)
+						}
+					}
+
+					// Distinct annotations check their initializer strictly:
+					// a literal of the base kind converts, anything else needs
+					// an explicit Name(value) conversion.
+					if _, isDistinct := p.distinctTypes[explicitType]; isDistinct {
+						inferredType := p.inferType(value)
+						if !p.checkTypeCompatibility(explicitType, inferredType, value) {
+							errMsg := fmt.Sprintf("Type mismatch (line %d): can't use %s as %s", line, inferredType, explicitType)
 							p.recordError(errMsg)
 						}
 					}

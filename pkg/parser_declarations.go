@@ -1098,6 +1098,48 @@ func (p *Parser) parseAliasDeclaration() *ASTNode {
 	}
 }
 
+// Parse distinct declaration: distinct Name: basetype $
+// A newtype with the base's layout but strict checking: only the same
+// distinct name (or a literal of the base kind, or an explicit Name(x)
+// conversion) flows into it. v1 bases are plain builtin/named types
+// (no array[...] nesting).
+func (p *Parser) parseDistinctDeclaration() *ASTNode {
+	startLine := p.current().Line
+	p.expect(TOKEN_DISTINCT)
+
+	name := p.expect(TOKEN_IDENTIFIER)
+	p.expect(TOKEN_ASSIGN) // :
+
+	baseType := ""
+	if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
+		p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
+		p.current().Type == TOKEN_CHAR_TYPE || p.current().Type == TOKEN_IDENTIFIER {
+		baseType = p.current().Value
+		p.advance()
+	} else {
+		errMsg := fmt.Sprintf("Expected base type after 'distinct %s:' at line %d", name.Value, startLine)
+		if p.LintMode {
+			p.recordError(errMsg)
+			baseType = "int" // default
+		} else {
+			panic(errMsg)
+		}
+	}
+
+	// Register the distinct type (name -> base)
+	if p.distinctTypes == nil {
+		p.distinctTypes = make(map[string]string)
+	}
+	p.distinctTypes[name.Value] = baseType
+
+	return &ASTNode{
+		Type:     NODE_DISTINCT_DECLARATION,
+		Value:    name.Value,
+		DataType: baseType,
+		Line:     startLine,
+	}
+}
+
 // Parse union declaration: union name: type1, type2, ... $
 func (p *Parser) parseUnionDeclaration() *ASTNode {
 	startLine := p.current().Line

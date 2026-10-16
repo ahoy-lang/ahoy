@@ -324,6 +324,9 @@ func (c *checker) isDefined(name string) bool {
 	if _, ok := p.unionTypes[name]; ok {
 		return true
 	}
+	if _, ok := p.distinctTypes[name]; ok {
+		return true
+	}
 	if _, ok := p.functions[name]; ok {
 		return true
 	}
@@ -393,6 +396,10 @@ func (c *checker) isCallable(name string) bool {
 	}
 	// A variable holding a C callback typedef is called through it too
 	if c.isCallbackTypedefVariable(name) {
+		return true
+	}
+	// A distinct type name converts with one argument: Name(value).
+	if _, ok := c.p.distinctTypes[name]; ok {
 		return true
 	}
 	if c.p.zeroArgFunctions[name] {
@@ -1623,6 +1630,20 @@ func (c *checker) checkCall(node *ASTNode) {
 		c.errorAt(node, "%s", msg)
 		return
 	}
+	// Distinct-type conversion: exactly one argument compatible with the
+	// base (literals included) or the distinct type itself (identity).
+	if base, ok := c.p.distinctTypes[name]; ok {
+		args := node.Children
+		if len(args) != 1 {
+			c.errorAt(node, "Conversion '%s(...)' takes exactly one argument", name)
+			return
+		}
+		actual := c.argActualType(args[0])
+		if actual != name && !c.p.checkTypeCompatibility(base, actual, args[0]) {
+			c.errorAt(args[0], "Cannot convert %s to %s", actual, name)
+		}
+		return
+	}
 	c.checkArguments(node, name, node.Children)
 	// free|x| frees immediately (recorded after the arguments are checked so
 	// the call itself doesn't warn): any later use of x in this function
@@ -1754,6 +1775,69 @@ func (c *checker) checkArguments(node *ASTNode, name string, args []*ASTNode) {
 		}
 		posIdx++
 	}
+
+	// Distinct-typed parameters are checked strictly (plain call args are
+	// otherwise unchecked): only the same distinct name, a literal of the
+	// base kind, or an explicit conversion flows in.
+	posIdx = 0
+	for _, arg := range args {
+		if arg == nil {
+			continue
+		}
+		if arg.Type == NODE_BINARY_OP && arg.Value == "named_arg" {
+			label, value := childAt(arg, 0), childAt(arg, 1)
+			if label != nil && value != nil {
+				for _, param := range params.Children {
+					if param != nil && param.Value == label.Value {
+						_, paramDistinct := c.p.distinctTypes[param.DataType]
+						if paramDistinct {
+							actual := c.argActualType(value)
+							if !c.p.checkTypeCompatibility(param.DataType, actual, value) {
+								c.errorAt(value, "Parameter '%s' expects %s but got %s", label.Value, param.DataType, actual)
+							}
+						} else {
+							actual := c.argActualType(value)
+							pt := param.DataType
+							if _, argDistinct := c.p.distinctTypes[actual]; argDistinct && pt != "" && pt != "any" && pt != "generic" && pt != "unknown" {
+								c.errorAt(value, "Parameter '%s' expects %s but got distinct %s (convert explicitly or widen the parameter)", label.Value, param.DataType, actual)
+							}
+						}
+						break
+					}
+				}
+			}
+			continue
+		}
+		if posIdx < len(params.Children) {
+			if pnode := params.Children[posIdx]; pnode != nil {
+				if _, isDistinct := c.p.distinctTypes[pnode.DataType]; isDistinct {
+					actual := c.argActualType(arg)
+					if !c.p.checkTypeCompatibility(pnode.DataType, actual, arg) {
+						c.errorAt(arg, "Parameter '%s' expects %s but got %s", pnode.Value, pnode.DataType, actual)
+					}
+				} else {
+					actual := c.argActualType(arg)
+					pt := pnode.DataType
+					if _, argDistinct := c.p.distinctTypes[actual]; argDistinct && pt != "" && pt != "any" && pt != "generic" && pt != "unknown" {
+						c.errorAt(arg, "Parameter '%s' expects %s but got distinct %s (convert explicitly or widen the parameter)", pnode.Value, pnode.DataType, actual)
+					}
+				}
+			}
+		}
+		posIdx++
+	}
+}
+
+// argActualType resolves a call argument's type for distinct checking: the
+// checker's own live scope first (parser scopes are unwound by check time),
+// parser inference as fallback.
+func (c *checker) argActualType(arg *ASTNode) string {
+	if arg != nil && arg.Type == NODE_IDENTIFIER {
+		if t := c.lookupType(arg.Value); t != "" {
+			return t
+		}
+	}
+	return c.p.inferType(arg)
 }
 
 // isTypeName reports whether name denotes a user type (struct or enum) in
