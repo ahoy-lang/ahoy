@@ -121,11 +121,9 @@ $
 $
 `, `@ f ||:
   switch x:
-    on 1:
-      print|"one"|
+    on 1: print|"one"|
     on 2: print|"two"|
-    _:
-      print|"other"|
+    _: print|"other"|
   $
 $
 `)

@@ -13,6 +13,8 @@ import "strings"
 //     If it does not fit, the body moves onto its own indented line. Loops are
 //     never collapsed: the parser rejects a `$` on the same line as a one-line
 //     loop, so a loop always keeps its `$` on a line of its own.
+//   - A switch arm (`on ...:` / `_:`) with a single simple body joins onto one
+//     line under the same width rule (arms carry no `$`).
 //   - Blank lines are collapsed to at most one, with none at the start or end of
 //     the file. Comments are preserved verbatim.
 //   - Spacing is normalised: runs of spaces become one, a comma is followed by
@@ -32,7 +34,7 @@ const (
 func formatSource(source string) string {
 	lines := normaliseLines(source)
 	assignIndent(lines)
-	return renderLines(collapseBlocks(lines))
+	return renderLines(collapseBlocks(collapseSwitchArms(lines)))
 }
 
 // fLine is one logical line of the formatted output.
@@ -570,6 +572,90 @@ func lastKeywordIndexOutsideStrings(text, word string) int {
 
 func isWordRune(ch rune) bool {
 	return ch == '_' || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')
+}
+
+// colonOutsideStrings reports whether text holds a `:` outside string
+// literals (and outside a trailing comment). A declaration colon must
+// never be joined onto an arm header: `on 5: x:int = ...` would not
+// parse the way the two lines do.
+func colonOutsideStrings(text string) bool {
+	code, _ := splitComment(text)
+	runes := []rune(code)
+	inString := rune(0)
+	for i := 0; i < len(runes); i++ {
+		ch := runes[i]
+		if inString != 0 {
+			if ch == '\\' {
+				i++
+				continue
+			}
+			if ch == inString {
+				inString = 0
+			}
+			continue
+		}
+		switch ch {
+		case '"', '`', '\'':
+			inString = ch
+			continue
+		case ':':
+			return true
+		}
+	}
+	return false
+}
+
+// collapseSwitchArms joins a switch arm header (`on ...:` or `_:`) with
+// its single simple body line when the joined line fits within
+// formatterMaxWidth. Arms carry no `$` closer, so collapseBlocks cannot
+// see them; this pass runs first. A body that opens a block, holds a
+// comment, holds a declaration colon, or is followed by a second body
+// line stays expanded. Joining is pure concatenation, so an already
+// joined arm never matches again: the pass is idempotent.
+func collapseSwitchArms(lines []*fLine) []*fLine {
+	isArmHeader := func(text string) bool {
+		trimmed := strings.TrimSpace(text)
+		if !strings.HasSuffix(trimmed, ":") {
+			return false
+		}
+		if strings.HasPrefix(trimmed, "on ") {
+			return true
+		}
+		return trimmed == "_:"
+	}
+	out := make([]*fLine, 0, len(lines))
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		if !isArmHeader(line.text) || i+1 >= len(lines) {
+			out = append(out, line)
+			continue
+		}
+		body := lines[i+1]
+		if body.blank || body.closer || body.indent != line.indent+1 ||
+			opensBlock(body.text) || isArmHeader(body.text) ||
+			strings.Contains(body.text, "?") || colonOutsideStrings(body.text) {
+			out = append(out, line)
+			continue
+		}
+		// A second body line means a multi-statement arm: leave it alone.
+		if i+2 < len(lines) {
+			next := lines[i+2]
+			if !next.blank && !next.closer && next.indent == line.indent+1 && !isArmHeader(next.text) {
+				out = append(out, line)
+				continue
+			}
+		}
+		header := strings.TrimSpace(line.text)
+		bodyText := strings.TrimSpace(body.text)
+		joined := strings.Repeat(formatterIndent, line.indent) + header + " " + bodyText
+		if len(joined) > formatterMaxWidth {
+			out = append(out, line)
+			continue
+		}
+		out = append(out, &fLine{text: header + " " + bodyText, indent: line.indent})
+		i++
+	}
+	return out
 }
 
 // collapseBlocks joins a short single-statement block onto one line and expands

@@ -1,0 +1,16 @@
+program switch_arms
+
+@ pick |i: int| string:
+  switch i:
+    on 0: return "fire"
+    on 1: return "smoke"
+    on 5:
+      return "a very long string value here that keeps going and going past the limit width check ok"
+  $
+  return ""
+$
+
+@ main ||:
+  a: pick|0|
+  print|a|
+$
