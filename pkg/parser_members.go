@@ -509,6 +509,11 @@ func (p *Parser) looksLikeLambda() bool {
 	defer func() { p.pos = saved }()
 
 	p.advance() // (
+	// Zero-argument lambda: (): expression
+	if p.current().Type == TOKEN_RPAREN {
+		p.advance()
+		return p.current().Type == TOKEN_ASSIGN
+	}
 	for {
 		if p.current().Type != TOKEN_IDENTIFIER {
 			return false

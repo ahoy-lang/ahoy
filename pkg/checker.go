@@ -2089,6 +2089,11 @@ func (c *checker) checkObjectLiteral(node *ASTNode) {
 		}
 		value, ok := present[field.Name]
 		if !ok {
+			// A field with a default (on_tick: fn()->int = &tick) is filled
+			// from that default, so omitting it is not a null call.
+			if field.DefaultValue != nil {
+				continue
+			}
 			c.errorAt(node, "Struct '%s' literal is missing function field '%s' (%s); calling it would be a null call",
 				structDef.Name, field.Name, field.Type)
 			continue

@@ -1591,7 +1591,23 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 					p.advance() // consume =
 
 					// Parse default value
-					if p.current().Type == TOKEN_NUMBER {
+					if p.current().Type == TOKEN_AMPERSAND && p.peek(1).Type == TOKEN_IDENTIFIER {
+						// Function-reference default: on_tick: fn()->int = &tick
+						ampLine := p.current().Line
+						p.advance() // &
+						fnName := p.current().Value
+						p.advance() // name
+						defaultValue = &ASTNode{
+							Type:  NODE_UNARY_OP,
+							Value: "&",
+							Line:  ampLine,
+							Children: []*ASTNode{{
+								Type:  NODE_IDENTIFIER,
+								Value: fnName,
+								Line:  ampLine,
+							}},
+						}
+					} else if p.current().Type == TOKEN_NUMBER {
 						defaultValue = &ASTNode{
 							Type:  NODE_NUMBER,
 							Value: p.current().Value,

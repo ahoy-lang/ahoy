@@ -8480,6 +8480,13 @@ func (gen *CodeGenerator) generateIndirectCall(node *ahoy.ASTNode, funcType stri
 // the function to the (void* env, params...) convention every function value
 // uses, so a call through a value has exactly one shape.
 func (gen *CodeGenerator) emitFunctionReference(name string) {
+	gen.output.WriteString(gen.funcRefExpr(name))
+}
+
+// funcRefExpr emits (once) the reference thunk for a named function and
+// returns the AhoyFn expression as a string, for contexts that build C as
+// text (struct-field defaults).
+func (gen *CodeGenerator) funcRefExpr(name string) string {
 	thunk := "__ahoy_ref_" + name
 	if !gen.funcRefThunks[name] {
 		gen.funcRefThunks[name] = true
@@ -8528,9 +8535,7 @@ func (gen *CodeGenerator) emitFunctionReference(name string) {
 		gen.closureDecls.WriteString(body)
 		gen.closureDecls.WriteString(" }\n")
 	}
-	gen.output.WriteString("((AhoyFn){ (void(*)(void))")
-	gen.output.WriteString(thunk)
-	gen.output.WriteString(", NULL })")
+	return "((AhoyFn){ (void(*)(void))" + thunk + ", NULL })"
 }
 
 // generateLambdaValue emits a lambda as an AhoyFn. The lambda becomes a static
@@ -8687,8 +8692,11 @@ func (gen *CodeGenerator) generateLambdaValue(node *ahoy.ASTNode) {
 		gen.closureDecls.WriteString(retC)
 		gen.closureDecls.WriteString(" ")
 		gen.closureDecls.WriteString(thunk)
-		gen.closureDecls.WriteString("(void* __env, ")
-		gen.closureDecls.WriteString(strings.Join(sig, ", "))
+		gen.closureDecls.WriteString("(void* __env")
+		if len(sig) > 0 {
+			gen.closureDecls.WriteString(", ")
+			gen.closureDecls.WriteString(strings.Join(sig, ", "))
+		}
 		gen.closureDecls.WriteString(") { (void)__env; ")
 		gen.closureDecls.WriteString(bodyCode)
 		gen.closureDecls.WriteString("; }\n")
@@ -8702,8 +8710,11 @@ func (gen *CodeGenerator) generateLambdaValue(node *ahoy.ASTNode) {
 	gen.closureDecls.WriteString(retC)
 	gen.closureDecls.WriteString(" ")
 	gen.closureDecls.WriteString(thunk)
-	gen.closureDecls.WriteString("(void* __env, ")
-	gen.closureDecls.WriteString(strings.Join(sig, ", "))
+	gen.closureDecls.WriteString("(void* __env")
+	if len(sig) > 0 {
+		gen.closureDecls.WriteString(", ")
+		gen.closureDecls.WriteString(strings.Join(sig, ", "))
+	}
 	gen.closureDecls.WriteString(") { ")
 	gen.closureDecls.WriteString(bodyCode)
 	gen.closureDecls.WriteString("; }\n")
@@ -11757,6 +11768,15 @@ func (gen *CodeGenerator) generateDefaultValue(node *ahoy.ASTNode) string {
 	}
 
 	switch node.Type {
+	case ahoy.NODE_UNARY_OP:
+		// Function-reference default: on_tick: fn()->int = &tick
+		if node.Value == "&" && len(node.Children) == 1 && node.Children[0].Type == ahoy.NODE_IDENTIFIER {
+			name := node.Children[0].Value
+			if gen.userFunctions[name] {
+				return gen.funcRefExpr(name)
+			}
+			return "((AhoyFn){0, 0})"
+		}
 	case ahoy.NODE_NUMBER:
 		return node.Value
 	case ahoy.NODE_STRING:

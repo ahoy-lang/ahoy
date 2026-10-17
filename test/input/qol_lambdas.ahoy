@@ -1,0 +1,32 @@
+expected: []
+? S3 (7.6): zero-arg lambdas + fn-typed struct field defaults
+
+@ tick || int:
+	return 7
+$
+
+struct S:
+	on_tick: fn() -> int = &tick
+	n: int
+$
+
+f: fn() -> int = (): 42
+v: f||
+print|v|
+expected.push|"42"|
+
+g: fn(int) -> int = (x): x * 3
+w: g|5|
+print|w|
+expected.push|"15"|
+
+s: S{n: 1}
+print|s.n|
+expected.push|"1"|
+
+d: s.on_tick||
+print|d|
+expected.push|"7"|
+
+? Print expected values for test validation
+print|expected|

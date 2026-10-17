@@ -630,14 +630,20 @@ func removeConstFromGlobals(code string) string {
 
 	inFunction := false
 	braceCount := 0
+	inCommentBlock := false
 
 	for _, line := range lines {
+		// Strip comments first so a brace inside a comment cannot desync the
+		// function/global tracking (same guard as extractConstantInits).
+		stripped, stillInBlock := stripCComments(line, inCommentBlock)
+		inCommentBlock = stillInBlock
+
 		// Track if we're inside a function
-		braceCount += strings.Count(line, "{")
-		braceCount -= strings.Count(line, "}")
+		braceCount += strings.Count(stripped, "{")
+		braceCount -= strings.Count(stripped, "}")
 
 		// Check for function definitions
-		if strings.Contains(line, "(") && strings.Contains(line, ")") && strings.Contains(line, "{") {
+		if strings.Contains(stripped, "(") && strings.Contains(stripped, ")") && strings.Contains(stripped, "{") {
 			inFunction = true
 		}
 		if braceCount == 0 {
@@ -659,6 +665,36 @@ func removeConstFromGlobals(code string) string {
 
 // extractConstantInits extracts global constant initialization statements
 // from the generated C code for hot reload re-initialization
+// stripCComments removes // and /* */ comments from one C line, carrying
+// multi-line block state in and out. Used before brace counting so a trailing
+// comment cannot hide a block-opening brace.
+func stripCComments(line string, inBlock bool) (string, bool) {
+	var out strings.Builder
+	i := 0
+	for i < len(line) {
+		if inBlock {
+			end := strings.Index(line[i:], "*/")
+			if end < 0 {
+				return out.String(), true
+			}
+			i += end + 2
+			inBlock = false
+			continue
+		}
+		if strings.HasPrefix(line[i:], "//") {
+			break
+		}
+		if strings.HasPrefix(line[i:], "/*") {
+			inBlock = true
+			i += 2
+			continue
+		}
+		out.WriteByte(line[i])
+		i++
+	}
+	return out.String(), inBlock
+}
+
 func extractConstantInits(code string) []string {
 	lines := strings.Split(code, "\n")
 	var inits []string
@@ -668,26 +704,24 @@ func extractConstantInits(code string) []string {
 	inCommentBlock := false
 
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
+		// Strip comments BEFORE counting braces: a line like
+		// `if (x) {   /* note */` both opens a block and ends with a
+		// comment, and treating it as comment-only desynced the brace
+		// counter, so later function bodies were scraped as globals.
+		stripped, stillInBlock := stripCComments(line, inCommentBlock)
+		inCommentBlock = stillInBlock
+		trimmed := strings.TrimSpace(stripped)
 
-		// Skip comments
-		if strings.HasPrefix(trimmed, "/*") {
-			inCommentBlock = true
-		}
-		if strings.HasSuffix(trimmed, "*/") {
-			inCommentBlock = false
-			continue
-		}
-		if inCommentBlock || strings.HasPrefix(trimmed, "//") {
+		if trimmed == "" {
 			continue
 		}
 
 		// Track if we're inside a function
-		braceCount += strings.Count(line, "{")
-		braceCount -= strings.Count(line, "}")
+		braceCount += strings.Count(stripped, "{")
+		braceCount -= strings.Count(stripped, "}")
 
 		// Check for function definitions
-		if strings.Contains(line, "(") && strings.Contains(line, ")") && strings.Contains(line, "{") {
+		if strings.Contains(stripped, "(") && strings.Contains(stripped, ")") && strings.Contains(stripped, "{") {
 			inFunction = true
 		}
 		if braceCount == 0 {
