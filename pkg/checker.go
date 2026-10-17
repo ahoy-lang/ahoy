@@ -1997,6 +1997,16 @@ func (c *checker) checkMethodCall(node *ASTNode) {
 	if recvType == "" {
 		recvType = NormalizeReceiverType(c.p.inferType(object))
 	}
+	// Fixed-size buffers expose len only; mutating methods (push/pop/fill
+	// and friends) would corrupt the struct as an AhoyArray, so reject
+	// them here instead of failing obscurely in generated C.
+	if recvType == "buffer[f32]" || strings.HasPrefix(recvType, "buffer[") {
+		if method != "len" && method != "length" {
+			c.errorAt(node, "Type '%s' has no method '%s' (fixed-size buffer)", recvType, method)
+			return
+		}
+		return
+	}
 	if _, hasImpl := c.methods[recvType]; hasImpl {
 		c.errorAt(node, "Type '%s' has no method '%s'%s", recvType, method, c.methodHint(recvType))
 		return

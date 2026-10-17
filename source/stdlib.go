@@ -227,6 +227,8 @@ var BuiltinFuncs = map[string]StdlibFunc{
 	"str":        {Name: "str", Category: "builtin", MethodName: "str", ReturnType: "string", Params: "value:any", Doc: "Converts to string"},
 	"int":        {Name: "int", Category: "builtin", MethodName: "int", ReturnType: "int", Params: "value:any", Doc: "Converts to integer"},
 	"float":      {Name: "float", Category: "builtin", MethodName: "float", ReturnType: "float", Params: "value:any", Doc: "Converts to float"},
+	"f32":        {Name: "f32", Category: "builtin", MethodName: "f32", ReturnType: "f32", Params: "value:any", Doc: "Narrows to 4-byte float"},
+	"buffer":     {Name: "buffer", Category: "builtin", MethodName: "buffer", ReturnType: "buffer[f32]", Params: "n:int", Doc: "Allocates a zeroed flat buffer[f32] of length n"},
 	"input":      {Name: "input", Category: "builtin", MethodName: "input", ReturnType: "string", Params: "prompt:string", Doc: "Reads input from stdin"},
 	"sleep":      {Name: "sleep", Category: "builtin", MethodName: "sleep", ReturnType: "void", Params: "milliseconds:int", Doc: "Pauses execution"},
 	"exit":       {Name: "exit", Category: "builtin", MethodName: "exit", ReturnType: "void", Params: "code:int", Doc: "Exits with code"},

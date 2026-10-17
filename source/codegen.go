@@ -562,6 +562,15 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		result.WriteString("\n")
 	}
 
+	// Flat POD buffer (buffer[f32]): single flexible allocation, always
+	// emitted (16 lines) so C kernels and -fast builds never chase a flag.
+	result.WriteString("// Flat buffer (buffer[f32]): contiguous float32 storage\n")
+	result.WriteString("typedef struct {\n")
+	result.WriteString("    int length;\n")
+	result.WriteString("    float data[];\n")
+	result.WriteString("} AhoyBufferF32;\n")
+	result.WriteString("char* print_buffer_helper(AhoyBufferF32* b);\n\n")
+
 	// String concatenation (+ on two strings) is emitted on demand during
 	// codegen, which runs after this preamble; the prototype is unconditional
 	// so string-only programs (no arrays) still see a declaration.
@@ -1869,6 +1878,9 @@ func (gen *CodeGenerator) isHeapAllocatedType(varType string) bool {
 	if strings.HasPrefix(varType, "array") || varType == "AhoyArray*" {
 		return true
 	}
+	if strings.HasPrefix(varType, "buffer") {
+		return true
+	}
 	if strings.HasPrefix(varType, "dict") || varType == "HashMap*" {
 		return true
 	}
@@ -2509,6 +2521,45 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	gen.declaredFunctionVars = make(map[string]bool) // Clear function-local declarations
 }
 
+// generateBufferWrite emits a float store into contiguous storage
+// (bounds-checked unless -fast).
+func (gen *CodeGenerator) generateBufferWrite(node *ahoy.ASTNode, arrayName string, indexNode *ahoy.ASTNode, valueNode *ahoy.ASTNode) {
+	gen.writeIndent()
+	objExpr := gen.nameExpr(arrayName)
+	if gen.enableBoundsChecking {
+		gen.output.WriteString("{ int __idx = ")
+		gen.generateNode(indexNode)
+		gen.output.WriteString("; ")
+		gen.output.WriteString("AhoyBufferF32* __b = ")
+		gen.output.WriteString(objExpr)
+		gen.output.WriteString("; ")
+		gen.output.WriteString("if (__idx < 0 || __idx >= __b->length) { ")
+		gen.output.WriteString("fprintf(stderr, \"RUNTIME ERROR: Buffer bounds violation\\n\"); ")
+		gen.output.WriteString("fprintf(stderr, \"  File: ")
+		gen.output.WriteString(gen.sourceFilename)
+		gen.output.WriteString("\\n\"); ")
+		gen.output.WriteString("fprintf(stderr, \"  Line: ")
+		gen.output.WriteString(strconv.Itoa(node.Line))
+		gen.output.WriteString("\\n\"); ")
+		gen.output.WriteString("fprintf(stderr, \"  Buffer: ")
+		gen.output.WriteString(arrayName)
+		gen.output.WriteString("\\n\"); ")
+		gen.output.WriteString("fprintf(stderr, \"  Index: %d\\n\", __idx); ")
+		gen.output.WriteString("fprintf(stderr, \"  Valid range: 0 to %d\\n\", __b->length - 1); ")
+		gen.output.WriteString("exit(1); } ")
+		gen.output.WriteString("__b->data[__idx] = (float)(")
+		gen.generateNode(valueNode)
+		gen.output.WriteString("); }\n")
+		return
+	}
+	gen.output.WriteString(objExpr)
+	gen.output.WriteString("->data[")
+	gen.generateNode(indexNode)
+	gen.output.WriteString("] = (float)(")
+	gen.generateNode(valueNode)
+	gen.output.WriteString(");\n")
+}
+
 func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 	gen.writeIndent()
 
@@ -2541,6 +2592,12 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			arrayName := node.Children[0].Value
 			indexNode := node.Children[0].Children[0]
 			valueNode := node.Children[1]
+
+			// Flat buffer store: contiguous float32 storage (no boxing).
+			if gen.isBufferVar(arrayName) {
+				gen.generateBufferWrite(node, arrayName, indexNode, valueNode)
+				return
+			}
 
 			// Check if the variable type is intptr_t, void*, generic, or any (might need casting to AhoyArray*)
 			needsArrayCast := false
@@ -5701,6 +5758,11 @@ func (gen *CodeGenerator) generateFreeCodeForVar(varName string, varType string)
 		return fmt.Sprintf("    if (%s) ahoy_jobs_destroy(%s);\n", varName, varName)
 	}
 
+	if strings.HasPrefix(varType, "buffer[") {
+		// Single flexible allocation (struct + data together).
+		return fmt.Sprintf("    if (%s) free(%s);\n", varName, varName)
+	}
+
 	if strings.HasPrefix(varType, "array") || varType == "AhoyArray*" {
 		// For arrays, need to free the array structure and possibly contents
 		// Check if array contains heap-allocated structs (Ahoy or C structs)
@@ -6106,6 +6168,14 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 			arg := node.Children[0]
 			argType := gen.inferType(arg)
 
+			// Flat buffer length lives on the struct.
+			if argType == "buffer[f32]" || strings.HasPrefix(argType, "buffer[") {
+				gen.output.WriteString("(")
+				gen.generateNode(arg)
+				gen.output.WriteString(")->length")
+				return
+			}
+
 			// Check if it's an array type
 			if argType == "array" || strings.HasPrefix(argType, "array[") || argType == "AhoyArray*" {
 				gen.output.WriteString("(")
@@ -6254,6 +6324,8 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 								// Check for typed collections
 								if strings.HasPrefix(argType, "array[") {
 									formatSpec = "%s" // Will use print_array_helper
+								} else if strings.HasPrefix(argType, "buffer[") {
+									formatSpec = "%s" // Will use print_buffer_helper
 								} else if strings.HasPrefix(argType, "dict[") {
 									formatSpec = "%s" // Will use print_dict_helper
 								} else if _, isStruct := gen.structs[argType]; isStruct {
@@ -6292,6 +6364,8 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 							// Check for typed collections
 							if strings.HasPrefix(argType, "array[") {
 								formatSpec = "%s" // Will use print_array_helper
+							} else if strings.HasPrefix(argType, "buffer[") {
+								formatSpec = "%s" // Will use print_buffer_helper
 							} else if strings.HasPrefix(argType, "dict[") {
 								formatSpec = "%s" // Will use print_dict_helper
 							} else if _, isStruct := gen.structs[argType]; isStruct {
@@ -6361,6 +6435,11 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 					} else if argType == "dict" || strings.HasPrefix(argType, "dict[") {
 						gen.dictMethods["print_dict"] = true
 						gen.output.WriteString("print_dict_helper(")
+						gen.generateNode(arg)
+						gen.output.WriteString(")")
+					} else if strings.HasPrefix(argType, "buffer[") {
+						gen.arrayMethods["print_buffer"] = true
+						gen.output.WriteString("print_buffer_helper(")
 						gen.generateNode(arg)
 						gen.output.WriteString(")")
 					} else if argType == "AhoyJSON*" || argType == "json" {
@@ -6621,6 +6700,17 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 		}
 		gen.output.WriteString(")")
 
+	case "__print_buffer_helper":
+		// Special case for buffer printing - don't convert to PascalCase
+		gen.output.WriteString("print_buffer_helper(")
+		for i, arg := range node.Children {
+			if i > 0 {
+				gen.output.WriteString(", ")
+			}
+			gen.generateNode(arg)
+		}
+		gen.output.WriteString(")")
+
 	// Type casts
 	case "int":
 		// int("42") parses the text. The plain C cast returned the pointer as an
@@ -6650,6 +6740,31 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 			gen.generateNode(node.Children[0])
 		}
 		gen.output.WriteString("))")
+
+	case "f32":
+		// f32(x) narrows to 4-byte float, like float(x) but explicit.
+		if len(node.Children) > 0 && gen.isStringExpr(node.Children[0]) {
+			gen.output.WriteString("atof(")
+			gen.generateNode(node.Children[0])
+			gen.output.WriteString(")")
+			return
+		}
+		gen.output.WriteString("((float)(")
+		if len(node.Children) > 0 {
+			gen.generateNode(node.Children[0])
+		}
+		gen.output.WriteString("))")
+
+	case "buffer":
+		// buffer|n| allocates a zeroed buffer[f32] of length n: one
+		// flexible allocation (struct + data), length stored up front.
+		gen.output.WriteString("({ int __n = ")
+		if len(node.Children) > 0 {
+			gen.generateNode(node.Children[0])
+		} else {
+			gen.output.WriteString("0")
+		}
+		gen.output.WriteString("; if (__n < 0) __n = 0; AhoyBufferF32* __b = calloc(1, sizeof(AhoyBufferF32) + (size_t)__n * sizeof(float)); __b->length = __n; __b; })")
 
 	case "char":
 		gen.output.WriteString("((char)(")
@@ -6948,6 +7063,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 						if isLValue && !strings.HasSuffix(argType, "*") && argType != "array" &&
 							!strings.HasPrefix(argType, "array[") && argType != "dict" &&
 							!strings.HasPrefix(argType, "dict[") && argType != "HashMap*" &&
+							!strings.HasPrefix(argType, "buffer[") &&
 							argType != "AhoyArray*" && argType != "string" && argType != "char*" {
 							gen.output.WriteString("&")
 						}
@@ -7033,6 +7149,25 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 						argType == "dict" || strings.HasPrefix(argType, "dict[") || strings.HasPrefix(argType, "dict<") ||
 						argType == "HashMap*" || strings.HasSuffix(argType, "*") {
 						gen.output.WriteString("(intptr_t)")
+					}
+				}
+
+				// A flat buffer passed to a C data-pointer parameter (float*,
+				// double*, void*) decays to its storage: buffers already ARE
+				// pointers, so no & is added above and only ->data is needed.
+				if hasCParamInfo && i < len(cParamTypes) {
+					paramType := strings.TrimSpace(cParamTypes[i])
+					paramType = strings.TrimPrefix(paramType, "const ")
+					paramType = strings.TrimSpace(paramType)
+					argType := gen.inferType(arg)
+					if (paramType == "float*" || paramType == "float *" ||
+						paramType == "double*" || paramType == "double *" ||
+						paramType == "void*" || paramType == "void *") &&
+						strings.HasPrefix(argType, "buffer[") {
+						gen.output.WriteString("(")
+						gen.generateNode(arg)
+						gen.output.WriteString(")->data")
+						continue
 					}
 				}
 
@@ -8791,6 +8926,55 @@ func (gen *CodeGenerator) nameExpr(name string) string {
 	return name
 }
 
+// isBufferVar reports whether name holds a buffer[f32].
+func (gen *CodeGenerator) isBufferVar(name string) bool {
+	if varType, exists := gen.variables[name]; exists {
+		if strings.HasPrefix(varType, "buffer[") {
+			return true
+		}
+	}
+	if varType, exists := gen.functionVars[name]; exists {
+		if strings.HasPrefix(varType, "buffer[") {
+			return true
+		}
+	}
+	return false
+}
+
+// generateBufferRead emits a float load from contiguous storage
+// (bounds-checked unless -fast or an lvalue context).
+func (gen *CodeGenerator) generateBufferRead(node *ahoy.ASTNode, objExpr string, arrayName string) {
+	if gen.enableBoundsChecking && !gen.skipBoundsCheck {
+		gen.output.WriteString("({ ")
+		gen.output.WriteString("int __idx = ")
+		gen.generateNode(node.Children[0])
+		gen.output.WriteString("; ")
+		gen.output.WriteString("AhoyBufferF32* __b = ")
+		gen.output.WriteString(objExpr)
+		gen.output.WriteString("; ")
+		gen.output.WriteString("if (__idx < 0 || __idx >= __b->length) { ")
+		gen.output.WriteString("fprintf(stderr, \"RUNTIME ERROR: Buffer bounds violation\\n\"); ")
+		gen.output.WriteString("fprintf(stderr, \"  File: ")
+		gen.output.WriteString(gen.sourceFilename)
+		gen.output.WriteString("\\n\"); ")
+		gen.output.WriteString("fprintf(stderr, \"  Line: ")
+		gen.output.WriteString(strconv.Itoa(node.Line))
+		gen.output.WriteString("\\n\"); ")
+		gen.output.WriteString("fprintf(stderr, \"  Buffer: ")
+		gen.output.WriteString(arrayName)
+		gen.output.WriteString("\\n\"); ")
+		gen.output.WriteString("fprintf(stderr, \"  Index: %d\\n\", __idx); ")
+		gen.output.WriteString("fprintf(stderr, \"  Valid range: 0 to %d\\n\", __b->length - 1); ")
+		gen.output.WriteString("exit(1); } ")
+		gen.output.WriteString("__b->data[__idx]; })")
+		return
+	}
+	gen.output.WriteString(objExpr)
+	gen.output.WriteString("->data[")
+	gen.generateNode(node.Children[0])
+	gen.output.WriteString("]")
+}
+
 func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 	// Check if this is a chained array access (2D array): grid[r][c]
 	// In this case, Value is empty and Children[0] is the inner array access, Children[1] is the outer index
@@ -8813,6 +8997,12 @@ func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 		if varType == "intptr_t" || varType == "void*" || varType == "generic" || varType == "any" {
 			needsArrayCast = true
 		}
+	}
+
+	// Flat buffer read: contiguous float32 storage, no boxing.
+	if gen.isBufferVar(arrayName) {
+		gen.generateBufferRead(node, objExpr, arrayName)
+		return
 	}
 
 	// If bounds checking is enabled and not skipped (lvalue context handled separately)
@@ -8985,6 +9175,28 @@ func (gen *CodeGenerator) generateChainedArrayAccess(node *ahoy.ASTNode) {
 	// same as 2D chained access).
 	if innerAccess.Type == ahoy.NODE_MEMBER_ACCESS {
 		arrayType := gen.inferType(innerAccess)
+		if arrayType == "buffer[f32]" || strings.HasPrefix(arrayType, "buffer[") {
+			// Buffer field index: bounds-checked float load (unless -fast).
+			if gen.enableBoundsChecking && !gen.skipBoundsCheck {
+				gen.output.WriteString("({ int __idx = ")
+				gen.generateNode(outerIndex)
+				gen.output.WriteString("; AhoyBufferF32* __b = ")
+				gen.generateNode(innerAccess)
+				gen.output.WriteString("; if (__idx < 0 || __idx >= __b->length) { ")
+				gen.output.WriteString("fprintf(stderr, \"RUNTIME ERROR: Buffer bounds violation\\n\"); ")
+				gen.output.WriteString("fprintf(stderr, \"  Index: %d\\n\", __idx); ")
+				gen.output.WriteString("fprintf(stderr, \"  Valid range: 0 to %d\\n\", __b->length - 1); ")
+				gen.output.WriteString("exit(1); } ")
+				gen.output.WriteString("__b->data[__idx]; })")
+				return
+			}
+			gen.output.WriteString("(")
+			gen.generateNode(innerAccess)
+			gen.output.WriteString(")->data[")
+			gen.generateNode(outerIndex)
+			gen.output.WriteString("]")
+			return
+		}
 		elemType := arrayType
 		if strings.HasPrefix(arrayType, "array[") && strings.HasSuffix(arrayType, "]") {
 			elemType = strings.TrimSuffix(strings.TrimPrefix(arrayType, "array["), "]")
@@ -9043,6 +9255,36 @@ func (gen *CodeGenerator) generateChainedArrayAssignment(node *ahoy.ASTNode) {
 	// For chained access, Children[0] is the inner array access, Children[1] is the outer index
 	innerAccess := accessNode.Children[0]
 	outerIndex := accessNode.Children[1]
+
+	// Buffer field store (h.b[i] = v): bounds-checked float store
+	// (unless -fast), same shape as generateBufferWrite.
+	if innerAccess.Type == ahoy.NODE_MEMBER_ACCESS {
+		if t := gen.inferType(innerAccess); t == "buffer[f32]" || strings.HasPrefix(t, "buffer[") {
+			if gen.enableBoundsChecking {
+				gen.output.WriteString("{ int __idx = ")
+				gen.generateNode(outerIndex)
+				gen.output.WriteString("; AhoyBufferF32* __b = ")
+				gen.generateNode(innerAccess)
+				gen.output.WriteString("; if (__idx < 0 || __idx >= __b->length) { ")
+				gen.output.WriteString("fprintf(stderr, \"RUNTIME ERROR: Buffer bounds violation\\n\"); ")
+				gen.output.WriteString("fprintf(stderr, \"  Index: %d\\n\", __idx); ")
+				gen.output.WriteString("fprintf(stderr, \"  Valid range: 0 to %d\\n\", __b->length - 1); ")
+				gen.output.WriteString("exit(1); } ")
+				gen.output.WriteString("__b->data[__idx] = (float)(")
+				gen.generateNode(valueNode)
+				gen.output.WriteString("); }\n")
+				return
+			}
+			gen.output.WriteString("(")
+			gen.generateNode(innerAccess)
+			gen.output.WriteString(")->data[")
+			gen.generateNode(outerIndex)
+			gen.output.WriteString("] = (float)(")
+			gen.generateNode(valueNode)
+			gen.output.WriteString(");\n")
+			return
+		}
+	}
 
 	// Generate: ((AhoyArray*)(inner_access))->data[outer_index] = value
 	gen.output.WriteString("((AhoyArray*)")
@@ -9204,6 +9446,9 @@ func (gen *CodeGenerator) mapType(langType string) string {
 	if strings.HasPrefix(langType, "array[") {
 		return "AhoyArray*"
 	}
+	if strings.HasPrefix(langType, "buffer[") {
+		return "AhoyBufferF32*"
+	}
 	if strings.HasPrefix(langType, "dict[") || strings.HasPrefix(langType, "dict<") {
 		return "HashMap*"
 	}
@@ -9226,6 +9471,8 @@ func (gen *CodeGenerator) mapType(langType string) string {
 		return "int"
 	case "float":
 		return "double"
+	case "f32":
+		return "float"
 	case "string", "char*", "char":
 		return "char*"
 	case "bool":
@@ -9611,6 +9858,10 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 				elemType := strings.TrimSuffix(strings.TrimPrefix(arrayType, "array["), "]")
 				return elemType
 			}
+			// Flat buffer reads widen to float.
+			if strings.HasPrefix(arrayType, "buffer[") {
+				return "float"
+			}
 			// Check if the inner array is a 2D array - return its element type
 			if arrayExpr.Type == ahoy.NODE_ARRAY_ACCESS && arrayExpr.Value != "" {
 				if elemType, exists := gen.array2DElementTypes[arrayExpr.Value]; exists {
@@ -9641,6 +9892,11 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		if strings.HasPrefix(arrayType, "array[") {
 			elemType := strings.TrimSuffix(strings.TrimPrefix(arrayType, "array["), "]")
 			return elemType
+		}
+
+		// Flat buffer reads widen to float.
+		if strings.HasPrefix(arrayType, "buffer[") {
+			return "float"
 		}
 
 		// If array is generic/any, elements are also generic/any (intptr_t)
@@ -12279,6 +12535,22 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 		gen.funcDecls.WriteString("}\n\n")
 	}
 
+	// print_buffer helper - formats buffer[f32] for printing
+	if gen.arrayMethods["print_buffer"] {
+		gen.funcDecls.WriteString("char* print_buffer_helper(AhoyBufferF32* b) {\n")
+		gen.funcDecls.WriteString("    if (b == NULL || b->length == 0) return \"[]\";\n")
+		gen.funcDecls.WriteString("    char* buffer = malloc(4096);\n")
+		gen.funcDecls.WriteString("    int offset = 0;\n")
+		gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \"[\");\n")
+		gen.funcDecls.WriteString("    for (int i = 0; i < b->length; i++) {\n")
+		gen.funcDecls.WriteString("        if (i > 0) offset += sprintf(buffer + offset, \", \");\n")
+		gen.funcDecls.WriteString("        offset += sprintf(buffer + offset, \"%g\", b->data[i]);\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \"]\");\n")
+		gen.funcDecls.WriteString("    return buffer;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
 	// print_string_array helper - formats string array for printing
 	if gen.arrayMethods["print_string_array"] {
 		gen.funcDecls.WriteString("char* print_string_array_helper(AhoyArray* arr) {\n")
@@ -12703,6 +12975,15 @@ func (gen *CodeGenerator) processFormatString(formatStr string, args []*ahoy.AST
 							Children: []*ahoy.ASTNode{args[argIndex]},
 						}
 						newArgs = append(newArgs, arrayArg)
+					} else if argType == "buffer[f32]" || strings.HasPrefix(argType, "buffer[") {
+						gen.arrayMethods["print_buffer"] = true
+						result += "%s"
+						bufArg := &ahoy.ASTNode{
+							Type:     ahoy.NODE_CALL,
+							Value:    "__print_buffer_helper", // Special marker
+							Children: []*ahoy.ASTNode{args[argIndex]},
+						}
+						newArgs = append(newArgs, bufArg)
 					} else {
 						result += gen.getFormatSpec(argType)
 						newArgs = append(newArgs, args[argIndex])
@@ -12824,6 +13105,8 @@ func (gen *CodeGenerator) getFormatSpec(typeName string) string {
 		return "%d" // C prints bool as 0/1
 	case "array":
 		return "%p" // Pointer
+	case "buffer[f32]":
+		return "%s" // print_buffer_helper
 	case "dict":
 		return "%p" // Pointer
 	default:

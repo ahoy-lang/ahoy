@@ -530,6 +530,9 @@ func (p *Parser) inferType(node *ASTNode) string {
 		if strings.HasPrefix(arrayType, "array[") && strings.HasSuffix(arrayType, "]") {
 			return strings.TrimSuffix(strings.TrimPrefix(arrayType, "array["), "]")
 		}
+		if strings.HasPrefix(arrayType, "buffer[") && strings.HasSuffix(arrayType, "]") {
+			return "float"
+		}
 		return "unknown"
 	case NODE_CALL:
 		// Handle function calls - infer return type from function signature

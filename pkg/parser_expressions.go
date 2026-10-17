@@ -257,6 +257,21 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				break
 			}
 		}
+		// Member-indexed assignment: obj.prop[idx]: value (buffer fields
+		// etc.). Skip balanced brackets so the assign check below sees
+		// past them; reads are unaffected (no assign follows).
+		for p.current().Type == TOKEN_LBRACKET {
+			p.advance() // skip [
+			depth := 1
+			for p.pos < len(p.tokens) && depth > 0 {
+				if p.current().Type == TOKEN_LBRACKET {
+					depth++
+				} else if p.current().Type == TOKEN_RBRACKET {
+					depth--
+				}
+				p.advance()
+			}
+		}
 		isAssignment := p.current().Type == TOKEN_ASSIGN || p.current().Type == TOKEN_EQUALS
 		isCompoundAssignment := p.isCompoundAssignOp(p.current().Type)
 		p.pos = savedPos // restore position
@@ -709,8 +724,11 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				possibleType := p.current().Value
 
 				// Check for typed collections: array[type]= or dict[key,value]= or dict<key,value>=
+				// or buffer[f32]= (flat POD buffer; buffer stays an identifier
+				// like dict, so no keyword is reserved for it)
 				if (p.current().Type == TOKEN_ARRAY_TYPE || p.current().Type == TOKEN_DICT_TYPE ||
-					(p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "dict")) &&
+					(p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "dict") ||
+					(p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "buffer")) &&
 					(p.peek(1).Type == TOKEN_LBRACKET || p.peek(1).Type == TOKEN_LANGLE) {
 					baseType := possibleType
 					isDict := p.current().Type == TOKEN_DICT_TYPE || p.current().Value == "dict"

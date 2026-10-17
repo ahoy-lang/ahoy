@@ -1564,6 +1564,17 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 						p.expect(TOKEN_RANGLE)
 						fieldType += ">"
 					}
+				} else if p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "buffer" {
+					// Flat buffer field: buffer[f32] (f32 only for now).
+					fieldType = "buffer"
+					p.advance()
+					if p.current().Type == TOKEN_LBRACKET {
+						p.advance() // consume [
+						fieldType += "[" + p.current().Value
+						p.advance() // consume type
+						p.expect(TOKEN_RBRACKET)
+						fieldType += "]"
+					}
 				} else {
 					fieldType = p.current().Value
 					if p.current().Type == TOKEN_IDENTIFIER ||

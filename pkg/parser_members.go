@@ -1158,6 +1158,15 @@ func (p *Parser) parseComplexReturnType() string {
 		return fmt.Sprintf("array[%s]", elementType)
 	}
 
+	// Check for buffer[f32] syntax (flat POD buffer; f32 only for now).
+	if baseType == "buffer" && p.current().Type == TOKEN_LBRACKET {
+		p.advance() // consume [
+		elementType := p.current().Value
+		p.advance() // consume type
+		p.expect(TOKEN_RBRACKET)
+		return fmt.Sprintf("buffer[%s]", elementType)
+	}
+
 	// Check for dict<key,value> or dict[key,value] syntax
 	if baseType == "dict" && (p.current().Type == TOKEN_LANGLE || p.current().Type == TOKEN_LBRACKET) {
 		bracketType := p.current().Type

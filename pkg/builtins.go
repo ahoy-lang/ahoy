@@ -22,9 +22,11 @@ func init() {
 	for _, name := range []string{
 		"assert", "exit", "float", "free", "input", "int", "len", "log",
 		"panic", "print", "rand", "rand_range", "read_json", "sleep", "str",
-		"typeof", "write_json",
+		"typeof", "write_json", "f32",
 		// job system
 		"jobs",
+		// flat POD buffer constructor: buffer|n| -> buffer[f32]
+		"buffer",
 	} {
 		builtinCallNames[name] = true
 		builtinMethodNames[name] = true
