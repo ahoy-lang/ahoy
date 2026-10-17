@@ -1392,12 +1392,12 @@ func main() {
 	// Start codegen timing
 	codegenStart := time.Now()
 
-	// Crash-location tracking stays on in all builds: ~3 stores per statement
-	// (~1% on real code, unmeasurable at -O3, zero RAM) is cheap for crash
-	// reports that name the exact Ahoy file:line - including from gamers'
-	// release builds. Paths are relativized (see crashPathRoot) so binaries
-	// don't leak absolute build-machine paths.
-	CrashLineTracking = true
+	// Crash-location tracking stays on by default: ~3 stores per statement is
+	// cheap for crash reports that name the exact Ahoy file:line - including
+	// from gamers' release builds. Paths are relativized (see crashPathRoot)
+	// so binaries don't leak absolute build-machine paths. -fast drops it
+	// (the stores also false-share across threads in hot loops).
+	CrashLineTracking = !noBoundsChecks
 
 	// Generate C code with source filename for better error messages
 	cCode := generateC(ast, sourceFile)

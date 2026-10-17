@@ -527,7 +527,20 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 	result.WriteString("int ahoy_jobs_done(AhoyJob* job);\n")
 	result.WriteString("int ahoy_jobs_drain(AhoyPool* pool, AhoyFn handler, intptr_t context);\n")
 	result.WriteString("void ahoy_jobs_stop(AhoyPool* pool);\n")
-	result.WriteString("void ahoy_jobs_destroy(AhoyPool* pool);\n\n")
+	result.WriteString("void ahoy_jobs_destroy(AhoyPool* pool);\n")
+	// v2 ABI (S3 7.4): up to 4 intptr_t arguments, a return-kind word that
+	// says how the result travels, and no per-job heap in the common path.
+	// The 1-arg form above stays byte-identical for existing programs.
+	result.WriteString("void ahoy_jobs_run(AhoyPool* pool, AhoyFn fn, intptr_t a0, intptr_t a1, intptr_t a2, intptr_t a3, int kind);\n")
+	result.WriteString("void ahoy_parfor(int lo, int hi, int count, AhoyFn fn, intptr_t ctx);\n")
+	result.WriteString("void* ahoy_jobs_go(AhoyPool* pool, AhoyFn fn, intptr_t a0, intptr_t a1, intptr_t a2, intptr_t a3, int kind);\n")
+	result.WriteString("void ahoy_jobs_join(void* handle);\n")
+	result.WriteString("int ahoy_jobs_count(AhoyPool* pool);\n")
+	result.WriteString("void ahoy_job_ret(void* job, int kind, intptr_t v);\n")
+	result.WriteString("intptr_t ahoy_jobs_last_ptr(AhoyPool* pool);\n")
+	result.WriteString("intptr_t ahoy_jobs_last_bits(AhoyPool* pool);\n")
+	result.WriteString("double ahoy_jobs_last_float(AhoyPool* pool);\n")
+	result.WriteString("intptr_t ahoy_jobs_last_int(AhoyPool* pool);\n\n")
 
 	// Write AhoyArray struct definition if arrays are used (must come after AhoyValueType)
 	if gen.arrayImpls || len(gen.arrayMethods) > 0 {
@@ -7879,6 +7892,19 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 	if object.Type == ahoy.NODE_IDENTIFIER && gen.inferType(object) == "pool" {
 		gen.useJobs = true
 		switch methodName {
+		case "parfor":
+			// parfor|lo, hi, &chunk| chunks [lo,hi) across the pool's
+			// workers and waits: chunk(start, end) must only touch its own
+			// range (no shared container mutation, no GL). Each chunk call
+			// gets a distinct slice; count is the pool's thread count.
+			gen.emitJobParFor(object.Value, args)
+			return
+		case "run":
+			// v2 (S3 7.4): p.run|fn, a0, a1, ...| runs one multi-argument
+			// task and stages its result; p.result_ptr()/result_int()/
+			// result_bits() read it back. Up to 4 intptr_t arguments.
+			gen.emitJobRun(object.Value, args)
+			return
 		case "submit":
 			gen.output.WriteString("ahoy_jobs_submit(" + object.Value + ", ")
 			argType := ""
@@ -7926,6 +7952,18 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 			return
 		case "drain":
 			gen.emitJobHandler(args, "ahoy_jobs_drain("+object.Value+", ")
+			return
+		case "result_ptr":
+			gen.output.WriteString("ahoy_jobs_last_ptr(" + object.Value + ")")
+			return
+		case "result_int":
+			gen.output.WriteString("ahoy_jobs_last_int(" + object.Value + ")")
+			return
+		case "result_bits":
+			gen.output.WriteString("ahoy_jobs_last_float(" + object.Value + ")")
+			return
+		case "result_float":
+			gen.output.WriteString("ahoy_jobs_last_float(" + object.Value + ")")
 			return
 		case "stop":
 			gen.output.WriteString("ahoy_jobs_stop(" + object.Value + ")")
@@ -14421,6 +14459,251 @@ func (gen *CodeGenerator) jobResultExpr(callExpr, jobName string) string {
 	return callExpr
 }
 
+// emitJobRun writes a v2 multi-argument job (S3 7.4):
+//
+//	p.run|fn, a0, a1, a2, a3|        runs fn(env, a0..a3, job) on the pool
+//
+// The task's own signature is the argument list without the job handle; a
+// generated thunk adapts it to the runtime ABI (intptr_t arguments, result
+// written back through the job handle by return kind). Results are read with
+// p.result_ptr() / p.result_int() / p.result_bits() (float bits) -- all
+// deterministic, since results stage in submit order.
+func (gen *CodeGenerator) emitJobRun(poolName string, args *ahoy.ASTNode) {
+	gen.output.WriteString("ahoy_jobs_run(" + poolName + ", ")
+	argTypes := []string{}
+	retType := ""
+	if len(args.Children) > 0 {
+		task := args.Children[0]
+		var ok bool
+		argTypes, retType, ok = gen.taskSignatureMulti(task)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "error: run task must be a named function or a typed fn value\n")
+			gen.hasError = true
+			argTypes = nil
+		}
+		gen.emitJobRunThunk(task, argTypes, retType)
+	} else {
+		gen.output.WriteString("(AhoyFn){0, 0}")
+	}
+	for i := 0; i < 4; i++ {
+		gen.output.WriteString(", ")
+		if i+1 < len(args.Children) {
+			gen.emitTaskArg(args.Children[i+1], argTypes[i])
+		} else {
+			gen.output.WriteString("0")
+		}
+	}
+	// kind word: 0 int/bool, 1 float bits, 2 pointer/ownership, 3 void
+	kind := 0
+	switch {
+	case retType == "float" || retType == "double" || retType == "f32":
+		kind = 1
+	case strings.HasPrefix(retType, "buffer[") || strings.HasSuffix(retType, "*") ||
+		retType == "string" || strings.HasPrefix(retType, "array[") ||
+		strings.HasPrefix(retType, "dict["):
+		kind = 2
+	case retType == "void" || retType == "":
+		kind = 3
+	}
+	gen.output.WriteString(", ")
+	gen.output.WriteString(strconv.Itoa(kind))
+	gen.output.WriteString(")")
+}
+
+// taskSignatureMulti returns the parameter types and return type of a task
+// value used with p.run|...| (any arity up to 4). Only named functions and
+// typed fn values are supported (the thunk needs a known C signature).
+func (gen *CodeGenerator) taskSignatureMulti(task *ahoy.ASTNode) ([]string, string, bool) {
+	if task == nil {
+		return nil, "", false
+	}
+	if task.Type == ahoy.NODE_UNARY_OP && task.Value == "&" && len(task.Children) == 1 &&
+		task.Children[0].Type == ahoy.NODE_IDENTIFIER {
+		name := task.Children[0].Value
+		params := gen.functionParamTypes[name]
+		rets := gen.functionReturnTypes[name]
+		if len(params) < 1 || len(params) > 4 || len(rets) > 1 {
+			return nil, "", false
+		}
+		ret := "void"
+		if len(rets) == 1 {
+			ret = rets[0]
+		}
+		return params, ret, true
+	}
+	if task.Type == ahoy.NODE_IDENTIFIER {
+		if ft, ok := gen.functionValueType(task.Value); ok {
+			if ps, r, ok := ahoy.ParseFunctionType(ft); ok && len(ps) >= 1 && len(ps) <= 4 {
+				return ps, r, true
+			}
+		}
+	}
+	return nil, "", false
+}
+
+// emitJobRunThunk writes the adapter that turns a task of Ahoy signature
+// fn(T0..Tn) -> R into the runtime's void fn(env, a0..a3, job*) ABI: it
+// bit-casts double arguments back, calls the task, and stores the result in
+// the job slot for the runtime to stage.
+func (gen *CodeGenerator) emitJobRunThunk(task *ahoy.ASTNode, argTypes []string, retType string) {
+	id := gen.varCounter
+	gen.varCounter++
+	envName := fmt.Sprintf("__ahoy_run_env_%d", id)
+	thunk := fmt.Sprintf("__ahoy_run_task_%d", id)
+
+	gen.closureDecls.WriteString("typedef struct { AhoyFn fn; } ")
+	gen.closureDecls.WriteString(envName)
+	gen.closureDecls.WriteString(";\n")
+	gen.closureDecls.WriteString("static void ")
+	gen.closureDecls.WriteString(thunk)
+	gen.closureDecls.WriteString("(void* env, intptr_t a0, intptr_t a1, intptr_t a2, intptr_t a3, void* jobp) {\n")
+	gen.closureDecls.WriteString("    ")
+	gen.closureDecls.WriteString(envName)
+	gen.closureDecls.WriteString("* e = (")
+	gen.closureDecls.WriteString(envName)
+	gen.closureDecls.WriteString("*)env;\n")
+	gen.closureDecls.WriteString("    AhoyFn fn = e->fn;\n    free(e);\n")
+	gen.closureDecls.WriteString("    (void)jobp;\n")
+
+	callArgs := []string{}
+	for i, at := range argTypes {
+		cName := fmt.Sprintf("a%d", i)
+		if isFloatAhoyType(at) {
+			gen.closureDecls.WriteString("    double " + cName + "_v; memcpy(&" + cName + "_v, &" + cName + ", sizeof(double));\n")
+			callArgs = append(callArgs, cName+"_v")
+		} else {
+			callArgs = append(callArgs, "("+gen.mapType(at)+")"+cName)
+		}
+	}
+	retC := gen.mapType(retType)
+	call := fmt.Sprintf("((%s(*)(void*, %s))fn.fn)(fn.env, %s)",
+		retC, strings.Join(mapTypes(gen, argTypes), ", "), strings.Join(callArgs, ", "))
+	switch {
+	case retType == "void" || retType == "":
+		gen.closureDecls.WriteString("    " + call + ";\n")
+		gen.closureDecls.WriteString("    ahoy_job_ret(jobp, 3, 0);\n")
+	case isFloatAhoyType(retType):
+		gen.closureDecls.WriteString("    double r0 = " + call + ";\n")
+		gen.closureDecls.WriteString("    intptr_t rb; memcpy(&rb, &r0, sizeof(double));\n")
+		gen.closureDecls.WriteString("    ahoy_job_ret(jobp, 1, rb);\n")
+	case retC == "int" || retC == "bool":
+		gen.closureDecls.WriteString("    ahoy_job_ret(jobp, 0, (intptr_t)(" + call + "));\n")
+	default:
+		gen.closureDecls.WriteString("    ahoy_job_ret(jobp, 2, (intptr_t)(" + call + "));\n")
+	}
+	gen.closureDecls.WriteString("}\n")
+
+	// The AhoyFn value: a single-use environment carrying the task.
+	gen.output.WriteString("({ ")
+	gen.output.WriteString(envName)
+	gen.output.WriteString("* __e = (")
+	gen.output.WriteString(envName)
+	gen.output.WriteString("*)malloc(sizeof(")
+	gen.output.WriteString(envName)
+	gen.output.WriteString(")); __e->fn = ")
+	if task.Type == ahoy.NODE_UNARY_OP && task.Value == "&" && len(task.Children) == 1 &&
+		task.Children[0].Type == ahoy.NODE_IDENTIFIER && gen.userFunctions[task.Children[0].Value] {
+		gen.emitFunctionReference(task.Children[0].Value)
+	} else {
+		gen.generateNode(task)
+	}
+	gen.output.WriteString("; (AhoyFn){ (void(*)(void))" + thunk + ", __e }; })")
+}
+
+func mapTypes(gen *CodeGenerator, types []string) []string {
+	out := make([]string, len(types))
+	for i, t := range types {
+		out[i] = gen.mapType(t)
+	}
+	return out
+}
+
+// emitJobParFor writes p.parfor|lo, hi, &chunk| (S3 7.5): splits [lo,hi)
+// into one contiguous chunk per pool worker, runs chunk(start, end) on the
+// pool, and waits. The chunk function takes (start:int, end:int); the split
+// is deterministic (count is the pool's thread count, chunks are contiguous
+// and cover the range exactly), so results are reproducible for reductions
+// into per-chunk storage. Contract: chunks must only touch their own range.
+func (gen *CodeGenerator) emitJobParFor(poolName string, args *ahoy.ASTNode) {
+	if len(args.Children) < 3 {
+		fmt.Fprintf(os.Stderr, "error: parfor needs |lo, hi, fn|\n")
+		gen.hasError = true
+		return
+	}
+	loArg := args.Children[0]
+	hiArg := args.Children[1]
+	chunk := args.Children[2]
+
+	// Validate the chunk signature: (start:int, end:int) or
+	// (start:int, end:int, ctx:...) with one optional context argument.
+	ctxType := ""
+	hasCtx := false
+	if chunk.Type == ahoy.NODE_UNARY_OP && chunk.Value == "&" && len(chunk.Children) == 1 &&
+		chunk.Children[0].Type == ahoy.NODE_IDENTIFIER {
+		name := chunk.Children[0].Value
+		params := gen.functionParamTypes[name]
+		if len(params) == 3 {
+			ctxType = params[2]
+			hasCtx = true
+		} else if len(params) != 2 {
+			fmt.Fprintf(os.Stderr, "error: parfor chunk '%s' must take (start:int, end:int) or (start:int, end:int, ctx)\n", name)
+			gen.hasError = true
+			return
+		}
+		if params[0] != "int" || params[1] != "int" {
+			fmt.Fprintf(os.Stderr, "error: parfor chunk '%s' must take (start:int, end:int)\n", name)
+			gen.hasError = true
+			return
+		}
+	}
+
+	id := gen.varCounter
+	gen.varCounter++
+	envName := fmt.Sprintf("__ahoy_par_env_%d", id)
+	thunk := fmt.Sprintf("__ahoy_par_task_%d", id)
+
+	// The runtime hands each worker (start, end, ctx); the thunk unpacks the
+	// chunk's AhoyFn from a one-slot environment and forwards the call.
+	gen.closureDecls.WriteString("typedef struct { AhoyFn fn; } ")
+	gen.closureDecls.WriteString(envName)
+	gen.closureDecls.WriteString(";\n")
+	gen.closureDecls.WriteString("static void ")
+	gen.closureDecls.WriteString(thunk)
+	gen.closureDecls.WriteString("(void* env, int start, int end, intptr_t ctx) {\n")
+	gen.closureDecls.WriteString("    " + envName + "* e = (" + envName + "*)env;\n")
+	gen.closureDecls.WriteString("    AhoyFn fn = e->fn;\n")
+	if hasCtx {
+		gen.closureDecls.WriteString("    ((void(*)(void*, int, int, " + gen.mapType(ctxType) + "))fn.fn)(fn.env, start, end, (" + gen.mapType(ctxType) + ")ctx);\n")
+	} else {
+		gen.closureDecls.WriteString("    ((void(*)(void*, int, int))fn.fn)(fn.env, start, end);\n")
+	}
+	gen.closureDecls.WriteString("}\n")
+
+	// Stage the environment (carrying the chunk fn) and hand the range to the
+	// direct spawn/join runtime -- no pool queue, so no per-chunk locks.
+	gen.output.WriteString("({ " + envName + "* __pe = (" + envName + "*)malloc(sizeof(" + envName + ")); ")
+	gen.output.WriteString("__pe->fn = ")
+	if chunk.Type == ahoy.NODE_UNARY_OP && chunk.Value == "&" && len(chunk.Children) == 1 &&
+		chunk.Children[0].Type == ahoy.NODE_IDENTIFIER && gen.userFunctions[chunk.Children[0].Value] {
+		gen.emitFunctionReference(chunk.Children[0].Value)
+	} else {
+		gen.generateNode(chunk)
+	}
+	gen.output.WriteString("; ahoy_parfor((int)(")
+	gen.generateNode(loArg)
+	gen.output.WriteString("), (int)(")
+	gen.generateNode(hiArg)
+	gen.output.WriteString("), ahoy_jobs_count(" + poolName + "), (AhoyFn){ (void(*)(void))" + thunk + ", __pe }, ")
+	if hasCtx && len(args.Children) > 3 {
+		gen.output.WriteString("(intptr_t)(")
+		gen.generateNode(args.Children[3])
+		gen.output.WriteString(")")
+	} else {
+		gen.output.WriteString("0")
+	}
+	gen.output.WriteString("); free(__pe); })")
+}
+
 // emitJobHandler writes the handler and context arguments of a drain call:
 // ahoy_jobs_drain(pool, handler, context). The handler takes (job, context).
 func (gen *CodeGenerator) emitJobHandler(args *ahoy.ASTNode, prefix string) {
@@ -14455,6 +14738,7 @@ func (gen *CodeGenerator) emitJobHandler(args *ahoy.ASTNode, prefix string) {
 func getJobRuntime() string {
 	return `#include <pthread.h>
 
+
 struct AhoyJob {
     AhoyFn fn;
     intptr_t arg;
@@ -14467,6 +14751,19 @@ struct AhoyJob {
     struct AhoyJob* next;        /* task queue */
     struct AhoyJob* next_completed;
     struct AhoyJob* next_all;    /* registry, so destroy() frees leftovers */
+    /* v2 (S3 7.4): multi-argument tasks. kind selects the entry ABI:
+       0 = legacy (fn(env, arg) -> intptr_t), 1 = v2 (fn(env, a0..a3) -> void,
+       result delivered through the ret slot by kind word). */
+    int kind;
+    intptr_t a0, a1, a2, a3;
+    intptr_t ret_bits;           /* float/double result, bit pattern */
+    intptr_t ret_ptr;            /* heap/pointer result (ownership moved) */
+    intptr_t ret_int;            /* int/bool result */
+    int ret_kind;                /* 0 int, 1 bits, 2 ptr, 3 void */
+    /* Cache-line padding: parfor allocates one job per worker back to back,
+       and adjacent job structs shared a line, so every worker's result
+       store invalidated the others (measured 5x slowdown on 4 workers). */
+    char _pad[64];
 };
 
 struct AhoyPool {
@@ -14482,6 +14779,10 @@ struct AhoyPool {
     int stopped;
     pthread_mutex_t mutex;
     pthread_cond_t work;
+    /* v2 (S3 7.4): last v2 result, staged by ahoy_jobs_run. */
+    intptr_t last_ptr;
+    intptr_t last_bits;
+    intptr_t last_int;
 };
 
 /* Remove a job from the completion queue. The caller holds pool->mutex. */
@@ -14544,7 +14845,14 @@ static void* ahoy_job_worker(void* data) {
         if (pool->head == NULL) pool->tail = NULL;
         pthread_mutex_unlock(&pool->mutex);
 
-        job->result = ((intptr_t(*)(void*, intptr_t))job->fn.fn)(job->fn.env, job->arg);
+        if (job->kind == 1) {
+            /* v2: the task writes its result back through the job slot it
+               was handed, so nothing travels on the return value. */
+            ((void(*)(void*, intptr_t, intptr_t, intptr_t, intptr_t, void*))job->fn.fn)(
+                job->fn.env, job->a0, job->a1, job->a2, job->a3, (void*)job);
+        } else {
+            job->result = ((intptr_t(*)(void*, intptr_t))job->fn.fn)(job->fn.env, job->arg);
+        }
 
         /* queue it for drain() before signalling done, so a waiter that sees
            done is guaranteed the queue entry already exists (or was skipped) */
@@ -14681,6 +14989,165 @@ void ahoy_jobs_destroy(AhoyPool* pool) {
     pthread_mutex_destroy(&pool->mutex);
     pthread_cond_destroy(&pool->work);
     free(pool);
+}
+
+/* ---- v2 ABI (S3 7.4) ----------------------------------------------------
+ * ahoy_jobs_run stages N v2 jobs on the pool and runs them, waiting for all
+ * before returning. Tasks receive their arguments and the job handle; a task
+ * writes its result with ahoy_job_ret_* (generated inline, no extra call).
+ * Results are then copied out in submit order into the pool's last-result
+ * slots, which ahoy_jobs_last_* read -- deterministic order regardless of
+ * worker scheduling, so parallel reductions stay reproducible.
+ * count == 0 is a no-op; count == 1 degenerates to a synchronous call. */
+
+void ahoy_jobs_run(AhoyPool* pool, AhoyFn fn, intptr_t a0, intptr_t a1, intptr_t a2, intptr_t a3, int kind) {
+    if (pool == NULL) return;
+    AhoyJob* job = (AhoyJob*)calloc(1, sizeof(AhoyJob));
+    job->fn = fn;
+    job->kind = 1;
+    job->a0 = a0;
+    job->a1 = a1;
+    job->a2 = a2;
+    job->a3 = a3;
+    job->pool = pool;
+    pthread_mutex_init(&job->mutex, NULL);
+    pthread_cond_init(&job->cond, NULL);
+    pthread_mutex_lock(&pool->mutex);
+    if (pool->tail) pool->tail->next = job; else pool->head = job;
+    pool->tail = job;
+    if (pool->all_tail) pool->all_tail->next_all = job; else pool->all = job;
+    pool->all_tail = job;
+    /* Broadcast, not signal: parfor stages N jobs back to back, and a signal
+       wakes one waiter while the others may not be waiting yet -- the rest
+       then sleep through their jobs and one worker runs them serially
+       (measured 4x slowdown). */
+    pthread_cond_broadcast(&pool->work);
+    pthread_mutex_unlock(&pool->mutex);
+    {
+        /* capture before wait() frees the job */
+        AhoyJob* j = job;
+        pthread_mutex_lock(&j->mutex);
+        while (!j->done) pthread_cond_wait(&j->cond, &j->mutex);
+        pthread_mutex_unlock(&j->mutex);
+        pool->last_ptr = j->ret_ptr;
+        pool->last_bits = j->ret_bits;
+        pool->last_int = j->ret_int;
+    }
+    ahoy_jobs_wait(job);
+    (void)kind;
+}
+
+/* ahoy_jobs_go stages a v2 job WITHOUT waiting; ahoy_jobs_join waits for it
+ * and stages its result. Submitting all chunks before joining any is what
+ * makes p.parfor actually parallel (each run() waits, so a run-per-chunk
+ * loop would serialize). */
+void* ahoy_jobs_go(AhoyPool* pool, AhoyFn fn, intptr_t a0, intptr_t a1, intptr_t a2, intptr_t a3, int kind) {
+    if (pool == NULL) return NULL;
+    AhoyJob* job = (AhoyJob*)calloc(1, sizeof(AhoyJob));
+    job->fn = fn;
+    job->kind = 1;
+    job->a0 = a0;
+    job->a1 = a1;
+    job->a2 = a2;
+    job->a3 = a3;
+    job->pool = pool;
+    pthread_mutex_init(&job->mutex, NULL);
+    pthread_cond_init(&job->cond, NULL);
+    pthread_mutex_lock(&pool->mutex);
+    if (pool->tail) pool->tail->next = job; else pool->head = job;
+    pool->tail = job;
+    if (pool->all_tail) pool->all_tail->next_all = job; else pool->all = job;
+    pool->all_tail = job;
+    pthread_cond_signal(&pool->work);
+    pthread_mutex_unlock(&pool->mutex);
+    (void)kind;
+    return job;
+}
+
+
+void ahoy_jobs_join(void* handle) {
+    AhoyJob* job = (AhoyJob*)handle;
+    if (job == NULL) return;
+    struct AhoyPool* pool = job->pool;
+    pthread_mutex_lock(&job->mutex);
+    while (!job->done) pthread_cond_wait(&job->cond, &job->mutex);
+    pthread_mutex_unlock(&job->mutex);
+    pool->last_ptr = job->ret_ptr;
+    pool->last_bits = job->ret_bits;
+    pool->last_int = job->ret_int;
+    ahoy_jobs_wait(job);
+}
+
+intptr_t ahoy_jobs_last_ptr(AhoyPool* pool) { return pool ? pool->last_ptr : 0; }
+intptr_t ahoy_jobs_last_bits(AhoyPool* pool) { return pool ? pool->last_bits : 0; }
+/* ---- parfor (S3 7.5) ----------------------------------------------------
+ * Chunked data-parallel loop. Deliberately NOT built on the job pool: the
+ * pool's shared queue takes a mutex per dequeue and a condvar per wake, which
+ * dominated the work and serialized the chunks (measured: 4 workers ran 20x
+ * the CPU of 1). Here each worker gets its chunk up front and runs it with no
+ * locks at all -- raw threads, joined at the end. Chunks are contiguous and
+ * cover [lo,hi) exactly, so a reduction over per-chunk storage is
+ * deterministic. Contract: a chunk must only touch its own range (no shared
+ * container mutation, no GL). */
+
+typedef struct {
+    AhoyFn fn;
+    int lo, hi;         /* this worker's slice */
+    intptr_t ctx;
+} AhoyParChunk;
+
+static void* ahoy_par_worker(void* data) {
+    AhoyParChunk* c = (AhoyParChunk*)data;
+    if (c->hi > c->lo) ((void(*)(void*, int, int, intptr_t))c->fn.fn)(c->fn.env, c->lo, c->hi, c->ctx);
+    return NULL;
+}
+
+void ahoy_parfor(int lo, int hi, int count, AhoyFn fn, intptr_t ctx) {
+    int n = count, i, total;
+    AhoyParChunk* chunks;
+    pthread_t* th;
+    if (n < 1) n = 1;
+    total = hi - lo;
+    if (total <= 0) return;
+    if (n > total) n = total;
+    chunks = (AhoyParChunk*)calloc((size_t)n, sizeof(AhoyParChunk));
+    th = (pthread_t*)calloc((size_t)n, sizeof(pthread_t));
+    for (i = 0; i < n; i++) {
+        int start = lo + (int)((long long)total * i / n);
+        int end = lo + (int)((long long)total * (i + 1) / n);
+        chunks[i].fn = fn;
+        chunks[i].lo = start;
+        chunks[i].hi = end;
+        chunks[i].ctx = ctx;
+    }
+    /* main thread takes the last chunk; workers take the rest */
+    for (i = 0; i < n - 1; i++) pthread_create(&th[i], NULL, ahoy_par_worker, &chunks[i]);
+    ahoy_par_worker(&chunks[n - 1]);
+    for (i = 0; i < n - 1; i++) pthread_join(th[i], NULL);
+    free(chunks);
+    free(th);
+}
+
+int ahoy_jobs_count(AhoyPool* pool) { return pool ? pool->thread_count : 1; }
+double ahoy_jobs_last_float(AhoyPool* pool) {
+    intptr_t b = pool ? pool->last_bits : 0;
+    double d;
+    memcpy(&d, &b, sizeof(double));
+    return d;
+}
+intptr_t ahoy_jobs_last_int(AhoyPool* pool) { return pool ? pool->last_int : 0; }
+
+/* Task-side result store (S3 7.4): the generated thunk cannot see the job
+ * struct (it is emitted before this runtime), so results travel through this
+ * one-word setter. kind: 0 int/bool, 1 float bits, 2 pointer/ownership,
+ * 3 void (no store). */
+void ahoy_job_ret(void* job, int kind, intptr_t v) {
+    AhoyJob* j = (AhoyJob*)job;
+    if (j == NULL) return;
+    j->ret_kind = kind;
+    if (kind == 0) j->ret_int = v;
+    else if (kind == 1) j->ret_bits = v;
+    else if (kind == 2) j->ret_ptr = v;
 }
 `
 }

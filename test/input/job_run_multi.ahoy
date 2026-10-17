@@ -1,0 +1,25 @@
+expected: []
+? S3 (7.4): p.run multi-argument jobs + staged results
+
+@ addmul |a:int, b:int, c:int| int:
+	return a * 100 + b * 10 + c
+$
+
+@ scale |v:float| float:
+	return v * 2.5
+$
+
+p: pool = jobs|2|
+p.run|&addmul, 1, 2, 3|
+ri: p.result_int||
+print|ri|
+expected.push|"123"|
+
+p.run|&scale, 4.0|
+rf: p.result_float||
+print|rf|
+expected.push|"10"|
+p.stop||
+
+? Print expected values for test validation
+print|expected|

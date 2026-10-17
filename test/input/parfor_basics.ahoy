@@ -1,0 +1,19 @@
+expected: []
+? S3 (7.5): p.parfor chunked parallel loop (deterministic chunks)
+
+@ chunk |s:int, e:int, acc:buffer[f32]| void:
+	loop i:s to e do
+		acc[0] = acc[0] + float(i)
+	$
+$
+
+acc: buffer[f32] = buffer|1|
+p: pool = jobs|2|
+p.parfor|0, 100, &chunk, acc|
+t: acc[0]
+print|t|
+expected.push|"4950"|
+p.stop||
+
+? Print expected values for test validation
+print|expected|
