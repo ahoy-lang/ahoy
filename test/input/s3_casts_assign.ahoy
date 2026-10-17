@@ -1,0 +1,28 @@
+expected: []
+? S3 batch A: double() cast, double decl, arr[i].field = v
+
+struct Pt:
+	x: int
+$
+
+d: double(5)
+print|d| ? should print: 5
+expected.push|"5"|
+
+z: double = 1.5
+print|z| ? should print: 1.5
+expected.push|"1.5"|
+
+w: double = double(2) + z
+print|w| ? should print: 3.5
+expected.push|"3.5"|
+
+pts: array[Pt] = []
+p: Pt{x: 1}
+pts.push|p|
+pts[0].x = 42
+print|pts[0].x| ? should print: 42
+expected.push|"42"|
+
+? Print expected values for test validation
+print|expected|

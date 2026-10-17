@@ -984,6 +984,7 @@ func main() {
 	coldReloadFlag := flag.Bool("coldreload", false, "Enable cold reload (auto-recompile and restart on file changes) - development only")
 	noSemanticsFlag := flag.Bool("no_semantics", false, "Skip semantic validation (type errors, undeclared names, duplicate definitions)")
 	strictFlag := flag.Bool("strict", true, "Extra dev-time warnings for bug classes that segfault (array-type contradictions, literal division by zero)")
+	fastFlag := flag.Bool("fast", false, "Disable runtime array bounds checks (opt-in: only for programs proven in-bounds; violations become silent memory bugs)")
 	defines := defineList{}
 	flag.Var(&defines, "D", "Define NAME for `when NAME:` blocks (repeatable, comma-separated)")
 	helpFlag := flag.Bool("h", false, "Show help")
@@ -991,6 +992,7 @@ func main() {
 	flag.Parse()
 
 	ahoy.StrictLint = *strictFlag
+	noBoundsChecks = *fastFlag
 
 	buildDefines = defines
 

@@ -169,6 +169,7 @@ var keywords = map[string]TokenType{
 	"shr":      TOKEN_SHR,
 	"int":      TOKEN_INT_TYPE,
 	"float":    TOKEN_FLOAT_TYPE,
+	"double":   TOKEN_FLOAT_TYPE,
 	"string":   TOKEN_STRING_TYPE,
 	"char":     TOKEN_CHAR_TYPE,
 	"bool":     TOKEN_BOOL_TYPE,
@@ -358,9 +359,16 @@ func Tokenize(input string) []Token {
 				}
 				word := content[start:i]
 				if tokenType, exists := keywords[word]; exists {
+					v := word
+					if word == "double" {
+						// double is spelled float internally: Ahoy float IS
+						// double-precision, so double(x), x: double etc. behave
+						// exactly like their float counterparts (§7.8).
+						v = "float"
+					}
 					tokens = append(tokens, Token{
 						Type:   tokenType,
-						Value:  word,
+						Value:  v,
 						Line:   lineNum + 1,
 						Column: start + 1,
 					})

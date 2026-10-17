@@ -138,7 +138,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					break
 				}
 			}
-			isAssignment := p.current().Type == TOKEN_ASSIGN
+			isAssignment := p.current().Type == TOKEN_ASSIGN || p.current().Type == TOKEN_EQUALS
 			isCompoundAssignment := p.isCompoundAssignOp(p.current().Type)
 			p.pos = savedPos // restore position
 

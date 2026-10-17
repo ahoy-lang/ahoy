@@ -22,6 +22,12 @@ import (
 // while dev builds (tcc, hot/cold reload) keep it on.
 var CrashLineTracking = true
 
+// noBoundsChecks carries the -fast CLI flag (source/main.go sets it after
+// flag parsing): skip emitting runtime array bounds checks. Default false.
+// Unlike CrashLineTracking (off in -release), checks stay on in release
+// builds unless -fast is passed explicitly.
+var noBoundsChecks = false
+
 func snakeToPascal(s string) string {
 	// If there are no underscores, return as-is (it's already in the correct format)
 	if !strings.Contains(s, "_") {
@@ -326,7 +332,7 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		generatedTypes:        make(map[string]bool),
 		jsonVariables:         make(map[string]bool),
 		jsonStructs:           make(map[string]bool),
-		enableBoundsChecking:  true, // Re-enabled with lvalue context handling
+		enableBoundsChecking:  !noBoundsChecks,
 		enableSignalHandler:   true, // Enable by default for better error messages
 		skipBoundsCheck:       false,
 		sourceFilename:        filename, // Source file for error messages
