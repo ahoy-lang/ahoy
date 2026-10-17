@@ -82,7 +82,7 @@ $
 ? Loop variations
 loop i:0 to 10 do print|f"looping {i}"| $
 loop i:0 to 10: print|f"looping {i}"| $
-loop i:0 to 10:
+loop i:0 to 10 do
     print|f"looping {i}"|
     print|f"more {i}"|
 $

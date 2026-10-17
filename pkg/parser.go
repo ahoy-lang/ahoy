@@ -224,7 +224,7 @@ type Parser struct {
 	structs             map[string]*StructDefinition  // Track struct definitions
 	enums               map[string]*EnumDefinition    // Track enum definitions
 	typeAliases         map[string]string             // Track type aliases
-	distinctTypes        map[string]string            // Distinct newtypes: name -> base type
+	distinctTypes       map[string]string             // Distinct newtypes: name -> base type
 	unionTypes          map[string][]string           // Track union types
 	objectLiterals      map[string]map[string]bool    // Track object literal properties by variable name
 	currentFunctionRet  string                        // Track current function return type

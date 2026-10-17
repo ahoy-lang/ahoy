@@ -184,7 +184,7 @@ type CodeGenerator struct {
 	currentFunctionHasMultiReturn bool                                    // Whether current function has multiple returns
 	hasMainFunc                   bool                                    // Whether there's an Ahoy main function
 	arrayElementTypes             map[string]string                       // array variable name -> element type
-	distinctTypes                map[string]string                       // distinct newtype name -> base Ahoy type
+	distinctTypes                 map[string]string                       // distinct newtype name -> base Ahoy type
 	reportedElemMismatch          map[string]bool                         // arrays already flagged for tracked-vs-declared element disagreement (dedupes the internal error)
 	dictLoopValueExpr             map[string]string                       // dict-loop value var -> C expression that formats it by its runtime type
 	array2DElementTypes           map[string]string                       // 2D array variable name -> nested element type (element type of inner arrays)
@@ -302,7 +302,7 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		dictMethods:           make(map[string]bool),
 		hasMainFunc:           false,
 		arrayElementTypes:     make(map[string]string),
-		distinctTypes:        make(map[string]string),
+		distinctTypes:         make(map[string]string),
 		array2DElementTypes:   make(map[string]string),
 		structs:               make(map[string]*StructInfo),
 		functionReturnTypes:   make(map[string][]string),

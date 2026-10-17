@@ -145,3 +145,15 @@ warning: Statement is dedented below the 'if' block body but still belongs to it
 ```
 
 Applies to `$` blocks and `switch` case bodies alike.
+
+## halt / next in case bodies
+
+`halt` and `next` work directly in `on` bodies. `next` continues the
+enclosing loop; `halt` exits it — via a compiler-generated jump to the
+loop end, because a plain C `break` would only exit the switch. Case heap
+locals are freed before the jump. In a switch outside any loop, `halt`
+just ends the case. Block-scoped defers pending at a `halt`/`next` still
+run (the jump skips their block end, so they are flushed first, exactly
+once); function-level defers still run once at function end. (All loop forms — counted, `to`, `till`, `in`, dict —
+work in case bodies, including `halt`/`next` inside loops nested there,
+which target the inner loop as usual.)

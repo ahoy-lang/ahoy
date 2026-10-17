@@ -2241,6 +2241,7 @@ func strictZeroNumber(s string) bool {
 	f, err := strconv.ParseFloat(t, 64)
 	return err == nil && f == 0
 }
+
 // ordering operator meaningless. Anything not confidently known is left alone.
 func operandsUnusable(lt, rt string) bool {
 	if !operandIsKnown(lt) || !operandIsKnown(rt) {

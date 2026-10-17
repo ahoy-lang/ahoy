@@ -96,9 +96,9 @@ const (
 	TOKEN_ENUM
 	TOKEN_STRUCT
 	TOKEN_TYPE
-	TOKEN_ALIAS // alias (type alias)
+	TOKEN_ALIAS    // alias (type alias)
 	TOKEN_DISTINCT // distinct (newtype: same layout, checked strictly)
-	TOKEN_UNION // union (union types)
+	TOKEN_UNION    // union (union types)
 	TOKEN_DO
 	TOKEN_HALT            // halt (break from loop)
 	TOKEN_NEXT            // next (continue to next iteration)

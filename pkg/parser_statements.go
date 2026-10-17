@@ -917,6 +917,16 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 					stmt = p.parseSwitchStatement()
 				case TOKEN_LOOP:
 					stmt = p.parseLoop()
+				case TOKEN_HALT:
+					// halt/next directly in a case body: halt exits the
+					// enclosing loop (via a compiler-generated jump past it
+					// when a switch boundary intervenes — plain `break`
+					// would only exit the switch); next continues it.
+					p.advance()
+					stmt = &ASTNode{Type: NODE_HALT, Line: stmtLine}
+				case TOKEN_NEXT:
+					p.advance()
+					stmt = &ASTNode{Type: NODE_NEXT, Line: stmtLine}
 				case TOKEN_IDENTIFIER:
 					// Could be assignment or expression
 					stmt = p.parseAssignmentOrExpression()
