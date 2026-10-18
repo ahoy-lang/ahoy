@@ -994,6 +994,13 @@ func main() {
 	ahoy.StrictLint = *strictFlag
 	noBoundsChecks = *fastFlag
 
+	// `when RELEASE then` lets engine and game code gate release-only work
+	// (e.g. auto-VAT's bake) without needing its own flag. Dev builds simply
+	// do not see the define.
+	if *releaseFlag {
+		defines = append(defines, "RELEASE")
+	}
+
 	buildDefines = defines
 
 	// Check for conflicting flags
