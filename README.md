@@ -235,9 +235,9 @@ else then
     other_action||
 $
 
-? If anif statements
+? If/elif (else-if) statements
 if   condition then action||
-anif other_condition then another_action||
+elif other_condition then another_action||
 else no_action||
 $
 
@@ -463,6 +463,8 @@ got: 0
 loop while got is not 5 do
     got = got + pool.drain|&collect, acc|
 $
+? (You can also write `loop until got is 5 do ... $` instead of
+? `loop while got is not 5 do ... $`.)
 ```
 
 Jobs are owned by the pool until they are consumed: `wait` consumes its job,

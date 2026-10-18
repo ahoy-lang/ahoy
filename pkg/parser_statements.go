@@ -1374,6 +1374,8 @@ func (p *Parser) parseLoop() *ASTNode {
 			condition := p.parseExpression()
 			if isUntil {
 				condition = &ASTNode{Type: NODE_UNARY_OP, Value: "not", Children: []*ASTNode{condition}}
+			} else if condition != nil && condition.Type == NODE_UNARY_OP && condition.Value == "not" {
+				p.recordWarningAtLine("consider `loop until COND` instead of `loop while not COND`", condition.Line, 1)
 			}
 
 			// Only accept 'do'
@@ -1568,6 +1570,8 @@ func (p *Parser) parseLoop() *ASTNode {
 		condition := p.parseExpression()
 		if isUntil {
 			condition = &ASTNode{Type: NODE_UNARY_OP, Value: "not", Children: []*ASTNode{condition}}
+		} else if condition != nil && condition.Type == NODE_UNARY_OP && condition.Value == "not" {
+			p.recordWarningAtLine("consider `loop until COND` instead of `loop while not COND`", condition.Line, 1)
 		}
 
 		// Only accept 'do'
