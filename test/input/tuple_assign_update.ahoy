@@ -1,0 +1,74 @@
+program tuple_assign_update
+
+? A name that came out of a tuple assignment is an ordinary variable:
+? assigning to it later must update it. The code generator used to
+? declare a second variable with the same name inside the nested block,
+? so the value outside the block never changed.
+
+@ two || int, int:
+	return 3, 4
+$
+
+@ main ||:
+	expected: []
+
+	a, b := two||
+	print|a, b|
+	expected.push|"3 4"|
+
+	? an assignment inside a nested block updates the tuple name
+	loop i:0 to 1 do
+		a, b := two||
+		if a is 3 then
+			a = a + 10
+			b = b + 20
+		$
+		print|a, b|
+		expected.push|"13 24"|
+	$
+	? the walrus form binds the name it finds, so the outer value is
+	? the one that changed
+	print|a, b|
+	expected.push|"13 24"|
+
+	? the typed form behaves the same
+	loop i:0 to 1 do
+		c, d :(int, int) = two||
+		if c is 3 then
+			c = c * 2
+		$
+		print|c, d|
+		expected.push|"6 4"|
+	$
+
+	? a tuple name that is assigned again keeps its value
+	e, f := two||
+	e, f := two||
+	e = e + 1
+	print|e, f|
+	expected.push|"4 4"|
+
+	? and the assignment survives a block that ends
+	g, h := two||
+	if g is 3 then
+		g = g + 5
+	$
+	print|g, h|
+	expected.push|"8 4"|
+
+	? a tuple that comes out of a switch behaves the same
+	k: int = 1
+	m, n :(int, int) = switch k:
+		on 1:
+			10, 20
+		_:
+			30, 40
+	$
+	if m is 10 then
+		m = m + 5
+	$
+	print|m, n|
+	expected.push|"15 20"|
+
+	print|expected|
+$

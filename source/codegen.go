@@ -11283,32 +11283,49 @@ func (gen *CodeGenerator) generateEnumDeclaration(node *ahoy.ASTNode) {
 func (gen *CodeGenerator) generateTupleSwitchAssignment(leftSide *ahoy.ASTNode, switchNode *ahoy.ASTNode) {
 	// Declare all left-side variables first
 	for i, target := range leftSide.Children {
-		if _, exists := gen.variables[target.Value]; !exists {
+		if target.Value == "_" {
+			continue
+		}
+		// A name that is already known in this scope is assigned, not
+		// declared again.
+		exists := false
+		if gen.currentFunction != "" && gen.functionVars != nil {
+			_, exists = gen.functionVars[target.Value]
+		} else {
+			_, exists = gen.variables[target.Value]
+		}
+		if !exists {
+			// The name lives in the block it is declared in, so a later
+			// assignment inside a nested block updates it instead of
+			// declaring a second variable with the same name.
+			gen.markDeclaredInCurrentScope(target.Value)
 			// Infer type from first case of switch
+			exprType := "int"
 			if len(switchNode.Children) > 1 {
 				firstCase := switchNode.Children[1]
 				if firstCase.Type == ahoy.NODE_SWITCH_CASE && len(firstCase.Children) > 1 {
 					caseBody := firstCase.Children[1]
 					// Case body should be a BLOCK node with tuple expressions
 					if caseBody.Type == ahoy.NODE_BLOCK && i < len(caseBody.Children) {
-						exprType := gen.inferType(caseBody.Children[i])
-						cType := gen.mapType(exprType)
-						gen.writeIndent()
-						gen.output.WriteString(cType)
-						gen.output.WriteString(" ")
-						gen.output.WriteString(target.Value)
-						gen.output.WriteString(";\n")
-						gen.variables[target.Value] = exprType
-						continue
+						exprType = gen.inferType(caseBody.Children[i])
 					}
 				}
 			}
-			// Fallback type
+			cType := gen.mapType(exprType)
 			gen.writeIndent()
-			gen.output.WriteString("int ")
+			gen.output.WriteString(cType)
+			gen.output.WriteString(" ")
 			gen.output.WriteString(target.Value)
 			gen.output.WriteString(";\n")
-			gen.variables[target.Value] = "int"
+			// Register it as declared, so a later assignment to it is an
+			// assignment and not a fresh declaration.
+			if gen.currentFunction != "" && gen.functionVars != nil {
+				gen.functionVars[target.Value] = exprType
+				gen.declaredFunctionVars[target.Value] = true
+			} else {
+				gen.variables[target.Value] = exprType
+				gen.declaredGlobalVars[target.Value] = true
+			}
 		}
 	}
 
@@ -11503,7 +11520,19 @@ func (gen *CodeGenerator) generateTupleAssignment(node *ahoy.ASTNode) {
 				}
 			}
 
-			if !existsInCurrentScope {
+			// A name that was declared in a block which has since ended is
+			// not visible here, so it needs a fresh declaration - the same
+			// rule an ordinary declaration follows.
+			needsRedeclare := existsInCurrentScope && !gen.nameVisibleInOpenScope(target.Value)
+
+			if !existsInCurrentScope || needsRedeclare {
+				// The name lives in the block it is declared in. Without
+				// this, a later assignment inside a nested block did not
+				// see the name as visible and emitted a second
+				// declaration with the same name, which shadowed the
+				// first: the update never reached the original variable.
+				gen.markDeclaredInCurrentScope(target.Value)
+
 				// Need to declare variable - look up function return types
 				cType := "int" // default
 				inferredType := "int"
