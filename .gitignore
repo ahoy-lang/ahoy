@@ -11,3 +11,6 @@ repos/
 # agent scratch space
 .scratch/
 .pi/
+
+# games developed with the engine
+games/

@@ -622,6 +622,22 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token, recvParam *ASTNode, me
 	p.blockDepth++ // Opening a multi-line block
 	body := p.parseBlockUntilEnd("function", startLine)
 
+	// Track the function-level `$` so a later surplus `$` can point back at
+	// the extra `$` that closed the function early. A surplus `$` inside the
+	// body closes the function itself (opens still balance), so the only
+	// reliable signal is what follows: indented code after the close means
+	// the body was cut short.
+	if p.LintMode {
+		closeLine := startLine
+		if p.pos > 0 && p.pos-1 < len(p.tokens) && p.tokens[p.pos-1].Type == TOKEN_END {
+			closeLine = p.tokens[p.pos-1].Line
+		}
+		p.lastFuncName = name.Value
+		p.lastFuncStartLine = startLine
+		p.lastFuncCloseLine = closeLine
+		p.checkEarlyFunctionClose(name.Value, startLine, closeLine)
+	}
+
 	// parseBlockUntilEnd already consumes the '$' token and decrements blockDepth
 
 	// In lint mode, restore previous function context
@@ -724,6 +740,43 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token, recvParam *ASTNode, me
 	}
 
 	return fn
+}
+
+// checkEarlyFunctionClose emits a single precise diagnostic when the `$` that
+// closed @funcName was a surplus `$` inside the body: the code that follows
+// is still indented as if inside the function. Without this, the rest of the
+// body parses at global scope and produces a cascade of `Variable not
+// declared / not allowed at global scope` errors. Top-level declarations
+// (@func, struct/enum/...) and EOF after the close are fine.
+func (p *Parser) checkEarlyFunctionClose(funcName string, startLine, closeLine int) {
+	j := p.pos
+	for j < len(p.tokens) {
+		t := p.tokens[j].Type
+		if t == TOKEN_NEWLINE || t == TOKEN_SEMICOLON || t == TOKEN_INDENT || t == TOKEN_DEDENT {
+			j++
+			continue
+		}
+		break
+	}
+	if j >= len(p.tokens) {
+		return
+	}
+	next := p.tokens[j]
+	if next.Type == TOKEN_EOF {
+		return
+	}
+	switch next.Type {
+	case TOKEN_AT, TOKEN_STRUCT, TOKEN_ENUM, TOKEN_ALIAS, TOKEN_DISTINCT,
+		TOKEN_UNION, TOKEN_IMPORT, TOKEN_PROGRAM, TOKEN_END:
+		return
+	}
+	indent := p.sourceLineIndent(next.Line)
+	if indent < 0 {
+		return
+	}
+	if indent > 0 {
+		p.recordErrorAtLine(fmt.Sprintf("extra $ at line %d closes @%s early (function opened at line %d); code at line %d is indented as if still inside the function — remove the surplus $", closeLine, funcName, startLine, next.Line), closeLine)
+	}
 }
 
 // Parse tuple assignment (a, b : c, d) or tuple declaration (a, b = c, d)
@@ -1279,6 +1332,199 @@ func (p *Parser) parseJsonStructDeclaration() *ASTNode {
 	return nil
 }
 
+// isReservedFieldKeyword reports whether tt is a keyword that cannot be used
+// as a struct field name. Builtin type names (int, float, string, ...) are
+// allowed as field names and are excluded; everything else that the tokenizer
+// produces as a keyword (if/then/loop/when/import/struct/enum/type/...) is
+// reserved.
+func isReservedFieldKeyword(tt TokenType) bool {
+	switch tt {
+	case TOKEN_IF, TOKEN_ELSE, TOKEN_ELIF, TOKEN_ELSEIF, TOKEN_ANIF, TOKEN_SWITCH,
+		TOKEN_LOOP, TOKEN_IN, TOKEN_TO, TOKEN_TILL, TOKEN_WHILE, TOKEN_UNTIL,
+		TOKEN_FUNC, TOKEN_FN, TOKEN_RETURN, TOKEN_IMPORT, TOKEN_PROGRAM,
+		TOKEN_WHEN, TOKEN_AHOY, TOKEN_PRINT, TOKEN_LOG, TOKEN_PANIC,
+		TOKEN_IS, TOKEN_NOT, TOKEN_OR, TOKEN_AND, TOKEN_THEN, TOKEN_ON,
+		TOKEN_TRUE, TOKEN_FALSE, TOKEN_ENUM, TOKEN_STRUCT, TOKEN_TYPE,
+		TOKEN_ALIAS, TOKEN_DISTINCT, TOKEN_UNION, TOKEN_DO, TOKEN_HALT,
+		TOKEN_NEXT, TOKEN_GOTO, TOKEN_ASSERT, TOKEN_DEFER, TOKEN_INFER,
+		TOKEN_VOID, TOKEN_ANY_TYPE,
+		TOKEN_BAND, TOKEN_BOR, TOKEN_BXOR, TOKEN_BNOT, TOKEN_SHL, TOKEN_SHR,
+		TOKEN_PLUS_WORD, TOKEN_MINUS_WORD, TOKEN_TIMES_WORD, TOKEN_DIV_WORD,
+		TOKEN_MOD_WORD, TOKEN_POW_WORD, TOKEN_LESSER_WORD, TOKEN_GREATER_WORD:
+		return true
+	}
+	return false
+}
+
+// reservedFieldMessage returns the helpful diagnostic for a reserved struct
+// field name. `type` gets a concrete suggestion because it is the common
+// real-world case (input bindings, AST nodes); everything else gets a generic
+// rename hint.
+func reservedFieldMessage(name string) string {
+	if name == "type" {
+		return "field name 'type' is reserved, use 'kind' or 'binding_type' instead"
+	}
+	return fmt.Sprintf("field name '%s' is reserved, rename it (e.g. '%s_' or '%s_field')", name, name, name)
+}
+
+// parseReservedStructField consumes a `keyword: type [= default]` field where
+// the field name is a reserved keyword. It assumes the current token is the
+// reserved keyword and peek(1) is ':'. It records the helpful diagnostic and
+// returns the field node so parsing can continue without a cascade.
+func (p *Parser) parseReservedStructField() *ASTNode {
+	tok := p.current()
+	msg := reservedFieldMessage(tok.Value)
+	if p.LintMode {
+		p.recordErrorAtLine(msg, tok.Line)
+	} else {
+		panic(msg + fmt.Sprintf(" at line %d", tok.Line))
+	}
+	fieldName := tok.Value
+	fieldLine := tok.Line
+	p.advance() // consume reserved keyword
+	p.advance() // consume ':'
+
+	fieldType, defaultValue := p.parseStructFieldTypeAfterColon()
+
+	// Skip optional delimiters
+	for p.current().Type == TOKEN_COMMA || p.current().Type == TOKEN_SEMICOLON || p.current().Type == TOKEN_NEWLINE {
+		p.advance()
+	}
+
+	return &ASTNode{
+		Type:         NODE_IDENTIFIER,
+		Value:        fieldName,
+		DataType:     fieldType,
+		Line:         fieldLine,
+		DefaultValue: defaultValue,
+	}
+}
+
+// parseStructFieldTypeAfterColon parses the type (and optional `= default`)
+// after the ':' of a struct field. The colon is already consumed.
+func (p *Parser) parseStructFieldTypeAfterColon() (string, *ASTNode) {
+	var fieldType string
+	var defaultValue *ASTNode
+
+	if p.current().Type == TOKEN_FN {
+		fieldType = p.parseFunctionTypeString()
+	} else if p.current().Type == TOKEN_ARRAY_TYPE {
+		fieldType = "array"
+		p.advance()
+		if p.current().Type == TOKEN_LBRACKET {
+			p.advance() // consume [
+			fieldType += "[" + p.current().Value
+			p.advance() // consume type
+			p.expect(TOKEN_RBRACKET)
+			fieldType += "]"
+		}
+	} else if p.current().Type == TOKEN_DICT_TYPE {
+		fieldType = "dict"
+		p.advance()
+		if p.current().Type == TOKEN_LANGLE {
+			p.advance() // consume <
+			fieldType += "<" + p.current().Value
+			p.advance() // consume key type
+			if p.current().Type == TOKEN_COMMA {
+				p.advance()
+				fieldType += "," + p.current().Value
+				p.advance() // consume value type
+			}
+			p.expect(TOKEN_RANGLE)
+			fieldType += ">"
+		}
+	} else if p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "buffer" {
+		fieldType = "buffer"
+		p.advance()
+		if p.current().Type == TOKEN_LBRACKET {
+			p.advance() // consume [
+			fieldType += "[" + p.current().Value
+			p.advance() // consume type
+			p.expect(TOKEN_RBRACKET)
+			fieldType += "]"
+		}
+	} else {
+		fieldType = p.current().Value
+		if p.current().Type == TOKEN_IDENTIFIER ||
+			p.current().Type == TOKEN_INT_TYPE ||
+			p.current().Type == TOKEN_FLOAT_TYPE ||
+			p.current().Type == TOKEN_STRING_TYPE ||
+			p.current().Type == TOKEN_BOOL_TYPE ||
+			p.current().Type == TOKEN_CHAR_TYPE ||
+			p.current().Type == TOKEN_DICT_TYPE ||
+			p.current().Type == TOKEN_ARRAY_TYPE {
+			p.advance()
+		}
+	}
+
+	// Check for = and default value
+	if p.current().Type == TOKEN_EQUALS {
+		p.advance() // consume =
+		defaultValue = p.parseStructFieldDefaultValue(fieldType)
+	}
+
+	if fieldType == "" {
+		fieldType = "int"
+	}
+	return fieldType, defaultValue
+}
+
+// parseStructFieldDefaultValue parses a struct field `= default` value.
+func (p *Parser) parseStructFieldDefaultValue(fieldType string) *ASTNode {
+	switch {
+	case p.current().Type == TOKEN_AMPERSAND && p.peek(1).Type == TOKEN_IDENTIFIER:
+		ampLine := p.current().Line
+		p.advance() // &
+		fnName := p.current().Value
+		p.advance() // name
+		return &ASTNode{
+			Type:  NODE_UNARY_OP,
+			Value: "&",
+			Line:  ampLine,
+			Children: []*ASTNode{{
+				Type:  NODE_IDENTIFIER,
+				Value: fnName,
+				Line:  ampLine,
+			}},
+		}
+	case p.current().Type == TOKEN_NUMBER:
+		n := &ASTNode{Type: NODE_NUMBER, Value: p.current().Value, Line: p.current().Line}
+		p.advance()
+		return n
+	case p.current().Type == TOKEN_TRUE || p.current().Type == TOKEN_FALSE:
+		n := &ASTNode{Type: NODE_BOOLEAN, Value: p.current().Value, Line: p.current().Line}
+		p.advance()
+		return n
+	case p.current().Type == TOKEN_MINUS && p.peek(1).Type == TOKEN_NUMBER:
+		line := p.current().Line
+		p.advance() // consume minus
+		n := &ASTNode{Type: NODE_NUMBER, Value: "-" + p.current().Value, Line: line}
+		p.advance()
+		return n
+	case p.current().Type == TOKEN_IDENTIFIER && p.peek(1).Type == TOKEN_LBRACE:
+		typeName := p.current().Value
+		p.advance() // consume type name
+		p.advance() // consume {
+		def := p.parseObjectLiteral()
+		def.Value = typeName
+		return def
+	case p.current().Type == TOKEN_LBRACE:
+		p.advance() // consume {
+		def := p.parseObjectLiteral()
+		def.Value = fieldType
+		return def
+	case p.current().Type == TOKEN_LANGLE:
+		return p.parseDictLiteral()
+	case p.current().Type == TOKEN_STRING:
+		n := &ASTNode{Type: NODE_STRING, Value: p.current().Value, Line: p.current().Line}
+		p.advance()
+		return n
+	case p.current().Type == TOKEN_LBRACKET:
+		return p.parseArrayLiteralBracket()
+	}
+	return nil
+}
+
 func (p *Parser) parseStructDeclaration() *ASTNode {
 	startLine := p.current().Line
 	p.expect(TOKEN_STRUCT)
@@ -1320,7 +1566,29 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 		p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 		p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_CHAR_TYPE ||
 		p.current().Type == TOKEN_BOOL_TYPE || p.current().Type == TOKEN_DICT_TYPE ||
-		p.current().Type == TOKEN_ARRAY_TYPE {
+		p.current().Type == TOKEN_ARRAY_TYPE || isReservedFieldKeyword(p.current().Type) {
+		// A field named `type` (e.g. `type: int`) is not a nested type
+		// declaration: `type NAME:` opens a nested type, `type:` is a field
+		// using the reserved word. The same applies to any other reserved
+		// keyword followed by ':'.
+		if p.current().Type == TOKEN_TYPE && p.peek(1).Type == TOKEN_ASSIGN {
+			struc.Children = append(struc.Children, p.parseReservedStructField())
+			if !isOneLine {
+				p.skipNewlines()
+			}
+			continue
+		}
+		if isReservedFieldKeyword(p.current().Type) && p.current().Type != TOKEN_TYPE {
+			if p.peek(1).Type == TOKEN_ASSIGN {
+				struc.Children = append(struc.Children, p.parseReservedStructField())
+				if !isOneLine {
+					p.skipNewlines()
+				}
+				continue
+			}
+			// Reserved word not followed by ':' ends the struct body.
+			break
+		}
 		if p.current().Type == TOKEN_TYPE {
 			// Nested type (e.g., "type smoke_particle:")
 			p.advance() // consume 'type'
@@ -1360,7 +1628,12 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 					}
 
 					// If we encounter another 'type' keyword, we're done with this nested type
+					// unless it is `type:` — a field using the reserved word.
 					if p.current().Type == TOKEN_TYPE {
+						if p.peek(1).Type == TOKEN_ASSIGN {
+							nestedType.Children = append(nestedType.Children, p.parseReservedStructField())
+							continue
+						}
 						break
 					}
 
@@ -1498,6 +1771,8 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 						for p.current().Type == TOKEN_COMMA || p.current().Type == TOKEN_SEMICOLON || p.current().Type == TOKEN_NEWLINE {
 							p.advance()
 						}
+					} else if isReservedFieldKeyword(p.current().Type) && p.peek(1).Type == TOKEN_ASSIGN {
+						nestedType.Children = append(nestedType.Children, p.parseReservedStructField())
 					} else {
 						// Unknown token, skip to avoid infinite loop
 						p.advance()

@@ -9335,6 +9335,59 @@ func (gen *CodeGenerator) generateChainedArrayAssignment(node *ahoy.ASTNode) {
 		}
 	}
 
+	// Struct and float values need heap allocation: the array stores
+	// intptr_t slots holding pointers for these types. A plain
+	// (void*)(intptr_t)value cast miscompiles aggregates ("aggregate value
+	// used where an integer was expected" / TCC "invalid aggregate type
+	// for register load") e.g. `imap.actions[idx] = a` where a is a struct.
+	valType := gen.inferType(valueNode)
+	if valType == "float" || valType == "double" {
+		gen.output.WriteString("((AhoyArray*)")
+		gen.generateNode(innerAccess)
+		gen.output.WriteString(")->data[")
+		gen.generateNode(outerIndex)
+		gen.output.WriteString("] = (intptr_t)({ double* __fp = malloc(sizeof(double)); *__fp = ")
+		gen.generateNode(valueNode)
+		gen.output.WriteString("; __fp; });\n")
+		return
+	}
+	{
+		argType := valType
+		needsHeapAlloc := false
+		structType := ""
+		if valueNode.Type == ahoy.NODE_OBJECT_LITERAL && valueNode.Value != "" {
+			needsHeapAlloc = true
+			structType = gen.mapType(valueNode.Value)
+		} else if _, isStruct := gen.structs[argType]; isStruct {
+			needsHeapAlloc = true
+			structType = gen.mapType(argType)
+		} else {
+			cType := gen.mapType(argType)
+			isCStruct := gen.cTypeDefinitions[cType] && !strings.HasSuffix(cType, "*") &&
+				cType != "int" && cType != "float" && cType != "double" &&
+				cType != "char" && cType != "bool" && cType != "void" &&
+				cType != "char*" && cType != "intptr_t"
+			if isCStruct {
+				needsHeapAlloc = true
+				structType = cType
+			}
+		}
+		if needsHeapAlloc {
+			gen.output.WriteString("((AhoyArray*)")
+			gen.generateNode(innerAccess)
+			gen.output.WriteString(")->data[")
+			gen.generateNode(outerIndex)
+			gen.output.WriteString("] = (intptr_t)({ ")
+			gen.output.WriteString(structType)
+			gen.output.WriteString("* __tmp = malloc(sizeof(")
+			gen.output.WriteString(structType)
+			gen.output.WriteString(")); *__tmp = ")
+			gen.generateNode(valueNode)
+			gen.output.WriteString("; __tmp; });\n")
+			return
+		}
+	}
+
 	// Generate: ((AhoyArray*)(inner_access))->data[outer_index] = value
 	gen.output.WriteString("((AhoyArray*)")
 	gen.generateNode(innerAccess)

@@ -262,6 +262,13 @@ type Parser struct {
 	// warning. sourceLinesReady marks the load attempt (lint parses only).
 	sourceLines      []string
 	sourceLinesReady bool
+	// lastFuncClose tracks the most recent function-level `$` so a later
+	// Superfluous `$` can point back at the extra `$` that closed the
+	// function early (the bell/editor/main.ahoy cascade: one surplus `$`
+	// closes @main, the rest of the body parses at global scope).
+	lastFuncName      string
+	lastFuncStartLine int
+	lastFuncCloseLine int
 }
 
 // The public parse entry points (Parse, ParseWithPath, ParseLint, ...)

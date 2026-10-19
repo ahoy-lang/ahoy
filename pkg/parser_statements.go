@@ -99,8 +99,12 @@ func (p *Parser) parseStatement() *ASTNode {
 			// Regular $ terminator
 			if p.blockDepth <= 0 {
 				if p.LintMode {
+					msg := "Superfluous $ - no block to close"
+					if p.lastFuncName != "" {
+						msg = fmt.Sprintf("Superfluous $ - no block to close (possibly an earlier extra $ closed @%s early at line %d; only '$' closes a block)", p.lastFuncName, p.lastFuncCloseLine)
+					}
 					p.Errors = append(p.Errors, ParseError{
-						Message: "Superfluous $ - no block to close",
+						Message: msg,
 						Line:    token.Line,
 						Column:  token.Column,
 					})
