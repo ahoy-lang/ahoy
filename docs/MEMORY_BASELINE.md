@@ -125,3 +125,27 @@ across five consecutive full-game runs plus a full editor run.
   probe: 12 allocations vs 500+), fragmentation, and locality — not
   steady-frame time. Routing hot-pass temps to arenas stays future work
   behind a volume measurement.
+
+## Massif verdict: no per-frame growth, routing deferred with numbers
+
+`valgrind --tool=massif`, balls, 90 frames headless (24.5G instructions,
+94 snapshots). Heap sits flat at 104–105MB the whole run (one 97MB dip
+as GL settles transient buffers) — no growth trend, so the autofree
+system holds at game scale, not just in probes.
+
+Breakdown at peak: ~43% Mesa/llvmpipe internals, ~16% one-time shadow
+FBO (`ahoy_shadow_fbo_ensure`), textures, and the idle arenas
+(`ahoy_arena_new` from `ahoy_main`: 1MB scene + 64KB frame, virtual
+only, ~0 RSS until routing lands). **Every Ahoy-side per-frame
+temporary sits below massif's 1% reporting threshold.** Routing temps
+to the frame arena would save a few hundred mallocs/sec against a 1ms
+frame dominated by GL — unmeasurable. Routing stays future work, now
+with a number attached instead of an intuition.
+
+Corollaries recorded for the backlog: `move` is unnecessary (takeover
+semantics — fresh values transfer with zero copy already; dups fire
+only for borrows, where a copy is required for soundness); transform
+hot-split is unjustified (struct copies are ~0.1µs of a ~5µs/node
+movers budget); teardown (`scene_free` freeing names) still needs the
+all-names-owned invariant and remains the one real follow-up, since
+scene switches without process exit leak names today.
