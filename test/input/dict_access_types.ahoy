@@ -1,0 +1,55 @@
+program dict_access_types
+
+? A typed dict knows its value type, so `d<"k">` is a string and not a
+? number. The read used to squeeze every entry through a double, which
+? turned a string into a double and left the caller to cast it back to a
+? pointer - invalid C ("cannot cast 'double' to 'char *'"), and a lossy
+? trip through a double besides.
+
+@ read_str |d:dict<string,string>| string:
+	return d<"k">
+$
+
+@ read_int |d:dict<string,int>| int:
+	return d<"n">
+$
+
+@ read_float |d:dict<string,float>| float:
+	return d<"f">
+$
+
+@ main ||:
+	expected: []
+
+	d: dict<string,string> = <"k": "world">
+	nums: dict<string,int> = <"n": 42>
+	ratios: dict<string,float> = <"f": 0.5>
+
+	? a string entry reads back as a string
+	s: string = read_str|d|
+	print|s|
+	expected.push|"world"|
+
+	? and so does a direct read
+	direct: string = d<"k">
+	print|direct|
+	expected.push|"world"|
+
+	? an int entry reads back as an int
+	i: int = read_int|nums|
+	print|i|
+	expected.push|"42"|
+
+	? a float entry reads back as a float
+	f: float = read_float|ratios|
+	print|f|
+	expected.push|"0.5"|
+
+	? an f-string formats the entry with its own type
+	key: string = "k"
+	text: string = f"inline={d<key>}"
+	print|text|
+	expected.push|"inline=world"|
+
+	print|expected|
+$

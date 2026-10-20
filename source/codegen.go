@@ -9433,8 +9433,40 @@ func (gen *CodeGenerator) generateChainedArrayAssignment(node *ahoy.ASTNode) {
 	gen.output.WriteString(";\n")
 }
 
+// dictValueType returns the value type of a typed dict variable
+// (`dict<string,string>` -> "string"), or "" when the dict is untyped and
+// the runtime entry tag is the only thing that knows.
+func (gen *CodeGenerator) dictValueType(dictName string) string {
+	if dictName == "" {
+		return ""
+	}
+	var dictVarType string
+	if varType, exists := gen.variables[dictName]; exists {
+		dictVarType = varType
+	} else if varType, exists := gen.functionVars[dictName]; exists {
+		dictVarType = varType
+	}
+	if !strings.HasPrefix(dictVarType, "dict<") && !strings.HasPrefix(dictVarType, "dict[") {
+		return ""
+	}
+	startIdx := strings.IndexAny(dictVarType, "<[")
+	endIdx := strings.LastIndexAny(dictVarType, ">]")
+	if startIdx < 0 || endIdx <= startIdx {
+		return ""
+	}
+	parts := strings.Split(dictVarType[startIdx+1:endIdx], ",")
+	if len(parts) != 2 {
+		return ""
+	}
+	return strings.TrimSpace(parts[1])
+}
+
 func (gen *CodeGenerator) generateDictAccess(node *ahoy.ASTNode) {
-	// Check if the dict variable is generic (intptr_t) and needs casting
+	// The value type of a typed dict decides how the entry is read. A string
+	// entry is a `char*` that has to be fetched as a pointer: the old path
+	// squeezed every entry through `hashMapGetDouble`, which turned a
+	// string into a double and left the caller to cast it back to a
+	// pointer - invalid C, and a lossy trip through a double besides.
 	dictName := node.Value
 	dictExpr := gen.nameExpr(dictName)
 	dictType := ""
@@ -9444,6 +9476,26 @@ func (gen *CodeGenerator) generateDictAccess(node *ahoy.ASTNode) {
 		dictType = varType
 	} else if varType, exists := gen.functionVars[dictName]; exists {
 		dictType = varType
+	}
+
+	valueType := gen.dictValueType(dictName)
+	if valueType != "" && valueType != "float" && valueType != "double" {
+		// A typed entry: fetch the stored value and cast it to the declared
+		// type. `hashMapGetTyped` returns the value as it was stored.
+		gen.output.WriteString("(")
+		gen.output.WriteString(gen.mapType(valueType))
+		gen.output.WriteString(")hashMapGetTyped(")
+		if dictType == "generic" || dictType == "any" {
+			gen.output.WriteString("(HashMap*)")
+			gen.output.WriteString(dictExpr)
+			gen.output.WriteString(", ")
+		} else {
+			gen.output.WriteString(dictExpr)
+			gen.output.WriteString(", ")
+		}
+		gen.generateNode(node.Children[0])
+		gen.output.WriteString(")")
+		return
 	}
 
 	// Use hashMapGetDouble which converts values to double (works for all numeric types)
@@ -10063,6 +10115,13 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		// Default to int if we don't know the element type
 		return "int"
 	case ahoy.NODE_DICT_ACCESS:
+		// A typed dict knows its value type: `d<"k">` on a
+		// `dict<string,string>` is a string, not a number. An untyped dict
+		// does not, and the runtime entry tag decides (the reader below
+		// asks for it).
+		if vt := gen.dictValueType(node.Value); vt != "" {
+			return vt
+		}
 		// Dictionary values - use hashMapGetDouble which handles type conversion
 		return "float"
 	case ahoy.NODE_OBJECT_ACCESS:
