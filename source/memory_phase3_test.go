@@ -127,6 +127,31 @@ $
 	}
 }
 
+// Regression: struct fields outlive the store — a loop-local string kept
+// in a field is duplicated (field_store_retain.ahoy would otherwise read
+// freed memory after the loop).
+func TestFieldStoreDuplicatesRetainable(t *testing.T) {
+	src := `program p
+struct Card:
+	text: string
+$
+
+@ main ||:
+	c: Card{text: ""}
+	loop i:0 to 3 do
+		s: "v" + "w"
+		c.text = s
+	$
+	print|c.text|
+$
+`
+	ast := ahoy.ParseWithPath(ahoy.Tokenize(src), "test.ahoy")
+	out := GenerateCWithFilename(ast, "test.ahoy")
+	if !strings.Contains(out, "c.text = strdup(s)") && !strings.Contains(out, "c.text=strdup(s)") {
+		t.Errorf("expected strdup promotion for loop-local stored into struct field")
+	}
+}
+
 // Region lifecycle: main creates frame+scene arenas once and destroys them.
 func TestMainOwnsRegionLifecycle(t *testing.T) {
 	src := `program p

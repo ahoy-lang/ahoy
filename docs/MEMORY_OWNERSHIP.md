@@ -76,6 +76,11 @@ String-element ownership today:
 - Returning an owned array transfers piece ownership to the caller by
   reference (`funcReturnsOwnedStrings`); unknown callees default to
   borrowed elements (leak-safe).
+- Struct-field stores duplicate retainable sources (`fieldStoreNeedsDup`):
+  bare identifiers (including parameters) and borrowed container reads
+  whose type reads as string. Fresh values, literals and already-handled
+  shapes stay raw. Same C type either way; contradictory-type stores
+  keep their shape.
 - Reads into primitives never escape-mark (`total = total +
   arr->length` retains nothing — the over-marking that leaked every
   loop-local container). Struct targets stay conservative (struct

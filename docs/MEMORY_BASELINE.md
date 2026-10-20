@@ -91,3 +91,14 @@ bounded teardown omissions, no per-frame growth.
 - Final run: **zero memory errors, 90/90 frames, clean close.**
   Exit leaks identical (134,109 bytes / 2,854 allocations, all
   load/boot-bounded, none per-frame).
+
+## Field-store rule run (same game, same flags)
+
+Struct-field stores of identifiers and borrowed reads now duplicate
+(`fieldStoreNeedsDup`); `dup` joined the string dispatch/inference
+lists; `node_make` funnel covered literal-init. **Zero memory errors,
+90/90 frames.** Exit leaks 134,739 bytes / 3,083 allocations (+630
+bytes / +229 allocs vs prior run — the field dups themselves, each a
+few bytes, all load/boot-bounded). Hottest leak site
+(`node_label:680`, ~102 records) is ~9 boot-time labels × ~12 allocs
+each, not per-frame growth. No site scales with the 90 frames.

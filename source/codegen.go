@@ -3208,7 +3208,13 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 		// Owned-read elements (pieces of split-built arrays) need the same:
 		// the source array frees its piece at scope exit, so the field
 		// takes a duplicate. Same C type, so no new type-error class.
-		if node.Children[1].Type == ahoy.NODE_F_STRING || gen.ownedReadNeedsDup(node.Children[1]) {
+		// Bare identifiers and borrowed access reads need it too: the
+		// field outlives the store statement, but the source may not
+		// (loop-local names, split pieces borrowed from arrays that die,
+		// parameters the caller frees). Fresh values (concatenation,
+		// string methods, literals) are immortal or static and stay raw.
+		if node.Children[1].Type == ahoy.NODE_F_STRING || gen.ownedReadNeedsDup(node.Children[1]) ||
+			gen.fieldStoreNeedsDup(node.Children[1]) {
 			gen.output.WriteString("strdup(")
 			gen.generateNode(node.Children[1])
 			gen.output.WriteString(")")
@@ -5751,6 +5757,35 @@ func (gen *CodeGenerator) setArrayStringOwnership(varName string, valueNode *aho
 		return
 	}
 	delete(gen.heapArrayOwnsStrings, varName)
+}
+
+// fieldStoreNeedsDup reports whether a struct-field store must duplicate
+// its source: bare identifiers (including parameters) and borrowed
+// container reads may die before the struct does, while the struct takes
+// no ownership. Fresh values (literals, f-strings, concatenations,
+// string methods — including dup itself — and owned reads, handled
+// elsewhere) are immortal or already duplicated and stay raw. Sources
+// that do not read as strings are left alone.
+func (gen *CodeGenerator) fieldStoreNeedsDup(valueNode *ahoy.ASTNode) bool {
+	if valueNode == nil {
+		return false
+	}
+	switch valueNode.Type {
+	case ahoy.NODE_STRING, ahoy.NODE_RAW_STRING, ahoy.NODE_F_STRING,
+		ahoy.NODE_BINARY_OP, ahoy.NODE_CALL,
+		ahoy.NODE_OBJECT_LITERAL, ahoy.NODE_ARRAY_LITERAL, ahoy.NODE_DICT_LITERAL:
+		return false
+	case ahoy.NODE_METHOD_CALL:
+		// Fresh methods copy; alias methods (getters) borrow — dup those.
+		return gen.callAliasKind(valueNode.Value).isAlias
+	}
+	switch valueNode.Type {
+	case ahoy.NODE_IDENTIFIER,
+		ahoy.NODE_MEMBER_ACCESS, ahoy.NODE_ARRAY_ACCESS,
+		ahoy.NODE_DICT_ACCESS, ahoy.NODE_OBJECT_ACCESS:
+		return isStringLikeType(gen.inferType(valueNode))
+	}
+	return false
 }
 
 // ownedReadNeedsDup reports whether valueNode reads an element from an
