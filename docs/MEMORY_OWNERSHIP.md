@@ -145,8 +145,12 @@ nonexistent `ahoy_array_dup` link error). Both lists now include it.
 - Static-declared string vars (`s: ""`) assigned owned reads skip
   tracking (no declaration entry): one copy leaks per assignment.
   Same pre-existing class as the `clean = clean + piece` pattern.
-  Follow-up: declaration-scope map (`varDeclScope`) so copies schedule
-  at the var's own scope.
+  A declaration-scope map was tried for this and reverted: scheduling
+  from branch-conditional registrations breaks single-pass dominance
+  (the registered scope may never have run while an unconditional
+  eager-free fires — the editor scene-path crash). Only
+  straight-line-dominated heap declarations schedule; the rest leak
+  soundly.
 - Copies pushed into borrowed (non-owning) arrays leak via shell-only
   freeing. Bounded per push; never dangles.
 - Borrowed borrows that later escape (`q: owned[i]` then `return q`)
@@ -160,11 +164,9 @@ nonexistent `ahoy_array_dup` link error). Both lists now include it.
 - Scope-allocation lists hold each name **once** (`appendScopeAllocation`
   dedups). Early-return cleanups emit per entry without marking, so a
   duplicate entry is a dynamic double-free.
-- Membership is atomic: wherever `heapVarScopes`/`heapVarTypes` are set,
-  `heapAllocatedVars` is set too. Escape marking, eager-free guards and
-  function-end cleanup key off the flag; lists key off scopes. Setting
-  one without the other frees what marks cannot see.
-- Declaration scope (`varDeclScope`, every in-function declaration plus
-  params at 0) lets reassignment schedule at the var's own scope. Only
-  fresh-heap values ever enter tracking through it, so widened frees
-  stay sound; globals (no record) still skip.
+- Registration schedules only straight-line-dominated values. A
+  branch-conditional registration paired with an unconditional
+  eager-free frees values the branch never ran for.
+- Never free from a pool with plain `free`: pooled chunk slots crash
+  under it. All codegen frees of known struct pointers route to the
+  per-struct Release fns; C code must do the same.
