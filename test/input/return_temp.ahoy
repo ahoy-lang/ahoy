@@ -1,0 +1,37 @@
+program return_temp
+
+struct Person:
+	name: string
+$
+
+? A return value that reads a container used to be freed by the return-path
+? cleanup before the return expression evaluated it. `return xs[0].strip||`
+? crashed with SIGSEGV because collectDeferredIdents missed the base variable
+? on an access node, so returnWouldFreeMentioned stayed false and no stash
+? temp was emitted. Each form below is a return that reads a container.
+
+@ strip_first |xs:array[string]| string:
+	return xs[0].strip||
+$
+
+@ main ||:
+	expected: []
+
+	s: array[string] = ["  hello  "]
+	r: strip_first|s|
+	print|r|
+	expected.push|"hello"|
+
+	? a bare array element (string) still round-trips
+	s2: array[string] = ["bare"]
+	print|s2[0]|
+	expected.push|"bare"|
+
+	? member access on a struct read then stripped in the return expression
+	p: Person{name: "  ahoy  "}
+	pn: p.name.strip||
+	print|pn|
+	expected.push|"ahoy"|
+
+	print|expected|
+$

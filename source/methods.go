@@ -92,6 +92,16 @@ func collectDeferredIdents(node *ahoy.ASTNode, into map[string]bool) {
 	if node.Type == ahoy.NODE_IDENTIFIER && node.Value != "" && node.Value != "_" {
 		into[node.Value] = true
 	}
+	// A container access carries its base variable in Value, not in a child
+	// identifier (`xs[0]`, `d<"k">`, `o.field`). Without this the base is
+	// missed, so a return like `return xs[0].strip||` does not mark the
+	// receiver: the return-path cleanup then frees the container before the
+	// return expression reads it (use-after-free).
+	if (node.Type == ahoy.NODE_ARRAY_ACCESS || node.Type == ahoy.NODE_DICT_ACCESS ||
+		node.Type == ahoy.NODE_MEMBER_ACCESS || node.Type == ahoy.NODE_OBJECT_ACCESS) &&
+		node.Value != "" && node.Value != "_" {
+		into[node.Value] = true
+	}
 	for _, child := range node.Children {
 		collectDeferredIdents(child, into)
 	}
