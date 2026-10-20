@@ -113,3 +113,15 @@ settling plus fewer live-at-exit paths after the scheduling revert);
 it was not chased further because leak accounting cannot mask
 use-after-free — ASan errors are the safety signal, and it is clean
 across five consecutive full-game runs plus a full editor run.
+
+## Slab-pool bench (movers/200/null-renderer, bench.py --quick)
+
+- Pre-pool baseline: 1.012ms/frame, checksum 469128.960013, rss 91,932KB.
+- Post-pool: 1.013ms/frame, identical checksum, rss 92,388KB.
+- No steady-state speedup (frames were never alloc-bound — the 20µs/node
+  budget is dispatch/physics, as predicted); +456KB is retained slab
+  high-water (32 chunks for 2,000 components, bounded by max live set).
+  The win is allocator churn under spawn/kill pressure (500-cycle churn
+  probe: 12 allocations vs 500+), fragmentation, and locality — not
+  steady-frame time. Routing hot-pass temps to arenas stays future work
+  behind a volume measurement.
