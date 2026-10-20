@@ -1258,6 +1258,11 @@ func main() {
 	// Quick pre-parse to get program name for cache loading
 	if *incFlag {
 		if programName := getQuickProgramName(absPath); programName != "" {
+			// Per target: the parallel cross builds of one program
+			// would otherwise share (and fight over) one cache file.
+			if *targetFlag != "" {
+				programName = programName + "-" + *targetFlag
+			}
 			GetBuildCache().SetProgramName(programName)
 		}
 	}
@@ -1274,7 +1279,11 @@ func main() {
 
 	// Set the program name for the cache if not already set
 	if GetBuildCache().ProgramName == "" {
-		GetBuildCache().SetProgramName(pkg.Name)
+		cacheName := pkg.Name
+		if *targetFlag != "" {
+			cacheName = cacheName + "-" + *targetFlag
+		}
+		GetBuildCache().SetProgramName(cacheName)
 	}
 
 	loadTime := time.Since(loadStart)
@@ -1468,7 +1477,15 @@ func main() {
 		outputDir = filepath.Join(filepath.Dir(filepath.Dir(sourceDir)), "test", "output")
 	}
 
-	outputFile := filepath.Join(outputDir, baseName+".c")
+	// The intermediate C file is per target: the same program can be built
+	// for several targets (bell's export runs them in parallel) and a
+	// shared output/main.c would be overwritten while another build
+	// compiles it.
+	cSuffix := ""
+	if *targetFlag != "" {
+		cSuffix = "-" + *targetFlag
+	}
+	outputFile := filepath.Join(outputDir, baseName+cSuffix+".c")
 	executable := filepath.Join(outputDir, baseName)
 
 	// Create output directory if it doesn't exist
