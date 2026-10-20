@@ -1,0 +1,47 @@
+program struct_alloc
+
+? A struct can be heap allocated: `ahoy_alloc_Ext()` returns a zeroed
+? Ext*. The C side knows the size, Ahoy has no way to ask for it.
+?
+? Together with a pointer-typed struct field (`ext: Ext*`) this is what a
+? component-style layout needs: a small core struct that holds a reference
+? to a per-kind component instead of a copy of every component's fields.
+
+struct Ext:
+	a: float
+	b: int
+$
+
+struct Holder:
+	name: string
+	ext: Ext*
+$
+
+@ main ||:
+	expected: []
+
+	? the allocator hands back a zeroed struct
+	e: Ext* = ahoy_alloc_Ext||
+	print|e.a|
+	expected.push|"0"|
+
+	? writing through the pointer
+	e.a = 1.5
+	e.b = 7
+	print|e.a|
+	expected.push|"1.5"|
+	print|e.b|
+	expected.push|"7"|
+
+	? a struct field holds the reference, and copies share it
+	h: Holder = Holder{name: "x", ext: e}
+	print|h.ext.b|
+	expected.push|"7"|
+
+	h2: Holder = h
+	h2.ext.b = 9
+	print|e.b|
+	expected.push|"9"|
+
+	print|expected|
+$

@@ -402,6 +402,12 @@ func (c *checker) isCallable(name string) bool {
 	if _, ok := c.p.distinctTypes[name]; ok {
 		return true
 	}
+	// A struct allocator: ahoy_alloc_NodeVis()
+	if structName := AllocStructName(name); structName != "" {
+		if _, ok := c.p.structs[structName]; ok {
+			return true
+		}
+	}
 	if c.p.zeroArgFunctions[name] {
 		return true
 	}

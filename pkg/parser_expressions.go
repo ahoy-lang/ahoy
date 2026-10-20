@@ -8,6 +8,17 @@ import (
 
 // Expression parsing: assignment, calls, operators and precedence.
 
+// pointerTypeAhead reports whether the tokens after the current type name are
+// a pointer suffix followed by `=`: `x: Ext* = &ext`. A multiplication is
+// not a pointer type - `x: a * b` declares a value.
+func (p *Parser) pointerTypeAhead() bool {
+	i := 1
+	for p.peek(i).Type == TOKEN_MULTIPLY {
+		i++
+	}
+	return p.peek(i).Type == TOKEN_EQUALS
+}
+
 func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 	// Check for unary expression assignment: ^ptr: value or &var: value
 	if p.current().Type == TOKEN_CARET || p.current().Type == TOKEN_AMPERSAND {
@@ -803,10 +814,23 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					explicitType = possibleType
 					isDeclaration = true
 					p.advance() // consume type
+					// A pointer type: `Ext*`.
+					explicitType = p.parsePointerSuffix(explicitType)
 					if p.current().Type == TOKEN_EQUALS {
 						p.advance() // consume =
 					}
 					// If TOKEN_LANGLE, DON'T consume it - but we need to handle it specially below
+				} else if p.peek(1).Type == TOKEN_MULTIPLY && p.pointerTypeAhead() {
+					// A pointer type: `p: Ext* = &ext`. The type name is
+					// followed by the pointer stars, then the value. A
+					// multiplication is not a pointer type: `x: a * b`
+					// declares a value.
+					p.advance() // consume the type name
+					explicitType = p.parsePointerSuffix(possibleType)
+					isDeclaration = true
+					if p.current().Type == TOKEN_EQUALS {
+						p.advance() // consume =
+					}
 				}
 			}
 		}

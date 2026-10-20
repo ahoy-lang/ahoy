@@ -430,6 +430,21 @@ func (p *Parser) validateFunctionCall(funcName string, line int, column int) boo
 }
 
 // inferType infers the type from an AST node
+// AllocPrefix marks the heap allocator the compiler emits for every struct:
+// `ahoy_alloc_NodeVis()` returns a zeroed NodeVis* on the heap. A struct
+// field that holds a pointer to another struct needs one, and the C side
+// knows the size - Ahoy has no way to ask for it.
+const AllocPrefix = "ahoy_alloc_"
+
+// AllocStructName returns the struct a call allocates, or "" when the name is
+// not an allocator call.
+func AllocStructName(callName string) string {
+	if !strings.HasPrefix(callName, AllocPrefix) {
+		return ""
+	}
+	return strings.TrimPrefix(callName, AllocPrefix)
+}
+
 func (p *Parser) inferType(node *ASTNode) string {
 	if node == nil {
 		return "unknown"
@@ -549,6 +564,13 @@ func (p *Parser) inferType(node *ASTNode) string {
 		// conversion: the result has the distinct type.
 		if _, isDistinct := p.distinctTypes[funcName]; isDistinct {
 			return funcName
+		}
+
+		// A struct allocator: ahoy_alloc_NodeVis() -> NodeVis*
+		if structName := AllocStructName(funcName); structName != "" {
+			if _, ok := p.structs[structName]; ok {
+				return structName + "*"
+			}
 		}
 
 		// First check C headers (global namespace)

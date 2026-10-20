@@ -9787,6 +9787,12 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		if node.Value == "sprintf" {
 			return "string"
 		}
+		// A struct allocator: ahoy_alloc_NodeVis() -> NodeVis*
+		if structName := ahoy.AllocStructName(node.Value); structName != "" {
+			if _, ok := gen.structs[structName]; ok {
+				return structName + "*"
+			}
+		}
 		// Type casts
 		if node.Value == "int" {
 			return "int"
@@ -11918,6 +11924,27 @@ func (gen *CodeGenerator) generateStruct(node *ahoy.ASTNode) {
 	gen.structDecls.WriteString("} ")
 	gen.structDecls.WriteString(cStructName)
 	gen.structDecls.WriteString(";\n\n")
+
+	// A heap allocator for the struct: `ahoy_alloc_NodeVis()` returns a
+	// zeroed NodeVis*. A struct field that holds a pointer to another struct
+	// needs one - the C side knows the size, Ahoy has no way to ask for it.
+	allocName := snakeToPascal(ahoy.AllocPrefix + structName)
+	gen.structDecls.WriteString("static ")
+	gen.structDecls.WriteString(cStructName)
+	gen.structDecls.WriteString("* ")
+	gen.structDecls.WriteString(allocName)
+	gen.structDecls.WriteString("(void);\n")
+	gen.structDecls.WriteString("static ")
+	gen.structDecls.WriteString(cStructName)
+	gen.structDecls.WriteString("* ")
+	gen.structDecls.WriteString(allocName)
+	gen.structDecls.WriteString("(void) { ")
+	gen.structDecls.WriteString(cStructName)
+	gen.structDecls.WriteString("* __v = (")
+	gen.structDecls.WriteString(cStructName)
+	gen.structDecls.WriteString("*)calloc(1, sizeof(")
+	gen.structDecls.WriteString(cStructName)
+	gen.structDecls.WriteString(")); return __v; }\n\n")
 
 	// Generate static fields as global variables
 	for _, field := range staticFields {
