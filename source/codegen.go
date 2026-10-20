@@ -6334,8 +6334,10 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 							case "AhoyJSON*", "json":
 								formatSpec = "%s" // Will use ahoy_json_stringify
 							default:
-								// Check for typed collections
-								if strings.HasPrefix(argType, "array[") {
+								if spec, _ := fixedWidthSpec(argType); spec != "" {
+									formatSpec = spec
+								} else if strings.HasPrefix(argType, "array[") {
+									// Check for typed collections
 									formatSpec = "%s" // Will use print_array_helper
 								} else if strings.HasPrefix(argType, "buffer[") {
 									formatSpec = "%s" // Will use print_buffer_helper
@@ -6374,8 +6376,10 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 						case "AhoyJSON*", "json":
 							formatSpec = "%s" // Will use ahoy_json_stringify
 						default:
-							// Check for typed collections
-							if strings.HasPrefix(argType, "array[") {
+							if spec, _ := fixedWidthSpec(argType); spec != "" {
+								formatSpec = spec
+							} else if strings.HasPrefix(argType, "array[") {
+								// Check for typed collections
 								formatSpec = "%s" // Will use print_array_helper
 							} else if strings.HasPrefix(argType, "buffer[") {
 								formatSpec = "%s" // Will use print_buffer_helper
@@ -6657,7 +6661,11 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 						case "char":
 							formatSpec = "%c"
 						default:
-							formatSpec = "%d"
+							if spec, _ := fixedWidthSpec(argType); spec != "" {
+								formatSpec = spec
+							} else {
+								formatSpec = "%d"
+							}
 						}
 
 						formatParts = append(formatParts, formatSpec)
@@ -6763,6 +6771,33 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 			return
 		}
 		gen.output.WriteString("((float)(")
+		if len(node.Children) > 0 {
+			gen.generateNode(node.Children[0])
+		}
+		gen.output.WriteString("))")
+
+	case "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64":
+		// Fixed-width integer casts: i64(x), u32(x), ... A string argument is
+		// parsed (i64("42")), everything else is a numeric C cast.
+		ct := gen.mapType(node.Value)
+		if len(node.Children) > 0 && gen.isStringExpr(node.Children[0]) {
+			switch node.Value {
+			case "i64":
+				gen.output.WriteString("((int64_t)atoll(")
+			case "u64":
+				gen.output.WriteString("((uint64_t)strtoull(")
+			default:
+				gen.output.WriteString("((" + ct + ")atoi(")
+			}
+			gen.generateNode(node.Children[0])
+			if node.Value == "u64" {
+				gen.output.WriteString(", 0, 10))")
+			} else {
+				gen.output.WriteString("))")
+			}
+			return
+		}
+		gen.output.WriteString("((" + ct + ")(")
 		if len(node.Children) > 0 {
 			gen.generateNode(node.Children[0])
 		}
@@ -9575,6 +9610,22 @@ func (gen *CodeGenerator) mapType(langType string) string {
 		return "double"
 	case "f32":
 		return "float"
+	case "i8":
+		return "int8_t"
+	case "u8":
+		return "uint8_t"
+	case "i16":
+		return "int16_t"
+	case "u16":
+		return "uint16_t"
+	case "i32":
+		return "int32_t"
+	case "u32":
+		return "uint32_t"
+	case "i64":
+		return "int64_t"
+	case "u64":
+		return "uint64_t"
 	case "string", "char*", "char":
 		return "char*"
 	case "bool":
@@ -9696,6 +9747,10 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		}
 		if node.Value == "string" {
 			return "string"
+		}
+		// Identifier-spelled casts (f32, i64, u32, ...) yield their own type.
+		if ahoy.IsCastTypeName(node.Value) {
+			return node.Value
 		}
 		// Check if it's a C function and we know its return type
 		if returnType, exists := gen.cFunctionReturnTypes[node.Value]; exists {
@@ -10432,7 +10487,9 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 				dictExprs = append(dictExprs, "")
 
 				formatSpec := "%d"
-				if varType == "string" || varType == "char*" || varType == "intptr_t" ||
+				if spec, _ := fixedWidthSpec(varType); spec != "" {
+					formatSpec = spec
+				} else if varType == "string" || varType == "char*" || varType == "intptr_t" ||
 					varType == "dict" || varType == "HashMap*" {
 					formatSpec = "%s"
 				} else if varType == "float" || varType == "double" {
@@ -10500,12 +10557,7 @@ func (gen *CodeGenerator) generateFString(node *ahoy.ASTNode) {
 			}
 
 			// Determine cast type if needed
-			castType := ""
-			if formatSpec == "%d" {
-				castType = "(int)"
-			} else if formatSpec == "%f" {
-				castType = "(double)"
-			}
+			castType := printfCastForSpec(formatSpec)
 
 			// Check if this is a member access expression (contains a dot)
 			if strings.Contains(v, ".") {
@@ -13230,8 +13282,49 @@ func normalizeCollectionType(typeName string) string {
 	return typeName
 }
 
+// fixedWidthSpec returns the printf specifier and the C cast used to print a
+// value of a fixed-width type, or ("", "") when the type is not one of them.
+// The plain %d path casts to (int), which truncates an int64_t to 32 bits, so
+// the wide and the unsigned types need their own specifier.
+func fixedWidthSpec(typeName string) (spec string, cast string) {
+	switch typeName {
+	case "i8", "i16", "i32":
+		return "%d", "(int)"
+	case "u8", "u16", "u32":
+		return "%u", "(unsigned int)"
+	case "i64":
+		return "%lld", "(long long)"
+	case "u64":
+		return "%llu", "(unsigned long long)"
+	case "f32":
+		return "%f", "(double)"
+	}
+	return "", ""
+}
+
+// printfCastForSpec returns the C cast that matches a printf specifier, so a
+// wide or unsigned value reaches printf in the type it expects.
+func printfCastForSpec(spec string) string {
+	switch spec {
+	case "%d":
+		return "(int)"
+	case "%f":
+		return "(double)"
+	case "%u":
+		return "(unsigned int)"
+	case "%lld":
+		return "(long long)"
+	case "%llu":
+		return "(unsigned long long)"
+	}
+	return ""
+}
+
 // Get C format specifier for a type
 func (gen *CodeGenerator) getFormatSpec(typeName string) string {
+	if spec, _ := fixedWidthSpec(typeName); spec != "" {
+		return spec
+	}
 	switch typeName {
 	case "int":
 		return "%d"

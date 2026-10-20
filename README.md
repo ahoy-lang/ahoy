@@ -789,8 +789,10 @@ returned directly (`return switch x: ...`). See
 ### Type System
 
 **Supported Types:**
-- `int` - Integers
-- `float` - Floating point
+- `int` - Integers (32-bit signed)
+- `float` - Floating point (64-bit, C `double`)
+- `f32` - 4-byte float (C `float`)
+- `i8` `u8` `i16` `u16` `i32` `u32` `i64` `u64` - Fixed-width integers
 - `string` - Text strings
 - `raw_string` - Raw strings (backticks, preserves newlines)
 - `bool` - Booleans (true/false)
@@ -800,6 +802,29 @@ returned directly (`return switch x: ...`). See
 - `vector2` - 2D vectors
 - `color` - Color values
 - `void` - No return value (functions)
+
+#### Fixed-width integers
+
+`int` is a 32-bit signed integer, so a 64-bit value does not fit in it. The
+fixed-width types give an explicit width and signedness. They are also casts,
+in the paren form the rest of the language uses:
+
+```ahoy
+big: i64 = 3000000000         ? a 64-bit value
+cast: i64 = i64(3000000000)   ? the same value, cast
+text: i64 = i64("9000000000") ? a string parses into the target width
+umax: u64 = 18446744073709551615
+packed: u32 = 4000000000      ? stays positive, unlike int
+small: i8 = i8(-120)
+```
+
+They work as declaration types, as function parameter and return types, and as
+casts (`i64(x)`, and the pipe form `i64|x|`). Printing uses the full width: an
+`i64` prints through `%lld`, never through `%d` (which would truncate it to
+32 bits).
+
+The mapping to C is direct: `i8`..`i64` are `int8_t`..`int64_t`, `u8`..`u64` are
+`uint8_t`..`uint64_t`. `f32` is `float`, `float` is `double`.
 
 ### Programs (Multi-file)
 
@@ -921,6 +946,8 @@ All Ahoy source files use the `.ahoy` extension.
 |---------|--------|---------|
 | Variable | `name: value` | `x: 42` |
 | Variable (typed) | `name:type= value` | `age:int= 29` |
+| Fixed-width int | `i8`..`i64`, `u8`..`u64` | `x: i64 = 3000000000` |
+| Cast | `type(value)` | `i64(3)`, `f32(1.5)` |
 | Constant | `NAME: value` | `MAX:: 100` |
 | Constant (typed) | `name::type= value` | `MAX::int= 100` |
 | Function | `name :: \|params\| type:` | `add :: \|a:int, b:int\| int:` |

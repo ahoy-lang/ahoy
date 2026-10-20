@@ -23,6 +23,8 @@ func init() {
 		"assert", "exit", "float", "free", "input", "int", "len", "log",
 		"panic", "print", "rand", "rand_range", "read_json", "sleep", "str",
 		"typeof", "write_json", "f32",
+		// fixed-width integer casts: i64(x), u32(x), ...
+		"i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64",
 		// job system
 		"jobs",
 		// flat POD buffer constructor: buffer|n| -> buffer[f32]

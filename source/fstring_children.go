@@ -18,8 +18,10 @@ func (gen *CodeGenerator) fstringSpecFor(child *ahoy.ASTNode) (spec string, dict
 	}
 	varType := normalizeCollectionType(gen.inferType(child))
 	spec = "%d"
-	if varType == "string" || varType == "char*" || varType == "intptr_t" ||
-		varType == "dict" || varType == "HashMap*" {
+	if fw, _ := fixedWidthSpec(varType); fw != "" {
+		spec = fw
+	} else if varType == "string" || varType == "char*" || varType == "intptr_t" ||
+			varType == "dict" || varType == "HashMap*" {
 		spec = "%s"
 	} else if varType == "float" || varType == "double" {
 		spec = "%f"
@@ -79,10 +81,8 @@ func (gen *CodeGenerator) generateFStringFromChildren(node *ahoy.ASTNode) {
 		// intptr_t carries string pointers; the bare value would print as a number.
 		if normalizeCollectionType(gen.inferType(a.expr)) == "intptr_t" {
 			gen.output.WriteString("(char*)")
-		} else if a.spec == "%d" {
-			gen.output.WriteString("(int)")
-		} else if a.spec == "%f" {
-			gen.output.WriteString("(double)")
+		} else if cast := printfCastForSpec(a.spec); cast != "" {
+			gen.output.WriteString(cast)
 		}
 		gen.generateNode(a.expr)
 	}

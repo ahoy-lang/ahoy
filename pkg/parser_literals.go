@@ -7,6 +7,28 @@ import (
 
 // Primary expressions and literals: arrays, objects, dicts, lambdas.
 
+// castTypeNames are the identifier-spelled cast types. `int`, `float`, `char`
+// and `string` are real keywords (handled by the type-token cast path); these
+// ride the identifier path and are recognised in parsePrimaryExpression when
+// followed by `(`. They are types too, so `x: i64 = ...` and `|x:u32|` work.
+var castTypeNames = map[string]bool{
+	"f32": true,
+	"i8":  true, "u8": true,
+	"i16": true, "u16": true,
+	"i32": true, "u32": true,
+	"i64": true, "u64": true,
+}
+
+func isCastTypeName(name string) bool {
+	return castTypeNames[name]
+}
+
+// IsCastTypeName reports whether name is an identifier-spelled cast type.
+// Exported for the codegen package (inferType).
+func IsCastTypeName(name string) bool {
+	return castTypeNames[name]
+}
+
 func (p *Parser) parsePrimaryExpression() *ASTNode {
 	// A lambda used as a value: (x:int): x * 2, (a, b): a + b. It has to be
 	// recognised before the parenthesized-expression case below.
@@ -342,6 +364,22 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 				Type:     NODE_DICT_ACCESS,
 				Value:    token.Value,
 				Children: []*ASTNode{key},
+				Line:     token.Line,
+			}
+		}
+
+		// Identifier-spelled cast types (f32, i64, u32, ...): `f32(3.7)`,
+		// `i64(n)`. They are not reserved keywords, so they ride the identifier
+		// path; recognise them when followed by `(` and produce the same
+		// NODE_CALL shape the type-token cast path (`int(x)`) builds.
+		if p.current().Type == TOKEN_LPAREN && isCastTypeName(token.Value) {
+			p.advance() // consume opening (
+			arg := p.parseExpression()
+			p.expect(TOKEN_RPAREN)
+			return &ASTNode{
+				Type:     NODE_CALL,
+				Value:    token.Value,
+				Children: []*ASTNode{arg},
 				Line:     token.Line,
 			}
 		}

@@ -8,19 +8,55 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+// testCompilerPath returns the path of the test compiler, rebuilding it when the
+// compiler sources are newer than the binary.
+//
+// The rebuild has to run inside the source module: this test package is its
+// own module, so `go build ../source` fails with "directory ../source outside
+// main module". A stale binary is worse than a missing one - it silently
+// tests the previous compiler, and the failure reads as a language
+// regression rather than as a stale build.
+func testCompilerPath(t *testing.T) string {
+	t.Helper()
+	binPath := "./ahoy-bin"
+	binAbs, err := filepath.Abs(binPath)
+	if err != nil {
+		t.Fatalf("resolving %s: %v", binPath, err)
+	}
+	srcDir, err := filepath.Abs("../source")
+	if err != nil {
+		t.Fatalf("resolving ../source: %v", err)
+	}
+	newest := time.Time{}
+	err = filepath.Walk(srcDir, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(p, ".go") {
+			return nil
+		}
+		if info.ModTime().After(newest) {
+			newest = info.ModTime()
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking %s: %v", srcDir, err)
+	}
+	if fi, err := os.Stat(binAbs); err == nil && fi.ModTime().After(newest) {
+		return binPath
+	}
+	cmd := exec.Command("go", "build", "-o", binAbs, ".")
+	cmd.Dir = srcDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Failed to build compiler: %v\n%s", err, out)
+	}
+	return binPath
+}
 
 // TestLinting runs the compiler's lint flag on all test files to catch linting errors
 func TestLinting(t *testing.T) {
-	// Build the compiler first
-	compilerPath := "./ahoy-bin"
-	if _, err := os.Stat(compilerPath); os.IsNotExist(err) {
-		// Try to build it
-		cmd := exec.Command("go", "build", "-o", compilerPath, "../source")
-		if err := cmd.Run(); err != nil {
-			t.Fatalf("Failed to build compiler: %v", err)
-		}
-	}
+	compilerPath := testCompilerPath(t)
 
 	// Discover all .ahoy files in input directory
 	files, err := filepath.Glob("input/*.ahoy")
@@ -127,15 +163,7 @@ func TestLSPDiagnostics(t *testing.T) {
 
 // TestConsolidatedFiles tests all consolidated test files
 func TestConsolidatedFiles(t *testing.T) {
-	// Build the compiler first
-	compilerPath := "./ahoy-bin"
-	if _, err := os.Stat(compilerPath); os.IsNotExist(err) {
-		// Try to build it
-		cmd := exec.Command("go", "build", "-o", compilerPath, "../source")
-		if err := cmd.Run(); err != nil {
-			t.Fatalf("Failed to build compiler: %v", err)
-		}
-	}
+	compilerPath := testCompilerPath(t)
 
 	// Discover all .ahoy files in input directory
 	files, err := filepath.Glob("input/*.ahoy")

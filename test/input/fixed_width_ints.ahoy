@@ -1,0 +1,77 @@
+program fixed_width_ints
+
+? Fixed-width integer types: i8/u8, i16/u16, i32/u32, i64/u64. They are
+? identifier-spelled cast types, so they work as a declaration type, as a
+? paren cast (i64(x)) and as a pipe cast (i64|x|). The plain `int` is a
+? 32-bit C int, so a 64-bit value needs one of these.
+
+@ add |a:i64, b:i64| i64:
+	return a + b
+$
+
+@ double_it |v:u64| u64:
+	return v * 2
+$
+
+@ main ||:
+	expected: []
+
+	? a 64-bit value does not fit in the 32-bit int
+	big: i64 = 3000000000
+	print|big|
+	expected.push|"3000000000"|
+
+	? the paren cast is the documented form
+	cast: i64 = i64(3000000000)
+	print|cast|
+	expected.push|"3000000000"|
+
+	? the pipe cast works too
+	pipe: i64 = i64|42|
+	print|pipe|
+	expected.push|"42"|
+
+	? a string parses into the target width
+	from_text: i64 = i64("9000000000")
+	print|from_text|
+	expected.push|"9000000000"|
+
+	? unsigned keeps the whole range
+	umax: u64 = 18446744073709551615
+	print|umax|
+	expected.push|"18446744073709551615"|
+
+	? a u32 above the signed range stays positive
+	u32big: u32 = 4000000000
+	print|u32big|
+	expected.push|"4000000000"|
+
+	? the narrow types
+	i8v: i8 = i8(-120)
+	u8v: u8 = u8(250)
+	i16v: i16 = i16(-30000)
+	u16v: u16 = u16(65535)
+	i32v: i32 = i32(-2000000000)
+	print|i8v, u8v, i16v, u16v, i32v|
+	expected.push|"-120 250 -30000 65535 -2000000000"|
+
+	? arithmetic keeps the width
+	sum: i64 = big + cast
+	print|sum|
+	expected.push|"6000000000"|
+
+	? parameters and return values carry the width
+	passed: i64 = add|big, cast|
+	print|passed|
+	expected.push|"6000000000"|
+
+	doubled: u64 = double_it|u32big|
+	print|doubled|
+	expected.push|"8000000000"|
+
+	? f-strings print the full width
+	ahoy |f"inline={big}"|
+	expected.push|"inline=3000000000"|
+
+	print|expected|
+$
