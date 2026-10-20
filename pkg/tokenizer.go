@@ -132,6 +132,11 @@ type Token struct {
 	Value  string
 	Line   int
 	Column int
+	// Indent is the indentation width of the line the token is on (a tab
+	// counts as two). The column is relative to the trimmed line, so it
+	// says nothing about the level a token sits at - the indent does, and
+	// the parser needs it to tell which `if` an `else` belongs to.
+	Indent int
 }
 
 // Keywords map for tokenization
@@ -234,9 +239,19 @@ func Tokenize(input string) []Token {
 		content := trimmed
 		i := 0
 
+		// Every token of this line carries the line's indentation, so the
+		// parser can tell which level a token sits at.
+		lineStart := len(tokens)
+		markIndent := func() {
+			for t := lineStart; t < len(tokens); t++ {
+				tokens[t].Indent = indent
+			}
+		}
+
 		// Check if line starts with comment
 		if len(content) > 0 && content[0] == '?' {
 			tokens = append(tokens, Token{Type: TOKEN_NEWLINE, Line: lineNum + 1})
+			markIndent()
 			continue
 		}
 
@@ -507,6 +522,7 @@ func Tokenize(input string) []Token {
 		}
 
 		tokens = append(tokens, Token{Type: TOKEN_NEWLINE, Line: lineNum + 1})
+		markIndent()
 	}
 
 	// Add final dedents

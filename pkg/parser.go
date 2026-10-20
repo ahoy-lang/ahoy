@@ -237,6 +237,7 @@ type Parser struct {
 	cHeaderGlobal       *CHeaderInfo                  // Global C header imports (no namespace)
 	preParsedHeaders    map[string]*CHeaderInfo       // Pre-parsed C headers (path -> header info) for parallel parsing
 	blockDepth          int                           // Track nesting depth of multi-line blocks
+	constructIndent     int                           // Indent of the block's own construct (an if/elif/when)
 	loopVarScopes       []map[string]string           // Stack of loop variable scopes
 	functionDepth       int                           // Track nesting depth of function definitions
 	hasProgramDecl      bool                          // Track if program declaration exists

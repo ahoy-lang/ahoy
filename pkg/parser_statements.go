@@ -364,6 +364,11 @@ func (p *Parser) ensureOwnScope() {
 
 func (p *Parser) parseIfStatement() *ASTNode {
 	startLine := p.current().Line
+	// The indentation of the `if` itself. A block is closed by `$`, not by
+	// indentation, so the level of an `else`/`elif` is what says which `if`
+	// it belongs to: an `else` at a different level belongs to an outer
+	// `if`, and the inner one must not claim it.
+	ifIndent := p.current().Indent
 	p.expect(TOKEN_IF)
 
 	var condition *ASTNode
@@ -426,7 +431,11 @@ func (p *Parser) parseIfStatement() *ASTNode {
 	p.blockDepth++ // Opening a block (inline or multiline)
 
 	// The if arm runs on the aliased parent maps (set above).
+	// The block stops at an else/elif at this if's own level.
+	savedConstructIndent := p.constructIndent
+	p.constructIndent = ifIndent
 	ifBody := p.parseBlockUntilEnd("if", startLine)
+	p.constructIndent = savedConstructIndent
 
 	// Restore the saved triple after the if arm so elseif/else and the code
 	// after the statement see the parent maps, never the arm's declares.
@@ -446,9 +455,12 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		p.advance()
 	}
 
-	// Handle elif chains (`elseif` and `anif` were removed: use `elif`)
-	for p.current().Type == TOKEN_ELIF ||
-		(p.current().Type == TOKEN_IDENTIFIER && (p.current().Value == "elseif" || p.current().Value == "anif")) {
+	// Handle elif chains (`elseif` and `anif` were removed: use `elif`).
+	// An `elif` belongs to this if only when it is at the same level: one
+	// that follows a nested if belongs to the outer if.
+	for (p.current().Type == TOKEN_ELIF ||
+		(p.current().Type == TOKEN_IDENTIFIER && (p.current().Value == "elseif" || p.current().Value == "anif"))) &&
+		p.current().Indent == ifIndent {
 		if p.current().Type == TOKEN_IDENTIFIER {
 			if !p.LintMode {
 				panic(fmt.Sprintf("`%s` was removed; write `elif` instead (line %d)", p.current().Value, p.current().Line))
@@ -488,7 +500,10 @@ func (p *Parser) parseIfStatement() *ASTNode {
 			savedAliased = p.scopeAliased
 			p.scopeAliased = true
 		}
+		savedConstructIndent := p.constructIndent
+		p.constructIndent = ifIndent
 		elseifBody := p.parseBlockUntilEnd("elif", startLine)
+		p.constructIndent = savedConstructIndent
 
 		// Restore the saved triple after the elif arm.
 		if p.LintMode {
@@ -506,8 +521,12 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		}
 	}
 
-	// Handle else (can optionally use ':')
-	if p.current().Type == TOKEN_ELSE {
+	// Handle else (can optionally use ':').
+	// The else belongs to this if only when it is at the same level. A block
+	// is closed by `$`, not by indentation, so without this the innermost
+	// if would claim an else that belongs to an outer if - and the block
+	// counting would then be off by one.
+	if p.current().Type == TOKEN_ELSE && p.current().Indent == ifIndent {
 		p.advance()
 
 		// Optional ':' or 'then' after else
@@ -1791,6 +1810,9 @@ func (p *Parser) parseLoop() *ASTNode {
 
 func (p *Parser) parseWhenStatement() *ASTNode {
 	startLine := p.current().Line
+	// The indentation of the `when` itself: an `else` at a different level
+	// belongs to an outer block, not to this one.
+	whenIndent := p.current().Indent
 	p.expect(TOKEN_WHEN)
 	condition := p.expect(TOKEN_IDENTIFIER) // Compile-time condition like DEBUG, RELEASE
 	if p.current().Type == TOKEN_THEN || p.current().Type == TOKEN_DO {
@@ -1813,7 +1835,10 @@ func (p *Parser) parseWhenStatement() *ASTNode {
 	}
 	p.skipWhitespace()
 	p.blockDepth++ // Opening a block
+	savedConstructIndent := p.constructIndent
+	p.constructIndent = whenIndent
 	body := p.parseBlockUntilEnd("when", startLine)
+	p.constructIndent = savedConstructIndent
 
 	whenStmt := &ASTNode{
 		Type:     NODE_WHEN_STATEMENT,
@@ -1827,7 +1852,7 @@ func (p *Parser) parseWhenStatement() *ASTNode {
 	for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_DEDENT || p.current().Type == TOKEN_SEMICOLON {
 		p.advance()
 	}
-	if p.current().Type == TOKEN_ELSE {
+	if p.current().Type == TOKEN_ELSE && p.current().Indent == whenIndent {
 		p.advance()
 		if p.current().Type == TOKEN_ASSIGN || p.current().Type == TOKEN_THEN {
 			p.advance()

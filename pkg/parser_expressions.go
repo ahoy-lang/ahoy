@@ -73,7 +73,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 		}
 	}
 
-	// Check for dict property assignment: dict<key>: value
+	// Check for dict property assignment: dict<key>: value or dict<key> = value
 	if p.pos+2 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_LANGLE {
 		// Check if this is dict<key>: pattern
 		savedPos := p.pos
@@ -86,16 +86,27 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				depth++
 			} else if p.current().Type == TOKEN_RANGLE {
 				depth--
+			} else if p.current().Type == TOKEN_NEWLINE {
+				// The accessor and its separator are on one line: stop
+				// here rather than scanning into the next statement and
+				// mistaking a later '>' for the end of this one.
+				break
 			}
 			p.advance()
 		}
-		isAssignment := p.current().Type == TOKEN_ASSIGN
+		// The separator can be a colon (d<"k">: v) or an equals sign
+		// (d<"k"> = v): both mean "store into this entry".
+		isAssignment := p.current().Type == TOKEN_ASSIGN || p.current().Type == TOKEN_EQUALS
 		p.pos = savedPos // restore position
 
 		if isAssignment {
 			// Parse as dict property assignment
 			target := p.parsePrimaryExpression() // This will parse dict<key>
-			p.expect(TOKEN_ASSIGN)
+			if p.current().Type == TOKEN_EQUALS {
+				p.advance() // consume the '='
+			} else {
+				p.expect(TOKEN_ASSIGN)
+			}
 			value := p.parseExpression()
 
 			// Convert to assignment node
@@ -1334,9 +1345,13 @@ func (p *Parser) parseBlockUntilEnd(constructName string, startLine int) *ASTNod
 			return block
 		}
 
-		// Stop if we encounter else/elif (for if statements)
-		if constructName == "if" || constructName == "elif" {
-			if p.current().Type == TOKEN_ELSE || p.current().Type == TOKEN_ELIF {
+		// Stop if we encounter else/elif (for if and when statements).
+		// Only when the else is at this block's own level: an else one
+		// level up belongs to an outer if, and taking it here would
+		// leave the outer block one `$` short.
+		if constructName == "if" || constructName == "elif" || constructName == "when" {
+			if (p.current().Type == TOKEN_ELSE || p.current().Type == TOKEN_ELIF) &&
+				p.current().Indent == p.constructIndent {
 				// Decrement blockDepth since we're not consuming $ here
 				// The else/anif will increment it again
 				p.blockDepth--

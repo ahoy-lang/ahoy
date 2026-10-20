@@ -1,0 +1,53 @@
+program nested_else
+
+? Which `if` an `else` belongs to.
+?
+? A block is closed by `$`, not by indentation, so the level of the `else`
+? is what says which `if` it belongs to. Without that, the innermost if
+? claimed an else that belonged to an outer one - and the block counting
+? then went wrong by one, so the program failed to parse with "Expected
+? '$' to close function".
+
+@ main ||:
+	expected: []
+
+	? the else is at the outer level, so it belongs to the outer if
+	a: int = 2
+	if a is 1 then
+		if a is 3 then
+			print|"inner then"|
+		$
+	else
+		print|"outer else"|
+	$
+	expected.push|"outer else"|
+
+	? the else is at the inner level, so it belongs to the inner if
+	b: int = 1
+	if b is 1 then
+		if b is 2 then
+			print|"inner then"|
+		else
+			print|"inner else"|
+		$
+		print|"after inner"|
+	$
+	expected.push|"inner else"|
+	expected.push|"after inner"|
+
+	? an elif after a nested if belongs to the outer if
+	c: int = 2
+	if c is 1 then
+		if c is 3 then
+			print|"inner then"|
+		$
+		print|"outer then"|
+	elif c is 2 then
+		print|"outer elif"|
+	else
+		print|"outer else"|
+	$
+	expected.push|"outer elif"|
+
+	print|expected|
+$
