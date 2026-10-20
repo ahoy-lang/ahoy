@@ -36,6 +36,17 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 				Line:  p.current().Line,
 			}
 			p.advance()
+		} else if p.current().Type == TOKEN_ANY_TYPE {
+			// 'any' is the type keyword, so `x.any` does not read as a member
+			// access. It is also the name of the predicate builtin, and
+			// `xs.any|predicate|` is how you ask an array a question, so the
+			// name has to be usable here. Nothing else can follow a dot and
+			// be the any-type: a declaration is `a: any`, not `a.any`.
+			member = Token{
+				Value: "any",
+				Line:  p.current().Line,
+			}
+			p.advance()
 		} else {
 			member = p.expect(TOKEN_IDENTIFIER)
 		}

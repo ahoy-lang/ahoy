@@ -1081,8 +1081,15 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 // arguments, but the argument grammar deliberately stops short of comparisons
 // so a `>` cannot be eaten. These words cannot be mistaken for the comma or the
 // closing pipe, so the three bitwise levels and shifts are safe to include.
+// parseCallArgumentExpression parses one argument of a call.
+//
+// It used to be a second copy of the expression chain that stopped at the
+// bitwise operators, so a comparison or a logical operator inside an
+// argument list was a parse error: `print|x > 2|` did not parse, and so no
+// lambda with a comparison in it parsed either. The main chain already
+// handles every operator, so the argument uses it.
 func (p *Parser) parseCallArgumentExpression() *ASTNode {
-	return p.parseArgBitwiseOr()
+	return p.parseOrExpression()
 }
 
 func (p *Parser) parseArgBitwiseOr() *ASTNode {
@@ -1774,11 +1781,11 @@ func (p *Parser) parseRelationalExpression() *ASTNode {
 			}
 		}
 
-		// Don't treat > as comparison operator if we're inside angle brackets for object/array access
-		// Check if the next token suggests we're closing an access expression
-		if p.current().Type == TOKEN_RANGLE && p.inFunctionCall > 0 {
-			// If we're in a function call (like print|obj<"prop">|), stop parsing
-			// The > is likely closing an object/array access, not a comparison
+		// A '>' is a comparison only when an expression can follow it. When
+		// it cannot, the '>' closes an angle-bracket construct: the '>' of a
+		// dict literal (<"k": 1>) or of a dict access (d<"k">). The parse
+		// that opened the bracket expects that '>' and consumes it.
+		if p.current().Type == TOKEN_RANGLE && !canStartExpression(p.peek(1).Type) {
 			break
 		}
 
