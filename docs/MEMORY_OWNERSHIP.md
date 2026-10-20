@@ -149,3 +149,17 @@ nonexistent `ahoy_array_dup` link error). Both lists now include it.
   return/field-escape of pure borrows is not yet.
 - Struct-element borrows have the same shape as string pieces and
   predate this work; same promotion treatment applies when touched.
+
+## Scheduling invariants (learned the hard way)
+
+- Scope-allocation lists hold each name **once** (`appendScopeAllocation`
+  dedups). Early-return cleanups emit per entry without marking, so a
+  duplicate entry is a dynamic double-free.
+- Membership is atomic: wherever `heapVarScopes`/`heapVarTypes` are set,
+  `heapAllocatedVars` is set too. Escape marking, eager-free guards and
+  function-end cleanup key off the flag; lists key off scopes. Setting
+  one without the other frees what marks cannot see.
+- Declaration scope (`varDeclScope`, every in-function declaration plus
+  params at 0) lets reassignment schedule at the var's own scope. Only
+  fresh-heap values ever enter tracking through it, so widened frees
+  stay sound; globals (no record) still skip.

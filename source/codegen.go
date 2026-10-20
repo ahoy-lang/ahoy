@@ -231,6 +231,7 @@ type CodeGenerator struct {
 	heapAllocatedVars             map[string]bool                         // Track heap-allocated variables in current function
 	heapVarScopes                 map[string]int                          // Track scope depth where each heap var was allocated
 	heapVarTypes                  map[string]string                       // Track type of each heap-allocated variable for proper freeing
+	varDeclScope                  map[string]int                          // var name -> scope depth where declared (ALL declarations, per function). Lets reassignment schedule cleanup at the var's own scope even when it has no heap entry yet (static-declared vars assigned fresh values: clean/rebuilt/text_s patterns).
 	heapArrayOwnsStrings          map[string]bool                         // array var -> true when elements are owned heap strings (split pieces); shell+pieces freed together. Literals borrow static strings: never freed.
 	scopeDepth                    int                                     // Current scope depth (incremented for loops/ifs/blocks)
 	scopeAllocations              map[int][]string                        // scope depth -> list of variables allocated at that scope
@@ -2639,6 +2640,7 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	// Initialize deferred statements stack for this function
 	gen.deferredStatements = []deferredStmt{}
 	gen.heapAllocatedVars = make(map[string]bool)
+	gen.varDeclScope = make(map[string]int)
 	gen.heapArrayOwnsStrings = make(map[string]bool)
 	gen.heapVarScopes = make(map[string]int)
 	gen.heapVarTypes = make(map[string]string)
@@ -2660,6 +2662,7 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	for _, param := range params.Children {
 		gen.functionParameters[param.Value] = true
 		gen.markDeclaredInCurrentScope(param.Value)
+		gen.varDeclScope[param.Value] = 0
 	}
 
 	// Crash reporting: record which Ahoy function is executing. Per-statement
@@ -3384,12 +3387,15 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 					valueNode.Type != ahoy.NODE_MEMBER_ACCESS && valueNode.Type != ahoy.NODE_ARRAY_ACCESS &&
 					valueNode.Type != ahoy.NODE_DICT_ACCESS && valueNode.Type != ahoy.NODE_OBJECT_ACCESS &&
 					!borrowSelect) {
-					// Without a declaration entry (literal/static-initialized
-					// or global) there is no known safe scope: skip
-					// registration (leak, sound). Registering at the
-					// current inner depth would free memory the variable's
-					// scope outlives (its owner, or a later read).
-					if _, hasDecl := gen.heapVarScopes[varName]; hasDecl {
+					// Without a declaration entry (global) there is no known
+					// safe scope: skip registration (leak, sound).
+					// Registering at the current inner depth would free
+					// memory the variable's scope outlives (its owner, or
+					// a later read). The declaration record covers
+					// static-initialized locals (clean/rebuilt/text_s
+					// patterns): their fresh values schedule at the var's
+					// own scope and are freed with it.
+					if declDepth, hasDecl := gen.declScopeOf(varName); hasDecl {
 						// Clear the autoFreed flag since we have a new allocation
 						delete(gen.autoFreedVars, varName)
 						// Schedule cleanup at the scope where the variable was
@@ -3398,9 +3404,14 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 						// freeing at the block exit leaves a dangling reference
 						// behind (heap use-after-free on the next use).
 						targetDepth := gen.scopeDepth
-						if declDepth, ok := gen.heapVarScopes[varName]; ok && declDepth < targetDepth {
+						if declDepth < targetDepth {
 							targetDepth = declDepth
 						}
+						// Full membership: escape marking, eager-free guards
+						// and function-end cleanup all key off this flag.
+						// Widened scheduling (declaration-record vars) must
+						// set it, or marks miss a var the lists still free.
+						gen.heapAllocatedVars[varName] = true
 						gen.heapVarScopes[varName] = targetDepth
 						gen.heapVarTypes[varName] = valueType
 						// Element ownership follows the new value: split owns
@@ -3408,7 +3419,7 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 						gen.setArrayStringOwnership(varName, valueNode)
 						// Add to the declaration scope's allocations if in nested scope
 						if targetDepth > 0 {
-							gen.scopeAllocations[targetDepth] = append(gen.scopeAllocations[targetDepth], varName)
+							gen.appendScopeAllocation(targetDepth, varName)
 						}
 					}
 				} else if valueNode.Type == ahoy.NODE_MEMBER_ACCESS || valueNode.Type == ahoy.NODE_ARRAY_ACCESS ||
@@ -3431,18 +3442,20 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				// elsewhere; don't compound it with a bad free).
 				if oldType, ok := gen.heapVarTypes[varName]; !ok || isStringLikeType(oldType) ||
 					oldType == "" || oldType == "unknown" || oldType == "any" || oldType == "generic" {
-					// Without a declaration entry there is no known safe
-					// scope: skip registration (leak, sound) — see above.
-					if _, hasDecl := gen.heapVarScopes[varName]; hasDecl {
+					// The declaration record covers static-initialized
+					// locals; globals (no record) still skip — see above.
+					if declDepth, hasDecl := gen.declScopeOf(varName); hasDecl {
 						delete(gen.autoFreedVars, varName)
 						targetDepth := gen.scopeDepth
-						if declDepth, ok := gen.heapVarScopes[varName]; ok && declDepth < targetDepth {
+						if declDepth < targetDepth {
 							targetDepth = declDepth
 						}
+						// Full membership (see heap block above).
+						gen.heapAllocatedVars[varName] = true
 						gen.heapVarScopes[varName] = targetDepth
 						gen.heapVarTypes[varName] = "string"
 						if targetDepth > 0 {
-							gen.scopeAllocations[targetDepth] = append(gen.scopeAllocations[targetDepth], varName)
+							gen.appendScopeAllocation(targetDepth, varName)
 						}
 					}
 				}
@@ -3557,6 +3570,11 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			if gen.currentFunction != "" && gen.functionVars != nil {
 				// Inside a function - use function scope
 				gen.functionVars[node.Value] = varType
+				// Declaration scope for reassignment scheduling: EVERY
+				// declaration records it (not just nested), so a later
+				// fresh assignment can schedule cleanup at this scope
+				// even if the declaration itself allocated nothing.
+				gen.varDeclScope[node.Value] = gen.scopeDepth
 				// Mark as nested scope if indent > 1 (inside loops/ifs)
 				// and track the indent level where this variable was declared
 				if gen.indent > 1 {
@@ -5709,6 +5727,19 @@ func (gen *CodeGenerator) assignmentTargetCanRetainHeap(target string) bool {
 	return true
 }
 
+// declScopeOf returns the scope depth where varName was declared: the
+// heap entry when one exists, else the declaration record. Reassignment
+// cleanup schedules at this scope, never the current inner scope.
+func (gen *CodeGenerator) declScopeOf(varName string) (int, bool) {
+	if d, ok := gen.heapVarScopes[varName]; ok {
+		return d, true
+	}
+	if d, ok := gen.varDeclScope[varName]; ok {
+		return d, true
+	}
+	return 0, false
+}
+
 // setArrayStringOwnership records whether an array variable owns heap
 // string elements. Only split results own pieces today (fresh malloc+memcpy
 // per piece). Literals borrow static strings; calls return unknown
@@ -5871,6 +5902,20 @@ func (gen *CodeGenerator) markEscapingVariables(node *ahoy.ASTNode) {
 	}
 }
 
+// appendScopeAllocation records varName for cleanup at depth, skipping
+// duplicates. Multiple reassignments (or a declaration plus later
+// reassignment) must not enqueue the same name twice: scope-exit and
+// early-return cleanups emit one free per entry, so a duplicate entry is
+// a dynamic double-free. One entry frees the latest binding exactly once.
+func (gen *CodeGenerator) appendScopeAllocation(depth int, varName string) {
+	for _, existing := range gen.scopeAllocations[depth] {
+		if existing == varName {
+			return
+		}
+	}
+	gen.scopeAllocations[depth] = append(gen.scopeAllocations[depth], varName)
+}
+
 // registerHeapAllocation tracks a heap-allocated variable for automatic freeing
 func (gen *CodeGenerator) registerHeapAllocation(varName string, varType string) {
 	// Skip if it's a function parameter
@@ -5881,7 +5926,7 @@ func (gen *CodeGenerator) registerHeapAllocation(varName string, varType string)
 	gen.heapAllocatedVars[varName] = true
 	gen.heapVarScopes[varName] = gen.scopeDepth
 	gen.heapVarTypes[varName] = varType
-	gen.scopeAllocations[gen.scopeDepth] = append(gen.scopeAllocations[gen.scopeDepth], varName)
+	gen.appendScopeAllocation(gen.scopeDepth, varName)
 }
 
 // enterScope increments scope depth for tracking nested allocations

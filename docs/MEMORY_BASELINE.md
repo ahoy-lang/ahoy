@@ -73,3 +73,21 @@ use-after-free, zero crashes, all 90 frames complete.** Exit leaks only:
 constructed nodes × 10 component kinds; `scene_free` never runs on the
 quit path), scene-load splits, assets, skill-UI boot. All load/boot-
 bounded teardown omissions, no per-frame growth.
+
+## Follow-up runs (same game, same flags)
+
+- Post-`varDeclScope` run: **double-free**, same pointer freed twice at
+  adjacent lines. Root cause: scope-allocation lists allowed duplicate
+  entries (two reassign statements, one depth); early-return cleanup
+  emits per entry with no dedup. Latent bug predating the widening,
+  exposed by it. Fixed with deduped appends (`appendScopeAllocation`,
+  all three sites).
+- Post-dedup run: new heap-use-after-free in `scene_load_new_line`
+  (`val = kv[1]` copy freed at loop exit while `kind_s`/`name_s` alias
+  it). Root cause: widened reassignment scheduling set scopes/types
+  but not `heapAllocatedVars`, so escape marks missed a var the scope
+  lists still freed (split-brain tracking). Fixed by setting full
+  membership wherever scopes/types are set.
+- Final run: **zero memory errors, 90/90 frames, clean close.**
+  Exit leaks identical (134,109 bytes / 2,854 allocations, all
+  load/boot-bounded, none per-frame).
