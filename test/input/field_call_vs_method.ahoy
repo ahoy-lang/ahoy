@@ -1,0 +1,46 @@
+program field_call_vs_method
+
+? A struct that has methods and also holds a function value in a field.
+?
+? The call through the field is a field call, not a method call. The checker
+? used to resolve `h.cb|...|` as a method and, as soon as the struct had any
+? method at all, report "Type 'Handler' has no method 'cb'". The engine hit
+? this with the Node struct: it has methods (added_to_group, get_groups, ...)
+? and fields that hold function values (ready, process, physics, draw), so
+? every call through those fields was reported as a missing method.
+
+@ twice |x:int| int:
+	return x * 2
+$
+
+struct Handler:
+	cb: fn(int)->int
+	name: string
+$
+
+@ (h Handler) shout |text:string| string:
+	return text + "!"
+$
+
+@ main ||:
+	expected: []
+
+	h: Handler = Handler{cb: &twice, name: "h"}
+
+	? the method: the ordinary path
+	s: string = h.shout|"hi"|
+	print|s|
+	expected.push|s|
+
+	? the field: a call through a function-valued field
+	v: int = h.cb|21|
+	print|v|
+	expected.push|v|
+
+	? and once more, to show the field is still a field
+	w: int = h.cb|v|
+	print|w|
+	expected.push|w|
+
+	print|expected|
+$

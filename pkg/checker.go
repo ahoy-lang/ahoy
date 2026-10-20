@@ -1922,6 +1922,22 @@ func (c *checker) resolveMethodCall(call *ASTNode) (string, bool, bool) {
 	return "", false, false
 }
 
+// structFieldIsFunction reports whether the named field of the struct holds a
+// function value. Such a field is called through the field, not through a
+// method of the same name.
+func (c *checker) structFieldIsFunction(recvType, field string) bool {
+	si, ok := c.p.structs[recvType]
+	if !ok || si == nil {
+		return false
+	}
+	for _, f := range si.Fields {
+		if f.Name == field {
+			return IsFunctionType(f.Type)
+		}
+	}
+	return false
+}
+
 // methodHint lists a type's known methods for "no such method" diagnostics.
 func (c *checker) methodHint(recvType string) string {
 	ms, ok := c.methods[recvType]
@@ -1952,6 +1968,24 @@ func (c *checker) checkMethodCall(node *ASTNode) {
 			c.checkNamespacedCall(node, object.Value)
 			return
 		}
+	}
+
+	// A field that holds a function value is called through the field:
+	// `cur.ready|nodes, idx|` calls the Node's `ready` field. A struct that
+	// has methods must not shadow its own function-valued fields, or every
+	// such call is reported as a missing method.
+	fieldRecvType := node.RecvType
+	if fieldRecvType == "" {
+		fieldRecvType = NormalizeReceiverType(c.p.inferType(object))
+	}
+	if c.structFieldIsFunction(fieldRecvType, method) {
+		c.checkExpr(object)
+		if args := node.Children[1]; args != nil {
+			for _, arg := range args.Children {
+				c.checkExpr(arg)
+			}
+		}
+		return
 	}
 
 	// User-defined method or associated function: validate the call with the
