@@ -12148,6 +12148,11 @@ func (gen *CodeGenerator) getTypeDefault(cType string) string {
 	case "HashMap*":
 		return "createHashMap(16)"
 	default:
+		// A pointer type (a struct field that holds a reference) has no
+		// value of its own: NULL is its zero.
+		if strings.HasSuffix(cType, "*") {
+			return "NULL"
+		}
 		return ""
 	}
 }
