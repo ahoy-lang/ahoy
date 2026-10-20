@@ -42,5 +42,14 @@ $
 	print|w|
 	expected.push|w|
 
+	? the same, out of an array: the element is bound to a name first,
+	? because the generator reads the callback out of a named struct
+	hs: array[Handler] = []
+	hs.push|h|
+	one: hs[0]
+	v2: int = one.cb|5|
+	print|v2|
+	expected.push|v2|
+
 	print|expected|
 $

@@ -1974,11 +1974,16 @@ func (c *checker) checkMethodCall(node *ASTNode) {
 	// `cur.ready|nodes, idx|` calls the Node's `ready` field. A struct that
 	// has methods must not shadow its own function-valued fields, or every
 	// such call is reported as a missing method.
+	//
+	// The receiver has to be a name: the code generator reads the callback
+	// out of a named struct, so `nodes[i].ready|...|` is not a call the
+	// generator can make (it would read the field off the array, not off
+	// the element). Bind the element to a local first.
 	fieldRecvType := node.RecvType
 	if fieldRecvType == "" {
 		fieldRecvType = NormalizeReceiverType(c.p.inferType(object))
 	}
-	if c.structFieldIsFunction(fieldRecvType, method) {
+	if object.Type == NODE_IDENTIFIER && c.structFieldIsFunction(fieldRecvType, method) {
 		c.checkExpr(object)
 		if args := node.Children[1]; args != nil {
 			for _, arg := range args.Children {
@@ -1986,6 +1991,20 @@ func (c *checker) checkMethodCall(node *ASTNode) {
 			}
 		}
 		return
+	}
+
+	// A callback field reached through an expression (`nodes[i].ready|...|`)
+	// is a call the generator cannot make: it reads the callback out of a
+	// named struct. Say so, instead of calling it a missing method.
+	if object.Type != NODE_IDENTIFIER {
+		fieldRecvType := node.RecvType
+		if fieldRecvType == "" {
+			fieldRecvType = NormalizeReceiverType(c.p.inferType(object))
+		}
+		if c.structFieldIsFunction(fieldRecvType, method) {
+			c.errorAt(node, "'%s' is a callback field: bind the value to a name first (ready: fn(...) = nodes[i].ready; ready|...|)", method)
+			return
+		}
 	}
 
 	// User-defined method or associated function: validate the call with the
