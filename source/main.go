@@ -993,6 +993,7 @@ func main() {
 
 	ahoy.StrictLint = *strictFlag
 	noBoundsChecks = *fastFlag
+	ArenaDebug = *debugFlag
 
 	// `when RELEASE then` lets engine and game code gate release-only work
 	// (e.g. auto-VAT's bake) without needing its own flag. Dev builds simply

@@ -1,0 +1,16 @@
+program string_dup
+
+? String duplication: dup takes ownership of a fresh copy. The source may
+? be loop-local or static; the duplicate is freed at scope exit.
+
+@ main ||:
+	expected: []
+	s: "hello"
+	t: s.dup||
+	print|t|
+	expected.push|"hello"|
+	u: t + "!"
+	print|u|
+	expected.push|"hello!"|
+	print|expected|
+$

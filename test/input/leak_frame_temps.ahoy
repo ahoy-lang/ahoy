@@ -1,0 +1,28 @@
+program leak_frame_temps
+
+? Frame-temporary discipline (unified memory plan, leak suite): string
+? concat, split results and array literals created inside a loop must be
+? freed per iteration — block-exit cleanup plus split-piece ownership.
+? Under valgrind this program must report zero lost bytes; see
+? tools/mem_check.sh and MEMORY_BASELINE.md. Functional output pins the
+? computation so the loop cannot be optimized away.
+
+@ frame_work |n:int| int:
+	total: 0
+	loop i:0 to n do
+		s: "entity-" + "x"
+		parts: s.split|"-"|
+		arr: [i, i + 1, i + 2]
+		arr.push|i|
+		total = total + arr.length + parts.length
+	$
+	return total
+$
+
+@ main ||:
+	expected: []
+	r: frame_work|200|
+	print|r|
+	expected.push|"1200"|
+	print|expected|
+$

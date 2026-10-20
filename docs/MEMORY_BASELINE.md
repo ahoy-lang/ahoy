@@ -1,0 +1,75 @@
+# Memory Baseline (Phase 1) — 2026-10-21
+
+Probe: `frame_work|200|` — per iteration: string concat, `split`, array
+literal + `push`. Compiled with Ahoy, built with `gcc -O1 -g`, run under
+`valgrind --leak-check=full`.
+
+## Numbers (Phase 0 code, before arena routing)
+
+- Total heap usage: **2,201 allocs / 601 frees / 51,696 bytes**
+- In use at exit: **38,600 bytes in 1,600 blocks**
+- Definitely lost: 12,800 bytes in 400 blocks; indirectly lost: 25,800
+  bytes in 1,200 blocks.
+
+## Leak sites (both loop-scope locals, freed never)
+
+1. `ahoy_string_split_array` result (`parts`) — `frame_probe_tmp.ahoy:9`
+   — 200 blocks, 17,800 bytes (direct+indirect).
+2. Array literal + push buffer (`arr`) — `frame_probe_tmp.ahoy:10`
+   — 200 blocks, 20,800 bytes.
+
+(`s`, the concat temp, is freed — string autofree covers it; the two
+container temps are not.)
+
+## Reading
+
+- Per-iteration cost ≈ 8 allocs, ~190 bytes leaked. A 60fps game doing
+  this work per frame leaks ~11KB/s and grows without bound.
+- The existing function-scope autofree (`addAutomaticDeferFrees`,
+  scope 0 only) does not cover loop-body scope depths. Block-exit
+  cleanup is the missing piece — Phase 3.
+- String-concat routing to a frame arena would eliminate site-class-1
+  temporaries wholesale; container promotion + block-exit free covers
+  site-class-2. Target after Phases 3–5: **0 lost, allocs ≈ frees + live
+  scene**, frame scratch reset to zero each iteration.
+
+Repro: `valgrind --leak-check=full /tmp/opencode/memprof/frame_probe_native`
+(probe source + .c archived in /tmp/opencode/memprof/).
+
+## After Phases 0–3 (same probe, same flags)
+
+- Total heap usage: **2,201 allocs / 2,201 frees / 51,696 bytes**
+- In use at exit: **0 bytes in 0 blocks**
+- `ERROR SUMMARY: 0 errors from 0 contexts`
+
+Fixes: narrowed assignment escape-marking (reads into scalars no longer
+pin loop locals), split-piece ownership with per-iteration deep free,
+promotion-at-boundary (literal-into-owned fixup, push-strdup) keeping
+ownership monotonic so static emission is sound across iterations.
+
+Functional pin: `../test/input/leak_frame_temps.ahoy` (prints 1200,
+expects `["1200"]`); ownership pin: `../tools/mem_check.sh`.
+
+## Bell game run (balls, 90 frames, ASan+LSan under xvfb) — 2026-10-21
+
+First run (post-Phase-3, pre-borrow-fix): heap-use-after-free in
+`ahoy_string_concat`, piece allocated by `ahoy_string_split_array`
+(`scene_load_line`, scene_file.ahoy:148 `hp`), freed by hp's scope-exit
+deep free (:152), read by `rebuilt + qpiece` (:156). The exact borrowed-
+element-store shape. The user-visible symptom was a glibc tcache
+double-free abort at scene load with models.
+
+Second run (post-borrow-promotion): load path clean; new UAF at runtime
+— `node_find` (core.ahoy:1824) reading a ball name allocated in
+`bs_spawn` (ball_sim.ahoy:142 `f"Ball{bs_bi}"`) and freed at loop exit
+(:172). Call-argument retention: `node_make` stored the name pointer
+without duplicating. Pre-existing (f-string tracking + loop-exit free
+predate this work; masked by stale memory until heap reuse bit).
+
+Third run (post `node_make` name-dup + `dup` dispatch fix): **zero
+use-after-free, zero crashes, all 90 frames complete.** Exit leaks only:
+134,109 bytes in 2,854 allocations, none scaling with frame count —
+64 ball names (node-owned by design), per-node components (18
+constructed nodes × 10 component kinds; `scene_free` never runs on the
+quit path), scene-load splits, assets, skill-UI boot. All load/boot-
+bounded teardown omissions, no per-frame growth.

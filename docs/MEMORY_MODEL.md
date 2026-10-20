@@ -4,6 +4,12 @@
 frees what, when, and what the rules are for code that keeps values alive
 longer than the scope that made them.*
 
+> Implementation companion: `MEMORY_OWNERSHIP.md` records the
+> compiler-side changes (allocation classes, frame/scene region
+> lifecycle, split-piece ownership, borrow promotion at store sites,
+> retaining-boundary ownership) and the ASan-validated Bell results in
+> `MEMORY_BASELINE.md`.
+
 ## The short version
 
 **Ahoy has no garbage collector and no reference counting. Containers are

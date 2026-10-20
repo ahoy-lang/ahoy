@@ -28,6 +28,11 @@ var CrashLineTracking = true
 // builds unless -fast is passed explicitly.
 var noBoundsChecks = false
 
+// ArenaDebug carries the -show_leaks CLI flag: poison arena regions on
+// reset (0xAB fill, so use-after-reset is detectable) and report region
+// high-water marks to stderr at program exit. Default false (zero cost).
+var ArenaDebug = false
+
 func snakeToPascal(s string) string {
 	// If there are no underscores, return as-is (it's already in the correct format)
 	if !strings.Contains(s, "_") {
@@ -226,6 +231,7 @@ type CodeGenerator struct {
 	heapAllocatedVars             map[string]bool                         // Track heap-allocated variables in current function
 	heapVarScopes                 map[string]int                          // Track scope depth where each heap var was allocated
 	heapVarTypes                  map[string]string                       // Track type of each heap-allocated variable for proper freeing
+	heapArrayOwnsStrings          map[string]bool                         // array var -> true when elements are owned heap strings (split pieces); shell+pieces freed together. Literals borrow static strings: never freed.
 	scopeDepth                    int                                     // Current scope depth (incremented for loops/ifs/blocks)
 	scopeAllocations              map[int][]string                        // scope depth -> list of variables allocated at that scope
 	loopScopeStack                []int                                   // Stack of scope depths where loops begin (for break/continue cleanup)
@@ -254,6 +260,11 @@ type CodeGenerator struct {
 	// as fresh). callAliasCache memoizes the per-callee verdict.
 	funcBodies            map[string]*ahoy.ASTNode // func name -> function node
 	callAliasCache        map[string]callAliasInfo // func name -> alias verdict
+	// funcReturnsOwnedStrings records functions observed returning an
+	// array variable that owns string elements (split-built). Callers
+	// receiving such a result take over piece ownership (promotion by
+	// reference, never a deep copy).
+	funcReturnsOwnedStrings map[string]bool // func name -> returns owned-strings array
 	constantValues        map[string]interface{}   // constant name -> computed value (for const expressions)
 	globalConstantGetters map[string]ConstantInfo  // constant name -> getter function info for hot reload
 	// globalConstantGetterOrder records first-seen order so emission is
@@ -360,6 +371,7 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		valueBindings:         make(map[string]*ahoy.ASTNode),
 		funcBodies:            make(map[string]*ahoy.ASTNode),
 		callAliasCache:        make(map[string]callAliasInfo),
+		funcReturnsOwnedStrings: make(map[string]bool),
 		constantValues:        make(map[string]interface{}),
 		globalConstantGetters: make(map[string]ConstantInfo),
 	}
@@ -493,6 +505,15 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		result.WriteString(gen.getSignalHandler())
 		result.WriteString("\n")
 	}
+
+	// Write automatic arena (region) implementation (always available) FIRST,
+	// so the array implementation (which routes allocations through it) can
+	// use it.
+	if ArenaDebug {
+		result.WriteString("#define AHOY_ARENA_POISON 1\n")
+	}
+	result.WriteString(gen.getArenaImplementation())
+	result.WriteString("\n")
 
 	// Write array implementation if needed (or if JSON needs it)
 	if gen.arrayImpls || gen.useJSON {
@@ -804,6 +825,126 @@ void arraySet(DynamicArray* arr, int index, void* value) {
 void freeArray(DynamicArray* arr) {
     free(arr->data);
     free(arr);
+}
+`
+}
+
+func (gen *CodeGenerator) getArenaImplementation() string {
+	return `
+// Automatic memory arena (region) implementation.
+//
+// Ownership rule (unified plan): every allocation has ONE owner —
+// arena-owned values are never individually freed, owned-heap values
+// are freed by autofree/manual free. Codegen must never emit free()
+// for an arena pointer. When the owner is unknown, fall back to
+// owned heap (malloc). See ahoy/docs/MEMORY_OWNERSHIP.md.
+typedef struct AhoyArenaBlock {
+    struct AhoyArenaBlock* next;
+    size_t used;
+    size_t cap;
+    char data[];
+} AhoyArenaBlock;
+
+typedef struct {
+    AhoyArenaBlock* current;
+    size_t blockSize;
+    size_t highWater; // max bytes held across resets (debug via -show_leaks)
+    size_t allocated; // bytes handed out since last reset (debug)
+} AhoyArena;
+
+static AhoyArenaBlock* ahoy_arena_new_block(size_t cap) {
+    AhoyArenaBlock* b = (AhoyArenaBlock*)malloc(sizeof(AhoyArenaBlock) + cap);
+    b->next = NULL;
+    b->used = 0;
+    b->cap = cap;
+    return b;
+}
+
+// Global current arena used by compiler-routed allocations.
+// Declared early: helpers below reference it.
+AhoyArena* __ahoy_current_arena = NULL;
+// Global frame + scene arenas. NULL until created by ahoy_main / scene hooks.
+AhoyArena* __ahoy_frame_arena = NULL;
+AhoyArena* __ahoy_scene_arena = NULL;
+
+AhoyArena* ahoy_arena_new(size_t blockSize) {
+    AhoyArena* a = (AhoyArena*)malloc(sizeof(AhoyArena));
+    a->blockSize = blockSize > 0 ? blockSize : (1 << 16);
+    a->current = ahoy_arena_new_block(a->blockSize);
+    a->highWater = 0;
+    a->allocated = 0;
+    return a;
+}
+
+void* ahoy_arena_alloc(AhoyArena* a, size_t size) {
+    if (a == NULL || a->current == NULL) {
+        return malloc(size);
+    }
+    size_t align = 8;
+    size_t aligned = (size + (align - 1)) & ~(align - 1);
+    if (a->current->used + aligned > a->current->cap) {
+        size_t cap = a->blockSize;
+        if (aligned > cap) cap = aligned;
+        AhoyArenaBlock* nb = ahoy_arena_new_block(cap);
+        nb->next = a->current;
+        a->current = nb;
+    }
+    void* p = a->current->data + a->current->used;
+    a->current->used += aligned;
+    a->allocated += aligned;
+    { size_t total = 0; AhoyArenaBlock* __b = a->current; while (__b) { total += __b->used; __b = __b->next; } if (total > a->highWater) a->highWater = total; }
+    return p;
+}
+
+void* ahoy_arena_calloc(AhoyArena* a, size_t n, size_t size) {
+    size_t total = n * size;
+    void* p = ahoy_arena_alloc(a, total);
+    memset(p, 0, total);
+    return p;
+}
+
+void* ahoy_arena_realloc(AhoyArena* a, void* ptr, size_t oldSize, size_t newSize) {
+    if (newSize == 0) return NULL;
+    void* np = ahoy_arena_alloc(a, newSize);
+    if (ptr != NULL && oldSize > 0) {
+        size_t copy = oldSize < newSize ? oldSize : newSize;
+        memcpy(np, ptr, copy);
+    }
+    return np;
+}
+
+void ahoy_arena_reset(AhoyArena* a) {
+    if (a == NULL || a->current == NULL) return;
+    AhoyArenaBlock* b = a->current;
+    while (b != NULL) {
+#ifdef AHOY_ARENA_POISON
+        memset(b->data, 0xAB, b->used);
+#endif
+        b->used = 0;
+        b = b->next;
+    }
+    a->allocated = 0;
+}
+
+void ahoy_arena_destroy(AhoyArena* a) {
+    if (a == NULL) return;
+    AhoyArenaBlock* b = a->current;
+    while (b != NULL) {
+        AhoyArenaBlock* n = b->next;
+        free(b);
+        b = n;
+    }
+    free(a);
+}
+
+// Region stack for nested frame/tool regions. The frame arena is created
+// once in ahoy_main; nested regions push/pop without destroying the frame.
+static inline void ahoy_region_push(AhoyArena** stackSlot, AhoyArena* newArena) {
+    *stackSlot = __ahoy_current_arena;
+    __ahoy_current_arena = newArena;
+}
+static inline void ahoy_region_pop(AhoyArena** stackSlot) {
+    __ahoy_current_arena = *stackSlot;
 }
 `
 }
@@ -2498,6 +2639,7 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	// Initialize deferred statements stack for this function
 	gen.deferredStatements = []deferredStmt{}
 	gen.heapAllocatedVars = make(map[string]bool)
+	gen.heapArrayOwnsStrings = make(map[string]bool)
 	gen.heapVarScopes = make(map[string]int)
 	gen.heapVarTypes = make(map[string]string)
 	gen.scopeDepth = 0
@@ -2530,6 +2672,32 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 		gen.output.WriteString("\";\n")
 	}
 
+	// Region lifecycle (unified plan Phases 4/5): the frame + scene arenas
+	// are created once in main; engine boundaries reset them. No user
+	// code touches arenas. Allocation routing is future work: today the
+	// arenas sit idle (owned heap serves everything) while lifecycle +
+	// high-water reporting ride along.
+	if funcName == "main" {
+		gen.writeIndent()
+		gen.output.WriteString("__ahoy_frame_arena = ahoy_arena_new(1 << 16);\n")
+		gen.writeIndent()
+		gen.output.WriteString("__ahoy_scene_arena = ahoy_arena_new(1 << 20);\n")
+	}
+	// Engine boundary hooks (name-matched, inert for non-engine programs):
+	// frame scratch dies at the next frame start; scene bulk on switch.
+	if funcName == "engine_frame" || funcName == "engine_frame_3d" {
+		gen.writeIndent()
+		gen.output.WriteString("ahoy_arena_reset(__ahoy_frame_arena);\n")
+	}
+	if funcName == "game_switch_scene" {
+		gen.writeIndent()
+		gen.output.WriteString("ahoy_arena_reset(__ahoy_scene_arena);\n")
+	}
+
+	// (Per-function arenas removed in Phase 0: they allocated 64KB per
+	// call with zero routed allocations and skipped early-return paths.
+	// Frame/scene arenas are created once and reset at engine boundaries.)
+
 	gen.generateNodeInternal(body, false)
 
 	// Add automatic defer free for heap-allocated variables that don't escape
@@ -2540,6 +2708,22 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 		for i := len(gen.deferredStatements) - 1; i >= 0; i-- {
 			gen.output.WriteString(gen.deferredStatements[i].code)
 		}
+	}
+
+	// (Per-function arena teardown removed with the prologue above.)
+
+	// Region teardown for main: report high-water marks under -show_leaks,
+	// then destroy both arenas. Early returns from main skip this (process
+	// exit reclaims; the report is best-effort).
+	if funcName == "main" {
+		if ArenaDebug {
+			gen.writeIndent()
+			gen.output.WriteString("fprintf(stderr, \"[ahoy-memory] frame high-water: %zu bytes; scene high-water: %zu bytes\\n\", __ahoy_frame_arena ? __ahoy_frame_arena->highWater : 0, __ahoy_scene_arena ? __ahoy_scene_arena->highWater : 0);\n")
+		}
+		gen.writeIndent()
+		gen.output.WriteString("ahoy_arena_destroy(__ahoy_frame_arena); __ahoy_frame_arena = NULL;\n")
+		gen.writeIndent()
+		gen.output.WriteString("ahoy_arena_destroy(__ahoy_scene_arena); __ahoy_scene_arena = NULL;\n")
 	}
 
 	gen.funcDecls.WriteString(gen.output.String())
@@ -2748,7 +2932,8 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 					gen.generateNode(valueNode)
 					gen.output.WriteString("; __fp; });")
 				} else if cType == "char*" {
-					// For strings, store as pointer
+					// For strings, store as pointer. An owned-read element
+					// is duplicated so the slot survives the source array.
 					if gen.enableBoundsChecking {
 						gen.output.WriteString("__arr->data[__idx] = (intptr_t)")
 					} else {
@@ -2763,7 +2948,13 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 						gen.generateNode(indexNode)
 						gen.output.WriteString("] = (void*)")
 					}
-					gen.generateNode(valueNode)
+					if gen.ownedReadNeedsDup(valueNode) {
+						gen.output.WriteString("strdup(")
+						gen.generateNode(valueNode)
+						gen.output.WriteString(")")
+					} else {
+						gen.generateNode(valueNode)
+					}
 					gen.output.WriteString(";")
 				} else {
 					// For int and other intptr_t-compatible types, direct assignment
@@ -2785,7 +2976,8 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 					gen.output.WriteString(";")
 				}
 			} else {
-				// Unknown type - assume intptr_t
+				// Unknown type - assume intptr_t. Owned-read strings are
+				// still duplicated (same pointer width either way).
 				if gen.enableBoundsChecking {
 					gen.output.WriteString("__arr->data[__idx] = (intptr_t)(intptr_t)")
 				} else {
@@ -2800,7 +2992,13 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 					gen.generateNode(indexNode)
 					gen.output.WriteString("] = (void*)(intptr_t)")
 				}
-				gen.generateNode(valueNode)
+				if gen.ownedReadNeedsDup(valueNode) {
+					gen.output.WriteString("strdup(")
+					gen.generateNode(valueNode)
+					gen.output.WriteString(")")
+				} else {
+					gen.generateNode(valueNode)
+				}
 				gen.output.WriteString(";")
 			}
 
@@ -3003,8 +3201,11 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 		gen.output.WriteString(" = ")
 
 		// Check if RHS is an f-string - if so, wrap in strdup to avoid use-after-free
-		// F-strings use static buffers that get overwritten, so struct fields need ownership
-		if node.Children[1].Type == ahoy.NODE_F_STRING {
+		// F-strings use static buffers that get overwritten, so struct fields need ownership.
+		// Owned-read elements (pieces of split-built arrays) need the same:
+		// the source array frees its piece at scope exit, so the field
+		// takes a duplicate. Same C type, so no new type-error class.
+		if node.Children[1].Type == ahoy.NODE_F_STRING || gen.ownedReadNeedsDup(node.Children[1]) {
 			gen.output.WriteString("strdup(")
 			gen.generateNode(node.Children[1])
 			gen.output.WriteString(")")
@@ -3083,8 +3284,13 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 	}
 
 	if isDeclared && !canRedeclare {
-		// Just assignment - mark RHS variables as escaping if being assigned to existing var
-		gen.markEscapingVariables(node.Children[0])
+		// Just assignment - mark RHS variables as escaping if being assigned to existing var.
+		// Narrowed (Phase 3): reads into primitive targets retain nothing,
+		// so they must not protect the read roots forever. Only stores
+		// into retaining targets (containers/structs/unknown) escape-mark.
+		if gen.assignmentTargetCanRetainHeap(node.Value) {
+			gen.markEscapingVariables(node.Children[0])
+		}
 		// Rebinding record: a later escape of this name protects owners
 		// transitively. (Fresh RHS shapes are covered by the blanket mark
 		// above; alias shapes resolve through this record on escape.)
@@ -3135,8 +3341,37 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 		} else {
 			gen.output.WriteString(node.Value)
 			gen.output.WriteString(" = ")
-			gen.generateNode(node.Children[0])
+			if gen.ownedReadNeedsDup(valueNode) && gen.targetCanHoldString(node.Value) {
+				// Owned-read element stored into a variable: duplicate so
+				// the store survives the source array's scope exit (the
+				// source frees its own piece). Same type, so no new
+				// type-error class; contradictory-type stores keep their
+				// garbage shape via the target guard.
+				gen.output.WriteString("strdup(")
+				gen.generateNode(node.Children[0])
+				gen.output.WriteString(")")
+			} else {
+				gen.generateNode(node.Children[0])
+			}
 			gen.output.WriteString(";\n")
+		}
+
+		// Promotion at the boundary (Phase 3): assigning an array literal
+		// into a variable that owns string elements duplicates every string
+		// element, so uniform ownership survives the transition — and every
+		// later loop iteration reusing this lexical site. The flag still
+		// reads the OLD value here; the tracking block below updates it.
+		if gen.heapArrayOwnsStrings[node.Value] && valueNode.Type == ahoy.NODE_ARRAY_LITERAL {
+			gen.writeIndent()
+			gen.output.WriteString("{ for (int __i=0; __i<")
+			gen.output.WriteString(node.Value)
+			gen.output.WriteString("->length; __i++) if (")
+			gen.output.WriteString(node.Value)
+			gen.output.WriteString("->types[__i]==AHOY_TYPE_STRING) ")
+			gen.output.WriteString(node.Value)
+			gen.output.WriteString("->data[__i]=(intptr_t)strdup((char*)(intptr_t)")
+			gen.output.WriteString(node.Value)
+			gen.output.WriteString("->data[__i]); }\n")
 		}
 
 		// After reassignment, track the new value if it's also heap-allocated
@@ -3168,6 +3403,9 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 						}
 						gen.heapVarScopes[varName] = targetDepth
 						gen.heapVarTypes[varName] = valueType
+						// Element ownership follows the new value: split owns
+						// pieces, everything else defaults to borrowed.
+						gen.setArrayStringOwnership(varName, valueNode)
 						// Add to the declaration scope's allocations if in nested scope
 						if targetDepth > 0 {
 							gen.scopeAllocations[targetDepth] = append(gen.scopeAllocations[targetDepth], varName)
@@ -3183,10 +3421,12 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 					delete(gen.heapAllocatedVars, varName)
 					delete(gen.heapVarTypes, varName)
 					delete(gen.heapVarScopes, varName)
+					delete(gen.heapArrayOwnsStrings, varName)
 				}
-			} else if gen.valueAllocatesString(valueNode) || valueNode.Type == ahoy.NODE_F_STRING {
+			} else if gen.valueAllocatesString(valueNode) || valueNode.Type == ahoy.NODE_F_STRING || gen.ownedReadNeedsDup(valueNode) {
 				// Fresh string assigned (concatenation, sprintf, methods —
-				// or a bound f-string, duplicated at emission above): track it unless the variable is
+				// or a bound f-string, duplicated at emission above — or an
+				// owned-read duplicate, strdup'd above): track it unless the variable is
 				// explicitly a non-string type (a type error reported
 				// elsewhere; don't compound it with a bad free).
 				if oldType, ok := gen.heapVarTypes[varName]; !ok || isStringLikeType(oldType) ||
@@ -3396,6 +3636,18 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				gen.output.WriteString(" = strdup(")
 				gen.generateNode(valueNode)
 				gen.output.WriteString(");\n")
+			} else if gen.ownedReadNeedsDup(valueNode) && gen.currentFunction != "" &&
+				gen.targetCanHoldString(node.Value) &&
+				(isStringLikeType(varType) || varType == "" || varType == "unknown" || varType == "any" || varType == "generic") {
+				// Bound owned-read element: duplicate the piece so the
+				// variable owns its copy (tracked as a fresh string below).
+				// The source array frees its own piece at scope exit.
+				gen.output.WriteString(cType)
+				gen.output.WriteString(" ")
+				gen.output.WriteString(node.Value)
+				gen.output.WriteString(" = strdup(")
+				gen.generateNode(valueNode)
+				gen.output.WriteString(");\n")
 			} else {
 				gen.output.WriteString(cType)
 				gen.output.WriteString(" ")
@@ -3426,6 +3678,12 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 					// protect alias arguments transitively instead.
 					if !gen.callAliasKind(valueNode.Value).isAlias {
 						gen.registerHeapAllocation(node.Value, varType)
+						// Callee-propagated piece ownership (see
+						// generateReturnStatement): the caller's array
+						// takes over the returned pieces by reference.
+						if gen.funcReturnsOwnedStrings[valueNode.Value] {
+							gen.heapArrayOwnsStrings[node.Value] = true
+						}
 					}
 				} else if valueNode.Type != ahoy.NODE_IDENTIFIER &&
 					valueNode.Type != ahoy.NODE_MEMBER_ACCESS && valueNode.Type != ahoy.NODE_ARRAY_ACCESS &&
@@ -3438,14 +3696,19 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 					// nothing (the branch owner frees); all-fresh ones own
 					// their selected temp and are tracked.
 					gen.registerHeapAllocation(node.Value, varType)
+					// Element ownership: split results own heap pieces;
+					// literals/calls default to borrowed (leak-safe).
+					gen.setArrayStringOwnership(node.Value, valueNode)
 				}
 			}
 			// Strings need allocation-site precision: literals, f-strings and
 			// aliases are static or shared and must never be freed; only
 			// fresh values (concatenation, sprintf, fresh-returning
-			// methods) are tracked. The type guard keeps explicitly
-			// non-string declarations out even if the value allocates.
-			if gen.currentFunction != "" && (gen.valueAllocatesString(valueNode) || valueNode.Type == ahoy.NODE_F_STRING) &&
+			// methods) are tracked. Owned-read duplicates (strdup'd pieces,
+			// emitted above) are fresh owned values too. The type guard
+			// keeps explicitly non-string declarations out even if the
+			// value allocates.
+			if gen.currentFunction != "" && (gen.valueAllocatesString(valueNode) || valueNode.Type == ahoy.NODE_F_STRING || gen.ownedReadNeedsDup(valueNode)) &&
 				(isStringLikeType(varType) || varType == "" || varType == "unknown" || varType == "any" || varType == "generic") {
 				gen.registerHeapAllocation(node.Value, "string")
 			}
@@ -5166,6 +5429,16 @@ func (gen *CodeGenerator) generateReturnStatement(node *ahoy.ASTNode) {
 		for _, child := range node.Children {
 			gen.markValueDeps(child)
 		}
+		// Ownership propagation (Phase 3): returning an array variable
+		// that owns string elements transfers piece ownership to the
+		// caller by reference. Recorded per function for CALL-site pickup.
+		for _, child := range node.Children {
+			if child != nil && child.Type == ahoy.NODE_IDENTIFIER && gen.heapArrayOwnsStrings[child.Value] {
+				if gen.currentAhoyFunction != "" {
+					gen.funcReturnsOwnedStrings[gen.currentAhoyFunction] = true
+				}
+			}
+		}
 	}
 
 	// Names read by the return value itself. The cleanups below run before
@@ -5318,9 +5591,24 @@ func (gen *CodeGenerator) generateReturnStatement(node *ahoy.ASTNode) {
 					}
 				}
 
-				gen.generateNode(child)
+				// Owned-read element returned: duplicate so the caller
+				// owns a copy (the local array frees its piece on exit).
+				if gen.ownedReadNeedsDup(child) {
+					gen.output.WriteString("strdup(")
+					gen.generateNode(child)
+					gen.output.WriteString(")")
+				} else {
+					gen.generateNode(child)
+				}
 			}
 			gen.output.WriteString("}")
+		} else if len(node.Children) == 1 && gen.ownedReadNeedsDup(node.Children[0]) &&
+			gen.returnTypeCanHoldString() {
+			// Owned-read element returned: duplicate so the caller owns
+			// a copy (the local array frees its piece on exit).
+			gen.output.WriteString("strdup(")
+			gen.generateNode(node.Children[0])
+			gen.output.WriteString(")")
 		} else {
 			gen.generateNode(node.Children[0])
 		}
@@ -5379,6 +5667,187 @@ func (gen *CodeGenerator) generateDeferStatement(node *ahoy.ASTNode) {
 			blockScoped: gen.referencesOutOfScopeName(node.Children[0]),
 		})
 	}
+}
+
+// AllocationClass is the single decision point for an allocation's owner
+// (unified memory plan, Phase 2). Both the autofree emitter and any future
+// arena router must read this; they must never disagree about who frees.
+//
+//	Value  — stack/registers, copied, no owner (int/float/bool/char, POD).
+//	Arena  — region-owned, never individually freed, dies with the region.
+//	Owned  — heap, autofree/manual free (default when the owner is unknown).
+//	Foreign — C/FFI-owned (textures, retained callbacks), explicit free only.
+type AllocationClass int
+
+const (
+	AllocValue AllocationClass = iota
+	AllocArena
+	AllocOwned
+	AllocForeign
+)
+
+// assignmentTargetCanRetainHeap reports whether storing into target can
+// retain heap storage. Primitive-typed targets (int/float/bool/char) hold
+// no pointers, so reads flowing into them (total = total + arr->length)
+// must NOT mark the read roots escaping — that over-marking leaked every
+// loop-local container read into a scalar. Everything else (arrays,
+// dicts, strings, structs — struct copies share string/component
+// references — any/unknown/generic) is conservative: true.
+func (gen *CodeGenerator) assignmentTargetCanRetainHeap(target string) bool {
+	if t, ok := gen.functionVars[target]; ok {
+		switch t {
+		case "int", "float", "double", "bool", "char":
+			return false
+		}
+	}
+	if t, ok := gen.variables[target]; ok {
+		switch t {
+		case "int", "float", "double", "bool", "char":
+			return false
+		}
+	}
+	return true
+}
+
+// setArrayStringOwnership records whether an array variable owns heap
+// string elements. Only split results own pieces today (fresh malloc+memcpy
+// per piece). Literals borrow static strings; calls return unknown
+// ownership (leak-safe: don't free). Promotion clones references, never
+// deep-copies payloads.
+func (gen *CodeGenerator) setArrayStringOwnership(varName string, valueNode *ahoy.ASTNode) {
+	if valueNode != nil && valueNode.Type == ahoy.NODE_METHOD_CALL && valueNode.Value == "split" {
+		gen.heapArrayOwnsStrings[varName] = true
+		return
+	}
+	delete(gen.heapArrayOwnsStrings, varName)
+}
+
+// ownedReadNeedsDup reports whether valueNode reads an element from an
+// array that owns heap string elements (split-built). The read pointer
+// aliases a piece the array will free at scope exit — any STORE of it
+// (bind, assign, push, return, field/dict/element store) must duplicate
+// (promotion at the boundary), or the store dangles when the array dies.
+// Pure reads (conditions, receivers, arithmetic) must NOT duplicate:
+// the copy would have no owner and leak per evaluation.
+func (gen *CodeGenerator) ownedReadNeedsDup(valueNode *ahoy.ASTNode) bool {
+	if valueNode == nil || valueNode.Type != ahoy.NODE_ARRAY_ACCESS {
+		return false
+	}
+	if valueNode.Value == "" {
+		return false
+	}
+	return gen.heapArrayOwnsStrings[valueNode.Value]
+}
+
+// returnTypeCanHoldString reports whether the current function's return
+// type can carry a string: true unless explicitly a primitive. Mirrors
+// targetCanHoldString for the return position (contradictory-type returns
+// keep their garbage shape).
+func (gen *CodeGenerator) returnTypeCanHoldString() bool {
+	t := gen.currentFunctionReturnType
+	switch t {
+	case "int", "float", "double", "bool", "char":
+		return false
+	}
+	if types, ok := gen.functionReturnTypes[gen.currentFunction]; ok && len(types) == 1 {
+		switch types[0] {
+		case "int", "float", "double", "bool", "char":
+			return false
+		}
+	}
+	return true
+}
+
+// targetCanHoldString reports whether storing a string into target keeps
+// the program well-typed: true unless target is explicitly a primitive
+// (int/float/double/bool/char), where a string store is a type error
+// reported elsewhere (leave the garbage shape alone, don't add a strdup
+// on top of it).
+func (gen *CodeGenerator) targetCanHoldString(target string) bool {
+	if t, ok := gen.functionVars[target]; ok {
+		switch t {
+		case "int", "float", "double", "bool", "char":
+			return false
+		}
+		return true
+	}
+	if t, ok := gen.heapVarTypes[target]; ok {
+		switch t {
+		case "int", "float", "double", "bool", "char":
+			return false
+		}
+		return true
+	}
+	if t, ok := gen.variables[target]; ok {
+		switch t {
+		case "int", "float", "double", "bool", "char":
+			return false
+		}
+	}
+	return true
+}
+
+// pushNeedsStrdup reports whether a push into an owned-strings array must
+// duplicate the argument: the array deep-frees every string element, so a
+// borrowed static (literal, f-string buffer, untracked name) would be
+// freed as if it were heap. Duplicating at the boundary keeps element
+// ownership uniform (monotonic: ownership never flips true->false along
+// any path, so static emission stays sound across loop iterations).
+// Tracked fresh strings and fresh-allocating expressions are already
+// owned: the container takes over (the source is escape-marked elsewhere).
+func (gen *CodeGenerator) pushNeedsStrdup(object, arg *ahoy.ASTNode) bool {
+	// An owned-read element is always heap-backed-but-borrowed: the copy
+	// keeps the store from dangling when the source array is freed.
+	// (Into a borrowed target the copy leaks via shell-only freeing —
+	// sound, bounded, documented in MEMORY_OWNERSHIP.md.)
+	if gen.ownedReadNeedsDup(arg) {
+		return true
+	}
+	if object == nil || object.Type != ahoy.NODE_IDENTIFIER {
+		return false
+	}
+	if object == nil || object.Type != ahoy.NODE_IDENTIFIER {
+		return false
+	}
+	if !gen.heapArrayOwnsStrings[object.Value] {
+		return false
+	}
+	if arg == nil {
+		return false
+	}
+	switch arg.Type {
+	case ahoy.NODE_STRING, ahoy.NODE_RAW_STRING, ahoy.NODE_F_STRING:
+		return true
+	case ahoy.NODE_IDENTIFIER:
+		if gen.heapAllocatedVars[arg.Value] {
+			if t, ok := gen.heapVarTypes[arg.Value]; ok && isStringLikeType(t) {
+				return false
+			}
+		}
+		// Untracked/static name: duplicate only if it reads as a string.
+		t := gen.inferType(arg)
+		return isStringLikeType(t)
+	default:
+		// Fresh-allocating expressions (concat, sprintf) are already owned.
+		return false
+	}
+}
+
+// demoteArrayStringOwnershipOnPush clears element ownership when a fill
+// stores one value N times: a single strdup cannot serve N slots (they
+// would alias one allocation and deep-free it N times), so fill into an
+// owned array degrades to shell-only freeing (leak-safe). Push appends a
+// single slot and duplicates instead (see pushNeedsStrdup) — ownership
+// is preserved, never demoted, on the push path.
+func (gen *CodeGenerator) demoteArrayStringOwnershipOnPush(object, arg *ahoy.ASTNode) {
+	if object == nil || object.Type != ahoy.NODE_IDENTIFIER {
+		return
+	}
+	if !gen.heapArrayOwnsStrings[object.Value] {
+		return
+	}
+	// Fill only: push duplicates via pushNeedsStrdup and never demotes.
+	delete(gen.heapArrayOwnsStrings, object.Value)
 }
 
 func (gen *CodeGenerator) markEscapingVariables(node *ahoy.ASTNode) {
@@ -5852,6 +6321,13 @@ func (gen *CodeGenerator) generateFreeCodeForVar(varName string, varType string)
 			}
 		} else if hasStructElements {
 			// Free struct elements (Ahoy or C structs) first, then array structure
+			return fmt.Sprintf("    if (%s) { for(int __i=0; __i<%s->length; __i++) { if(%s->data[__i]) free((void*)%s->data[__i]); } free(%s->data); free(%s->types); free(%s); }\n",
+				varName, varName, varName, varName, varName, varName, varName)
+		} else if gen.heapArrayOwnsStrings[varName] {
+			// Owned heap string elements (split pieces): free each piece,
+			// then the shell. Only set when the array was provenanced from
+			// split; literals borrow static strings and never take this
+			// path, and static pushes demote ownership first.
 			return fmt.Sprintf("    if (%s) { for(int __i=0; __i<%s->length; __i++) { if(%s->data[__i]) free((void*)%s->data[__i]); } free(%s->data); free(%s->types); free(%s); }\n",
 				varName, varName, varName, varName, varName, varName, varName)
 		} else {
@@ -8138,7 +8614,7 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 		"upper", "lower", "replace", "contains",
 		"camel_case", "snake_case", "pascal_case", "kebab_case",
 		"match", "split", "count", "lpad", "rpad", "pad",
-		"strip", "get_file",
+		"strip", "get_file", "dup",
 	}
 
 	// List of dictionary-only methods (not ambiguous)
@@ -8314,6 +8790,12 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 					gen.output.WriteString(")); *__tmp = ")
 					gen.generateNodeInternal(arg, false)
 					gen.output.WriteString("; __tmp; })")
+				} else if gen.pushNeedsStrdup(object, arg) {
+					// Borrowed static into an owned-strings array: duplicate
+					// so the deep free stays sound (multi-arg push path).
+					gen.output.WriteString("strdup(")
+					gen.generateNodeInternal(arg, false)
+					gen.output.WriteString(")")
 				} else {
 					gen.generateNodeInternal(arg, false)
 				}
@@ -8351,6 +8833,11 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 					// fill stores the value N times: same ownership as push.
 					if (methodName == "push" || methodName == "fill") && arg.Type == ahoy.NODE_IDENTIFIER && gen.heapAllocatedVars[arg.Value] {
 						gen.escapingVars[arg.Value] = true
+					}
+					// A borrowed static pushed/filled into an owned-strings
+					// array demotes element ownership (shell-only freeing).
+					if methodName == "fill" {
+						gen.demoteArrayStringOwnershipOnPush(object, arg)
 					}
 					// Pushed closures (by name or directly) carry their captures.
 					if (methodName == "push" || methodName == "fill") && arg.Type == ahoy.NODE_IDENTIFIER {
@@ -8408,6 +8895,12 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 								gen.output.WriteString(")); *__tmp = ")
 								gen.generateNodeInternal(arg, false)
 								gen.output.WriteString("; __tmp; })")
+							} else if methodName == "push" && gen.pushNeedsStrdup(object, arg) {
+								// Borrowed static into an owned-strings array:
+								// duplicate so the deep free stays sound.
+								gen.output.WriteString("strdup(")
+								gen.generateNodeInternal(arg, false)
+								gen.output.WriteString(")")
 							} else {
 								gen.generateNodeInternal(arg, false)
 							}
@@ -9600,7 +10093,15 @@ func (gen *CodeGenerator) generateDictPutTyped(dictExpr string, keyNode, valueNo
 		gen.output.WriteString("; })")
 	} else {
 		gen.output.WriteString("(void*)(intptr_t)")
-		gen.generateNode(valueNode)
+		// Owned-read element stored into a dict: duplicate so the entry
+		// survives the source array's scope exit (same C type either way).
+		if gen.ownedReadNeedsDup(valueNode) {
+			gen.output.WriteString("strdup(")
+			gen.generateNode(valueNode)
+			gen.output.WriteString(")")
+		} else {
+			gen.generateNode(valueNode)
+		}
 	}
 
 	gen.output.WriteString(", ")
@@ -9966,6 +10467,7 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			node.Value == "snake_case" || node.Value == "pascal_case" ||
 			node.Value == "kebab_case" || node.Value == "strip" ||
 			node.Value == "lpad" || node.Value == "rpad" ||
+			node.Value == "dup" ||
 			node.Value == "pad" || node.Value == "get_file" {
 			return "string"
 		}
@@ -14324,7 +14826,7 @@ func (gen *CodeGenerator) writeStringHelperFunctions() {
 		gen.funcDecls.WriteString("        memcpy(piece, start, len);\n")
 		gen.funcDecls.WriteString("        piece[len] = '\\0';\n")
 		gen.funcDecls.WriteString("        if (arr->length == arr->capacity) {\n")
-		gen.funcDecls.WriteString("            arr->capacity *= 2;\n")
+		gen.funcDecls.WriteString("            arr->capacity = arr->capacity > 0 ? arr->capacity * 2 : 4;\n")
 		gen.funcDecls.WriteString("            arr->data = (intptr_t*)realloc(arr->data, arr->capacity * sizeof(intptr_t));\n")
 		gen.funcDecls.WriteString("            arr->types = (AhoyValueType*)realloc(arr->types, arr->capacity * sizeof(AhoyValueType));\n")
 		gen.funcDecls.WriteString("        }\n")
