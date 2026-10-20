@@ -1,0 +1,27 @@
+program pool_churn
+
+? Slab-pool churn: allocating and releasing a struct in a loop must reuse
+? pooled blocks (one chunk malloc per 64) instead of churning the
+? allocator, and recycled blocks must read back zeroed (calloc parity).
+
+struct Cell:
+	a: float
+	b: int
+$
+
+@ main ||:
+	expected: []
+	loop i:0 to 500 do
+		e: Cell* = ahoy_alloc_Cell||
+		e.a = 1.5
+		e.b = 7
+		free|e|
+	$
+	fresh: Cell* = ahoy_alloc_Cell||
+	print|fresh.a|
+	expected.push|"0"|
+	print|fresh.b|
+	expected.push|"0"|
+	free|fresh|
+	print|expected|
+$

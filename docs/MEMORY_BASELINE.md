@@ -102,3 +102,14 @@ bytes / +229 allocs vs prior run — the field dups themselves, each a
 few bytes, all load/boot-bounded). Hottest leak site
 (`node_label:680`, ~102 records) is ~9 boot-time labels × ~12 allocs
 each, not per-frame growth. No site scales with the 90 frames.
+
+## Post-revert run (same game, same flags)
+
+**Zero memory errors, 90/90 frames. Exit leaks: 19,021 bytes / 1,201
+allocations** — same leak kinds (scene splits, node names, concats,
+skill UI), lower counts, nothing per-frame. The drop vs the prior
+134KB run is not fully attributed (candidates: pool still-reachables
+settling plus fewer live-at-exit paths after the scheduling revert);
+it was not chased further because leak accounting cannot mask
+use-after-free — ASan errors are the safety signal, and it is clean
+across five consecutive full-game runs plus a full editor run.

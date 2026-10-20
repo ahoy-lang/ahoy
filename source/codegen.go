@@ -231,7 +231,6 @@ type CodeGenerator struct {
 	heapAllocatedVars             map[string]bool                         // Track heap-allocated variables in current function
 	heapVarScopes                 map[string]int                          // Track scope depth where each heap var was allocated
 	heapVarTypes                  map[string]string                       // Track type of each heap-allocated variable for proper freeing
-	varDeclScope                  map[string]int                          // var name -> scope depth where declared (ALL declarations, per function). Lets reassignment schedule cleanup at the var's own scope even when it has no heap entry yet (static-declared vars assigned fresh values: clean/rebuilt/text_s patterns).
 	heapArrayOwnsStrings          map[string]bool                         // array var -> true when elements are owned heap strings (split pieces); shell+pieces freed together. Literals borrow static strings: never freed.
 	scopeDepth                    int                                     // Current scope depth (incremented for loops/ifs/blocks)
 	scopeAllocations              map[int][]string                        // scope depth -> list of variables allocated at that scope
@@ -2640,7 +2639,6 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	// Initialize deferred statements stack for this function
 	gen.deferredStatements = []deferredStmt{}
 	gen.heapAllocatedVars = make(map[string]bool)
-	gen.varDeclScope = make(map[string]int)
 	gen.heapArrayOwnsStrings = make(map[string]bool)
 	gen.heapVarScopes = make(map[string]int)
 	gen.heapVarTypes = make(map[string]string)
@@ -2662,7 +2660,6 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	for _, param := range params.Children {
 		gen.functionParameters[param.Value] = true
 		gen.markDeclaredInCurrentScope(param.Value)
-		gen.varDeclScope[param.Value] = 0
 	}
 
 	// Crash reporting: record which Ahoy function is executing. Per-statement
@@ -3393,15 +3390,18 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 					valueNode.Type != ahoy.NODE_MEMBER_ACCESS && valueNode.Type != ahoy.NODE_ARRAY_ACCESS &&
 					valueNode.Type != ahoy.NODE_DICT_ACCESS && valueNode.Type != ahoy.NODE_OBJECT_ACCESS &&
 					!borrowSelect) {
-					// Without a declaration entry (global) there is no known
-					// safe scope: skip registration (leak, sound).
-					// Registering at the current inner depth would free
-					// memory the variable's scope outlives (its owner, or
-					// a later read). The declaration record covers
-					// static-initialized locals (clean/rebuilt/text_s
-					// patterns): their fresh values schedule at the var's
-					// own scope and are freed with it.
-					if declDepth, hasDecl := gen.declScopeOf(varName); hasDecl {
+					// Without a heap declaration entry (literal/static-
+					// initialized locals, globals) there is no known safe
+					// scope: skip registration (leak, sound). Registering
+					// at the current inner depth would free memory the
+					// variable's scope outlives (its owner, or a later
+					// read) — and a branch-conditional registration paired
+					// with an unconditional eager-free would free a value
+					// the branch never ran for (the editor scene-path
+					// crash). Single-pass codegen cannot prove dominance,
+					// so only straight-line-dominated heap declarations
+					// schedule here.
+					if _, hasDecl := gen.heapVarScopes[varName]; hasDecl {
 						// Clear the autoFreed flag since we have a new allocation
 						delete(gen.autoFreedVars, varName)
 						// Schedule cleanup at the scope where the variable was
@@ -3410,14 +3410,9 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 						// freeing at the block exit leaves a dangling reference
 						// behind (heap use-after-free on the next use).
 						targetDepth := gen.scopeDepth
-						if declDepth < targetDepth {
+						if declDepth, ok := gen.heapVarScopes[varName]; ok && declDepth < targetDepth {
 							targetDepth = declDepth
 						}
-						// Full membership: escape marking, eager-free guards
-						// and function-end cleanup all key off this flag.
-						// Widened scheduling (declaration-record vars) must
-						// set it, or marks miss a var the lists still free.
-						gen.heapAllocatedVars[varName] = true
 						gen.heapVarScopes[varName] = targetDepth
 						gen.heapVarTypes[varName] = valueType
 						// Element ownership follows the new value: split owns
@@ -3448,16 +3443,14 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				// elsewhere; don't compound it with a bad free).
 				if oldType, ok := gen.heapVarTypes[varName]; !ok || isStringLikeType(oldType) ||
 					oldType == "" || oldType == "unknown" || oldType == "any" || oldType == "generic" {
-					// The declaration record covers static-initialized
-					// locals; globals (no record) still skip — see above.
-					if declDepth, hasDecl := gen.declScopeOf(varName); hasDecl {
+					// Same dominance rule as the heap block above: only
+					// straight-line-dominated heap declarations schedule.
+					if _, hasDecl := gen.heapVarScopes[varName]; hasDecl {
 						delete(gen.autoFreedVars, varName)
 						targetDepth := gen.scopeDepth
-						if declDepth < targetDepth {
+						if declDepth, ok := gen.heapVarScopes[varName]; ok && declDepth < targetDepth {
 							targetDepth = declDepth
 						}
-						// Full membership (see heap block above).
-						gen.heapAllocatedVars[varName] = true
 						gen.heapVarScopes[varName] = targetDepth
 						gen.heapVarTypes[varName] = "string"
 						if targetDepth > 0 {
@@ -3576,11 +3569,6 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			if gen.currentFunction != "" && gen.functionVars != nil {
 				// Inside a function - use function scope
 				gen.functionVars[node.Value] = varType
-				// Declaration scope for reassignment scheduling: EVERY
-				// declaration records it (not just nested), so a later
-				// fresh assignment can schedule cleanup at this scope
-				// even if the declaration itself allocated nothing.
-				gen.varDeclScope[node.Value] = gen.scopeDepth
 				// Mark as nested scope if indent > 1 (inside loops/ifs)
 				// and track the indent level where this variable was declared
 				if gen.indent > 1 {
@@ -5733,19 +5721,6 @@ func (gen *CodeGenerator) assignmentTargetCanRetainHeap(target string) bool {
 	return true
 }
 
-// declScopeOf returns the scope depth where varName was declared: the
-// heap entry when one exists, else the declaration record. Reassignment
-// cleanup schedules at this scope, never the current inner scope.
-func (gen *CodeGenerator) declScopeOf(varName string) (int, bool) {
-	if d, ok := gen.heapVarScopes[varName]; ok {
-		return d, true
-	}
-	if d, ok := gen.varDeclScope[varName]; ok {
-		return d, true
-	}
-	return 0, false
-}
-
 // setArrayStringOwnership records whether an array variable owns heap
 // string elements. Only split results own pieces today (fresh malloc+memcpy
 // per piece). Literals borrow static strings; calls return unknown
@@ -6331,6 +6306,27 @@ func (gen *CodeGenerator) exitScope() string {
 	return cleanup.String()
 }
 
+// structPoolNames returns the allocator/releaser C names for an Ahoy
+// struct pointer type ("NodeVis*") or struct name ("NodeVis"). Unknown
+// (C structs, primitives, generics) reports "".
+//
+// Pool safety contract: AhoyReleaseT accepts any block of at least
+// sizeof(T) — pooled chunk slots, push-wrapper mallocs, even foreign
+// mallocs. Plain free() on a pooled chunk slot is the one error: only
+// codegen-emitted frees (all routed here) may free pooled pointers;
+// C code must use the Release fns. Double-release corrupts the free
+// list (existing double-emission guards apply); NULL is always safe.
+func (gen *CodeGenerator) structPoolNames(t string) (alloc, release string) {
+	base := strings.TrimSuffix(t, "*")
+	base = strings.TrimPrefix(base, "struct:")
+	if _, ok := gen.structs[base]; !ok {
+		return "", ""
+	}
+	suffix := snakeToPascal(ahoy.AllocPrefix + base)
+	suffix = strings.TrimPrefix(suffix, "AhoyAlloc")
+	return "AhoyAlloc" + suffix, "AhoyRelease" + suffix
+}
+
 // generateFreeCodeForVar generates the appropriate free() code for a variable based on its type
 func (gen *CodeGenerator) generateFreeCodeForVar(varName string, varType string) string {
 	// A function value owns the environment of a capturing closure; the value
@@ -6353,9 +6349,10 @@ func (gen *CodeGenerator) generateFreeCodeForVar(varName string, varType string)
 		hasStructElements := false
 		hasNestedArrays := false
 		nestedElemType := ""
+		elemType := ""
 
 		if strings.HasPrefix(varType, "array[") {
-			elemType := strings.TrimSuffix(strings.TrimPrefix(varType, "array["), "]")
+			elemType = strings.TrimSuffix(strings.TrimPrefix(varType, "array["), "]")
 
 			// Check if this is a 2D array (array of arrays)
 			if strings.HasPrefix(elemType, "array[") {
@@ -6400,7 +6397,14 @@ func (gen *CodeGenerator) generateFreeCodeForVar(varName string, varType string)
 					varName, varName, varName, varName, varName, varName)
 			}
 		} else if hasStructElements {
-			// Free struct elements (Ahoy or C structs) first, then array structure
+			// Free struct elements (Ahoy or C structs) first, then array structure.
+			// Pooled Ahoy structs recycle; C structs free. (Push-wrapper
+			// mallocs entering a pool are safe: Release accepts any block
+			// of at least the struct size.)
+			if _, rel := gen.structPoolNames(elemType); rel != "" {
+				return fmt.Sprintf("    if (%s) { for(int __i=0; __i<%s->length; __i++) { if(%s->data[__i]) %s((void*)%s->data[__i]); } free(%s->data); free(%s->types); free(%s); }\n",
+					varName, varName, varName, rel, varName, varName, varName, varName)
+			}
 			return fmt.Sprintf("    if (%s) { for(int __i=0; __i<%s->length; __i++) { if(%s->data[__i]) free((void*)%s->data[__i]); } free(%s->data); free(%s->types); free(%s); }\n",
 				varName, varName, varName, varName, varName, varName, varName)
 		} else if gen.heapArrayOwnsStrings[varName] {
@@ -6425,7 +6429,14 @@ func (gen *CodeGenerator) generateFreeCodeForVar(varName string, varType string)
 		// For heap-allocated strings
 		return fmt.Sprintf("    if (%s) { free(%s); }\n", varName, varName)
 	} else if strings.Contains(varType, "*") || gen.structs[varType] != nil || gen.cTypeDefinitions[varType] {
-		// For struct pointers or other pointer types
+		// For struct pointers or other pointer types. Pooled Ahoy structs
+		// recycle through their Release fn; C and unknown pointers free.
+		// Pointer-only: a bare struct value must never enter a pool.
+		if strings.Contains(varType, "*") {
+			if _, rel := gen.structPoolNames(varType); rel != "" {
+				return fmt.Sprintf("    if (%s) { %s(%s); }\n", varName, rel, varName)
+			}
+		}
 		return fmt.Sprintf("    if (%s) { free(%s); }\n", varName, varName)
 	}
 	return ""
@@ -6733,6 +6744,19 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 	// Keep user-defined functions as snake_case
 	// Convert C library functions to their original names
 	funcName := node.Value
+
+	// Pooled structs: free|x| on a known Ahoy struct pointer releases to
+	// the slab pool instead of malloc-free (same single ownership, memory
+	// recycled). Unknown, C and non-pointer types keep plain free.
+	if funcName == "free" && len(node.Children) == 1 {
+		if _, rel := gen.structPoolNames(gen.inferType(node.Children[0])); rel != "" {
+			gen.output.WriteString(rel)
+			gen.output.WriteString("(")
+			gen.generateNodeInternal(node.Children[0], false)
+			gen.output.WriteString(")")
+			return
+		}
+	}
 
 	// Special case: rename main to ahoy_main
 	if funcName == "main" {
@@ -12572,25 +12596,117 @@ func (gen *CodeGenerator) generateStruct(node *ahoy.ASTNode) {
 	// NodeVis* with the struct's declared field defaults applied. A struct
 	// field that holds a pointer to another struct needs one - the C side
 	// knows the size, Ahoy has no way to ask for it.
+	//
+	// Allocation comes from a per-struct slab pool (64-item chunks,
+	// free-list recycled): spawn-heavy workloads do one malloc per 64
+	// nodes instead of one per component, and freed components recycle
+	// instead of churning the allocator. Popped blocks are memset to zero
+	// (calloc parity) before defaults are applied. Plain free() on a
+	// pooled pointer is an error - free| on a known struct pointer and
+	// autofree route to the Release fn instead; C code must do the same.
+	// Chunks live for the process lifetime (high-water retention by
+	// design; still-reachable, never reported as leaked). Hot reload
+	// loads a fresh library per reload, so pools never span struct-layout
+	// changes.
 	allocName := snakeToPascal(ahoy.AllocPrefix + structName)
+	poolSuffix := strings.TrimPrefix(allocName, "AhoyAlloc")
+	releaseName := "AhoyRelease" + poolSuffix
+	gen.structDecls.WriteString("typedef union AhoyPoolSlot_")
+	gen.structDecls.WriteString(poolSuffix)
+	gen.structDecls.WriteString(" { ")
+	gen.structDecls.WriteString(cStructName)
+	gen.structDecls.WriteString(" item; void* next; } AhoyPoolSlot_")
+	gen.structDecls.WriteString(poolSuffix)
+	gen.structDecls.WriteString(";\n")
+	gen.structDecls.WriteString("typedef struct AhoyPoolChunk_")
+	gen.structDecls.WriteString(poolSuffix)
+	gen.structDecls.WriteString(" { struct AhoyPoolChunk_")
+	gen.structDecls.WriteString(poolSuffix)
+	gen.structDecls.WriteString("* next; AhoyPoolSlot_")
+	gen.structDecls.WriteString(poolSuffix)
+	gen.structDecls.WriteString(" items[64]; } AhoyPoolChunk_")
+	gen.structDecls.WriteString(poolSuffix)
+	gen.structDecls.WriteString(";\n")
+	gen.structDecls.WriteString("static AhoyPoolSlot_")
+	gen.structDecls.WriteString(poolSuffix)
+	gen.structDecls.WriteString("* AhoyPoolFree_")
+	gen.structDecls.WriteString(poolSuffix)
+	gen.structDecls.WriteString(" = NULL;\n")
+	gen.structDecls.WriteString("static AhoyPoolChunk_")
+	gen.structDecls.WriteString(poolSuffix)
+	gen.structDecls.WriteString("* AhoyPoolChunks_")
+	gen.structDecls.WriteString(poolSuffix)
+	gen.structDecls.WriteString(" = NULL;\n")
 	gen.structDecls.WriteString("static ")
 	gen.structDecls.WriteString(cStructName)
 	gen.structDecls.WriteString("* ")
 	gen.structDecls.WriteString(allocName)
 	gen.structDecls.WriteString("(void);\n")
+	gen.structDecls.WriteString("static void ")
+	gen.structDecls.WriteString(releaseName)
+	gen.structDecls.WriteString("(")
+	gen.structDecls.WriteString(cStructName)
+	gen.structDecls.WriteString("* p);\n")
 	// The definition goes with the other helper implementations, not here:
 	// a declared default can name a function value (`on_tick: fn() -> int =
 	// &tick`), and the thunk that backs it is emitted after the struct
 	// declarations.
+	gen.funcDecls.WriteString("static void ")
+	gen.funcDecls.WriteString(releaseName)
+	gen.funcDecls.WriteString("(")
+	gen.funcDecls.WriteString(cStructName)
+	gen.funcDecls.WriteString("* p) { if (p == NULL) return; AhoyPoolSlot_")
+	gen.funcDecls.WriteString(poolSuffix)
+	gen.funcDecls.WriteString("* __s = (AhoyPoolSlot_")
+	gen.funcDecls.WriteString(poolSuffix)
+	gen.funcDecls.WriteString("*)p; __s->next = AhoyPoolFree_")
+	gen.funcDecls.WriteString(poolSuffix)
+	gen.funcDecls.WriteString("; AhoyPoolFree_")
+	gen.funcDecls.WriteString(poolSuffix)
+	gen.funcDecls.WriteString(" = __s; }\n")
 	gen.funcDecls.WriteString("static ")
 	gen.funcDecls.WriteString(cStructName)
 	gen.funcDecls.WriteString("* ")
 	gen.funcDecls.WriteString(allocName)
-	gen.funcDecls.WriteString("(void) { ")
+	gen.funcDecls.WriteString("(void) {\n")
+	gen.funcDecls.WriteString("    if (AhoyPoolFree_")
+	gen.funcDecls.WriteString(poolSuffix)
+	gen.funcDecls.WriteString(" == NULL) {\n")
+	gen.funcDecls.WriteString("        AhoyPoolChunk_")
+	gen.funcDecls.WriteString(poolSuffix)
+	gen.funcDecls.WriteString("* __c = (AhoyPoolChunk_")
+	gen.funcDecls.WriteString(poolSuffix)
+	gen.funcDecls.WriteString("*)malloc(sizeof(AhoyPoolChunk_")
+	gen.funcDecls.WriteString(poolSuffix)
+	gen.funcDecls.WriteString("));\n")
+	gen.funcDecls.WriteString("        if (__c == NULL) return NULL;\n")
+	gen.funcDecls.WriteString("        __c->next = AhoyPoolChunks_")
+	gen.funcDecls.WriteString(poolSuffix)
+	gen.funcDecls.WriteString(";\n")
+	gen.funcDecls.WriteString("        AhoyPoolChunks_")
+	gen.funcDecls.WriteString(poolSuffix)
+	gen.funcDecls.WriteString(" = __c;\n")
+	gen.funcDecls.WriteString("        int __i;\n")
+	gen.funcDecls.WriteString("        for (__i = 63; __i >= 0; __i--) { __c->items[__i].next = AhoyPoolFree_")
+	gen.funcDecls.WriteString(poolSuffix)
+	gen.funcDecls.WriteString("; AhoyPoolFree_")
+	gen.funcDecls.WriteString(poolSuffix)
+	gen.funcDecls.WriteString(" = &__c->items[__i]; }\n")
+	gen.funcDecls.WriteString("    }\n")
+	gen.funcDecls.WriteString("    AhoyPoolSlot_")
+	gen.funcDecls.WriteString(poolSuffix)
+	gen.funcDecls.WriteString("* __s = AhoyPoolFree_")
+	gen.funcDecls.WriteString(poolSuffix)
+	gen.funcDecls.WriteString(";\n")
+	gen.funcDecls.WriteString("    AhoyPoolFree_")
+	gen.funcDecls.WriteString(poolSuffix)
+	gen.funcDecls.WriteString(" = (AhoyPoolSlot_")
+	gen.funcDecls.WriteString(poolSuffix)
+	gen.funcDecls.WriteString("*)__s->next;\n")
+	gen.funcDecls.WriteString("    ")
 	gen.funcDecls.WriteString(cStructName)
-	gen.funcDecls.WriteString("* __v = (")
-	gen.funcDecls.WriteString(cStructName)
-	gen.funcDecls.WriteString("*)calloc(1, sizeof(")
+	gen.funcDecls.WriteString("* __v = &__s->item;\n")
+	gen.funcDecls.WriteString("    memset(__v, 0, sizeof(")
 	gen.funcDecls.WriteString(cStructName)
 	gen.funcDecls.WriteString("));\n")
 	// The declared defaults: a calloc leaves a string field NULL, and the

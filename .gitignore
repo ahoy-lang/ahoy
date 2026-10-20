@@ -14,3 +14,6 @@ repos/
 
 # games developed with the engine
 games/
+
+# compiler scratch binary (go build ./... default output)
+/source/source
