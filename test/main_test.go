@@ -30,18 +30,26 @@ func testCompilerPath(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("resolving ../source: %v", err)
 	}
-	newest := time.Time{}
-	err = filepath.Walk(srcDir, func(p string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() || !strings.HasSuffix(p, ".go") {
-			return nil
-		}
-		if info.ModTime().After(newest) {
-			newest = info.ModTime()
-		}
-		return nil
-	})
+	// The language core lives in ../pkg (the source module replaces `ahoy`
+	// with it), so a change there has to count as stale too.
+	pkgDir, err := filepath.Abs("../pkg")
 	if err != nil {
-		t.Fatalf("walking %s: %v", srcDir, err)
+		t.Fatalf("resolving ../pkg: %v", err)
+	}
+	newest := time.Time{}
+	for _, dir := range []string{srcDir, pkgDir} {
+		err = filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() || !strings.HasSuffix(p, ".go") {
+				return nil
+			}
+			if info.ModTime().After(newest) {
+				newest = info.ModTime()
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walking %s: %v", dir, err)
+		}
 	}
 	if fi, err := os.Stat(binAbs); err == nil && fi.ModTime().After(newest) {
 		return binPath

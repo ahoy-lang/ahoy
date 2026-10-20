@@ -1,0 +1,46 @@
+program pointer_fields
+
+? A struct field may hold a pointer to another struct: `ext: Ext*`.
+?
+? The point is that the field holds a *reference*, so the pointed-to struct
+? is not copied when the holder is copied, and a write through the pointer is
+? seen by everyone who holds it. That is what makes a component-style layout
+? (a small core struct plus per-kind components) expressible.
+
+struct Ext:
+	a: float
+	b: int
+$
+
+struct Holder:
+	name: string
+	ext: Ext*
+$
+
+@ main ||:
+	expected: []
+
+	e: Ext = Ext{a: 1.5, b: 2}
+	h: Holder = Holder{name: "x", ext: &e}
+
+	? reading through the pointer
+	print|h.ext.a|
+	expected.push|"1.5"|
+	print|h.ext.b|
+	expected.push|"2"|
+
+	? a write through the pointer is shared
+	h.ext.a = 9.0
+	print|h.ext.a|
+	expected.push|"9"|
+	print|e.a|
+	expected.push|"9"|
+
+	? copying the holder copies the reference, not the target
+	h2: Holder = h
+	h2.ext.b = 7
+	print|e.b|
+	expected.push|"7"|
+
+	print|expected|
+$

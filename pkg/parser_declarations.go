@@ -1400,6 +1400,19 @@ func (p *Parser) parseReservedStructField() *ASTNode {
 	}
 }
 
+// parsePointerSuffix consumes a `*` suffix on a struct field type and returns
+// the pointer type. A struct field that holds a reference to another struct
+// no longer copies it, which is what makes a component-style layout (a small
+// core plus per-kind components) expressible at all. The C side already
+// maps `Ext*` to `Ext*`.
+func (p *Parser) parsePointerSuffix(fieldType string) string {
+	for p.current().Type == TOKEN_MULTIPLY {
+		p.advance()
+		fieldType += "*"
+	}
+	return fieldType
+}
+
 // parseStructFieldTypeAfterColon parses the type (and optional `= default`)
 // after the ':' of a struct field. The colon is already consumed.
 func (p *Parser) parseStructFieldTypeAfterColon() (string, *ASTNode) {
@@ -1456,6 +1469,8 @@ func (p *Parser) parseStructFieldTypeAfterColon() (string, *ASTNode) {
 			p.advance()
 		}
 	}
+
+	fieldType = p.parsePointerSuffix(fieldType)
 
 	// Check for = and default value
 	if p.current().Type == TOKEN_EQUALS {
@@ -1700,6 +1715,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 									p.current().Type == TOKEN_BOOL_TYPE {
 									p.advance()
 								}
+								fieldType = p.parsePointerSuffix(fieldType)
 							}
 
 							// Check for = and default value
@@ -1859,6 +1875,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 						p.current().Type == TOKEN_BOOL_TYPE {
 						p.advance()
 					}
+					fieldType = p.parsePointerSuffix(fieldType)
 				}
 
 				// Check for = and default value
