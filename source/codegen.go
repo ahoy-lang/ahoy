@@ -11926,25 +11926,43 @@ func (gen *CodeGenerator) generateStruct(node *ahoy.ASTNode) {
 	gen.structDecls.WriteString(";\n\n")
 
 	// A heap allocator for the struct: `ahoy_alloc_NodeVis()` returns a
-	// zeroed NodeVis*. A struct field that holds a pointer to another struct
-	// needs one - the C side knows the size, Ahoy has no way to ask for it.
+	// NodeVis* with the struct's declared field defaults applied. A struct
+	// field that holds a pointer to another struct needs one - the C side
+	// knows the size, Ahoy has no way to ask for it.
 	allocName := snakeToPascal(ahoy.AllocPrefix + structName)
 	gen.structDecls.WriteString("static ")
 	gen.structDecls.WriteString(cStructName)
 	gen.structDecls.WriteString("* ")
 	gen.structDecls.WriteString(allocName)
 	gen.structDecls.WriteString("(void);\n")
-	gen.structDecls.WriteString("static ")
-	gen.structDecls.WriteString(cStructName)
-	gen.structDecls.WriteString("* ")
-	gen.structDecls.WriteString(allocName)
-	gen.structDecls.WriteString("(void) { ")
-	gen.structDecls.WriteString(cStructName)
-	gen.structDecls.WriteString("* __v = (")
-	gen.structDecls.WriteString(cStructName)
-	gen.structDecls.WriteString("*)calloc(1, sizeof(")
-	gen.structDecls.WriteString(cStructName)
-	gen.structDecls.WriteString(")); return __v; }\n\n")
+	// The definition goes with the other helper implementations, not here:
+	// a declared default can name a function value (`on_tick: fn() -> int =
+	// &tick`), and the thunk that backs it is emitted after the struct
+	// declarations.
+	gen.funcDecls.WriteString("static ")
+	gen.funcDecls.WriteString(cStructName)
+	gen.funcDecls.WriteString("* ")
+	gen.funcDecls.WriteString(allocName)
+	gen.funcDecls.WriteString("(void) { ")
+	gen.funcDecls.WriteString(cStructName)
+	gen.funcDecls.WriteString("* __v = (")
+	gen.funcDecls.WriteString(cStructName)
+	gen.funcDecls.WriteString("*)calloc(1, sizeof(")
+	gen.funcDecls.WriteString(cStructName)
+	gen.funcDecls.WriteString("));\n")
+	// The declared defaults: a calloc leaves a string field NULL, and the
+	// default is what the rest of the program expects to find.
+	for _, f := range structInfo.Fields {
+		if f.DefaultValue == "" || f.DefaultValue == "0" {
+			continue
+		}
+		gen.funcDecls.WriteString("__v->")
+		gen.funcDecls.WriteString(f.Name)
+		gen.funcDecls.WriteString(" = ")
+		gen.funcDecls.WriteString(f.DefaultValue)
+		gen.funcDecls.WriteString(";\n")
+	}
+	gen.funcDecls.WriteString("return __v; }\n\n")
 
 	// Generate static fields as global variables
 	for _, field := range staticFields {
