@@ -27,6 +27,10 @@ func init() {
 		"i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64",
 		// job system
 		"jobs",
+		// math and geometry
+		"abs", "min", "max", "clamp", "lerp", "sign", "floor", "ceil",
+		"round", "sqrt", "pow", "hypot", "mod",
+		"rect_contains", "rect_intersects",
 		// flat POD buffer constructor: buffer|n| -> buffer[f32]
 		"buffer",
 	} {

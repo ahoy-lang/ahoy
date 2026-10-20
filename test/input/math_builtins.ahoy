@@ -1,0 +1,87 @@
+program math_builtins
+
+? The math builtins. The language had none: a square root came from the
+? engine's C header, so a program outside the engine could not take one.
+?
+? The geometry builtins answer the rectangle questions that used to be four
+? nested ifs each.
+
+@ main ||:
+	expected: []
+
+	a: float = abs|-3.5|
+	print|a|
+	expected.push|"3.5"|
+
+	b: float = min|3.0, 7.0|
+	print|b|
+	expected.push|"3"|
+
+	c: float = max|3.0, 7.0|
+	print|c|
+	expected.push|"7"|
+
+	d: float = clamp|15.0, 0.0, 10.0|
+	print|d|
+	expected.push|"10"|
+
+	e: float = clamp|-5.0, 0.0, 10.0|
+	print|e|
+	expected.push|"0"|
+
+	f: float = lerp|0.0, 10.0, 0.25|
+	print|f|
+	expected.push|"2.5"|
+
+	g: int = sign|-4.0|
+	print|g|
+	expected.push|g|
+
+	h: float = floor|2.7|
+	print|h|
+	expected.push|"2"|
+
+	i: float = ceil|2.1|
+	print|i|
+	expected.push|"3"|
+
+	j: float = round|2.5|
+	print|j|
+	expected.push|"3"|
+
+	k: float = sqrt|16.0|
+	print|k|
+	expected.push|"4"|
+
+	l: float = pow|2.0, 10.0|
+	print|l|
+	expected.push|"1024"|
+
+	m: float = hypot|3.0, 4.0|
+	print|m|
+	expected.push|"5"|
+
+	n: float = mod|7.0, 3.0|
+	print|n|
+	expected.push|"1"|
+
+	? the geometry builtins: the point is inside the rectangle
+	o: bool = rect_contains|5.0, 5.0, 0.0, 0.0, 10.0, 10.0|
+	print|o|
+	expected.push|o|
+
+	p: bool = rect_contains|15.0, 5.0, 0.0, 0.0, 10.0, 10.0|
+	print|p|
+	expected.push|p|
+
+	? and the rectangles overlap
+	q: bool = rect_intersects|0.0, 0.0, 10.0, 10.0, 5.0, 5.0, 10.0, 10.0|
+	print|q|
+	expected.push|q|
+
+	r: bool = rect_intersects|0.0, 0.0, 2.0, 2.0, 5.0, 5.0, 2.0, 2.0|
+	print|r|
+	expected.push|r|
+
+	print|expected|
+$

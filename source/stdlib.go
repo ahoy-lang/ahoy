@@ -242,6 +242,23 @@ var BuiltinFuncs = map[string]StdlibFunc{
 	"exit":       {Name: "exit", Category: "builtin", MethodName: "exit", ReturnType: "void", Params: "code:int", Doc: "Exits with code"},
 	"rand":       {Name: "rand", Category: "builtin", MethodName: "rand", ReturnType: "int", Params: "", Doc: "Returns random integer"},
 	"rand_range": {Name: "rand_range", Category: "builtin", MethodName: "rand_range", ReturnType: "int", Params: "min:int, max:int", Doc: "Returns random in range"},
+	// The math builtins.
+	"abs":          {Name: "abs", Category: "builtin", MethodName: "abs", ReturnType: "float", Params: "x:float", Doc: "The absolute value"},
+	"min":          {Name: "min", Category: "builtin", MethodName: "min", ReturnType: "float", Params: "a:float, b:float", Doc: "The smaller of two numbers"},
+	"max":          {Name: "max", Category: "builtin", MethodName: "max", ReturnType: "float", Params: "a:float, b:float", Doc: "The larger of two numbers"},
+	"clamp":        {Name: "clamp", Category: "builtin", MethodName: "clamp", ReturnType: "float", Params: "x:float, lo:float, hi:float", Doc: "Keeps a number between a low and a high bound"},
+	"lerp":         {Name: "lerp", Category: "builtin", MethodName: "lerp", ReturnType: "float", Params: "a:float, b:float, t:float", Doc: "Interpolates between two numbers (t from 0 to 1)"},
+	"sign":         {Name: "sign", Category: "builtin", MethodName: "sign", ReturnType: "int", Params: "x:float", Doc: "-1, 0 or 1, the sign of a number"},
+	"floor":        {Name: "floor", Category: "builtin", MethodName: "floor", ReturnType: "float", Params: "x:float", Doc: "The largest whole number not above x"},
+	"ceil":         {Name: "ceil", Category: "builtin", MethodName: "ceil", ReturnType: "float", Params: "x:float", Doc: "The smallest whole number not below x"},
+	"round":        {Name: "round", Category: "builtin", MethodName: "round", ReturnType: "float", Params: "x:float", Doc: "The nearest whole number"},
+	"sqrt":         {Name: "sqrt", Category: "builtin", MethodName: "sqrt", ReturnType: "float", Params: "x:float", Doc: "The square root"},
+	"pow":          {Name: "pow", Category: "builtin", MethodName: "pow", ReturnType: "float", Params: "x:float, y:float", Doc: "x raised to the power y"},
+	"hypot":        {Name: "hypot", Category: "builtin", MethodName: "hypot", ReturnType: "float", Params: "x:float, y:float", Doc: "The length of the hypotenuse of a right triangle"},
+	"mod":          {Name: "mod", Category: "builtin", MethodName: "mod", ReturnType: "float", Params: "x:float, y:float", Doc: "The remainder of x divided by y"},
+	// The geometry builtins.
+	"rect_contains": {Name: "rect_contains", Category: "builtin", MethodName: "rect_contains", ReturnType: "bool", Params: "x:float, y:float, rx:float, ry:float, rw:float, rh:float", Doc: "Is the point inside the rectangle"},
+	"rect_intersects": {Name: "rect_intersects", Category: "builtin", MethodName: "rect_intersects", ReturnType: "bool", Params: "ax:float, ay:float, aw:float, ah:float, bx:float, by:float, bw:float, bh:float", Doc: "Do two rectangles overlap"},
 }
 
 // GetAllStdlibFuncs returns all stdlib functions

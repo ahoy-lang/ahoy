@@ -174,6 +174,7 @@ type CodeGenerator struct {
 	hasError                      bool                                    // Track if error occurred
 	arrayImpls                    bool                                    // Track if we've added array implementation
 	arrayMethods                  map[string]bool                         // Track which array methods are used
+	mathBuiltins                  map[string]bool                         // Track which math/geometry builtins are used
 	stringMethods                 map[string]bool                         // Track which string methods are used
 	dictMethods                   map[string]bool                         // Track which dict methods are used
 	useJSON                       bool                                    // Track if JSON functions are used
@@ -304,6 +305,7 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		hasError:              false,
 		arrayImpls:            false,
 		arrayMethods:          make(map[string]bool),
+		mathBuiltins:          make(map[string]bool),
 		stringMethods:         make(map[string]bool),
 		dictMethods:           make(map[string]bool),
 		hasMainFunc:           false,
@@ -447,6 +449,9 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 
 	// Generate dict helper functions if any dict methods were used
 	gen.writeDictHelperFunctions()
+
+	// Generate the math and geometry builtins the program uses
+	gen.writeMathHelperFunctions()
 
 	// Generate string helper functions if any string methods were used
 	gen.writeStringHelperFunctions()
@@ -607,6 +612,23 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 	result.WriteString("char* ahoy_string_pascal_case(const char* str);\n")
 	result.WriteString("char* ahoy_string_kebab_case(const char* str);\n")
 	result.WriteString("char* ahoy_string_lpad(const char* str, int length, const char* pad);\n")
+
+	// The math and geometry builtins.
+	result.WriteString("double ahoy_abs(double x);\n")
+	result.WriteString("double ahoy_min(double a, double b);\n")
+	result.WriteString("double ahoy_max(double a, double b);\n")
+	result.WriteString("double ahoy_clamp(double x, double lo, double hi);\n")
+	result.WriteString("double ahoy_lerp(double a, double b, double t);\n")
+	result.WriteString("int ahoy_sign(double x);\n")
+	result.WriteString("double ahoy_floor(double x);\n")
+	result.WriteString("double ahoy_ceil(double x);\n")
+	result.WriteString("double ahoy_round(double x);\n")
+	result.WriteString("double ahoy_sqrt(double x);\n")
+	result.WriteString("double ahoy_pow(double x, double y);\n")
+	result.WriteString("double ahoy_hypot(double x, double y);\n")
+	result.WriteString("double ahoy_mod(double x, double y);\n")
+	result.WriteString("bool ahoy_rect_contains(double x, double y, double rx, double ry, double rw, double rh);\n")
+	result.WriteString("bool ahoy_rect_intersects(double ax, double ay, double aw, double ah, double bx, double by, double bw, double bh);\n")
 	result.WriteString("char* ahoy_string_rpad(const char* str, int length, const char* pad);\n")
 	result.WriteString("char* ahoy_string_pad(const char* str, int length, const char* pad);\n")
 	result.WriteString("char* ahoy_string_get_file(const char* path);\n")
@@ -6175,6 +6197,30 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 
 	// Handle special functions
 	switch node.Value {
+	case "abs", "min", "max", "clamp", "lerp", "sign", "floor", "ceil",
+		"round", "sqrt", "pow", "hypot", "mod",
+		"rect_contains", "rect_intersects":
+		// The math and geometry builtins: a plain call with C arguments.
+		gen.mathBuiltins[node.Value] = true
+		// The ones that call the C library's math functions need its header.
+		switch node.Value {
+		case "floor", "ceil", "round", "sqrt", "pow", "hypot", "mod":
+			if !gen.includes["math.h"] {
+				gen.includes["math.h"] = true
+				gen.orderedIncludes = append(gen.orderedIncludes, "math.h")
+			}
+		}
+		gen.output.WriteString("ahoy_")
+		gen.output.WriteString(node.Value)
+		gen.output.WriteString("(")
+		for i, child := range node.Children {
+			if i > 0 {
+				gen.output.WriteString(", ")
+			}
+			gen.generateNodeInternal(child, false)
+		}
+		gen.output.WriteString(")")
+		return
 	case "len", "length":
 		// len/length function - returns length of array, dict, string, etc.
 		if len(node.Children) > 0 {
@@ -8074,6 +8120,16 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 		}
 	}
 
+	// The predicate builtins read the array element by element and ask a
+	// lambda about each one. The code is generated inline, so the lambda
+	// is inlined into the loop rather than called through a pointer.
+	if predicateMethods[methodName] {
+		if len(args.Children) > 0 && args.Children[0].Type == ahoy.NODE_LAMBDA {
+			gen.generatePredicateInline(methodName, object, args.Children[0])
+			return
+		}
+	}
+
 	// Infer the object type to determine correct method routing
 	objectType := gen.inferType(object)
 
@@ -9951,8 +10007,13 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		}
 		// Array methods that return int
 		if node.Value == "sum" || node.Value == "pop" ||
-			node.Value == "pick" || node.Value == "has" {
+			node.Value == "pick" || node.Value == "has" ||
+			node.Value == "count_if" || node.Value == "find_index" {
 			return "int"
+		}
+		// The predicate builtins that answer with a yes or a no
+		if node.Value == "any" || node.Value == "all" {
+			return "bool"
 		}
 		return "int"
 	case ahoy.NODE_UNARY_OP:
@@ -13879,6 +13940,64 @@ func (gen *CodeGenerator) writeStructHelperFunctions() {
 		gen.funcDecls.WriteString("    return buffer;\n")
 		gen.funcDecls.WriteString("}\n")
 	}
+}
+
+// writeMathHelperFunctions writes the math and geometry builtins the program
+// uses. Each is written only when the program uses it, so a program that
+// never takes a square root does not carry the square root.
+func (gen *CodeGenerator) writeMathHelperFunctions() {
+	if len(gen.mathBuiltins) == 0 {
+		return
+	}
+	// The math and geometry builtins. Each is written only when the program
+	// uses it, so a program that never takes a square root does not carry
+	// the square root.
+	if gen.mathBuiltins["abs"] {
+		gen.funcDecls.WriteString("double ahoy_abs(double x) { return x < 0 ? -x : x; }\n\n")
+	}
+	if gen.mathBuiltins["min"] {
+		gen.funcDecls.WriteString("double ahoy_min(double a, double b) { return a < b ? a : b; }\n\n")
+	}
+	if gen.mathBuiltins["max"] {
+		gen.funcDecls.WriteString("double ahoy_max(double a, double b) { return a > b ? a : b; }\n\n")
+	}
+	if gen.mathBuiltins["clamp"] {
+		gen.funcDecls.WriteString("double ahoy_clamp(double x, double lo, double hi) { if (x < lo) return lo; if (x > hi) return hi; return x; }\n\n")
+	}
+	if gen.mathBuiltins["lerp"] {
+		gen.funcDecls.WriteString("double ahoy_lerp(double a, double b, double t) { return a + (b - a) * t; }\n\n")
+	}
+	if gen.mathBuiltins["sign"] {
+		gen.funcDecls.WriteString("int ahoy_sign(double x) { return x > 0 ? 1 : (x < 0 ? -1 : 0); }\n\n")
+	}
+	if gen.mathBuiltins["floor"] {
+		gen.funcDecls.WriteString("double ahoy_floor(double x) { return floor(x); }\n\n")
+	}
+	if gen.mathBuiltins["ceil"] {
+		gen.funcDecls.WriteString("double ahoy_ceil(double x) { return ceil(x); }\n\n")
+	}
+	if gen.mathBuiltins["round"] {
+		gen.funcDecls.WriteString("double ahoy_round(double x) { return round(x); }\n\n")
+	}
+	if gen.mathBuiltins["sqrt"] {
+		gen.funcDecls.WriteString("double ahoy_sqrt(double x) { return x <= 0 ? 0 : sqrt(x); }\n\n")
+	}
+	if gen.mathBuiltins["pow"] {
+		gen.funcDecls.WriteString("double ahoy_pow(double x, double y) { return pow(x, y); }\n\n")
+	}
+	if gen.mathBuiltins["hypot"] {
+		gen.funcDecls.WriteString("double ahoy_hypot(double x, double y) { return sqrt(x * x + y * y); }\n\n")
+	}
+	if gen.mathBuiltins["mod"] {
+		gen.funcDecls.WriteString("double ahoy_mod(double x, double y) { return y == 0 ? 0 : fmod(x, y); }\n\n")
+	}
+	if gen.mathBuiltins["rect_contains"] {
+		gen.funcDecls.WriteString("bool ahoy_rect_contains(double x, double y, double rx, double ry, double rw, double rh) { return x >= rx && x <= rx + rw && y >= ry && y <= ry + rh; }\n\n")
+	}
+	if gen.mathBuiltins["rect_intersects"] {
+		gen.funcDecls.WriteString("bool ahoy_rect_intersects(double ax, double ay, double aw, double ah, double bx, double by, double bw, double bh) { return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by; }\n\n")
+	}
+
 }
 
 func (gen *CodeGenerator) writeStringHelperFunctions() {

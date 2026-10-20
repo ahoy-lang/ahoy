@@ -1,0 +1,103 @@
+program predicate_builtins
+
+? The predicate builtins ask an array a question instead of a hand-written
+? loop with a flag:
+?
+?   any        is there one that matches?
+?   all        do all of them match?
+?   count_if   how many match?
+?   find_index where is the first one that matches (-1 when there is none)?
+?   find       the first one that matches
+?
+? Without them, every one of those questions is a loop with a flag, and the
+? flag is why the code nests: the interesting part ends up one level deeper
+? than it needs to be.
+
+struct Item:
+	name: string
+	hp: int
+	visible: bool
+$
+
+@ main ||:
+	expected: []
+
+	xs: array[int] = [1, 2, 3, 4, 5, 6]
+
+	? any: is there an even number?
+	has_even: bool = xs.any|x: x % 2 is 0|
+	print|has_even|
+	expected.push|has_even|
+
+	? all: are they all even?
+	all_even: bool = xs.all|x: x % 2 is 0|
+	print|all_even|
+	expected.push|all_even|
+
+	? count_if: how many are above 3?
+	n: int = xs.count_if|x: x > 3|
+	print|n|
+	expected.push|n|
+
+	? find_index: where is the 4?
+	i: int = xs.find_index|x: x is 4|
+	print|i|
+	expected.push|i|
+
+	? find_index: nothing matches, so -1
+	j: int = xs.find_index|x: x is 99|
+	print|j|
+	expected.push|j|
+
+	? find: the element itself
+	v: int = xs.find|x: x is 5|
+	print|v|
+	expected.push|v|
+
+	? an empty array: any is false, all is true, the count is zero
+	empty: array[int] = []
+	ea: bool = empty.any|x: x > 0|
+	print|ea|
+	expected.push|ea|
+
+	eb: bool = empty.all|x: x > 0|
+	print|eb|
+	expected.push|eb|
+
+	ec: int = empty.count_if|x: x > 0|
+	print|ec|
+	expected.push|ec|
+
+	? and on an array of structs, which is what the engine asks about
+	items: array[Item] = []
+	items.push|Item{name: "sword", hp: 10, visible: true}|
+	items.push|Item{name: "shield", hp: 5, visible: false}|
+	items.push|Item{name: "potion", hp: 1, visible: true}|
+
+	? any: is there a visible one?
+	has_visible: bool = items.any|it: it.visible|
+	print|has_visible|
+	expected.push|has_visible|
+
+	? all: are they all visible?
+	all_visible: bool = items.all|it: it.visible|
+	print|all_visible|
+	expected.push|all_visible|
+
+	? count_if: how many have more than 2 hp?
+	strong: int = items.count_if|it: it.hp > 2|
+	print|strong|
+	expected.push|strong|
+
+	? find_index: where is the potion?
+	k: int = items.find_index|it: it.name is "potion"|
+	print|k|
+	expected.push|k|
+
+	? find: the element itself
+	found: Item = items.find|it: it.name is "shield"|
+	print|found.name|
+	expected.push|found.name|
+
+	print|expected|
+$
