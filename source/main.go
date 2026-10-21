@@ -1942,7 +1942,7 @@ func findDuplicateFunctions(pkg *Package) []ahoy.ParseError {
 			}
 			if first, exists := seen[child.Value]; exists {
 				diagnostics = append(diagnostics, ahoy.ParseError{
-					Message: fmt.Sprintf("Function '%s' is already declared in %s (line %d); Ahoy doesn't support function overloading",
+					Message: fmt.Sprintf("Function '%s' is already declared in %s (line %d); Ahoy doesn't support function overloading (files sharing one program name in a directory compile together: scratch files want unique program names, or none for standalone)",
 						child.Value, filepath.Base(first.file), first.line),
 					Line:   child.Line,
 					Column: child.Column,

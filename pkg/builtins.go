@@ -33,6 +33,8 @@ func init() {
 		"rect_contains", "rect_intersects",
 		// flat POD buffer constructor: buffer|n| -> buffer[f32]
 		"buffer",
+		// buffer growth (realloc-copy): grow|buf, n| -> same buffer type
+		"grow",
 	} {
 		builtinCallNames[name] = true
 		builtinMethodNames[name] = true

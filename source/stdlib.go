@@ -237,6 +237,7 @@ var BuiltinFuncs = map[string]StdlibFunc{
 	"i64":        {Name: "i64", Category: "builtin", MethodName: "i64", ReturnType: "i64", Params: "value:any", Doc: "Casts to a signed 64-bit integer"},
 	"u64":        {Name: "u64", Category: "builtin", MethodName: "u64", ReturnType: "u64", Params: "value:any", Doc: "Casts to an unsigned 64-bit integer"},
 	"buffer":     {Name: "buffer", Category: "builtin", MethodName: "buffer", ReturnType: "buffer[f32]", Params: "n:int", Doc: "Allocates a zeroed flat buffer[f32] of length n"},
+	"grow":       {Name: "grow", Category: "builtin", MethodName: "grow", ReturnType: "buffer", Params: "buf:buffer, n:int", Doc: "Returns a new buffer of length n with the first elements copied over"},
 	"input":      {Name: "input", Category: "builtin", MethodName: "input", ReturnType: "string", Params: "prompt:string", Doc: "Reads input from stdin"},
 	"sleep":      {Name: "sleep", Category: "builtin", MethodName: "sleep", ReturnType: "void", Params: "milliseconds:int", Doc: "Pauses execution"},
 	"exit":       {Name: "exit", Category: "builtin", MethodName: "exit", ReturnType: "void", Params: "code:int", Doc: "Exits with code"},

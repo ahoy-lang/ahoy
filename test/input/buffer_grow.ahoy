@@ -1,0 +1,41 @@
+program buffer_grow
+
+? grow|buf, n| returns a new buffer of length n with the contents
+? copied over (zero-fill beyond). Same type back for buffer[f32] and
+? buffer[int]; negative n clamps to empty.
+
+@ main ||:
+	expected: []
+	b: buffer[f32] = buffer|4|
+	b[0] = 1.5
+	b[3] = 4.5
+	g: grow|b, 8|
+	n: len|g|
+	print|n|
+	expected.push|8|
+	print|g[0]|
+	expected.push|"1.5"|
+	print|g[3]|
+	expected.push|"4.5"|
+	print|g[7]|
+	expected.push|"0"|
+	s: grow|b, 2|
+	ns: len|s|
+	print|ns|
+	expected.push|2|
+	print|s[0]|
+	expected.push|"1.5"|
+	i: buffer[int] = buffer|2|
+	i[1] = 41
+	gi: grow|i, 5|
+	ngi: len|gi|
+	print|ngi|
+	expected.push|5|
+	print|gi[1]|
+	expected.push|41|
+	z: grow|b, -3|
+	nz: len|z|
+	print|nz|
+	expected.push|0|
+	print|expected|
+$

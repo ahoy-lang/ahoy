@@ -62,6 +62,8 @@ func (gen *CodeGenerator) valueAllocatesString(node *ahoy.ASTNode) bool {
 		}
 		return len(node.Children) >= 2 &&
 			gen.isStringExpr(node.Children[0]) && gen.isStringExpr(node.Children[1])
+	case ahoy.NODE_STRING_SLICE:
+		return true
 	case ahoy.NODE_CALL:
 		return node.Value == "sprintf"
 	case ahoy.NODE_METHOD_CALL:

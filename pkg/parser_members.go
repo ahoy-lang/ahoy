@@ -174,6 +174,10 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 		// access, so the generator shares that path.
 		for p.current().Type == TOKEN_LBRACKET {
 			p.advance()
+			if slice, ok := p.tryParseStringSlice(object, object.Line); ok {
+				object = slice
+				continue
+			}
 			index := p.parseExpression()
 			p.expect(TOKEN_RBRACKET)
 			object = &ASTNode{

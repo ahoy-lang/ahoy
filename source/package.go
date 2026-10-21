@@ -211,6 +211,33 @@ func validateSemanticsWithTokens(tokens []ahoy.Token, filePath string, programNa
 	return diagnostics
 }
 
+// peekProgramName reads just the header: the name from the first
+// `program NAME` line, or "" when absent/unreadable. Parse failures in
+// files that could never join this build (another program, or none) are
+// skipped silently with it; a scratch dir full of broken experiments
+// should not spam every build that happens to sit in it.
+func peekProgramName(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	if len(data) > 4096 {
+		data = data[:4096]
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "?") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "program" {
+			return fields[1]
+		}
+		return ""
+	}
+	return ""
+}
+
 // LoadPackageFromFile loads a file and its associated package files
 func (pm *PackageManager) LoadPackageFromFile(mainFilePath string) (*Package, error) {
 	// Load the main file
@@ -283,8 +310,13 @@ func (pm *PackageManager) LoadPackageFromFile(mainFilePath string) (*Package, er
 			continue
 		}
 		if result.err != nil {
-			// Skip files that fail to parse instead of failing the whole package
-			fmt.Printf("Warning: Skipping file %s due to error: %v\n", filepath.Base(result.path), result.err)
+			// Skip files that fail to parse instead of failing the whole package.
+			// Only report it when the file could have joined this build
+			// (same program): headerless files are standalone and never
+			// merge, so their breakage is none of this build's business.
+			if peekProgramName(result.path) == mainFile.ProgramName {
+				fmt.Printf("Warning: Skipping file %s due to error: %v\n", filepath.Base(result.path), result.err)
+			}
 			continue
 		}
 
@@ -360,6 +392,12 @@ func (pm *PackageManager) LoadPackageFromDirectory(dirPath string) (*Package, er
 
 	packageFiles := make(map[string][]PackageFile) // program name -> files
 	standaloneFiles := []PackageFile{}
+	type loadFailure struct {
+		name string
+		peek string
+		err  error
+	}
+	loadFailures := []loadFailure{}
 
 	for _, file := range files {
 		if file.IsDir() || !strings.HasSuffix(file.Name(), ".ahoy") {
@@ -369,8 +407,10 @@ func (pm *PackageManager) LoadPackageFromDirectory(dirPath string) (*Package, er
 		filePath := filepath.Join(dirPath, file.Name())
 		pf, err := pm.LoadFile(filePath)
 		if err != nil {
-			// Skip files that fail to parse
-			fmt.Printf("Warning: Skipping file %s due to error: %v\n", file.Name(), err)
+			// Skip files that fail to parse; the warning waits until
+			// grouping below, when we know which programs this import
+			// actually includes.
+			loadFailures = append(loadFailures, loadFailure{name: file.Name(), peek: peekProgramName(filePath), err: err})
 			continue
 		}
 
@@ -378,6 +418,19 @@ func (pm *PackageManager) LoadPackageFromDirectory(dirPath string) (*Package, er
 			standaloneFiles = append(standaloneFiles, *pf)
 		} else {
 			packageFiles[pf.ProgramName] = append(packageFiles[pf.ProgramName], *pf)
+		}
+	}
+
+	// Report parse failures only for files that could have joined one
+	// of the grouped programs (or carry no readable header, where we
+	// cannot tell): unrelated breakage stays quiet.
+	for _, f := range loadFailures {
+		if f.peek == "" {
+			fmt.Printf("Warning: Skipping file %s due to error: %v\n", f.name, f.err)
+			continue
+		}
+		if _, ok := packageFiles[f.peek]; ok {
+			fmt.Printf("Warning: Skipping file %s due to error: %v\n", f.name, f.err)
 		}
 	}
 

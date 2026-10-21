@@ -45,6 +45,11 @@ joined_string : ["Join", "these", "words"].join|" "|
 ? split string
 split_string : example_string.split|", "|  # Splits into ["Hello", " Ahoy!"]
 
+? slice string (Go/Odin s[lo:hi] shape; s[lo:], s[:hi], s[:] all work)
+first_word : example_string[0:5]|  # "Hello" (fresh copy, bounds clamped)
+tail : example_string[7:]|         # from index 7 to the end
+? negatives clamp to 0, inverted ranges are empty, byte-based
+
 ? count occurrences of a character
 count_l : example_string.count|"l"||
 

@@ -1,0 +1,44 @@
+program string_slice
+
+? Go/Odin-style string slices (s[lo:hi], s[lo:], s[:hi], s[:]).
+? Fresh copies, bounds clamped (byte-based); negatives clamp to 0,
+? inverted ranges are empty. Struct member targets and methods on
+? results compose; slice-of-slice works.
+
+struct Rec:
+	name: string
+$
+
+@ main ||:
+	expected: []
+	s: "hello world"
+	print|s[0:5]|
+	expected.push|"hello"|
+	print|s[6:]|
+	expected.push|"world"|
+	print|s[:5]|
+	expected.push|"hello"|
+	print|s[:]|
+	expected.push|"hello world"|
+	print|s[3:3]|
+	expected.push|""|
+	print|s[-5:50]|
+	expected.push|"hello world"|
+	print|s[8:3]|
+	expected.push|""|
+	r: Rec = Rec{name: "abcdefghij"}
+	print|r.name[2:6]|
+	expected.push|"cdef"|
+	print|r.name[2:6][1:3]|
+	expected.push|"de"|
+	n: 3
+	m: 7
+	print|r.name[n:m]|
+	expected.push|"defg"|
+	t: s[0:5].strip||
+	print|t|
+	expected.push|"hello"|
+	print|s[0:5] + "!"|
+	expected.push|"hello!"|
+	print|expected|
+$

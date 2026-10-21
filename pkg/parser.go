@@ -47,6 +47,7 @@ const (
 	NODE_ARRAY_LITERAL
 	NODE_ARRAY_ACCESS
 	NODE_DICT_ACCESS
+	NODE_STRING_SLICE
 	NODE_BLOCK
 	NODE_TYPE
 	NODE_ENUM_DECLARATION
@@ -527,6 +528,9 @@ func (p *Parser) inferType(node *ASTNode) string {
 		}
 
 		return "unknown"
+	case NODE_STRING_SLICE:
+		// A string slice is a string.
+		return "string"
 	case NODE_ARRAY_ACCESS:
 		// An element takes its array's element type: array[Node] -> Node.
 		// (Single-level strip handles nesting: array[array[int]] -> array[int].)

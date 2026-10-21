@@ -25,6 +25,10 @@ func renderSubject(node *ASTNode) string {
 		if node.Value != "" {
 			return node.Value + "[...]"
 		}
+	case NODE_STRING_SLICE:
+		if len(node.Children) > 0 {
+			return renderSubject(node.Children[0]) + "[lo:hi]"
+		}
 	}
 	return "this value"
 }

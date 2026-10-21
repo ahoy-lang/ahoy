@@ -157,6 +157,9 @@ func (c *checker) heapPushValue(node *ASTNode) bool {
 	switch node.Type {
 	case NODE_ARRAY_LITERAL, NODE_DICT_LITERAL:
 		return true
+	case NODE_STRING_SLICE:
+		// A slice is a fresh heap string the container will not free.
+		return true
 	case NODE_STRING, NODE_NUMBER, NODE_CHAR, NODE_BOOLEAN, NODE_RAW_STRING, NODE_F_STRING:
 		return false
 	case NODE_IDENTIFIER, NODE_MEMBER_ACCESS, NODE_OBJECT_ACCESS, NODE_ARRAY_ACCESS, NODE_DICT_ACCESS:
@@ -287,7 +290,7 @@ func (c *checker) exprIsString(node *ASTNode) bool {
 		return false
 	}
 	switch node.Type {
-	case NODE_STRING, NODE_RAW_STRING, NODE_F_STRING, NODE_CHAR:
+	case NODE_STRING, NODE_RAW_STRING, NODE_F_STRING, NODE_CHAR, NODE_STRING_SLICE:
 		return true
 	}
 	if node.Type == NODE_IDENTIFIER {

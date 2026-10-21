@@ -29,6 +29,49 @@ func IsCastTypeName(name string) bool {
 	return castTypeNames[name]
 }
 
+// tryParseStringSlice parses the inside of [...] as a Go/Odin-style
+// string slice (s[lo:hi], s[lo:], s[:hi], s[:]) instead of a plain index.
+// Call with the current token right after '[' was consumed; target is the
+// value being indexed. Omitted bounds become 0 (lo) and 999999999 (hi):
+// codegen clamps both, so the defaults are exact and no nil children or
+// sentinel states exist. Returns (nil, false) with the position rewound
+// when this is not a slice, so the plain-index path proceeds untouched.
+func (p *Parser) tryParseStringSlice(target *ASTNode, line int) (*ASTNode, bool) {
+	intLit := func(v string) *ASTNode {
+		return &ASTNode{Type: NODE_NUMBER, Value: v, DataType: "int", Line: line}
+	}
+	saved := p.pos
+	var lo, hi *ASTNode
+	if p.current().Type == TOKEN_ASSIGN {
+		// s[:hi] / s[:]
+		lo = intLit("0")
+		p.advance()
+	} else {
+		lo = p.parseExpression()
+		if p.current().Type != TOKEN_ASSIGN {
+			p.pos = saved
+			return nil, false
+		}
+		p.advance() // consume :
+	}
+	if p.current().Type == TOKEN_RBRACKET {
+		hi = intLit("999999999")
+	} else {
+		hi = p.parseExpression()
+	}
+	if p.current().Type != TOKEN_RBRACKET {
+		p.pos = saved
+		return nil, false
+	}
+	p.advance() // consume ]
+	return &ASTNode{
+		Type:     NODE_STRING_SLICE,
+		Value:    "",
+		Children: []*ASTNode{target, lo, hi},
+		Line:     line,
+	}, true
+}
+
 func (p *Parser) parsePrimaryExpression() *ASTNode {
 	// A lambda used as a value: (x:int): x * 2, (a, b): a + b. It has to be
 	// recognised before the parenthesized-expression case below.
@@ -141,38 +184,52 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 		// Check for array access identifier[index]
 		if p.current().Type == TOKEN_LBRACKET {
 			p.advance()
-			index := p.parseExpression()
-			p.expect(TOKEN_RBRACKET)
+			identNode := &ASTNode{Type: NODE_IDENTIFIER, Value: token.Value, Line: token.Line}
+			var node *ASTNode
+			// String slice (s[lo:hi]) before plain index
+			if slice, ok := p.tryParseStringSlice(identNode, token.Line); ok {
+				node = slice
+			} else {
+				index := p.parseExpression()
+				p.expect(TOKEN_RBRACKET)
 
-			// Validate access syntax in lint mode
-			if p.LintMode {
-				if varType, ok := p.variableTypes[token.Value]; ok {
-					if varType == "dict" {
-						errMsg := fmt.Sprintf("Invalid dict access syntax, use dict{} instead of array[]")
-						p.recordError(errMsg)
-					} else if varType == "object" {
-						errMsg := fmt.Sprintf("Invalid object access syntax, use object<> instead of array[]")
-						p.recordError(errMsg)
+				// Validate access syntax in lint mode
+				if p.LintMode {
+					if varType, ok := p.variableTypes[token.Value]; ok {
+						if varType == "dict" {
+							errMsg := fmt.Sprintf("Invalid dict access syntax, use dict{} instead of array[]")
+							p.recordError(errMsg)
+						} else if varType == "object" {
+							errMsg := fmt.Sprintf("Invalid object access syntax, use object<> instead of array[]")
+							p.recordError(errMsg)
+						}
 					}
+				}
+
+				node = &ASTNode{
+					Type:     NODE_ARRAY_ACCESS,
+					Value:    token.Value,
+					Children: []*ASTNode{index},
+					Line:     token.Line,
+				}
+
+				// Validate array bounds in lint mode
+				if p.LintMode {
+					identNode := &ASTNode{Type: NODE_IDENTIFIER, Value: token.Value}
+					p.validateArrayAccess(identNode, index, token.Line)
 				}
 			}
 
-			node := &ASTNode{
-				Type:     NODE_ARRAY_ACCESS,
-				Value:    token.Value,
-				Children: []*ASTNode{index},
-				Line:     token.Line,
-			}
-
-			// Validate array bounds in lint mode
-			if p.LintMode {
-				identNode := &ASTNode{Type: NODE_IDENTIFIER, Value: token.Value}
-				p.validateArrayAccess(identNode, index, token.Line)
-			}
-
-			// Check for chained array access (2D arrays): grid[r][c]
+			// Check for chained array access (2D arrays): grid[r][c].
+			// A slice composes here too (s[0:4][1:2] slices the fresh
+			// string); a plain index into one (s[0:4][0]) fails downstream
+			// exactly like indexing a string does today.
 			for p.current().Type == TOKEN_LBRACKET {
 				p.advance()
+				if slice, ok := p.tryParseStringSlice(node, token.Line); ok {
+					node = slice
+					continue
+				}
 				nextIndex := p.parseExpression()
 				p.expect(TOKEN_RBRACKET)
 				// Wrap the previous node as a chained array access

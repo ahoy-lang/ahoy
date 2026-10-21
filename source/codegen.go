@@ -622,6 +622,7 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 	// declaration: harmless for int returns, a hard error for bool and
 	// pointer returns (the implicit int conflicts with the definition).
 	result.WriteString("char* ahoy_string_dup(const char* src);\n")
+	result.WriteString("char* ahoy_string_slice(const char* s, int lo, int hi);\n")
 	result.WriteString("int ahoy_string_length(const char* str);\n")
 	result.WriteString("char* ahoy_string_upper(const char* str);\n")
 	result.WriteString("char* ahoy_string_lower(const char* str);\n")
@@ -2300,6 +2301,9 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 
 	case ahoy.NODE_ARRAY_ACCESS:
 		gen.generateArrayAccess(node)
+
+	case ahoy.NODE_STRING_SLICE:
+		gen.generateStringSlice(node)
 
 	case ahoy.NODE_DICT_ACCESS:
 		gen.generateDictAccess(node)
@@ -7469,6 +7473,24 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 		}
 		gen.output.WriteString("; if (__n < 0) __n = 0; AhoyBufferF32* __b = calloc(1, sizeof(AhoyBufferF32) + (size_t)__n * sizeof(float)); __b->length = __n; __b; })")
 
+	case "grow":
+		// grow|buf, n| -> new buffer of length n with min(len, n) copied.
+		// Element storage is flat floats for every buffer[T] spelling, so
+		// one implementation serves buffer[f32] and buffer[int] alike.
+		gen.output.WriteString("({ AhoyBufferF32* __old = ")
+		if len(node.Children) > 0 {
+			gen.generateNode(node.Children[0])
+		} else {
+			gen.output.WriteString("0")
+		}
+		gen.output.WriteString("; int __n = ")
+		if len(node.Children) > 1 {
+			gen.generateNode(node.Children[1])
+		} else {
+			gen.output.WriteString("0")
+		}
+		gen.output.WriteString("; if (__n < 0) __n = 0; AhoyBufferF32* __nb = calloc(1, sizeof(AhoyBufferF32) + (size_t)__n * sizeof(float)); int __m = __old ? __old->length : 0; if (__m > __n) __m = __n; for (int __i = 0; __i < __m; __i++) __nb->data[__i] = __old->data[__i]; __nb->length = __n; __nb; })")
+
 	case "char":
 		gen.output.WriteString("((char)(")
 		if len(node.Children) > 0 {
@@ -7895,6 +7917,27 @@ func isStringTypeName(t string) bool {
 	return t == "string" || t == "char*" || t == "const char*"
 }
 
+// isFnExpr reports whether an operand is a function value (a named reference
+// &foo, a fn-typed variable/parameter, or a member read of an fn-typed struct
+// field). Function values lower to the AhoyFn struct, so == on them would not
+// compile; equality has to compare the entry point and environment instead.
+func (gen *CodeGenerator) isFnExpr(n *ahoy.ASTNode) bool {
+	if n == nil {
+		return false
+	}
+	if n.Type == ahoy.NODE_UNARY_OP && n.Value == "&" && len(n.Children) == 1 &&
+		n.Children[0].Type == ahoy.NODE_IDENTIFIER && gen.userFunctions[n.Children[0].Value] {
+		return true
+	}
+	t := gen.inferType(n)
+	if strings.HasSuffix(t, "*") {
+		if inner := strings.TrimSuffix(t, "*"); ahoy.IsFunctionType(inner) {
+			return true
+		}
+	}
+	return ahoy.IsFunctionType(t)
+}
+
 // checkedArrayElem returns the tracked element type for an array variable,
 // verifying it against the variable's declared type. A tracked entry that
 // disagrees with an explicit array[T] declaration means the compiler lost
@@ -7948,6 +7991,32 @@ func (gen *CodeGenerator) checkedArrayElem(arrayName string, node *ahoy.ASTNode)
 func (gen *CodeGenerator) generateBinaryOp(node *ahoy.ASTNode) {
 	switch node.Value {
 	case "is":
+		if len(node.Children) >= 2 && gen.isFnExpr(node.Children[0]) && gen.isFnExpr(node.Children[1]) {
+			// Function values compare by identity: entry point plus captured
+			// environment. AhoyFn is a struct, so plain == would not compile.
+			// Each side is bound once (statement expression) so operands with
+			// calls are evaluated exactly once.
+			n := gen.varCounter
+			gen.varCounter++
+			gen.output.WriteString("({ AhoyFn _ahfn_a_")
+			fmt.Fprintf(&gen.output, "%d", n)
+			gen.output.WriteString(" = (")
+			gen.generateNode(node.Children[0])
+			gen.output.WriteString("); AhoyFn _ahfn_b_")
+			fmt.Fprintf(&gen.output, "%d", n)
+			gen.output.WriteString(" = (")
+			gen.generateNode(node.Children[1])
+			gen.output.WriteString("); (_ahfn_a_")
+			fmt.Fprintf(&gen.output, "%d", n)
+			gen.output.WriteString(".fn == _ahfn_b_")
+			fmt.Fprintf(&gen.output, "%d", n)
+			gen.output.WriteString(".fn && _ahfn_a_")
+			fmt.Fprintf(&gen.output, "%d", n)
+			gen.output.WriteString(".env == _ahfn_b_")
+			fmt.Fprintf(&gen.output, "%d", n)
+			gen.output.WriteString(".env); })")
+			return
+		}
 		if gen.isStringExpr(node.Children[0]) && gen.isStringExpr(node.Children[1]) {
 			// Strings compare by value. `a is b` on two char* was pointer
 			// equality, so two equal strings read as different and a name
@@ -8178,7 +8247,17 @@ func (gen *CodeGenerator) generateIsListComparisons(subject *ahoy.ASTNode, value
 			gen.output.WriteString(" || ")
 		}
 		gen.output.WriteString("(")
-		if gen.isStringExpr(subject) && gen.isStringExpr(value) {
+		if gen.isFnExpr(subject) && gen.isFnExpr(value) && gen.isSimpleExpression(value) {
+			gen.output.WriteString("((")
+			gen.emitIsListSubject(subject, subjectOverride)
+			gen.output.WriteString(".fn == (")
+			gen.generateNode(value)
+			gen.output.WriteString(").fn) && (")
+			gen.emitIsListSubject(subject, subjectOverride)
+			gen.output.WriteString(".env == (")
+			gen.generateNode(value)
+			gen.output.WriteString(").env))")
+		} else if gen.isStringExpr(subject) && gen.isStringExpr(value) {
 			gen.output.WriteString("strcmp(")
 			gen.emitIsListSubject(subject, subjectOverride)
 			gen.output.WriteString(", ")
@@ -9741,6 +9820,20 @@ func (gen *CodeGenerator) generateBufferRead(node *ahoy.ASTNode, objExpr string,
 	gen.output.WriteString("]")
 }
 
+// generateStringSlice emits s[lo:hi] via a fresh malloc'd copy (bounds
+// clamped in C). Omitted bounds arrive as 0 / 999999999 literals, which
+// the clamp makes exact.
+func (gen *CodeGenerator) generateStringSlice(node *ahoy.ASTNode) {
+	gen.stringMethods["slice"] = true
+	gen.output.WriteString("ahoy_string_slice(")
+	gen.generateNode(node.Children[0])
+	gen.output.WriteString(", ")
+	gen.generateNode(node.Children[1])
+	gen.output.WriteString(", ")
+	gen.generateNode(node.Children[2])
+	gen.output.WriteString(")")
+}
+
 func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 	// Check if this is a chained array access (2D array): grid[r][c]
 	// In this case, Value is empty and Children[0] is the inner array access, Children[1] is the outer index
@@ -10441,6 +10534,8 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		return "string"
 	case ahoy.NODE_F_STRING:
 		return "string"
+	case ahoy.NODE_STRING_SLICE:
+		return "string"
 	case ahoy.NODE_BOOLEAN:
 		return "bool"
 	case ahoy.NODE_DICT_LITERAL:
@@ -10476,6 +10571,13 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		}
 		if node.Value == "sprintf" {
 			return "string"
+		}
+		// grow|buf, n| keeps the source buffer's element type.
+		if node.Value == "grow" && len(node.Children) > 0 {
+			if at := gen.inferType(node.Children[0]); strings.HasPrefix(at, "buffer[") {
+				return at
+			}
+			return "buffer[f32]"
 		}
 		// A struct allocator: ahoy_alloc_NodeVis() -> NodeVis*
 		if structName := ahoy.AllocStructName(node.Value); structName != "" {
@@ -14142,6 +14244,8 @@ func (gen *CodeGenerator) getNodeType(node *ahoy.ASTNode) string {
 		return "string"
 	case ahoy.NODE_F_STRING:
 		return "string"
+	case ahoy.NODE_STRING_SLICE:
+		return "string"
 	case ahoy.NODE_CHAR:
 		return "char"
 	case ahoy.NODE_BOOLEAN:
@@ -14756,6 +14860,24 @@ func (gen *CodeGenerator) writeStringHelperFunctions() {
 		gen.funcDecls.WriteString("    char* out = malloc(la + lb + 1);\n")
 		gen.funcDecls.WriteString("    memcpy(out, a, la);\n")
 		gen.funcDecls.WriteString("    memcpy(out + la, b, lb + 1);\n")
+		gen.funcDecls.WriteString("    return out;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// string slice (s[lo:hi]): fresh copy, bounds clamped (byte-based)
+	if gen.stringMethods["slice"] {
+		gen.funcDecls.WriteString("char* ahoy_string_slice(const char* s, int lo, int hi) {\n")
+		gen.funcDecls.WriteString("    int len, start, end, n;\n")
+		gen.funcDecls.WriteString("    char* out;\n")
+		gen.funcDecls.WriteString("    if (!s) s = \"\";\n")
+		gen.funcDecls.WriteString("    len = strlen(s);\n")
+		gen.funcDecls.WriteString("    start = lo < 0 ? 0 : lo;\n")
+		gen.funcDecls.WriteString("    end = hi > len ? len : hi;\n")
+		gen.funcDecls.WriteString("    if (end < start) end = start;\n")
+		gen.funcDecls.WriteString("    n = end - start;\n")
+		gen.funcDecls.WriteString("    out = malloc(n + 1);\n")
+		gen.funcDecls.WriteString("    memcpy(out, s + start, n);\n")
+		gen.funcDecls.WriteString("    out[n] = 0;\n")
 		gen.funcDecls.WriteString("    return out;\n")
 		gen.funcDecls.WriteString("}\n\n")
 	}

@@ -521,6 +521,13 @@ func (c *checker) knownNames() []string {
 // plausible typo. Candidates come from the precomputed suggestNames list, and
 // each comparison stops early once it cannot beat the current best, so a file
 // with hundreds of undefined names no longer costs hundreds of full scans.
+// Control keywords that read as variables when misremembered from other
+// languages: break is halt (exit loop), continue is next (skip iteration).
+var controlKeywordHints = map[string]string{
+	"break":    "halt (exit loop)",
+	"continue": "next (skip iteration)",
+}
+
 func (c *checker) suggest(name string) string {
 	// Only suggest genuinely similar names, and never for very short ones.
 	limit := len(name) / 3
@@ -990,6 +997,10 @@ func (c *checker) checkStatement(node *ASTNode) {
 		delete(c.freedNames, node.Value)
 
 	case NODE_ASSIGNMENT:
+		// Slices are read-only views: assign to s[i] or rebuild the string.
+		if target := childAt(node, 0); target != nil && target.Type == NODE_STRING_SLICE {
+			c.errorAt(target, "cannot assign to a string slice s[lo:hi]")
+		}
 		// The parser already rejects assignment to an undeclared variable.
 		c.checkExpr(childAt(node, 0))
 		c.warnPartialCallResult(node, childAt(node, 0), 1)
@@ -1523,6 +1534,22 @@ func (c *checker) checkExpr(node *ASTNode) {
 			c.checkExpr(child)
 		}
 
+	case NODE_STRING_SLICE:
+		// Children are target, lo, hi (999999999 stands in for an
+		// omitted hi; clamping makes it exact). The target must be a
+		// string; arrays index with arr[i] instead.
+		if target := childAt(node, 0); target != nil {
+			t := c.inferNodeType(target)
+			if t != "" && t != "unknown" && t != "any" && t != "generic" &&
+				t != "string" && t != "char*" && t != "const char*" &&
+				t != "char *" && t != "const char *" {
+				c.errorAt(target, "string slices need a string target (s[lo:hi]); index arrays with arr[i]")
+			}
+		}
+		for _, child := range node.Children {
+			c.checkExpr(child)
+		}
+
 	case NODE_MEMBER_ACCESS, NODE_OBJECT_ACCESS, NODE_TYPE_PROPERTY:
 		// Value is the field name; only the object is a reference.
 		c.checkExpr(childAt(node, 0))
@@ -1618,7 +1645,9 @@ func (c *checker) checkNameUse(node *ASTNode, name string) {
 
 func (c *checker) reportUndefined(node *ASTNode, name string) {
 	msg := fmt.Sprintf("Variable '%s' is not declared", name)
-	if suggestion := c.suggest(name); suggestion != "" {
+	if keywordHint, ok := controlKeywordHints[name]; ok {
+		msg += fmt.Sprintf("; did you mean '%s'?", keywordHint)
+	} else if suggestion := c.suggest(name); suggestion != "" {
 		msg += fmt.Sprintf("; did you mean '%s'?", suggestion)
 	}
 	c.errorAt(node, "%s", msg)
@@ -1649,6 +1678,16 @@ func (c *checker) checkCall(node *ASTNode) {
 			c.errorAt(args[0], "Cannot convert %s to %s", actual, name)
 		}
 		return
+	}
+	// grow|buf, n| needs a buffer source; the result keeps its type.
+	if name == "grow" {
+		if len(node.Children) != 2 {
+			c.errorAt(node, "grow takes exactly two arguments: grow|buf, n|")
+			return
+		}
+		if actual := c.argActualType(node.Children[0]); actual != "" && actual != "unknown" && actual != "any" && actual != "generic" && !strings.HasPrefix(actual, "buffer[") {
+			c.errorAt(node.Children[0], "grow needs a buffer source, not %s", actual)
+		}
 	}
 	c.checkArguments(node, name, node.Children)
 	// free|x| frees immediately (recorded after the arguments are checked so

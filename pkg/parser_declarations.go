@@ -780,6 +780,56 @@ func (p *Parser) checkEarlyFunctionClose(funcName string, startLine, closeLine i
 }
 
 // Parse tuple assignment (a, b : c, d) or tuple declaration (a, b = c, d)
+// parseTupleMemberType consumes one member type inside a tuple type list
+// (the :(t1, t2) in `a, b :(t1, t2) = f||`) and returns its full text,
+// including an optional balanced [...] group (array[int],
+// dict[string,int], buffer[f32], ...). Commas inside brackets do not split
+// the member list. Every branch advances, so no input can spin here: a
+// composite member used to leave the list loop with no progress and hang
+// the parser forever (the early array multi-return hang).
+func (p *Parser) parseTupleMemberType() string {
+	typ := p.current().Value
+	p.advance()
+	if p.current().Type != TOKEN_LBRACKET {
+		return typ
+	}
+	typ += "["
+	p.advance()
+	depth := 1
+	for depth > 0 {
+		t := p.current()
+		if t.Type == TOKEN_EOF {
+			p.recordError(fmt.Sprintf("Unterminated type brackets at line %d", t.Line))
+			break
+		}
+		if t.Type == TOKEN_LBRACKET {
+			depth++
+			typ += "["
+			p.advance()
+			continue
+		}
+		if t.Type == TOKEN_RBRACKET {
+			depth--
+			if depth == 0 {
+				p.advance()
+				break
+			}
+			typ += "]"
+			p.advance()
+			continue
+		}
+		if t.Type == TOKEN_COMMA {
+			typ += ","
+			p.advance()
+			continue
+		}
+		typ += t.Value
+		p.advance()
+	}
+	typ += "]"
+	return typ
+}
+
 func (p *Parser) parseTupleAssignment() *ASTNode {
 	// Parse left side (identifiers with optional type annotations)
 	leftSide := &ASTNode{Type: NODE_BLOCK}
@@ -842,16 +892,20 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 
 		typeIndex := 0
 		for p.current().Type != TOKEN_RPAREN && p.current().Type != TOKEN_EOF {
-			// Parse type
+			// Parse type (composite member types keep their [...] group)
 			if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
 				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 				p.current().Type == TOKEN_IDENTIFIER {
 
+				fullType := p.parseTupleMemberType()
 				if typeIndex < len(leftSide.Children) {
-					leftSide.Children[typeIndex].DataType = p.current().Value
+					leftSide.Children[typeIndex].DataType = fullType
 				}
 				typeIndex++
+			} else if p.current().Type != TOKEN_RPAREN && p.current().Type != TOKEN_EOF {
+				// Unknown token inside the list: skip it so a malformed
+				// member can never stall the loop; the checker reports it.
 				p.advance()
 			}
 
@@ -894,16 +948,20 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 			p.advance() // consume (
 			typeIndex := 0
 			for p.current().Type != TOKEN_RPAREN && p.current().Type != TOKEN_EOF {
-				// Parse type
+				// Parse type (composite member types keep their [...] group)
 				if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 					p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
 					p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
 					p.current().Type == TOKEN_IDENTIFIER {
 
+					fullType := p.parseTupleMemberType()
 					if typeIndex < len(leftSide.Children) {
-						leftSide.Children[typeIndex].DataType = p.current().Value
+						leftSide.Children[typeIndex].DataType = fullType
 					}
 					typeIndex++
+				} else if p.current().Type != TOKEN_RPAREN && p.current().Type != TOKEN_EOF {
+					// Unknown token inside the list: skip it so a malformed
+					// member can never stall the loop; the checker reports it.
 					p.advance()
 				}
 
