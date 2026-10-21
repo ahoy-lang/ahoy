@@ -91,10 +91,21 @@ work: the checker tracks no nullness, so the rule stays syntactic.
   thunks; arity mismatches are compile errors. What remains is
   Goose-style typed queues (one queue per value type, flat values
   crossing as `memcpy`) rather than the untyped `intptr_t` slot.
-- No index types / checkfree (item 7) and no long-distance return
-  (item 8): early `return`/`halt`/`next` plus `guard` cover the
-  structured uses; the rest is design-only until the checker is
-  stronger.
+- No index types / checkfree (item 7): `checkfree fn` rejects a
+  function if any bounds check survives elimination — which requires
+  the elimination analysis first. Done looks like: (a) a bounds-check
+  pass that removes provably-safe checks and reports the rest
+  (`--bce-lines` style); (b) index types for validated graph edges;
+  (c) `checkfree` as a checker error naming the surviving check.
+  Until (a) exists, early `return`/`halt`/`guard` cover the uses.
+- No long-distance return (item 8): `return E from f` needs call-graph
+  ordering in the checker (every function containing such a return
+  must lie inside a call of `f`) plus hidden-discriminant codegen with
+  plain signatures between. Done looks like: statically-checked,
+  unwinder-free, values built at the destination (like `to_bytes`
+  builds into its destination today). Until the checker's cascade
+  problems are fixed, `guard` + multi-return cover the structured
+  uses; this stays last.
 
 ## 6. How to check it
 
