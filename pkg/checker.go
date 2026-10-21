@@ -1627,6 +1627,26 @@ func (c *checker) checkExpr(node *ASTNode) {
 	case NODE_MEMBER_ACCESS, NODE_OBJECT_ACCESS, NODE_TYPE_PROPERTY:
 		// Value is the field name; only the object is a reference.
 		c.checkExpr(childAt(node, 0))
+		// A field read on a buffer or string dies as "struct or union
+		// expected" in C. Buffers expose length only (elements via buf[i]);
+		// strings expose length/count (methods use call syntax: s.strip||).
+		// Arrays, dicts (key lookup), structs and enums keep their routing.
+		if node.Type == NODE_MEMBER_ACCESS {
+			if obj := childAt(node, 0); obj != nil && obj.Type == NODE_IDENTIFIER {
+				if _, isEnum := c.p.enums[obj.Value]; !isEnum {
+					t := c.lookupType(obj.Value)
+					if t == "buffer[f32]" || strings.HasPrefix(t, "buffer[") {
+						if node.Value != "length" {
+							c.errorAt(node, "Type '%s' has no field '%s' (buffers expose length only; read elements with buf[i])", t, node.Value)
+						}
+					} else if t == "string" || t == "char*" || t == "const char*" || t == "char *" || t == "const char *" {
+						if node.Value != "length" && node.Value != "count" {
+							c.errorAt(node, "Type 'string' has no field '%s' (string methods use call syntax: s.%s||)", node.Value, node.Value)
+						}
+					}
+				}
+			}
+		}
 
 	case NODE_STATIC_MEMBER_ACCESS:
 		// StructType.#field - the object is a type name, not a variable.
@@ -1695,6 +1715,18 @@ func (c *checker) checkLambda(node *ASTNode) {
 // interpolated text is stored as part of the string value, not as child nodes,
 // so the leading identifier of each {..} group is checked by hand.
 func (c *checker) checkFString(node *ASTNode) {
+	// Pre-parsed interpolation groups take the expression path, mirroring
+	// codegen: every {expr} gets full validation (member access, calls,
+	// indexing), so {b.x} on a buffer errors here instead of in C.
+	if len(node.Children) > 0 {
+		for _, child := range node.Children {
+			if child == nil || child.Type == NODE_STRING {
+				continue
+			}
+			c.checkExpr(child)
+		}
+		return
+	}
 	for _, expr := range fstringExpressions(node.Value) {
 		if name := leadingIdentifier(expr); name != "" {
 			if !c.isDefined(name) {
