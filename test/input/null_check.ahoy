@@ -1,0 +1,47 @@
+program null_check
+
+? null is the nil reference: zero value of pointer fields, testable
+? with `is null` / `is not null` (pointer comparison, never strcmp),
+? assignable to pointer targets.
+
+struct Ext:
+	a: float
+	b: int
+$
+
+struct Holder:
+	name: string
+	ext: Ext*
+$
+
+@ main ||:
+	expected: []
+
+	? a pointer field starts as null
+	h: Holder = Holder{name: "x", ext: null}
+	print|h.ext is null|
+	expected.push|"1"|
+	print|h.ext is not null|
+	expected.push|"0"|
+
+	? assigning a live pointer flips both tests
+	e: Ext = Ext{a: 1.5, b: 2}
+	h.ext = &e
+	print|h.ext is null|
+	expected.push|"0"|
+	print|h.ext is not null|
+	expected.push|"1"|
+
+	? guard + null is the early-exit shape (no narrowing yet: the
+	? check itself is the feature; flow types stay as declared)
+	guard h.ext is not null else return $
+	print|h.ext.a|
+	expected.push|"1.5"|
+
+	? clearing back to null
+	h.ext = null
+	print|h.ext is null|
+	expected.push|"1"|
+
+	print|expected|
+$

@@ -64,10 +64,12 @@ nested. A guard whose `B` falls through is legal but pointless; prefer
 4.3 One way: `else` opens the block directly. `else then` and `else:`
 are errors everywhere (`if`, `when`, `guard`) — same rule as the
 removed `elseif`/`anif` synonyms.
-4.4 `guard` does not narrow types yet. Null narrowing
-(`guard p else return $` giving non-null `p` afterwards) is item
-3b and needs a `null` literal first; until then the rule is
-syntactic only.
+4.4 `null` is the nil reference: the zero value of every pointer
+field, assignable to pointer targets, comparable with `is null` /
+`is not null` (pointer comparison, never `strcmp`). `guard p else
+return $` on a pointer therefore reads the check directly. Flow
+narrowing (knowing `p` is non-null after the guard) is still future
+work: the checker tracks no nullness, so the rule stays syntactic.
 
 ## 5. What is explicitly not promised (yet)
 

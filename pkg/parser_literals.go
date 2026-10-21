@@ -167,6 +167,19 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			Line:     token.Line,
 		}
 
+	case TOKEN_NULL:
+		// null is a nil reference: the zero value of every pointer field,
+		// comparable with `is null` / `is not null` (pointer comparison,
+		// never strcmp). Assignable to pointer-typed targets.
+		token := p.current()
+		p.advance()
+		return &ASTNode{
+			Type:     NODE_NULL_LITERAL,
+			Value:    "null",
+			DataType: "null",
+			Line:     token.Line,
+		}
+
 	case TOKEN_QUESTION:
 		// Loop counter variable ?
 		token := p.current()

@@ -93,6 +93,7 @@ const (
 	TOKEN_ARRAY_TYPE
 	TOKEN_TRUE
 	TOKEN_FALSE
+	TOKEN_NULL            // null (nil pointer / empty reference literal)
 	TOKEN_ENUM
 	TOKEN_STRUCT
 	TOKEN_TYPE
@@ -183,6 +184,7 @@ var keywords = map[string]TokenType{
 	"array":    TOKEN_ARRAY_TYPE,
 	"true":     TOKEN_TRUE,
 	"false":    TOKEN_FALSE,
+	"null":     TOKEN_NULL,
 	"enum":     TOKEN_ENUM,
 	"struct":   TOKEN_STRUCT,
 	"type":     TOKEN_TYPE,

@@ -43,6 +43,7 @@ const (
 	NODE_F_STRING   // f-string with interpolation
 	NODE_CHAR
 	NODE_BOOLEAN
+	NODE_NULL_LITERAL // null literal (nil reference)
 	NODE_DICT_LITERAL
 	NODE_ARRAY_LITERAL
 	NODE_ARRAY_ACCESS
@@ -957,7 +958,7 @@ func tokenTypeName(t TokenType) string {
 		TOKEN_DEDENT: "dedent", TOKEN_INT_TYPE: "type 'int'", TOKEN_FLOAT_TYPE: "type 'float'",
 		TOKEN_STRING_TYPE: "type 'string'", TOKEN_BOOL_TYPE: "type 'bool'",
 		TOKEN_DICT_TYPE: "type 'dict'", TOKEN_ARRAY_TYPE: "type 'array'",
-		TOKEN_TRUE: "'true'", TOKEN_FALSE: "'false'",
+		TOKEN_TRUE: "'true'", TOKEN_FALSE: "'false'", TOKEN_NULL: "'null'",
 		TOKEN_ENUM: "'enum'", TOKEN_STRUCT: "'struct'", TOKEN_TYPE: "'type'",
 		TOKEN_DO: "'do'", TOKEN_HALT: "'halt'", TOKEN_NEXT: "'next'",
 		TOKEN_ASSERT: "'assert'", TOKEN_DEFER: "'defer'",

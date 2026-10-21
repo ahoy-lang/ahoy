@@ -2290,6 +2290,9 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 			gen.output.WriteString("false")
 		}
 
+	case ahoy.NODE_NULL_LITERAL:
+		gen.output.WriteString("NULL")
+
 	case ahoy.NODE_DICT_LITERAL:
 		gen.generateDictLiteral(node)
 
@@ -10538,6 +10541,8 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		return "string"
 	case ahoy.NODE_BOOLEAN:
 		return "bool"
+	case ahoy.NODE_NULL_LITERAL:
+		return "null"
 	case ahoy.NODE_DICT_LITERAL:
 		return "dict"
 	case ahoy.NODE_ARRAY_LITERAL:
