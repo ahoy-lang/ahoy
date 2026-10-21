@@ -78,8 +78,12 @@ work: the checker tracks no nullness, so the rule stays syntactic.
   `to_bytes` / `from_bytes` / `from_bytes_ok` with exact framing
   checks; hostile bytes fail closed to empty/false. `array` and
   `string` payloads need ownership-aware framing and are next.
-- No typed job values (item 6): the pool takes `intptr_t`, floats are
-  unsupported in the task ABI.
+- Typed job values (item 6, mostly shipped): tasks take one value
+  (`submit`) or up to four (`p.run`), and `float`/`double`/`f32`
+  arguments and results travel as bit patterns through marshal
+  thunks; arity mismatches are compile errors. What remains is
+  Goose-style typed queues (one queue per value type, flat values
+  crossing as `memcpy`) rather than the untyped `intptr_t` slot.
 - No index types / checkfree (item 7) and no long-distance return
   (item 8): early `return`/`halt`/`next` plus `guard` cover the
   structured uses; the rest is design-only until the checker is

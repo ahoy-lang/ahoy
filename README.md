@@ -426,8 +426,13 @@ $
 `jobs|n|` starts a pool of `n` worker threads. `pool.submit|fn, arg|` queues a
 task and returns a job; `pool.wait|job|` blocks until it finishes and returns
 its result. A task is a function value taking one argument (pass `0` when it
-needs none); results are pointer-sized, so ints, strings, arrays and pointers
-work, while floats in the task ABI are not supported yet.
+needs none). Arguments and results travel as `intptr_t`: ints, strings,
+arrays and pointers pass by value, and `float`/`double`/`f32` travel as
+their bit pattern through a generated marshal thunk (exact for
+representable values). Arity is checked: `submit` takes the function and
+at most one argument, and `p.run|fn, a0..a3|` (up to four arguments, with
+`p.result_int/float/ptr` readers) must match the task's parameter count —
+anything else is a compile error, not a crash.
 
 ```ahoy
 @ square :: |n:int| int:

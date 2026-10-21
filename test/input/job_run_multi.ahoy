@@ -9,6 +9,14 @@ $
 	return v * 2.5
 $
 
+@ addf |a:float, b:float| float:
+	return a + b
+$
+
+@ f32scale |v:f32| f32:
+	return v * 3.0
+$
+
 p: pool = jobs|2|
 p.run|&addmul, 1, 2, 3|
 ri: p.result_int||
@@ -19,6 +27,17 @@ p.run|&scale, 4.0|
 rf: p.result_float||
 print|rf|
 expected.push|"10"|
+
+p.run|&addf, 1.5, 2.5|
+rf2: p.result_float||
+print|rf2|
+expected.push|"4"|
+
+p.run|&f32scale, 2.0|
+r32: f32 = p.result_float||
+r32f: float = r32
+print|r32f|
+expected.push|"6"|
 p.stop||
 
 ? Print expected values for test validation

@@ -8721,6 +8721,14 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 			gen.emitJobRun(object.Value, args)
 			return
 		case "submit":
+			// submit|fn| or submit|fn, arg|: anything else is a call-site
+			// error, not silently dropped arguments (extra args used to
+			// vanish; a bad task used to miscompile downstream).
+			if len(args.Children) > 2 {
+				fmt.Fprintf(os.Stderr, "error: submit takes a function and one argument, but got %d arguments\n", len(args.Children)-1)
+				gen.hasError = true
+				return
+			}
 			gen.output.WriteString("ahoy_jobs_submit(" + object.Value + ", ")
 			argType := ""
 			if len(args.Children) > 0 {
@@ -15704,7 +15712,10 @@ func (gen *CodeGenerator) recordJobResultType(node *ahoy.ASTNode) {
 
 // isFloatAhoyType reports whether a type travels as a C double.
 func isFloatAhoyType(t string) bool {
-	return t == "float" || t == "double"
+	// f32 travels as a double bit pattern and narrows/widens at the
+	// boundary: f32->double is exact, double->f32 is the C conversion.
+	// Without this, an f32 task silently read intptr_t bits as a float.
+	return t == "float" || t == "double" || t == "f32"
 }
 
 // taskSignature returns the parameter and return Ahoy types of a task value:
@@ -15849,7 +15860,7 @@ func (gen *CodeGenerator) emitTaskArg(arg *ahoy.ASTNode, argType string) {
 // so it is memcpy'd back rather than cast.
 func (gen *CodeGenerator) jobResultExpr(callExpr, jobName string) string {
 	ret := gen.jobResultTypes[jobName]
-	if ret == "float" || ret == "double" {
+	if isFloatAhoyType(ret) {
 		return fmt.Sprintf("({ intptr_t __jr = %s; double __jd; memcpy(&__jd, &__jr, sizeof(double)); __jd; })", callExpr)
 	}
 	if ret != "" {
@@ -15878,7 +15889,12 @@ func (gen *CodeGenerator) emitJobRun(poolName string, args *ahoy.ASTNode) {
 		if !ok {
 			fmt.Fprintf(os.Stderr, "error: run task must be a named function or a typed fn value\n")
 			gen.hasError = true
-			argTypes = nil
+			return
+		}
+		if len(args.Children)-1 != len(argTypes) {
+			fmt.Fprintf(os.Stderr, "error: run task takes %d arguments but got %d\n", len(argTypes), len(args.Children)-1)
+			gen.hasError = true
+			return
 		}
 		gen.emitJobRunThunk(task, argTypes, retType)
 	} else {

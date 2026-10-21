@@ -15,6 +15,10 @@ $
 	return float|n| / 2.0
 $
 
+@ fhalf |x:f32| f32:
+	return x / 2.0
+$
+
 @ main ||:
 	expected: []
 	pool: pool = jobs|4|
@@ -36,6 +40,13 @@ $
 	r3: pool.wait|j3|
 	print|r3|
 	expected.push|"4.5"|
+
+	? f32 argument and result travel as double bit patterns
+	j4: job = pool.submit|&fhalf, 5.0|
+	r4: pool.wait|j4|
+	r4f: float = r4
+	print|r4f|
+	expected.push|"2.5"|
 
 	pool.stop||
 	print|expected|
