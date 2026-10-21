@@ -1,8 +1,8 @@
 expected: []
-? guard C else then B $ desugars to if not C then B $: early exits stay flat.
+? guard C else B $ desugars to if not C then B $: early exits stay flat.
 
 @ check :: |v:int| int:
-	guard v >= 0 else then return -1 $
+	guard v >= 0 else return -1 $
 	return v * 2
 $
 
@@ -16,7 +16,7 @@ expected.push|"-1"|
 ? guard inside a loop: skip without nesting
 total: 0
 loop i:0 to 4 do
-	guard i > 1 else then next $
+	guard i > 1 else next $
 	total = total + i
 $
 print|total|

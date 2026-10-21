@@ -528,7 +528,8 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		}
 	}
 
-	// Handle else (can optionally use ':').
+	// Handle else (bare `else`, closed by `$` like every other block).
+	// `else then` and `else:` were removed: one way to open the block.
 	// The else belongs to this if only when it is at the same level. A block
 	// is closed by `$`, not by indentation, so without this the innermost
 	// if would claim an else that belongs to an outer if - and the block
@@ -536,13 +537,13 @@ func (p *Parser) parseIfStatement() *ASTNode {
 	if p.current().Type == TOKEN_ELSE && p.current().Indent == ifIndent {
 		p.advance()
 
-		// Optional ':' or 'then' after else
 		if p.current().Type == TOKEN_ASSIGN || p.current().Type == TOKEN_THEN {
+			p.elseWordError()
 			p.advance()
 		}
 
 		// Both inline and multiline now require $ to close
-		// Skip optional newlines after colon
+		// Skip optional newlines after else
 		for p.current().Type == TOKEN_NEWLINE {
 			p.advance()
 		}
@@ -639,7 +640,10 @@ func (p *Parser) parseGuardStatement() *ASTNode {
 		}
 	}
 
+	// One way: `else` opens the block directly. `else then` / `else:` is an
+	// error (see elseWordError), not a third spelling.
 	if p.current().Type == TOKEN_THEN || p.current().Type == TOKEN_ASSIGN {
+		p.elseWordError()
 		p.advance()
 	}
 
@@ -1394,6 +1398,15 @@ func (p *Parser) loopColonError() {
 	p.recordError("`:` does not open a loop block; write `do` instead")
 }
 
+// elseWordError: `else` opens its block directly. `else then` and `else:`
+// were removed; there is one way to write it, not three.
+func (p *Parser) elseWordError() {
+	if !p.LintMode {
+		panic(fmt.Sprintf("`else` takes no `then` or `:`; write `else` and the block instead (line %d)", p.current().Line))
+	}
+	p.recordError("`else` takes no `then` or `:`; write `else` and the block instead")
+}
+
 func (p *Parser) parseLoop() *ASTNode {
 	startLine := p.current().Line
 	p.expect(TOKEN_LOOP)
@@ -1970,6 +1983,7 @@ func (p *Parser) parseWhenStatement() *ASTNode {
 	if p.current().Type == TOKEN_ELSE && p.current().Indent == whenIndent {
 		p.advance()
 		if p.current().Type == TOKEN_ASSIGN || p.current().Type == TOKEN_THEN {
+			p.elseWordError()
 			p.advance()
 		}
 		for p.current().Type == TOKEN_NEWLINE {

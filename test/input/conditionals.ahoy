@@ -138,9 +138,9 @@ $
 expected.push|"Not selected"|
 
 if i is 99 then print|"Not selected"|;
-else then print|"else_then"|; ? the then should be allowed as optional not required and should not be a linting or lsp error.
+else print|"else_bare"|; ? else opens its block directly: else then / else: is an error.
 $
-expected.push|"else_then"|;
+expected.push|"else_bare"|;
 
 
 

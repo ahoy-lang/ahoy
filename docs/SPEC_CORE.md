@@ -54,15 +54,18 @@ clearest form.
 
 ## 4. Guard (item 3, normative)
 
-4.1 `guard C else then B $` is exactly `if not C then B $`. No new
-scope, no new codegen, no checker rule: the parser desugars to
+4.1 `guard C else B $` is exactly `if not C then B $`. No new scope,
+no new codegen, no checker rule: the parser desugars to
 `NODE_IF_STATEMENT` with a `not` condition.
 4.2 Intended use is early exit: `B` ends in `return`, `halt`, or
 `next`. The code after the guard then knows `C` held, flat instead of
 nested. A guard whose `B` falls through is legal but pointless; prefer
 `if`.
-4.3 `guard` does not narrow types yet. Null narrowing
-(`guard p else then return $` giving non-null `p` afterwards) is item
+4.3 One way: `else` opens the block directly. `else then` and `else:`
+are errors everywhere (`if`, `when`, `guard`) — same rule as the
+removed `elseif`/`anif` synonyms.
+4.4 `guard` does not narrow types yet. Null narrowing
+(`guard p else return $` giving non-null `p` afterwards) is item
 3b and needs a `null` literal first; until then the rule is
 syntactic only.
 

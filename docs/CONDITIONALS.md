@@ -116,7 +116,7 @@ One-line conditionals stay on one line, multi-line conditionals stay multi-line.
 
 ## Guard (early exit, flat instead of nested)
 
-`guard C else then B $` is exactly `if not C then B $` — the parser
+`guard C else B $` is exactly `if not C then B $` — the parser
 desugars it, so the checker and codegen never see a new construct.
 Use it when the `B` block exits (`return`, `halt`, `next`): the code
 after the guard then knows `C` held, without indenting the rest of
@@ -124,13 +124,16 @@ the function one level deeper:
 
 ```ahoy
 @ node_set_slot_w :: |nodes:array[Node], id:int, v:float| void:
-    guard id >= 0 else then return $
-    guard v >= 8.0 else then v = 8.0 $
+    guard id >= 0 else return $
+    guard v >= 8.0 else v = 8.0 $
     cur: nodes[id]
     cur.slot.slot_w = v
     nodes[id] = cur
 $
 ```
+
+One way: `else` opens the block directly. `else then` and `else:`
+are errors — in `guard`, and in `if`/`when` too.
 
 `guard` is contextual, not reserved: a variable named `guard` (Bell
 uses it as a loop-counter name) still declares and assigns normally.
