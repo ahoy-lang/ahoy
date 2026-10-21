@@ -239,6 +239,7 @@ type CodeGenerator struct {
 	pendingLoopEndLabel           string                                  // Label stashed by exitLoopScope, emitted by the loop tail (emitLoopEndLabel)
 	switchCaseDepths              []int                                   // Scope depths of open switch-case bodies (halt needs to know a switch intervenes)
 	escapingVars                  map[string]bool                         // Track variables that escape the function (returned or stored)
+	storedVars                    map[string]bool                         // Whole values stored into struct fields: must survive scope exit even when they are containers (addAutomaticDeferFrees always frees containers, so escapingVars alone cannot protect them)
 	deferredUsers                 map[string]bool                         // Vars mentioned in pending defer statements (must outlive them)
 	aliasEdges                    map[string]map[string]int               // heap var -> aliases declared from it -> scope depth where declared
 	manuallyFreedVars             map[string]bool                         // Track variables with manual defer free
@@ -351,6 +352,7 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		sourceFilename:        filename, // Source file for error messages
 		heapAllocatedVars:     make(map[string]bool),
 		escapingVars:          make(map[string]bool),
+		storedVars:            make(map[string]bool),
 		deferredUsers:         make(map[string]bool),
 		aliasEdges:            make(map[string]map[string]int),
 		manuallyFreedVars:     make(map[string]bool),
@@ -2649,6 +2651,7 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	gen.pendingLoopEndLabel = ""
 	gen.switchCaseDepths = nil
 	gen.escapingVars = make(map[string]bool)
+	gen.storedVars = make(map[string]bool)
 	gen.deferredUsers = make(map[string]bool)
 	gen.aliasEdges = make(map[string]map[string]int)
 	gen.manuallyFreedVars = make(map[string]bool)
@@ -3194,6 +3197,8 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 
 		// Mark any variables in the value as escaping (being stored)
 		gen.markEscapingVariables(node.Children[1])
+		// Whole-value struct-field stores retain (see markStoredVariables)
+		gen.markStoredVariables(node.Children[1])
 		// Transitive stored dependencies (aliases of aliases).
 		gen.markValueDeps(node.Children[1])
 
@@ -5912,6 +5917,25 @@ func (gen *CodeGenerator) markEscapingVariables(node *ahoy.ASTNode) {
 	}
 }
 
+// markStoredVariables records heap-allocated names stored as whole values
+// into struct fields (obj.field = v). Unlike markEscapingVariables, this
+// mark is honored for containers too: the field aliases the value (no copy),
+// so freeing it at scope exit is always a use-after-free. Call-arg and push
+// marks stay borrow-only and keep today's behavior.
+func (gen *CodeGenerator) markStoredVariables(node *ahoy.ASTNode) {
+	if node == nil {
+		return
+	}
+	if node.Type == ahoy.NODE_IDENTIFIER {
+		if gen.heapAllocatedVars[node.Value] {
+			gen.storedVars[node.Value] = true
+		}
+	}
+	for _, child := range node.Children {
+		gen.markStoredVariables(child)
+	}
+}
+
 // appendScopeAllocation records varName for cleanup at depth, skipping
 // duplicates. Multiple reassignments (or a declaration plus later
 // reassignment) must not enqueue the same name twice: scope-exit and
@@ -6485,6 +6509,11 @@ func (gen *CodeGenerator) addAutomaticDeferFrees() {
 		// Skip if variable escapes, UNLESS it's a container
 		// Container variables should always be freed even if their contents escape
 		if gen.escapingVars[varName] && !isContainer {
+			continue
+		}
+		// ...unless the container itself was stored whole into a struct
+		// field: the field aliases it, so freeing here dangles the field.
+		if gen.storedVars[varName] {
 			continue
 		}
 

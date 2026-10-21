@@ -1,0 +1,39 @@
+program field_store_container
+
+? A whole container stored into a struct field must survive scope exit:
+? the field aliases it (no copy), so freeing it dangles the field. This
+? pinned a use-after-free where `h.box.items = vals` freed vals (length
+? read back fine, contents garbage). Struct-pointer chains included.
+
+struct Box:
+	items: array[int] = []
+$
+
+struct Handle:
+	box: Box*
+$
+
+@ fill |h:Handle| void:
+	vals: array[int] = []
+	loop i:0 to 10 do
+		vals.push|i * 7|
+	$
+	h.box.items = vals
+$
+
+@ main ||:
+	expected: []
+	b: Box = Box{}
+	h: Handle = Handle{box: &b}
+	fill|h|
+	n: h.box.items.length
+	print|n|
+	v0: h.box.items[0]
+	v9: h.box.items[9]
+	print|v0|
+	print|v9|
+	expected.push|10|
+	expected.push|0|
+	expected.push|63|
+	print|expected|
+$

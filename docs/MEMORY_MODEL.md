@@ -46,6 +46,17 @@ Freeing is skipped for a name that was freed by hand (`free|x|`), already
 auto-freed, or is marked as escaping. The compiler errs towards leaking: a
 leak is a wasted allocation, a dangling pointer is a crash.
 
+One sharp edge, fixed: a whole container stored into a **struct field**
+(`h.box.items = vals`, including chains through pointer fields like
+`cur.swarm.flow_dir = dirs`) aliases the value — no copy — so the field
+dangles if the scope exit frees it. Function-scope cleanup used to free
+containers even when marked escaping (only the elements were thought to
+escape), which corrupted exactly this pattern (length read back fine,
+contents garbage). Struct-field stores now carry their own retain mark
+(`storedVars` in `source/codegen.go`) that the function-scope cleanup
+honors. Call-arg and push marks stay borrow-only: passing an array to a
+function that only reads it must still free at scope exit.
+
 ## The rules that follow
 
 1. **A container dies with its scope.** If a value has to outlive the scope
