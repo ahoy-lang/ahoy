@@ -27,7 +27,7 @@ func (p *Parser) parseMethodDeclaration() *ASTNode {
 		recvType = p.parseComplexReturnType()
 	}
 	p.expect(TOKEN_RPAREN)
-	methodName := p.expect(TOKEN_IDENTIFIER)
+	methodName := p.expectDefName("method")
 
 	recvNorm := NormalizeReceiverType(recvType)
 	mangled := Token{
@@ -53,7 +53,7 @@ func (p *Parser) parseMethodDeclaration() *ASTNode {
 // precede the type declaration in the file).
 func (p *Parser) parseAssociatedDeclaration(typeName Token) *ASTNode {
 	p.expect(TOKEN_DOT)
-	methodName := p.expect(TOKEN_IDENTIFIER)
+	methodName := p.expectDefName("associated function")
 	mangled := Token{
 		Type:   TOKEN_IDENTIFIER,
 		Value:  MangleMethodName(typeName.Value, methodName.Value),

@@ -701,7 +701,8 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			}
 		} else if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 			p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
-			p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
+			p.current().Type == TOKEN_CHAR_TYPE || p.current().Type == TOKEN_DICT_TYPE ||
+			p.current().Type == TOKEN_ARRAY_TYPE ||
 			p.current().Type == TOKEN_IDENTIFIER {
 
 			// A cast opens with a pipe: int|5|, string|n|. Parentheses are also
@@ -868,9 +869,14 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			} else if (p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_STRING) &&
 				p.peek(1).Type == TOKEN_ASSIGN {
 				// Parse object literal with properties
-				value = p.parseObjectLiteral()
-				value.Value = explicitType // Set the type name
-				value.Line = line          // Set the line number
+				value = p.parseObjectLiteralRaw()
+				if value.Type == NODE_OBJECT_LITERAL {
+					value.Value = explicitType // Set the type name
+					value.Line = line          // Set the line number
+					if p.current().Type == TOKEN_DOT {
+						value = p.parseMemberAccessChain(value)
+					}
+				}
 			} else {
 				// Parse as regular expression (fallback)
 				value = p.parseExpression()

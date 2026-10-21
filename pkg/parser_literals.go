@@ -292,8 +292,16 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			if (p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_STRING) &&
 				p.peek(1).Type == TOKEN_ASSIGN {
 				// This is object instantiation with named properties
-				obj := p.parseObjectLiteral() // Will consume the closing }
-				obj.Value = token.Value       // Set the type name
+				obj := p.parseObjectLiteralRaw() // Will consume the closing }
+				if obj.Type == NODE_OBJECT_LITERAL {
+					obj.Value = token.Value // Set the type name
+					// A method or field chain on a struct literal:
+					// V{...}.twice||, V{...}.x — chained after stamping
+					// so the receiver carries the struct type.
+					if p.current().Type == TOKEN_DOT {
+						return p.parseMemberAccessChain(obj)
+					}
+				}
 				return obj
 			}
 
@@ -589,6 +597,10 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 		p.advance() // consume '('
 		expr := p.parseExpression()
 		p.expect(TOKEN_RPAREN)
+		// A chain on the parenthesized value: (V{...}).twice||, (a+b).x.
+		if p.current().Type == TOKEN_DOT {
+			return p.parseMemberAccessChain(expr)
+		}
 		return expr
 
 	case TOKEN_SWITCH:
@@ -620,9 +632,14 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			if (p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_STRING) &&
 				p.peek(1).Type == TOKEN_ASSIGN {
 				// Object instantiation with properties: vector2{x: 10, y: 20}
-				obj := p.parseObjectLiteral()
-				obj.Value = token.Value // Set the type name
-				obj.Line = token.Line   // Set the line number
+				obj := p.parseObjectLiteralRaw()
+				if obj.Type == NODE_OBJECT_LITERAL {
+					obj.Value = token.Value // Set the type name
+					obj.Line = token.Line   // Set the line number
+					if p.current().Type == TOKEN_DOT {
+						return p.parseMemberAccessChain(obj)
+					}
+				}
 				return obj
 			}
 
@@ -638,9 +655,14 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			if (p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_STRING) &&
 				p.peek(1).Type == TOKEN_ASSIGN {
 				// Old object instantiation: vector2<x: 10, y: 20> - convert to new syntax warning
-				obj := p.parseObjectLiteral()
-				obj.Value = token.Value // Set the type name
-				obj.Line = token.Line   // Set the line number
+				obj := p.parseObjectLiteralRaw()
+				if obj.Type == NODE_OBJECT_LITERAL {
+					obj.Value = token.Value // Set the type name
+					obj.Line = token.Line   // Set the line number
+					if p.current().Type == TOKEN_DOT {
+						return p.parseMemberAccessChain(obj)
+					}
+				}
 				return obj
 			}
 
@@ -872,6 +894,20 @@ func (p *Parser) parseArrayLiteral() *ASTNode {
 }
 
 func (p *Parser) parseObjectLiteral() *ASTNode {
+	obj := p.parseObjectLiteralRaw()
+	// A chain on the literal itself (anonymous receiver): {k: v}.method.
+	// Named instantiation (V{...}.method) parses through the raw form so
+	// the type name is stamped before chaining, not onto the chained node.
+	if p.current().Type == TOKEN_DOT {
+		return p.parseMemberAccessChain(obj)
+	}
+	return obj
+}
+
+// parseObjectLiteralRaw parses {k: v, ...} without chaining a trailing
+// .member: instantiation sites stamp the type name first and chain after,
+// so the receiver carries the struct type instead of "object".
+func (p *Parser) parseObjectLiteralRaw() *ASTNode {
 	// TOKEN_LBRACE already consumed by caller
 	// Save line before advancing
 	line := p.current().Line
@@ -971,11 +1007,6 @@ func (p *Parser) parseObjectLiteral() *ASTNode {
 	}
 
 	p.expect(TOKEN_RBRACE)
-
-	// Check for member access after object literal
-	if p.current().Type == TOKEN_DOT {
-		return p.parseMemberAccessChain(object)
-	}
 
 	return object
 }

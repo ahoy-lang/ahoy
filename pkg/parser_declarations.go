@@ -304,9 +304,8 @@ func (p *Parser) parseConstantDeclaration() *ASTNode {
 	var explicitType string
 	if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 		p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
-		p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
-		p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
-		p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
+		p.current().Type == TOKEN_CHAR_TYPE || p.current().Type == TOKEN_DICT_TYPE ||
+		p.current().Type == TOKEN_ARRAY_TYPE ||
 		p.current().Type == TOKEN_IDENTIFIER {
 
 		// This might be a type annotation
@@ -365,7 +364,7 @@ func (p *Parser) parseFunctionDeclaration() *ASTNode {
 		return p.parseMethodDeclaration()
 	}
 
-	name := p.expect(TOKEN_IDENTIFIER)
+	name := p.expectDefName("function")
 
 	// Associated function: @ Type.name |params| rettype:
 	if p.current().Type == TOKEN_DOT {
@@ -853,7 +852,8 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 			nextToken := p.peek(1)
 			isTypeToken := nextToken.Type == TOKEN_INT_TYPE || nextToken.Type == TOKEN_FLOAT_TYPE ||
 				nextToken.Type == TOKEN_STRING_TYPE || nextToken.Type == TOKEN_BOOL_TYPE ||
-				nextToken.Type == TOKEN_DICT_TYPE || nextToken.Type == TOKEN_ARRAY_TYPE
+				nextToken.Type == TOKEN_CHAR_TYPE || nextToken.Type == TOKEN_DICT_TYPE ||
+				nextToken.Type == TOKEN_ARRAY_TYPE
 
 			// Check if this is inline type annotation (has comma after type)
 			isInlineTypeAnnotation := isTypeToken && p.peek(2).Type == TOKEN_COMMA
@@ -895,7 +895,8 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 			// Parse type (composite member types keep their [...] group)
 			if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 				p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
-				p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
+				p.current().Type == TOKEN_CHAR_TYPE || p.current().Type == TOKEN_DICT_TYPE ||
+				p.current().Type == TOKEN_ARRAY_TYPE ||
 				p.current().Type == TOKEN_IDENTIFIER {
 
 				fullType := p.parseTupleMemberType()
@@ -951,7 +952,8 @@ func (p *Parser) parseTupleAssignment() *ASTNode {
 				// Parse type (composite member types keep their [...] group)
 				if p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 					p.current().Type == TOKEN_STRING_TYPE || p.current().Type == TOKEN_BOOL_TYPE ||
-					p.current().Type == TOKEN_DICT_TYPE || p.current().Type == TOKEN_ARRAY_TYPE ||
+					p.current().Type == TOKEN_CHAR_TYPE || p.current().Type == TOKEN_DICT_TYPE ||
+					p.current().Type == TOKEN_ARRAY_TYPE ||
 					p.current().Type == TOKEN_IDENTIFIER {
 
 					fullType := p.parseTupleMemberType()
@@ -1613,6 +1615,31 @@ func (p *Parser) parseStructFieldDefaultValue(fieldType string) *ASTNode {
 	return nil
 }
 
+// expectDefName reads a definition name (function, method, struct). A type
+// keyword in name position (`double`, `string`, ...) used to fail with
+// "Expected identifier, got type 'float'", naming the wrong thing —
+// `double` lexes as a float-type token. Name the reserved word instead.
+func (p *Parser) expectDefName(what string) Token {
+	if t := p.current(); t.Type != TOKEN_IDENTIFIER {
+		word := t.Value
+		if word == "" {
+			word = tokenTypeName(t.Type)
+		}
+		extra := ""
+		if t.Type == TOKEN_FLOAT_TYPE {
+			extra = " (this includes the C spelling 'double')"
+		}
+		errMsg := fmt.Sprintf("'%s' is a reserved word and cannot name a %s%s; choose another name", word, what, extra)
+		if p.LintMode {
+			p.recordError(errMsg)
+			p.advance()
+			return Token{Type: TOKEN_IDENTIFIER, Value: "error", Line: t.Line, Column: t.Column}
+		}
+		panic(errMsg)
+	}
+	return p.expect(TOKEN_IDENTIFIER)
+}
+
 func (p *Parser) parseStructDeclaration() *ASTNode {
 	startLine := p.current().Line
 	p.expect(TOKEN_STRUCT)
@@ -1622,7 +1649,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 		name = p.current()
 		p.advance()
 	} else {
-		name = p.expect(TOKEN_IDENTIFIER)
+		name = p.expectDefName("struct")
 	}
 	p.expect(TOKEN_ASSIGN)
 
@@ -1946,7 +1973,8 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 						p.current().Type == TOKEN_INT_TYPE ||
 						p.current().Type == TOKEN_FLOAT_TYPE ||
 						p.current().Type == TOKEN_STRING_TYPE ||
-						p.current().Type == TOKEN_BOOL_TYPE {
+						p.current().Type == TOKEN_BOOL_TYPE ||
+						p.current().Type == TOKEN_CHAR_TYPE {
 						p.advance()
 					}
 					fieldType = p.parsePointerSuffix(fieldType)

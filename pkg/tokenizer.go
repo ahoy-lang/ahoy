@@ -33,7 +33,7 @@ const (
 	TOKEN_IN    // in (for loop element in array)
 	TOKEN_TO    // to (for loop range)
 	TOKEN_TILL  // till (removed; kept so use sites get the removal error)
-	TOKEN_WHILE // while (plain while-true loop; same AST as bare loop-till)
+	TOKEN_WHILE // while (plain while-true loop; same AST as bare loop-while)
 	TOKEN_UNTIL // until (run-until loop; desugars to while-not)
 	TOKEN_FUNC
 	TOKEN_FN // fn (function type, e.g. fn(int)->int)

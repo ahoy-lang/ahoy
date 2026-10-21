@@ -180,6 +180,7 @@ type CodeGenerator struct {
 	arrayImpls                    bool                                    // Track if we've added array implementation
 	arrayMethods                  map[string]bool                         // Track which array methods are used
 	mathBuiltins                  map[string]bool                         // Track which math/geometry builtins are used
+	randHelperEmitted             bool                                    // rand/rand_range used: helpers emitted in final assembly
 	stringMethods                 map[string]bool                         // Track which string methods are used
 	dictMethods                   map[string]bool                         // Track which dict methods are used
 	useJSON                       bool                                    // Track if JSON functions are used
@@ -390,6 +391,10 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 	gen.orderedIncludes = append(gen.orderedIncludes, "stdint.h")
 	gen.includes["assert.h"] = true
 	gen.orderedIncludes = append(gen.orderedIncludes, "assert.h")
+	// time.h is unconditional: main() seeds rand from time(NULL), and
+	// time_now|| reads clock(). Both are C89, safe on every target.
+	gen.includes["time.h"] = true
+	gen.orderedIncludes = append(gen.orderedIncludes, "time.h")
 
 	// Generate hash map implementation
 	gen.writeHashMapImplementation()
@@ -466,6 +471,9 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 
 	// Generate the math and geometry builtins the program uses
 	gen.writeMathHelperFunctions()
+
+	// Random helpers (rand/rand_range), written once at top level
+	gen.writeRandHelperFunctions()
 
 	// Generate string helper functions if any string methods were used
 	gen.writeStringHelperFunctions()
@@ -598,6 +606,30 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		if gen.arrayMethods["remove"] {
 			result.WriteString("AhoyArray* ahoy_array_remove(AhoyArray* arr, int index);\n")
 		}
+		// The rest of the stdlib array methods. Without a forward
+		// declaration the first call site implicitly declares the function
+		// as returning int; when the real definition (AhoyArray* or
+		// intptr_t) follows, tcc reports "incompatible types for
+		// redefinition". int-returning methods (sum, has) linked by
+		// accident; every other one was a compile error.
+		if gen.arrayMethods["sum"] {
+			result.WriteString("int ahoy_array_sum(AhoyArray* arr);\n")
+		}
+		if gen.arrayMethods["has"] {
+			result.WriteString("int ahoy_array_has(AhoyArray* arr, intptr_t value);\n")
+		}
+		if gen.arrayMethods["sort"] {
+			result.WriteString("AhoyArray* ahoy_array_sort(AhoyArray* arr);\n")
+		}
+		if gen.arrayMethods["reverse"] {
+			result.WriteString("AhoyArray* ahoy_array_reverse(AhoyArray* arr);\n")
+		}
+		if gen.arrayMethods["shuffle"] {
+			result.WriteString("AhoyArray* ahoy_array_shuffle(AhoyArray* arr);\n")
+		}
+		if gen.arrayMethods["pick"] {
+			result.WriteString("intptr_t ahoy_array_pick(AhoyArray* arr);\n")
+		}
 		result.WriteString("char* print_array_helper(AhoyArray* arr);\n")
 		result.WriteString("AhoyArray* ahoy_string_split_array(const char* str, const char* delim);\n")
 		result.WriteString("\n")
@@ -669,6 +701,18 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 	result.WriteString("double ahoy_pow(double x, double y);\n")
 	result.WriteString("double ahoy_hypot(double x, double y);\n")
 	result.WriteString("double ahoy_mod(double x, double y);\n")
+	result.WriteString("double ahoy_sin(double x);\n")
+	result.WriteString("double ahoy_cos(double x);\n")
+	result.WriteString("double ahoy_tan(double x);\n")
+	result.WriteString("double ahoy_asin(double x);\n")
+	result.WriteString("double ahoy_acos(double x);\n")
+	result.WriteString("double ahoy_atan(double x);\n")
+	result.WriteString("double ahoy_atan2(double y, double x);\n")
+	result.WriteString("double ahoy_fmod(double x, double y);\n")
+	result.WriteString("double ahoy_ln(double x);\n")
+	result.WriteString("double ahoy_exp(double x);\n")
+	result.WriteString("int ahoy_rand(void);\n")
+	result.WriteString("int ahoy_rand_range(int lo, int hi);\n")
 	result.WriteString("bool ahoy_rect_contains(double x, double y, double rx, double ry, double rw, double rh);\n")
 	result.WriteString("bool ahoy_rect_intersects(double ax, double ay, double aw, double ah, double bx, double by, double bw, double bh);\n")
 	result.WriteString("char* ahoy_string_rpad(const char* str, int length, const char* pad);\n")
@@ -784,6 +828,9 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		// If there's an Ahoy main function, just call it
 		result.WriteString("#line 1 \"<ahoy-generated>\"\n")
 		result.WriteString("int main() {\n")
+		// Seed once: rand/shuffle/pick share one stream. (Per-call srand
+		// reseeds with the same second and repeats the sequence.)
+		result.WriteString("    srand((unsigned)time(NULL));\n")
 		if gen.enableSignalHandler {
 			result.WriteString("    ahoy_setup_signal_handlers();\n")
 		}
@@ -794,6 +841,7 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		// Legacy: no main function, use global scope code
 		result.WriteString("#line 1 \"<ahoy-generated>\"\n")
 		result.WriteString("int main() {\n")
+		result.WriteString("    srand((unsigned)time(NULL));\n")
 		if gen.enableSignalHandler {
 			result.WriteString("    ahoy_setup_signal_handlers();\n")
 		}
@@ -3381,6 +3429,12 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			gen.output.WriteString(" = strdup(")
 			gen.generateNode(node.Children[0])
 			gen.output.WriteString(");\n")
+		} else if gen.charTarget(node.Value) {
+			// Storing into a char slot: a 1-character literal becomes 'x'.
+			gen.output.WriteString(node.Value)
+			gen.output.WriteString(" = ")
+			gen.generateCharSlot(node.Children[0])
+			gen.output.WriteString(";\n")
 		} else {
 			gen.output.WriteString(node.Value)
 			gen.output.WriteString(" = ")
@@ -3697,6 +3751,15 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				gen.output.WriteString(" = strdup(")
 				gen.generateNode(valueNode)
 				gen.output.WriteString(");\n")
+			} else if varType == "char" {
+				// A 1-character literal becomes a C char literal; a char
+				// value (variable, call, index) emits as-is.
+				gen.output.WriteString(cType)
+				gen.output.WriteString(" ")
+				gen.output.WriteString(node.Value)
+				gen.output.WriteString(" = ")
+				gen.generateCharSlot(valueNode)
+				gen.output.WriteString(";\n")
 			} else {
 				gen.output.WriteString(cType)
 				gen.output.WriteString(" ")
@@ -4661,16 +4724,16 @@ func (gen *CodeGenerator) generateWhileLoop(node *ahoy.ASTNode) {
 	gen.writeIndent()
 
 	// Check if we have an explicit loop variable with initialization
-	// Pattern 1: Children[0] is loop var, Children[1] is start, Children[2] is condition, Children[3] is body (loop i:start till condition)
-	// Pattern 2: Children[0] is loop var, Children[1] is start (0), Children[2] is condition, Children[3] is body (loop i till condition)
-	// Pattern 3: Children[0] is condition, Children[1] is body (loop till condition)
+	// Pattern 1: Children[0] is loop var, Children[1] is start, Children[2] is condition, Children[3] is body (loop i:start while/until condition)
+	// Pattern 2: Children[0] is loop var, Children[1] is start (0), Children[2] is condition, Children[3] is body (loop i while/until condition)
+	// Pattern 3: Children[0] is condition, Children[1] is body (loop while/until condition)
 	var loopVar string
 	var conditionNode *ahoy.ASTNode
 	var bodyNode *ahoy.ASTNode
 	var outerScopeStarted bool
 
 	if len(node.Children) == 4 && node.Children[0].Type == ahoy.NODE_IDENTIFIER {
-		// Pattern 1 or 2: loop i:start till condition or loop i till condition
+		// Pattern 1 or 2: loop i:start while/until condition or loop i while/until condition
 		loopVar = node.Children[0].Value
 		startNode := node.Children[1]
 		conditionNode = node.Children[2]
@@ -4691,7 +4754,7 @@ func (gen *CodeGenerator) generateWhileLoop(node *ahoy.ASTNode) {
 		gen.output.WriteString(";\n")
 		gen.writeIndent()
 	} else if len(node.Children) == 3 && node.Children[0].Type == ahoy.NODE_IDENTIFIER {
-		// Old syntax: loop i till condition (without start value)
+		// Old shape: loop i while/until condition (without start value)
 		loopVar = node.Children[0].Value
 		conditionNode = node.Children[1]
 		bodyNode = node.Children[2]
@@ -4709,7 +4772,7 @@ func (gen *CodeGenerator) generateWhileLoop(node *ahoy.ASTNode) {
 		gen.output.WriteString(" = 0;\n")
 		gen.writeIndent()
 	} else {
-		// Pattern 3: loop till condition (no loop variable)
+		// Pattern 3: loop while/until condition (no loop variable)
 		conditionNode = node.Children[0]
 		bodyNode = node.Children[1]
 	}
@@ -5646,6 +5709,8 @@ func (gen *CodeGenerator) generateReturnStatement(node *ahoy.ASTNode) {
 					gen.output.WriteString("strdup(")
 					gen.generateNode(child)
 					gen.output.WriteString(")")
+				} else if hasReturnTypes && i < len(returnTypes) && returnTypes[i] == "char" {
+					gen.generateCharSlot(child)
 				} else {
 					gen.generateNode(child)
 				}
@@ -5658,6 +5723,8 @@ func (gen *CodeGenerator) generateReturnStatement(node *ahoy.ASTNode) {
 			gen.output.WriteString("strdup(")
 			gen.generateNode(node.Children[0])
 			gen.output.WriteString(")")
+		} else if len(node.Children) == 1 && gen.currentFunctionReturnType == "char" {
+			gen.generateCharSlot(node.Children[0])
 		} else {
 			gen.generateNode(node.Children[0])
 		}
@@ -6840,12 +6907,16 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 	switch node.Value {
 	case "abs", "min", "max", "clamp", "lerp", "sign", "floor", "ceil",
 		"round", "sqrt", "pow", "hypot", "mod",
+		"sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+		"fmod", "ln", "exp",
 		"rect_contains", "rect_intersects":
 		// The math and geometry builtins: a plain call with C arguments.
 		gen.mathBuiltins[node.Value] = true
 		// The ones that call the C library's math functions need its header.
 		switch node.Value {
-		case "floor", "ceil", "round", "sqrt", "pow", "hypot", "mod":
+		case "floor", "ceil", "round", "sqrt", "pow", "hypot", "mod",
+			"sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+			"fmod", "ln", "exp":
 			if !gen.includes["math.h"] {
 				gen.includes["math.h"] = true
 				gen.orderedIncludes = append(gen.orderedIncludes, "math.h")
@@ -6861,6 +6932,36 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 			gen.generateNodeInternal(child, false)
 		}
 		gen.output.WriteString(")")
+		return
+	case "rand", "rand_range":
+		// Random integers. rand|| is the whole libc range; rand_range|lo, hi|
+		// is inclusive on both ends (raylib GetRandomValue semantics).
+		// Seeded once in main(), so shuffle/pick share the same stream
+		// instead of reseeding per call.
+		if !gen.includes["time.h"] {
+			gen.includes["time.h"] = true
+			gen.orderedIncludes = append(gen.orderedIncludes, "time.h")
+		}
+		if !gen.randHelperEmitted {
+			gen.randHelperEmitted = true
+		}
+		if node.Value == "rand" {
+			gen.output.WriteString("ahoy_rand()")
+		} else {
+			gen.output.WriteString("ahoy_rand_range(")
+			for i, child := range node.Children {
+				if i > 0 {
+					gen.output.WriteString(", ")
+				}
+				gen.generateNodeInternal(child, false)
+			}
+			gen.output.WriteString(")")
+		}
+		return
+	case "time_now":
+		// Seconds since the program started (CPU time, monotonic).
+		// time.h is always included: main() seeds rand from it.
+		gen.output.WriteString("((double)clock() / (double)CLOCKS_PER_SEC)")
 		return
 	case "len", "length":
 		// len/length function - returns length of array, dict, string, etc.
@@ -7800,7 +7901,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 								gen.output.WriteString("(intptr_t)")
 							}
 						}
-						gen.generateNode(argNode)
+						gen.generateMaybeCharArg(argNode, paramTypes, i, hasParamInfo)
 					} else if positionalIndex < len(positionalArgs) {
 						// Use positional argument
 						argNode := positionalArgs[positionalIndex]
@@ -7840,7 +7941,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 								gen.output.WriteString("(intptr_t)")
 							}
 						}
-						gen.generateNode(argNode)
+						gen.generateMaybeCharArg(argNode, paramTypes, i, hasParamInfo)
 					} else {
 						// Parameter not provided - use default value
 						paramDefaults, hasDefaults := gen.functionParamDefaults[node.Value]
@@ -8015,11 +8116,46 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 					}
 				}
 
-				gen.generateNode(arg)
+				gen.generateMaybeCharArg(arg, paramTypes, i, hasParamInfo)
 			}
 		}
 		gen.output.WriteString(")")
 	}
+}
+
+// generateMaybeCharArg emits a call argument into a possibly char-typed
+// parameter slot: a 1-character string literal coerces to 'x', everything
+// else emits normally.
+func (gen *CodeGenerator) generateMaybeCharArg(arg *ahoy.ASTNode, paramTypes []string, i int, hasParamInfo bool) {
+	if hasParamInfo && i < len(paramTypes) && strings.TrimSpace(paramTypes[i]) == "char" {
+		gen.generateCharSlot(arg)
+		return
+	}
+	gen.generateNode(arg)
+}
+
+// generateCharString lifts a char-typed value to a 1-character C string
+// for concatenation. Stack storage: the concat copies it immediately,
+// so nothing dangles.
+func (gen *CodeGenerator) generateCharString(node *ahoy.ASTNode) {
+	gen.output.WriteString("({ char _cs[2] = {")
+	gen.generateCharSlot(node)
+	gen.output.WriteString(", 0}; _cs; })")
+}
+
+// isCharExpr reports whether an operand is a char: a char variable,
+// literal, call result or index read. Used to lift string + char.
+func (gen *CodeGenerator) isCharExpr(n *ahoy.ASTNode) bool {
+	if n == nil {
+		return false
+	}
+	if n.Type == ahoy.NODE_CHAR {
+		return true
+	}
+	if n.Type == ahoy.NODE_STRING {
+		return len([]rune(n.Value)) == 1
+	}
+	return gen.inferType(n) == "char"
 }
 
 // isStringExpr reports whether an operand is a string (or a char* from C), so
@@ -8225,6 +8361,29 @@ func (gen *CodeGenerator) generateBinaryOp(node *ahoy.ASTNode) {
 		gen.generateNode(node.Children[1])
 		gen.output.WriteString(")")
 	case "+":
+		if len(node.Children) >= 2 {
+			left, right := node.Children[0], node.Children[1]
+			if gen.isCharExpr(left) != gen.isCharExpr(right) &&
+				(gen.isStringExpr(left) || gen.isStringExpr(right)) {
+				// string + char (either order): lift the char to a
+				// 1-character string. char + char stays arithmetic.
+				gen.stringMethods["concat"] = true
+				gen.output.WriteString("ahoy_string_concat(")
+				if gen.isStringExpr(left) {
+					gen.generateNode(left)
+				} else {
+					gen.generateCharString(left)
+				}
+				gen.output.WriteString(", ")
+				if gen.isStringExpr(right) {
+					gen.generateNode(right)
+				} else {
+					gen.generateCharString(right)
+				}
+				gen.output.WriteString(")")
+				return
+			}
+		}
 		if len(node.Children) >= 2 && gen.isStringExpr(node.Children[0]) && gen.isStringExpr(node.Children[1]) {
 			// String concatenation: + on two strings builds a new string.
 			gen.stringMethods["concat"] = true
@@ -8923,6 +9082,26 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 		return
 	}
 
+	// Extended array builtins: slice/index_of/reduce/insert/join/clear/dup
+	// plus the append->push, erase->remove and size->length aliases. These
+	// used to fall through to the generic array path, which emits a call to
+	// ahoy_array_<name> that was never defined (link error), or worse to a
+	// same-named string/dict helper (array dup called ahoy_string_dup on an
+	// AhoyArray* and corrupted the heap). Everything here is inline, like
+	// map/filter, so no forward declarations are needed.
+	if methodName == "append" {
+		methodName = "push"
+	} else if methodName == "erase" {
+		methodName = "remove"
+	} else if methodName == "size" {
+		if isArrayLikeType(gen.inferType(object)) {
+			methodName = "length"
+		}
+	}
+	if gen.generateArrayExtendedInline(node, object, args, methodName) {
+		return
+	}
+
 	// Handle map and filter with inline code generation
 	if methodName == "map" || methodName == "filter" {
 		if len(args.Children) > 0 && args.Children[0].Type == ahoy.NODE_LAMBDA {
@@ -9004,6 +9183,18 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 		}
 	}
 
+	// String-only methods need a string-like receiver. Without this gate
+	// an array named the same (xs.dup||) compiled to ahoy_string_dup(xs)
+	// and corrupted the heap; unknown receivers keep the old permissive
+	// behavior (untyped values, f-string results).
+	objIsString := objectType == "char*" || objectType == "string" ||
+		objectType == "const char*" || objectType == "const char *"
+	objIsContainer := isArrayLikeType(objectType) || objectType == "dict" ||
+		strings.HasPrefix(objectType, "dict[") || objectType == "HashMap*" ||
+		strings.HasPrefix(objectType, "struct:")
+	if isStringMethod && !objIsString && objIsContainer {
+		isStringMethod = false
+	}
 	if isStringMethod || (objectType == "char*" && methodName == "length") {
 		// Track which string method is used
 		gen.stringMethods[methodName] = true
@@ -10077,6 +10268,78 @@ func (gen *CodeGenerator) generateStringSlice(node *ahoy.ASTNode) {
 	gen.output.WriteString(")")
 }
 
+// generateStringIndex emits a bounds-checked byte read s[i] as a C char.
+// The failure report mirrors the array path so out-of-range string indexing
+// reads the same in crash logs.
+func (gen *CodeGenerator) generateStringIndex(node *ahoy.ASTNode, objExpr string, arrayName string) {
+	gen.output.WriteString("({ const char* __s = ")
+	gen.output.WriteString(objExpr)
+	gen.output.WriteString("; int __idx = ")
+	gen.generateNode(node.Children[0])
+	gen.output.WriteString("; int __n = strlen(__s); ")
+	gen.output.WriteString("if (__idx < 0 || __idx >= __n) { ")
+	gen.output.WriteString("fprintf(stderr, \"RUNTIME ERROR: String index out of bounds\\n\"); ")
+	gen.output.WriteString("fprintf(stderr, \"  File: ")
+	gen.output.WriteString(gen.sourceFilename)
+	gen.output.WriteString("\\n\"); ")
+	gen.output.WriteString("fprintf(stderr, \"  Line: ")
+	gen.output.WriteString(strconv.Itoa(node.Line))
+	gen.output.WriteString("\\n\"); ")
+	gen.output.WriteString("fprintf(stderr, \"  String: ")
+	gen.output.WriteString(arrayName)
+	gen.output.WriteString("\\n\"); ")
+	gen.output.WriteString("fprintf(stderr, \"  Index: %d\\n\", __idx); ")
+	gen.output.WriteString("fprintf(stderr, \"  Valid range: 0 to %d\\n\", __n - 1); ")
+	gen.output.WriteString("exit(1); } __s[__idx]; })")
+}
+
+// charTarget reports whether a variable name currently holds a char:
+// the slot a 1-character literal coerces into.
+func (gen *CodeGenerator) charTarget(name string) bool {
+	if t, ok := gen.variables[name]; ok && t == "char" {
+		return true
+	}
+	if t, ok := gen.functionVars[name]; ok && t == "char" {
+		return true
+	}
+	return false
+}
+
+// generateCharSlot emits a value into a char-typed slot. A 1-character
+// string literal becomes a C char literal ('x'); anything else (a char
+// variable, call result, index read) emits normally. Multi-character
+// literals are rejected by the checker; dynamic strings need s[i].
+func (gen *CodeGenerator) generateCharSlot(node *ahoy.ASTNode) {
+	if node.Type == ahoy.NODE_STRING {
+		if r := []rune(node.Value); len(r) == 1 {
+			gen.output.WriteString("'")
+			gen.output.WriteString(escapeCharLiteral(r[0]))
+			gen.output.WriteString("'")
+			return
+		}
+	}
+	gen.generateNode(node)
+}
+
+// escapeCharLiteral renders one rune as C char-literal contents.
+func escapeCharLiteral(r rune) string {
+	switch r {
+	case '\'':
+		return "\\'"
+	case '\\':
+		return "\\\\"
+	case '\n':
+		return "\\n"
+	case '\t':
+		return "\\t"
+	case '\r':
+		return "\\r"
+	case 0:
+		return "\\0"
+	}
+	return string(r)
+}
+
 func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 	// Check if this is a chained array access (2D array): grid[r][c]
 	// In this case, Value is empty and Children[0] is the inner array access, Children[1] is the outer index
@@ -10104,6 +10367,18 @@ func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 	// Flat buffer read: contiguous lanes, no boxing.
 	if gen.isBufferVar(arrayName) {
 		gen.generateBufferRead(node, objExpr, arrayName, gen.bufferElemOfVar(arrayName))
+		return
+	}
+
+	// String index: s[i] is the i-th byte (a C char), bounds-checked
+	// against strlen like an array read. Without this a string receiver
+	// fell into the AhoyArray* path and failed to compile.
+	if varType, exists := gen.variables[arrayName]; exists && isStringLikeType(varType) {
+		gen.generateStringIndex(node, objExpr, arrayName)
+		return
+	}
+	if varType, exists := gen.functionVars[arrayName]; exists && isStringLikeType(varType) {
+		gen.generateStringIndex(node, objExpr, arrayName)
 		return
 	}
 
@@ -10718,8 +10993,10 @@ func (gen *CodeGenerator) mapType(langType string) string {
 		return "int64_t"
 	case "u64":
 		return "uint64_t"
-	case "string", "char*", "char":
+	case "string", "char*", "char *", "const char*", "const char *":
 		return "char*"
+	case "char":
+		return "char"
 	case "bool":
 		return "bool"
 	case "dict":
@@ -11058,6 +11335,11 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		if node.Value == "+" && isStringTypeName(leftType) && isStringTypeName(rightType) {
 			return "string"
 		}
+		// string + char (either order) concatenates, like string + string.
+		if node.Value == "+" && ((isStringTypeName(leftType) && rightType == "char") ||
+			(isStringTypeName(rightType) && leftType == "char")) {
+			return "string"
+		}
 		// Either spelling of float promotes (member access can yield
 		// "double" for the same Ahoy float, depending on inference order).
 		if leftType == "float" || leftType == "double" || rightType == "float" || rightType == "double" {
@@ -11196,6 +11478,11 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 				return "int"
 			}
 			return "float"
+		}
+
+		// String indexing reads a byte: s[i] is a char.
+		if isStringLikeType(arrayType) {
+			return "char"
 		}
 
 		// If array is generic/any, elements are also generic/any (intptr_t)
@@ -14883,6 +15170,181 @@ func (gen *CodeGenerator) getAhoyTypeEnum(typeName string) string {
 }
 
 // Generate inline map code
+
+// isArrayLikeType reports whether an inferred type is an Ahoy dynamic array.
+func isArrayLikeType(t string) bool {
+	return t == "array" || strings.HasPrefix(t, "array[") || t == "AhoyArray*"
+}
+
+// generateArrayExtendedInline emits the array builtins that used to fall
+// through to undefined ahoy_array_<name> calls: slice, index_of, reduce,
+// insert, join, clear and dup. Like map/filter everything is a C statement
+// expression over the source array, so no forward declarations are needed.
+// Returns false for anything it does not own (map/filter/push/..., strings,
+// dicts, structs), letting the normal routing below run.
+func (gen *CodeGenerator) generateArrayExtendedInline(node *ahoy.ASTNode, object *ahoy.ASTNode, args *ahoy.ASTNode, methodName string) bool {
+	switch methodName {
+	case "slice", "index_of", "reduce", "insert", "join", "clear", "dup":
+	default:
+		return false
+	}
+	if !isArrayLikeType(gen.inferType(object)) {
+		return false
+	}
+	gen.arrayImpls = true
+	gen.arrayMethods[methodName] = true
+	switch methodName {
+	case "slice":
+		// xs.slice|lo, hi|: fresh array with elements [lo, hi), clamped.
+		lo := argOrZero(args, 0)
+		hi := argOrZero(args, 1)
+		gen.output.WriteString("({ AhoyArray* __src = ")
+		gen.generateNodeInternal(object, false)
+		gen.output.WriteString("; int __lo = ")
+		gen.generateNodeInternal(lo, false)
+		gen.output.WriteString("; int __hi = ")
+		gen.generateNodeInternal(hi, false)
+		gen.output.WriteString("; if (__lo < 0) __lo = 0; if (__hi > __src->length) __hi = __src->length; if (__hi < __lo) __hi = __lo; ")
+		gen.output.WriteString("AhoyArray* __r = malloc(sizeof(AhoyArray)); ")
+		gen.output.WriteString("__r->length = __hi - __lo; __r->capacity = __r->length; ")
+		gen.output.WriteString("__r->data = __r->length ? malloc(__r->length * sizeof(intptr_t)) : 0; ")
+		gen.output.WriteString("__r->types = __r->length ? malloc(__r->length * sizeof(AhoyValueType)) : 0; ")
+		gen.output.WriteString("__r->is_typed = __src->is_typed; __r->element_type = __src->element_type; ")
+		gen.output.WriteString("for (int __i = 0; __i < __r->length; __i++) { __r->data[__i] = __src->data[__lo + __i]; __r->types[__i] = __src->types[__lo + __i]; } ")
+		gen.output.WriteString("__r; })")
+	case "index_of":
+		// xs.index_of|v|: first index whose slot equals v, else -1.
+		// Same equality as has (slot identity). For strings compare by
+		// value with find_index|it: it is "x"| instead.
+		v := argOrZero(args, 0)
+		gen.output.WriteString("({ AhoyArray* __src = ")
+		gen.generateNodeInternal(object, false)
+		gen.output.WriteString("; intptr_t __v = (intptr_t)(")
+		gen.generateNodeInternal(v, false)
+		gen.output.WriteString("); int __r = -1; for (int __i = 0; __i < __src->length; __i++) { if (__src->data[__i] == __v) { __r = __i; break; } } __r; })")
+	case "reduce":
+		// xs.reduce|init, (acc, el): body|: left fold over int slots.
+		init := argOrZero(args, 0)
+		var lambda *ahoy.ASTNode
+		if len(args.Children) > 1 {
+			lambda = args.Children[1]
+		}
+		accName, elName, body := "acc", "x", init
+		if lambda != nil && lambda.Type == ahoy.NODE_LAMBDA {
+			if names, b := lambdaParamNames(lambda); len(names) >= 2 {
+				accName, elName, body = names[0], names[1], b
+			} else if len(names) == 1 {
+				elName, body = names[0], b
+			}
+		}
+		gen.output.WriteString("({ AhoyArray* __src = ")
+		gen.generateNodeInternal(object, false)
+		gen.output.WriteString("; intptr_t __acc = (intptr_t)(")
+		gen.generateNodeInternal(init, false)
+		gen.output.WriteString("); for (int __i = 0; __i < __src->length; __i++) { int ")
+		gen.output.WriteString(accName)
+		gen.output.WriteString(" = (int)__acc; int ")
+		gen.output.WriteString(elName)
+		gen.output.WriteString(" = (int)__src->data[__i]; __acc = (intptr_t)(")
+		gen.generateNodeInternal(body, false)
+		gen.output.WriteString("); } __acc; })")
+	case "insert":
+		// xs.insert|idx, v|: shift right and store, growing like push.
+		// Returns the same array.
+		idx := argOrZero(args, 0)
+		val := argOrZero(args, 1)
+		gen.output.WriteString("({ AhoyArray* __a = ")
+		gen.generateNodeInternal(object, false)
+		gen.output.WriteString("; int __idx = ")
+		gen.generateNodeInternal(idx, false)
+		gen.output.WriteString("; if (__idx < 0) __idx = 0; if (__idx > __a->length) __idx = __a->length; ")
+		gen.output.WriteString("if (__a->length >= __a->capacity) { __a->capacity = __a->capacity == 0 ? 4 : __a->capacity * 2; ")
+		gen.output.WriteString("__a->data = realloc(__a->data, __a->capacity * sizeof(intptr_t)); ")
+		gen.output.WriteString("__a->types = realloc(__a->types, __a->capacity * sizeof(AhoyValueType)); } ")
+		gen.output.WriteString("memmove(&__a->data[__idx+1], &__a->data[__idx], (__a->length - __idx) * sizeof(intptr_t)); ")
+		gen.output.WriteString("memmove(&__a->types[__idx+1], &__a->types[__idx], (__a->length - __idx) * sizeof(AhoyValueType)); ")
+		if gen.pushNeedsStrdup(object, val) {
+			gen.output.WriteString("__a->data[__idx] = (intptr_t)strdup((char*)(intptr_t)(")
+			gen.generateNodeInternal(val, false)
+			gen.output.WriteString(")); ")
+		} else {
+			gen.output.WriteString("__a->data[__idx] = (intptr_t)(")
+			gen.generateNodeInternal(val, false)
+			gen.output.WriteString("); ")
+		}
+		gen.output.WriteString("__a->types[__idx] = ")
+		gen.output.WriteString(gen.getAhoyTypeEnum(gen.getValueType(val)))
+		gen.output.WriteString("; __a->length++; __a; })")
+	case "join":
+		// xs.join|sep|: concatenate the string slots with sep between.
+		// Non-string slots are skipped, never dereferenced blindly.
+		sep := argOrZero(args, 0)
+		gen.output.WriteString("({ AhoyArray* __a = ")
+		gen.generateNodeInternal(object, false)
+		gen.output.WriteString("; const char* __sep = ")
+		gen.generateNodeInternal(sep, false)
+		gen.output.WriteString("; size_t __n = 0; int __c = 0; ")
+		gen.output.WriteString("for (int __i = 0; __i < __a->length; __i++) { if (__a->types[__i] == AHOY_TYPE_STRING && __a->data[__i]) { __n += strlen((char*)(intptr_t)__a->data[__i]) + (__c ? strlen(__sep) : 0); __c++; } } ")
+		gen.output.WriteString("char* __r = malloc(__n + 1); __r[0] = 0; __c = 0; ")
+		gen.output.WriteString("for (int __i = 0; __i < __a->length; __i++) { if (__a->types[__i] == AHOY_TYPE_STRING && __a->data[__i]) { if (__c) strcat(__r, __sep); strcat(__r, (char*)(intptr_t)__a->data[__i]); __c++; } } ")
+		gen.output.WriteString("__r; })")
+	case "clear":
+		// xs.clear||: drop every element. Length goes to zero; the slots
+		// are left for scope exit to reclaim (leak direction, never dangle).
+		gen.output.WriteString("({ AhoyArray* __a = ")
+		gen.generateNodeInternal(object, false)
+		gen.output.WriteString("; __a->length = 0; __a; })")
+	case "dup":
+		// xs.dup||: shallow copy (new buffers, shared slots) — the same
+		// aliasing push already has.
+		gen.output.WriteString("({ AhoyArray* __src = ")
+		gen.generateNodeInternal(object, false)
+		gen.output.WriteString("; AhoyArray* __r = malloc(sizeof(AhoyArray)); ")
+		gen.output.WriteString("__r->length = __src->length; __r->capacity = __src->length; ")
+		gen.output.WriteString("__r->data = __r->length ? malloc(__r->length * sizeof(intptr_t)) : 0; ")
+		gen.output.WriteString("__r->types = __r->length ? malloc(__r->length * sizeof(AhoyValueType)) : 0; ")
+		gen.output.WriteString("__r->is_typed = __src->is_typed; __r->element_type = __src->element_type; ")
+		gen.output.WriteString("for (int __i = 0; __i < __r->length; __i++) { __r->data[__i] = __src->data[__i]; __r->types[__i] = __src->types[__i]; } ")
+		gen.output.WriteString("__r; })")
+	}
+	return true
+}
+
+// argOrZero returns args[i] or a zero int literal when missing, so a short
+// call still generates valid C (the checker reports the arity).
+func argOrZero(args *ahoy.ASTNode, i int) *ahoy.ASTNode {
+	if args != nil && i < len(args.Children) && args.Children[i] != nil {
+		return args.Children[i]
+	}
+	return &ahoy.ASTNode{Type: ahoy.NODE_NUMBER, Value: "0", DataType: "int"}
+}
+
+// lambdaParamNames splits a lambda into its parameter names and body,
+// mirroring the map/filter inline convention (Value holds the count in the
+// new format, the single name in the old format).
+func lambdaParamNames(lambda *ahoy.ASTNode) ([]string, *ahoy.ASTNode) {
+	paramCount := 1
+	if lambda.Value != "" {
+		if count, err := strconv.Atoi(lambda.Value); err == nil {
+			paramCount = count
+		}
+	}
+	if paramCount == 1 && len(lambda.Children) == 1 {
+		return []string{lambda.Value}, lambda.Children[0]
+	}
+	if len(lambda.Children) > paramCount {
+		names := []string{}
+		for i := 0; i < paramCount; i++ {
+			names = append(names, lambda.Children[i].Value)
+		}
+		return names, lambda.Children[paramCount]
+	}
+	if len(lambda.Children) > 0 {
+		return []string{"x"}, lambda.Children[0]
+	}
+	return []string{"x"}, &ahoy.ASTNode{Type: ahoy.NODE_NUMBER, Value: "0", DataType: "int"}
+}
+
 func (gen *CodeGenerator) generateMapInline(arrayNode *ahoy.ASTNode, lambda *ahoy.ASTNode) {
 	// Parse lambda structure: Value contains param count, first N children are params, last child is body
 	paramCount := 1
@@ -15189,11 +15651,23 @@ func (gen *CodeGenerator) writeStructHelperFunctions() {
 // writeMathHelperFunctions writes the math and geometry builtins the program
 // uses. Each is written only when the program uses it, so a program that
 // never takes a square root does not carry the square root.
+// writeRandHelperFunctions emits ahoy_rand/ahoy_rand_range once, at top
+// level. The call sites run during function-body generation (whose output
+// buffer later becomes part of a function), so the definitions must be
+// written here in the final assembly phase instead — writing them at the
+// call site nests them inside the caller's body.
+func (gen *CodeGenerator) writeRandHelperFunctions() {
+	if !gen.randHelperEmitted {
+		return
+	}
+	gen.funcDecls.WriteString("int ahoy_rand(void) { return rand(); }\n\n")
+	gen.funcDecls.WriteString("int ahoy_rand_range(int lo, int hi) { if (hi <= lo) return lo; return lo + rand() % (hi - lo + 1); }\n\n")
+}
+
 func (gen *CodeGenerator) writeMathHelperFunctions() {
 	if len(gen.mathBuiltins) == 0 {
 		return
-	}
-	// The math and geometry builtins. Each is written only when the program
+	}	// The math and geometry builtins. Each is written only when the program
 	// uses it, so a program that never takes a square root does not carry
 	// the square root.
 	if gen.mathBuiltins["abs"] {
@@ -15234,6 +15708,36 @@ func (gen *CodeGenerator) writeMathHelperFunctions() {
 	}
 	if gen.mathBuiltins["mod"] {
 		gen.funcDecls.WriteString("double ahoy_mod(double x, double y) { return y == 0 ? 0 : fmod(x, y); }\n\n")
+	}
+	if gen.mathBuiltins["sin"] {
+		gen.funcDecls.WriteString("double ahoy_sin(double x) { return sin(x); }\n\n")
+	}
+	if gen.mathBuiltins["cos"] {
+		gen.funcDecls.WriteString("double ahoy_cos(double x) { return cos(x); }\n\n")
+	}
+	if gen.mathBuiltins["tan"] {
+		gen.funcDecls.WriteString("double ahoy_tan(double x) { return tan(x); }\n\n")
+	}
+	if gen.mathBuiltins["asin"] {
+		gen.funcDecls.WriteString("double ahoy_asin(double x) { if (x < -1) x = -1; if (x > 1) x = 1; return asin(x); }\n\n")
+	}
+	if gen.mathBuiltins["acos"] {
+		gen.funcDecls.WriteString("double ahoy_acos(double x) { if (x < -1) x = -1; if (x > 1) x = 1; return acos(x); }\n\n")
+	}
+	if gen.mathBuiltins["atan"] {
+		gen.funcDecls.WriteString("double ahoy_atan(double x) { return atan(x); }\n\n")
+	}
+	if gen.mathBuiltins["atan2"] {
+		gen.funcDecls.WriteString("double ahoy_atan2(double y, double x) { if (x == 0 && y == 0) return 0; return atan2(y, x); }\n\n")
+	}
+	if gen.mathBuiltins["fmod"] {
+		gen.funcDecls.WriteString("double ahoy_fmod(double x, double y) { return y == 0 ? 0 : fmod(x, y); }\n\n")
+	}
+	if gen.mathBuiltins["ln"] {
+		gen.funcDecls.WriteString("double ahoy_ln(double x) { return x <= 0 ? 0 : log(x); }\n\n")
+	}
+	if gen.mathBuiltins["exp"] {
+		gen.funcDecls.WriteString("double ahoy_exp(double x) { return exp(x); }\n\n")
 	}
 	if gen.mathBuiltins["rect_contains"] {
 		gen.funcDecls.WriteString("bool ahoy_rect_contains(double x, double y, double rx, double ry, double rw, double rh) { return x >= rx && x <= rx + rw && y >= ry && y <= ry + rh; }\n\n")

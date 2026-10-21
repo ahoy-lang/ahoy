@@ -422,7 +422,7 @@ func (p *Parser) validateFunctionCall(funcName string, line int, column int) boo
 	// Check for recursion: function calling itself
 	if p.currentFunctionName != "" && funcName == p.currentFunctionName {
 		p.Errors = append(p.Errors, ParseError{
-			Message: fmt.Sprintf("Recursion not allowed: function '%s' cannot call itself; use loop till condition instead.", funcName),
+			Message: fmt.Sprintf("Recursion not allowed: function '%s' cannot call itself; name the result in a local instead, or restructure as `loop until COND do` / `loop while COND do`.", funcName),
 			Line:    line,
 			Column:  column,
 		})

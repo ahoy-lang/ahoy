@@ -30,6 +30,10 @@ func init() {
 		// math and geometry
 		"abs", "min", "max", "clamp", "lerp", "sign", "floor", "ceil",
 		"round", "sqrt", "pow", "hypot", "mod",
+		"sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+		"fmod", "ln", "exp",
+		// monotonic clock (seconds since program start)
+		"time_now",
 		"rect_contains", "rect_intersects",
 		// flat POD buffer constructor: buffer|n| -> buffer[f32]
 		"buffer",
@@ -56,6 +60,7 @@ func init() {
 		// array
 		"length", "push", "pop", "sum", "has", "sort", "reverse", "shuffle",
 		"pick", "fill", "remove", "dup", "clear", "size",
+		"slice", "index_of", "reduce", "insert", "join", "append", "erase",
 		// dict
 		"has_all", "keys", "values", "stable_sort", "merge",
 		// string
@@ -76,7 +81,9 @@ func init() {
 		"string",  // cast
 		"map",     // collection pipeline
 		"filter",
-		"each",
+		// no "each": a lambda body is a pure expression (calls do not
+		// parse there), so each could only silently do nothing. A missing
+		// name is a clean "no method" error instead of a C link error.
 		"reduce",
 		"any",
 		"all",

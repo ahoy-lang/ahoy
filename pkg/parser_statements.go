@@ -1511,11 +1511,11 @@ func (p *Parser) parseLoop() *ASTNode {
 				Line:     startLine,
 			}
 		} else if p.current().Type == TOKEN_TILL {
-			// `till` was removed: condition loops are `loop while COND do`.
+			// `till` was removed: condition loops are `loop until COND do` or `loop while COND do`.
 			if !p.LintMode {
-				panic(fmt.Sprintf("`till` was removed; write `loop while COND do` instead (line %d)", p.current().Line))
+				panic(fmt.Sprintf("`till` was removed; write `loop until COND do` or `loop while COND do` instead (line %d)", p.current().Line))
 			}
-			p.recordError("`till` was removed; write `loop while COND do` instead")
+			p.recordError("`till` was removed; write `loop until COND do` or `loop while COND do` instead")
 			return &ASTNode{Type: NODE_WHILE_LOOP, Children: []*ASTNode{}}
 		} else if p.current().Type == TOKEN_WHILE || p.current().Type == TOKEN_UNTIL {
 			// loop i:start while condition / loop i:start until condition
@@ -1698,11 +1698,11 @@ func (p *Parser) parseLoop() *ASTNode {
 			Children: []*ASTNode{loopVarNode, zeroNode, endExpr, body},
 		}
 	} else if p.current().Type == TOKEN_TILL {
-		// `till` was removed: condition loops are `loop while COND do`.
+		// `till` was removed: condition loops are `loop until COND do` or `loop while COND do`.
 		if !p.LintMode {
-			panic(fmt.Sprintf("`till` was removed; write `loop while COND do` instead (line %d)", p.current().Line))
+			panic(fmt.Sprintf("`till` was removed; write `loop until COND do` or `loop while COND do` instead (line %d)", p.current().Line))
 		}
-		p.recordError("`till` was removed; write `loop while COND do` instead")
+		p.recordError("`till` was removed; write `loop until COND do` or `loop while COND do` instead")
 		return &ASTNode{Type: NODE_WHILE_LOOP, Children: []*ASTNode{}}
 	} else if p.current().Type == TOKEN_WHILE || p.current().Type == TOKEN_UNTIL {
 		// loop [i] while condition / loop [i] until condition
@@ -1743,7 +1743,7 @@ func (p *Parser) parseLoop() *ASTNode {
 		body := p.parseBlockUntilEnd("loop", startLine)
 
 		if loopVar != nil {
-			// loop i till condition - i should be initialized to 0 locally
+			// loop i while/until condition - i is initialized to 0 locally
 			loopVarNode := &ASTNode{
 				Type:   NODE_IDENTIFIER,
 				Value:  loopVar.Value,
@@ -1757,7 +1757,7 @@ func (p *Parser) parseLoop() *ASTNode {
 				Line:     startLine,
 			}
 		} else {
-			// loop till condition - no local var, should check outer scope in linting
+			// loop while/until condition - no local var, check outer scope in linting
 			return &ASTNode{
 				Type:     NODE_WHILE_LOOP,
 				Children: []*ASTNode{condition, body},

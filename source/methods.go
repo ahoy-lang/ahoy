@@ -48,7 +48,8 @@ func (gen *CodeGenerator) resolveUserMethod(call *ahoy.ASTNode) (string, bool, b
 
 // valueAllocatesString reports whether evaluating this expression produces a
 // freshly heap-allocated string the owner must free: string concatenation
-// (both operands strings), sprintf, and fresh-returning string methods.
+// (string operands, including the string + char form), sprintf, and
+// fresh-returning string methods.
 // Literals, f-strings (static buffer), aliases, member/array/dict access,
 // user and C calls (which may return shared statics) never allocate here.
 func (gen *CodeGenerator) valueAllocatesString(node *ahoy.ASTNode) bool {
@@ -60,8 +61,15 @@ func (gen *CodeGenerator) valueAllocatesString(node *ahoy.ASTNode) bool {
 		if node.Value != "+" && node.Value != "plus" {
 			return false
 		}
-		return len(node.Children) >= 2 &&
-			gen.isStringExpr(node.Children[0]) && gen.isStringExpr(node.Children[1])
+		if len(node.Children) < 2 {
+			return false
+		}
+		left, right := node.Children[0], node.Children[1]
+		if gen.isStringExpr(left) && gen.isStringExpr(right) {
+			return true
+		}
+		return gen.isCharExpr(left) != gen.isCharExpr(right) &&
+			(gen.isStringExpr(left) || gen.isStringExpr(right))
 	case ahoy.NODE_STRING_SLICE:
 		return true
 	case ahoy.NODE_CALL:

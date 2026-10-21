@@ -982,6 +982,9 @@ func (c *checker) checkStatement(node *ASTNode) {
 		if declType == "" {
 			declType = c.inferVarType(childAt(node, 0))
 		}
+		if declType == "char" {
+			c.checkCharSlot(childAt(node, 0), "variable '"+node.Value+"'")
+		}
 		c.declareTyped(node.Value, declType)
 		// Buffer lanes: validate the spelling, then agree the value's
 		// lane with the declaration's. Constructors carry their lane
@@ -998,7 +1001,23 @@ func (c *checker) checkStatement(node *ASTNode) {
 				}
 			}
 		}
-		// -strict: an explicit annotation contradicting an array read
+		// In-place array methods (push/sort/reverse/shuffle/fill/remove/insert/
+		// clear plus the append/erase aliases) return the SAME array they
+		// mutated. Binding that to a second name makes two scope-owned owners
+		// of one allocation, which scope exit frees twice (SIGSEGV). Use the
+		// call as a statement, or rebind the same name: xs.push|4|.
+		if rhs := childAt(node, 0); rhs != nil && rhs.Type == NODE_METHOD_CALL && len(rhs.Children) > 0 {
+			if recv := rhs.Children[0]; recv != nil && recv.Type == NODE_IDENTIFIER && recv.Value != node.Value {
+				if recvT := c.lookupType(recv.Value); recvT == "array" || strings.HasPrefix(recvT, "array[") {
+					switch rhs.Value {
+					case "push", "append", "sort", "reverse", "shuffle", "fill",
+						"remove", "erase", "insert", "clear":
+						c.warningAt(node, "In-place '%s' returns the same array: '%s' and '%s' now own one allocation (double-free at scope exit); call it as a statement or rebind '%s' itself", rhs.Value, node.Value, recv.Value, recv.Value)
+					}
+				}
+			}
+		}
+	// -strict: an explicit annotation contradicting an array read
 		// (n: int = strs[i]) is shaped exactly like the lines[i]-as-int
 		// segfault. Flowing inference stays silent; only an explicit
 		// claim that disagrees with the array's element type warns.
@@ -1033,6 +1052,25 @@ func (c *checker) checkStatement(node *ASTNode) {
 		// The parser already rejects assignment to an undeclared variable.
 		c.checkExpr(childAt(node, 0))
 		c.warnPartialCallResult(node, childAt(node, 0), 1)
+		if tgt := childAt(node, 0); tgt != nil && tgt.Type == NODE_IDENTIFIER {
+			if c.lookupType(tgt.Value) == "char" {
+				c.checkCharSlot(childAt(node, 1), "variable '"+tgt.Value+"'")
+			}
+		}
+		// Same aliasing rule as declarations: rebinding an in-place array
+		// call to a different name double-frees at scope exit.
+		if tgt, val := childAt(node, 0), childAt(node, 1); tgt != nil && val != nil &&
+			tgt.Type == NODE_IDENTIFIER && val.Type == NODE_METHOD_CALL && len(val.Children) > 0 {
+			if recv := val.Children[0]; recv != nil && recv.Type == NODE_IDENTIFIER && recv.Value != tgt.Value {
+				if recvT := c.lookupType(recv.Value); recvT == "array" || strings.HasPrefix(recvT, "array[") {
+					switch val.Value {
+					case "push", "append", "sort", "reverse", "shuffle", "fill",
+						"remove", "erase", "insert", "clear":
+						c.warningAt(node, "In-place '%s' returns the same array: '%s' and '%s' now own one allocation (double-free at scope exit); call it as a statement or rebind '%s' itself", val.Value, tgt.Value, recv.Value, recv.Value)
+					}
+				}
+			}
+		}
 		// Heap stores into struct fields or dict slots may leak the previous
 		// contents when autofree can't prove the store safe - but that is the
 		// safe direction (vs dangling), and high-level code is not nagged
@@ -1093,7 +1131,7 @@ func (c *checker) checkStatement(node *ASTNode) {
 		}
 
 	case NODE_WHILE_LOOP:
-		// `loop i:start till condition` and `loop i till condition` carry the
+		// `loop i:start while/until condition` and `loop i while/until condition` carry the
 		// loop variable as the first child; it is in scope in the condition and
 		// the body, so it has to be declared before either is checked.
 		if len(node.Children) >= 3 && node.Children[0].Type == NODE_IDENTIFIER {
@@ -1176,6 +1214,13 @@ func (c *checker) checkStatement(node *ASTNode) {
 			if child != nil && child.Type == NODE_F_STRING {
 				c.warningAt(child, "Returning an f-string shares the format buffer; bind it to a variable first so the caller owns its value")
 				break
+			}
+		}
+		// A multi-character literal returned from a char function is
+		// garbage, not a conversion; single characters coerce.
+		if len(node.Children) == 1 && c.inFunction {
+			if sig, ok := c.p.functions[c.funcName]; ok && len(sig.ReturnTypes) == 1 && sig.ReturnTypes[0] == "char" {
+				c.checkCharSlot(node.Children[0], "return of '"+c.funcName+"'")
 			}
 		}
 		// A bare `return` in a function that promises a value dies later in
@@ -1849,9 +1894,14 @@ func (c *checker) checkArguments(node *ASTNode, name string, args []*ASTNode) {
 			label, value := childAt(arg, 0), childAt(arg, 1)
 			if label != nil {
 				for _, param := range params.Children {
-					if param != nil && param.Value == label.Value && IsFunctionType(param.DataType) {
-						if refName, ok := fnRefName(value); ok {
-							c.checkFnRef(value, refName, param.DataType, "parameter '"+label.Value+"'")
+					if param != nil && param.Value == label.Value {
+						if IsFunctionType(param.DataType) {
+							if refName, ok := fnRefName(value); ok {
+								c.checkFnRef(value, refName, param.DataType, "parameter '"+label.Value+"'")
+							}
+						}
+						if param.DataType == "char" {
+							c.checkCharSlot(value, "parameter '"+label.Value+"'")
 						}
 						break
 					}
@@ -1864,6 +1914,9 @@ func (c *checker) checkArguments(node *ASTNode, name string, args []*ASTNode) {
 				if refName, ok := fnRefName(arg); ok {
 					c.checkFnRef(arg, refName, pnode.DataType, "parameter '"+pnode.Value+"'")
 				}
+			}
+			if pnode := params.Children[posIdx]; pnode != nil && pnode.DataType == "char" {
+				c.checkCharSlot(arg, "parameter '"+pnode.Value+"'")
 			}
 		}
 		posIdx++
@@ -2224,6 +2277,16 @@ func (c *checker) checkMethodCall(node *ASTNode) {
 		}
 		return
 	}
+	// each is deliberately not a method: a lambda body is a pure expression
+	// (calls do not parse there), so each could only silently do nothing.
+	// A missing name would otherwise fall through to codegen and die as a
+	// C link error; say so here instead.
+	if recvType == "array" || strings.HasPrefix(recvType, "array[") {
+		if method == "each" {
+			c.errorAt(node, "'each' is not supported: a lambda body is a pure expression (calls do not parse there), so each could only silently do nothing; write a loop instead")
+			return
+		}
+	}
 	if _, hasImpl := c.methods[recvType]; hasImpl {
 		c.errorAt(node, "Type '%s' has no method '%s'%s", recvType, method, c.methodHint(recvType))
 		return
@@ -2241,6 +2304,17 @@ func (c *checker) checkMethodCall(node *ASTNode) {
 	// (literals) or caller-owned, so autofree cannot free them safely, and
 	// long-lived log-style arrays would nag on every push. Same policy as
 	// field stores above.
+}
+
+// checkCharSlot rejects a multi-character string literal flowing into a
+// char slot: codegen would emit the pointer as a byte (garbage). Exactly
+// one character coerces to 'x'; anything else needs s[i] or a string.
+func (c *checker) checkCharSlot(value *ASTNode, targetDesc string) {
+	if value != nil && value.Type == NODE_STRING {
+		if r := []rune(value.Value); len(r) != 1 {
+			c.errorAt(value, "Cannot store %d-character string in char (%s); use a 1-character literal or s[i]", len(r), targetDesc)
+		}
+	}
 }
 
 // fnRefName reports whether a value node is a &name function reference, and

@@ -238,14 +238,24 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 			// Check if this is object instantiation with properties
 			if (p.current().Type == TOKEN_IDENTIFIER || p.current().Type == TOKEN_STRING) &&
 				p.peek(1).Type == TOKEN_ASSIGN {
-				obj := p.parseObjectLiteral()
-				obj.Value = fullTypeName
+				obj := p.parseObjectLiteralRaw()
+				if obj.Type == NODE_OBJECT_LITERAL {
+					obj.Value = fullTypeName
+					if p.current().Type == TOKEN_DOT {
+						return p.parseMemberAccessChain(obj)
+					}
+				}
 				return obj
 			}
 
 			// Handle other cases - for now just parse as object literal
-			obj := p.parseObjectLiteral()
-			obj.Value = fullTypeName
+			obj := p.parseObjectLiteralRaw()
+			if obj.Type == NODE_OBJECT_LITERAL {
+				obj.Value = fullTypeName
+				if p.current().Type == TOKEN_DOT {
+					return p.parseMemberAccessChain(obj)
+				}
+			}
 			return obj
 		}
 	}

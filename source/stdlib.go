@@ -51,12 +51,12 @@ var ArrayMethods = map[string]StdlibFunc{
 	"shuffle": {
 		Name: "ahoy_array_shuffle", Category: "array", MethodName: "shuffle", ReturnType: "array",
 		Params: "arr:array", Doc: "Randomly shuffles the array",
-		Code: "AhoyArray* ahoy_array_shuffle(AhoyArray* arr) {\n    srand(time(NULL));\n    for (int i = arr->length - 1; i > 0; i--) {\n        int j = rand() % (i + 1);\n        intptr_t temp = arr->data[i];\n        arr->data[i] = arr->data[j];\n        arr->data[j] = temp;\n    }\n    return arr;\n}\n",
+		Code: "AhoyArray* ahoy_array_shuffle(AhoyArray* arr) {\n    for (int i = arr->length - 1; i > 0; i--) {\n        int j = rand() % (i + 1);\n        intptr_t temp = arr->data[i];\n        arr->data[i] = arr->data[j];\n        arr->data[j] = temp;\n    }\n    return arr;\n}\n",
 	},
 	"pick": {
 		Name: "ahoy_array_pick", Category: "array", MethodName: "pick", ReturnType: "any",
 		Params: "arr:array", Doc: "Returns a random element from the array",
-		Code: "intptr_t ahoy_array_pick(AhoyArray* arr) {\n    if (arr->length == 0) return 0;\n    srand(time(NULL));\n    return arr->data[rand() % arr->length];\n}\n",
+		Code: "intptr_t ahoy_array_pick(AhoyArray* arr) {\n    if (arr->length == 0) return 0;\n    return arr->data[rand() % arr->length];\n}\n",
 	},
 	"fill": {
 		Name: "ahoy_array_fill", Category: "array", MethodName: "fill", ReturnType: "array",
@@ -262,6 +262,17 @@ var BuiltinFuncs = map[string]StdlibFunc{
 	"pow":          {Name: "pow", Category: "builtin", MethodName: "pow", ReturnType: "float", Params: "x:float, y:float", Doc: "x raised to the power y"},
 	"hypot":        {Name: "hypot", Category: "builtin", MethodName: "hypot", ReturnType: "float", Params: "x:float, y:float", Doc: "The length of the hypotenuse of a right triangle"},
 	"mod":          {Name: "mod", Category: "builtin", MethodName: "mod", ReturnType: "float", Params: "x:float, y:float", Doc: "The remainder of x divided by y"},
+	"sin":          {Name: "sin", Category: "builtin", MethodName: "sin", ReturnType: "float", Params: "x:float", Doc: "The sine of x (radians)"},
+	"cos":          {Name: "cos", Category: "builtin", MethodName: "cos", ReturnType: "float", Params: "x:float", Doc: "The cosine of x (radians)"},
+	"tan":          {Name: "tan", Category: "builtin", MethodName: "tan", ReturnType: "float", Params: "x:float", Doc: "The tangent of x (radians)"},
+	"asin":         {Name: "asin", Category: "builtin", MethodName: "asin", ReturnType: "float", Params: "x:float", Doc: "The arcsine of x, in radians (clamped to [-1, 1])"},
+	"acos":         {Name: "acos", Category: "builtin", MethodName: "acos", ReturnType: "float", Params: "x:float", Doc: "The arccosine of x, in radians (clamped to [-1, 1])"},
+	"atan":         {Name: "atan", Category: "builtin", MethodName: "atan", ReturnType: "float", Params: "x:float", Doc: "The arctangent of x, in radians"},
+	"atan2":        {Name: "atan2", Category: "builtin", MethodName: "atan2", ReturnType: "float", Params: "y:float, x:float", Doc: "The angle of (x, y), in radians (-pi to pi)"},
+	"fmod":         {Name: "fmod", Category: "builtin", MethodName: "fmod", ReturnType: "float", Params: "x:float, y:float", Doc: "The floating-point remainder of x divided by y"},
+	"ln":           {Name: "ln", Category: "builtin", MethodName: "ln", ReturnType: "float", Params: "x:float", Doc: "The natural logarithm of x (0 when x is not positive)"},
+	"exp":          {Name: "exp", Category: "builtin", MethodName: "exp", ReturnType: "float", Params: "x:float", Doc: "e raised to the power x"},
+	"time_now":     {Name: "time_now", Category: "builtin", MethodName: "time_now", ReturnType: "float", Params: "", Doc: "Seconds since the program started (CPU time, monotonic)"},
 	// The geometry builtins.
 	"rect_contains": {Name: "rect_contains", Category: "builtin", MethodName: "rect_contains", ReturnType: "bool", Params: "x:float, y:float, rx:float, ry:float, rw:float, rh:float", Doc: "Is the point inside the rectangle"},
 	"rect_intersects": {Name: "rect_intersects", Category: "builtin", MethodName: "rect_intersects", ReturnType: "bool", Params: "ax:float, ay:float, aw:float, ah:float, bx:float, by:float, bw:float, bh:float", Doc: "Do two rectangles overlap"},
