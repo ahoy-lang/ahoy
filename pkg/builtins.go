@@ -35,6 +35,9 @@ func init() {
 		"buffer",
 		// buffer growth (realloc-copy): grow|buf, n| -> same buffer type
 		"grow",
+		// verified-load serialization (flat values): to_bytes|buf|,
+		// from_bytes|bytes|, from_bytes_ok|bytes|
+		"to_bytes", "from_bytes", "from_bytes_ok",
 	} {
 		builtinCallNames[name] = true
 		builtinMethodNames[name] = true

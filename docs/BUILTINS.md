@@ -81,3 +81,19 @@ rect_intersects|ax, ay, aw, ah, bx, by, bw, bh|   do the rectangles overlap
 They answer the questions that used to be four nested `if`s each. A
 rectangle is a position and a size: `x`, `y` is the top left, `w`, `h` the
 size.
+
+## The serialization builtins
+
+```
+to_bytes|buf|          image of a buffer[f32]: LE u32 count, then LE float32 bytes
+from_bytes|bytes|      the buffer rebuilt, verified; an empty buffer when framing fails
+from_bytes_ok|bytes|   the verifier alone: length, count, tags, ranges
+```
+
+They load what `to_bytes` wrote and nothing else. A short image, a
+count that disagrees with the length, a non-int tag, an out-of-range
+byte, or an absurd count fails closed: `from_bytes` yields an empty
+buffer and `from_bytes_ok` is false. A corrupt or hostile file is
+never a wild reference. The format is a same-platform save image (the
+floats are the host's LE encoding), not portable interchange; `array`
+and `string` payloads are the next framing, not this one.

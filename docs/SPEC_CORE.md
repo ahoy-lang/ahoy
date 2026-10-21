@@ -74,8 +74,10 @@ work: the checker tracks no nullness, so the rule stays syntactic.
 ## 5. What is explicitly not promised (yet)
 
 - No stable references into growing arrays (item 5).
-- No verified serialization (item 4): bytes cross as copies, never as
-  verified views; hostile input must still be validated by hand.
+- Serialization covers flat `buffer[f32]` values (item 4, shipped):
+  `to_bytes` / `from_bytes` / `from_bytes_ok` with exact framing
+  checks; hostile bytes fail closed to empty/false. `array` and
+  `string` payloads need ownership-aware framing and are next.
 - No typed job values (item 6): the pool takes `intptr_t`, floats are
   unsupported in the task ABI.
 - No index types / checkfree (item 7) and no long-distance return

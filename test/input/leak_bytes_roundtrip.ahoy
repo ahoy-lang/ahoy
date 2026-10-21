@@ -1,0 +1,96 @@
+program leak_bytes_roundtrip
+
+? Verified-load serialization (ownership + functional pin): to_bytes
+? images a buffer[f32] as LE [u32 count][float32...] in an array[int];
+? from_bytes rebuilds it only when framing verifies exactly, else an
+? empty buffer; from_bytes_ok is the verifier alone. Under valgrind
+? this program must report zero lost bytes (tools/mem_check.sh): every
+? image and rebuild is scope-owned. See SPEC_CORE.md item 4.
+
+@ main ||:
+	expected: []
+
+	b: buffer[f32] = buffer|3|
+	b[0] = 1.5
+	b[1] = -2.25
+	b[2] = 0.0
+
+	? image shape: 4 + 3*4 = 16 bytes, LE count 3
+	img: to_bytes|b|
+	il: len|img|
+	print|il|
+	expected.push|"16"|
+	print|img[0]|
+	expected.push|"3"|
+	print|img[1]|
+	expected.push|"0"|
+
+	? round trip is bit-exact
+	ok: from_bytes_ok|img|
+	print|ok|
+	expected.push|"1"|
+	back: from_bytes|img|
+	bl: len|back|
+	print|bl|
+	expected.push|"3"|
+	print|back[0]|
+	expected.push|"1.5"|
+	print|back[1]|
+	expected.push|"-2.25"|
+	print|back[2]|
+	expected.push|"0"|
+
+	? empty buffer round-trips (count 0 is valid)
+	e: buffer[f32] = buffer|0|
+	eimg: to_bytes|e|
+	eok: from_bytes_ok|eimg|
+	print|eok|
+	expected.push|"1"|
+	eback: from_bytes|eimg|
+	el: len|eback|
+	print|el|
+	expected.push|"0"|
+
+	? truncated image fails closed
+	trunc: to_bytes|b|
+	trunc.pop||
+	sok: from_bytes_ok|trunc|
+	print|sok|
+	expected.push|"0"|
+	sback: from_bytes|trunc|
+	sl: len|sback|
+	print|sl|
+	expected.push|"0"|
+
+	? count byte tampered (declares 99, holds 3) fails closed
+	badcount: to_bytes|b|
+	badcount[0] = 99
+	bok: from_bytes_ok|badcount|
+	print|bok|
+	expected.push|"0"|
+
+	? trailing garbage fails closed
+	pad: to_bytes|b|
+	pad.push|7|
+	lok: from_bytes_ok|pad|
+	print|lok|
+	expected.push|"0"|
+
+	? non-int element fails closed (count 1, length 8, tag STRING at [4])
+	evil: [1, 0, 0, 0, "x", 1, 2, 3]
+	e2: from_bytes_ok|evil|
+	print|e2|
+	expected.push|"0"|
+
+	? absurd count fails without allocating (len 4, count u32max)
+	huge: [255, 255, 255, 255]
+	hok: from_bytes_ok|huge|
+	print|hok|
+	expected.push|"0"|
+	hback: from_bytes|huge|
+	hl: len|hback|
+	print|hl|
+	expected.push|"0"|
+
+	print|expected|
+$

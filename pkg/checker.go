@@ -1689,6 +1689,25 @@ func (c *checker) checkCall(node *ASTNode) {
 			c.errorAt(node.Children[0], "grow needs a buffer source, not %s", actual)
 		}
 	}
+	// to_bytes|buf| needs a buffer source; from_bytes*|bytes| need an array.
+	if name == "to_bytes" {
+		if len(node.Children) != 1 {
+			c.errorAt(node, "to_bytes takes exactly one argument: to_bytes|buf|")
+			return
+		}
+		if actual := c.argActualType(node.Children[0]); actual != "" && actual != "unknown" && actual != "any" && actual != "generic" && !strings.HasPrefix(actual, "buffer[") {
+			c.errorAt(node.Children[0], "to_bytes needs a buffer source, not %s", actual)
+		}
+	}
+	if name == "from_bytes" || name == "from_bytes_ok" {
+		if len(node.Children) != 1 {
+			c.errorAt(node, "%s takes exactly one argument: %s|bytes|", name, name)
+			return
+		}
+		if actual := c.argActualType(node.Children[0]); actual != "" && actual != "unknown" && actual != "any" && actual != "generic" && actual != "array" && !strings.HasPrefix(actual, "array[") {
+			c.errorAt(node.Children[0], "%s needs an array of bytes, not %s", name, actual)
+		}
+	}
 	c.checkArguments(node, name, node.Children)
 	// free|x| frees immediately (recorded after the arguments are checked so
 	// the call itself doesn't warn): any later use of x in this function

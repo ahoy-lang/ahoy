@@ -610,7 +610,16 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 	result.WriteString("    int length;\n")
 	result.WriteString("    float data[];\n")
 	result.WriteString("} AhoyBufferF32;\n")
-	result.WriteString("char* print_buffer_helper(AhoyBufferF32* b);\n\n")
+	result.WriteString("char* print_buffer_helper(AhoyBufferF32* b);\n")
+	// Verified-load serialization (flat values only): framing is LE
+	// [u32 count][count x float32]; from_bytes checks it exactly. Gated
+	// on use so string-only programs never declare them.
+	if gen.arrayMethods["bytes"] {
+		result.WriteString("AhoyArray* ahoy_buffer_to_bytes(AhoyBufferF32* b);\n")
+		result.WriteString("AhoyBufferF32* ahoy_buffer_from_bytes(AhoyArray* a);\n")
+		result.WriteString("int ahoy_buffer_from_bytes_ok(AhoyArray* a);\n")
+	}
+	result.WriteString("\n")
 
 	// String concatenation (+ on two strings) is emitted on demand during
 	// codegen, which runs after this preamble; the prototype is unconditional
@@ -7494,6 +7503,40 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 		}
 		gen.output.WriteString("; if (__n < 0) __n = 0; AhoyBufferF32* __nb = calloc(1, sizeof(AhoyBufferF32) + (size_t)__n * sizeof(float)); int __m = __old ? __old->length : 0; if (__m > __n) __m = __n; for (int __i = 0; __i < __m; __i++) __nb->data[__i] = __old->data[__i]; __nb->length = __n; __nb; })")
 
+	case "to_bytes":
+		// to_bytes|buf| -> array[int] image: [u32 LE count][float32 LE...].
+		gen.arrayMethods["bytes"] = true
+		gen.output.WriteString("ahoy_buffer_to_bytes(")
+		if len(node.Children) > 0 {
+			gen.generateNode(node.Children[0])
+		} else {
+			gen.output.WriteString("0")
+		}
+		gen.output.WriteString(")")
+
+	case "from_bytes":
+		// from_bytes|bytes| -> buffer[f32]: verified rebuild, empty when
+		// the image is corrupt (length/count/tag/range/cap all checked).
+		gen.arrayMethods["bytes"] = true
+		gen.output.WriteString("ahoy_buffer_from_bytes(")
+		if len(node.Children) > 0 {
+			gen.generateNode(node.Children[0])
+		} else {
+			gen.output.WriteString("0")
+		}
+		gen.output.WriteString(")")
+
+	case "from_bytes_ok":
+		// from_bytes_ok|bytes| -> bool: the verifier alone, no rebuild.
+		gen.arrayMethods["bytes"] = true
+		gen.output.WriteString("ahoy_buffer_from_bytes_ok(")
+		if len(node.Children) > 0 {
+			gen.generateNode(node.Children[0])
+		} else {
+			gen.output.WriteString("0")
+		}
+		gen.output.WriteString(")")
+
 	case "char":
 		gen.output.WriteString("((char)(")
 		if len(node.Children) > 0 {
@@ -10583,6 +10626,17 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 				return at
 			}
 			return "buffer[f32]"
+		}
+		// Verified-load serialization: image is array[int] bytes,
+		// rebuilt value is buffer[f32], verdict is bool.
+		if node.Value == "to_bytes" {
+			return "array"
+		}
+		if node.Value == "from_bytes" {
+			return "buffer[f32]"
+		}
+		if node.Value == "from_bytes_ok" {
+			return "bool"
 		}
 		// A struct allocator: ahoy_alloc_NodeVis() -> NodeVis*
 		if structName := ahoy.AllocStructName(node.Value); structName != "" {
@@ -13761,6 +13815,74 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 		gen.funcDecls.WriteString("    }\n")
 		gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \"]\");\n")
 		gen.funcDecls.WriteString("    return buffer;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// bytes framing (little-endian): [u32 count][count x float32].
+	// ahoy_bytes_valid verifies framing exactly before anything is built:
+	// short image, count/length mismatch, non-int tags, out-of-range
+	// bytes, or absurd counts fail closed, so a corrupt or hostile image
+	// is an empty buffer (and false), never a wild reference. Float bytes
+	// are the host's own LE encoding (every target is LE); the format is
+	// a same-platform save image, not portable interchange.
+	if gen.arrayMethods["bytes"] {
+		gen.funcDecls.WriteString("static int ahoy_bytes_valid(AhoyArray* a, unsigned* countOut) {\n")
+		gen.funcDecls.WriteString("    unsigned count, i;\n")
+		gen.funcDecls.WriteString("    if (!a || !a->data || !a->types || a->length < 4) return 0;\n")
+		gen.funcDecls.WriteString("    for (i = 0; i < 4; i++) {\n")
+		gen.funcDecls.WriteString("        if (a->types[i] != AHOY_TYPE_INT) return 0;\n")
+		gen.funcDecls.WriteString("        if (a->data[i] < 0 || a->data[i] > 255) return 0;\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    count = (unsigned)(a->data[0] & 0xff) | ((unsigned)(a->data[1] & 0xff) << 8) |\n")
+		gen.funcDecls.WriteString("            ((unsigned)(a->data[2] & 0xff) << 16) | ((unsigned)(a->data[3] & 0xff) << 24);\n")
+		gen.funcDecls.WriteString("    if (count > 8388608u) return 0;\n")
+		gen.funcDecls.WriteString("    if ((unsigned)a->length != 4u + count * 4u) return 0;\n")
+		gen.funcDecls.WriteString("    for (i = 4; i < (unsigned)a->length; i++) {\n")
+		gen.funcDecls.WriteString("        if (a->types[i] != AHOY_TYPE_INT) return 0;\n")
+		gen.funcDecls.WriteString("        if (a->data[i] < 0 || a->data[i] > 255) return 0;\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    if (countOut) *countOut = count;\n")
+		gen.funcDecls.WriteString("    return 1;\n")
+		gen.funcDecls.WriteString("}\n\n")
+		gen.funcDecls.WriteString("AhoyArray* ahoy_buffer_to_bytes(AhoyBufferF32* b) {\n")
+		gen.funcDecls.WriteString("    AhoyArray* arr = (AhoyArray*)malloc(sizeof(AhoyArray));\n")
+		gen.funcDecls.WriteString("    int n = (b && b->length > 0) ? b->length : 0;\n")
+		gen.funcDecls.WriteString("    int cap = 4 + n * 4, i, k;\n")
+		gen.funcDecls.WriteString("    unsigned u;\n")
+		gen.funcDecls.WriteString("    float f;\n")
+		gen.funcDecls.WriteString("    arr->length = 0;\n")
+		gen.funcDecls.WriteString("    arr->capacity = cap;\n")
+		gen.funcDecls.WriteString("    arr->data = (intptr_t*)malloc((size_t)cap * sizeof(intptr_t));\n")
+		gen.funcDecls.WriteString("    arr->types = (AhoyValueType*)malloc((size_t)cap * sizeof(AhoyValueType));\n")
+		gen.funcDecls.WriteString("    arr->is_typed = 1;\n")
+		gen.funcDecls.WriteString("    arr->element_type = AHOY_TYPE_INT;\n")
+		gen.funcDecls.WriteString("    for (k = 0; k < 4; k++) { arr->data[arr->length] = (n >> (8 * k)) & 0xff; arr->types[arr->length] = AHOY_TYPE_INT; arr->length++; }\n")
+		gen.funcDecls.WriteString("    for (i = 0; i < n; i++) {\n")
+		gen.funcDecls.WriteString("        f = b->data[i];\n")
+		gen.funcDecls.WriteString("        memcpy(&u, &f, 4);\n")
+		gen.funcDecls.WriteString("        for (k = 0; k < 4; k++) { arr->data[arr->length] = (intptr_t)((u >> (8 * k)) & 0xff); arr->types[arr->length] = AHOY_TYPE_INT; arr->length++; }\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    return arr;\n")
+		gen.funcDecls.WriteString("}\n\n")
+		gen.funcDecls.WriteString("AhoyBufferF32* ahoy_buffer_from_bytes(AhoyArray* a) {\n")
+		gen.funcDecls.WriteString("    unsigned count = 0, i;\n")
+		gen.funcDecls.WriteString("    AhoyBufferF32* out = (AhoyBufferF32*)calloc(1, sizeof(AhoyBufferF32));\n")
+		gen.funcDecls.WriteString("    out->length = 0;\n")
+		gen.funcDecls.WriteString("    if (!ahoy_bytes_valid(a, &count)) return out;\n")
+		gen.funcDecls.WriteString("    if (count == 0) return out;\n")
+		gen.funcDecls.WriteString("    out = (AhoyBufferF32*)realloc(out, sizeof(AhoyBufferF32) + (size_t)count * sizeof(float));\n")
+		gen.funcDecls.WriteString("    for (i = 0; i < count; i++) {\n")
+		gen.funcDecls.WriteString("        unsigned u = (unsigned)(a->data[4 + i * 4] & 0xff) | ((unsigned)(a->data[4 + i * 4 + 1] & 0xff) << 8) |\n")
+		gen.funcDecls.WriteString("                ((unsigned)(a->data[4 + i * 4 + 2] & 0xff) << 16) | ((unsigned)(a->data[4 + i * 4 + 3] & 0xff) << 24);\n")
+		gen.funcDecls.WriteString("        float f;\n")
+		gen.funcDecls.WriteString("        memcpy(&f, &u, 4);\n")
+		gen.funcDecls.WriteString("        out->data[i] = f;\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    out->length = (int)count;\n")
+		gen.funcDecls.WriteString("    return out;\n")
+		gen.funcDecls.WriteString("}\n\n")
+		gen.funcDecls.WriteString("int ahoy_buffer_from_bytes_ok(AhoyArray* a) {\n")
+		gen.funcDecls.WriteString("    return ahoy_bytes_valid(a, 0);\n")
 		gen.funcDecls.WriteString("}\n\n")
 	}
 }
