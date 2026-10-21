@@ -52,6 +52,17 @@ type checker struct {
 	// freedNames holds locals explicitly freed with free|x| (not deferred).
 	// Any later use warns (use-after-free); rebinding clears the entry.
 	freedNames map[string]bool
+	// inLoop counts enclosing loop bodies under check: a guard whose
+	// else arm is a bare halt/next diverges only inside a loop (at top
+	// level halt/next do not provably leave), so inLoop gates that
+	// narrowing. Saved and reset per function like the sets above.
+	inLoop int
+	// nonNull holds names proved not-null by a guard or null test in the
+	// straight-line flow (guard p is not null else return, or an if arm
+	// entered under p is not null). Any assignment clears the entry, so
+	// membership always means definitely-not-null here. Fresh per
+	// function, like freedNames.
+	nonNull map[string]bool
 	// inDefer counts enclosing defer statements: free|x| inside one runs at
 	// scope end, so later uses before then are fine and not recorded.
 	inDefer int
@@ -84,6 +95,7 @@ func (p *Parser) checkSemantics(ast *ASTNode, programNames []string, programMeth
 		scopeTypes:   []map[string]string{{}},
 		programNames: make(map[string]bool, len(programNames)),
 		freedNames:   make(map[string]bool),
+		nonNull:      make(map[string]bool),
 	}
 	for _, name := range programNames {
 		c.programNames[name] = true
@@ -770,10 +782,14 @@ func (c *checker) checkFunction(node *ASTNode) {
 	savedInFunc := c.inFunction
 	savedParams := c.funcParams
 	savedFreed := c.freedNames
+	savedLoop := c.inLoop
+	savedNonNull := c.nonNull
 	c.funcName = node.Value
 	c.inFunction = true
 	c.funcParams = map[string]bool{}
 	c.freedNames = map[string]bool{}
+	c.inLoop = 0
+	c.nonNull = map[string]bool{}
 
 	c.pushScope()
 	if params != nil {
@@ -801,6 +817,8 @@ func (c *checker) checkFunction(node *ASTNode) {
 	c.inFunction = savedInFunc
 	c.funcParams = savedParams
 	c.freedNames = savedFreed
+	c.inLoop = savedLoop
+	c.nonNull = savedNonNull
 }
 
 // functionNeedsReturn reports whether a function body must return a value on
@@ -840,6 +858,82 @@ func bodyHasValueReturn(node *ASTNode) bool {
 		}
 	}
 	return false
+}
+
+// checkNullIf checks an if statement, threading null-state through its
+// arms: an arm entered under `X is not null` knows X inside (guarded
+// derefs stay clean); a diverging single arm entered under `X is null`
+// proves X for what follows when there is no else to sneak around
+// through (the guard shape, and the bare if-no-else shape). Every other
+// arm checks exactly as before, with the set restored afterwards, so a
+// conditional proof never leaks out of its arm.
+func (c *checker) checkNullIf(node *ASTNode) {
+	if len(node.Children) == 0 {
+		return
+	}
+	n := len(node.Children)
+	hasElse := (n-1)%2 == 0
+	bodyEnd := n
+	var elseBody *ASTNode
+	if hasElse && n > 1 {
+		elseBody = node.Children[n-1]
+		bodyEnd = n - 1
+	}
+	// The if condition always checks as an expression.
+	c.checkExpr(node.Children[0])
+	// (condition, body) arms: bodies at odd indices, each governed by
+	// the condition before it. A nested if child (an elif chain the
+	// parser left nested) recurses and handles itself. Every arm body
+	// checks under a snapshot: assignments inside a conditional arm
+	// must not leak proofs out of it.
+	for i := 1; i < bodyEnd; i += 2 {
+		body := node.Children[i]
+		if body.Type == NODE_IF_STATEMENT {
+			c.checkStatement(body)
+			continue
+		}
+		if body.Type != NODE_BLOCK {
+			c.checkStatement(body)
+			continue
+		}
+		saved := c.snapshotNull()
+		if root, isNull, ok := nullImplies(node.Children[i-1], false); ok && !isNull {
+			c.nonNull[root] = true
+		}
+		c.checkBlock(body)
+		c.restoreNull(saved)
+	}
+	// Elif conditions between the arms check as plain expressions.
+	for i := 2; i < bodyEnd; i += 2 {
+		c.checkExpr(node.Children[i])
+	}
+	if elseBody != nil {
+		if elseBody.Type != NODE_BLOCK {
+			c.checkStatement(elseBody)
+			return
+		}
+		// No elifs: the else runs with the if condition false.
+		// Snapshot unconditionally: an else arm is conditional.
+		saved := c.snapshotNull()
+		if bodyEnd == 2 {
+			if root, isNull, ok := nullImplies(node.Children[0], true); ok && !isNull {
+				c.nonNull[root] = true
+			}
+		}
+		c.checkBlock(elseBody)
+		c.restoreNull(saved)
+		return
+	}
+	// No else, single then-arm, diverging body: the fall-through proves
+	// the condition false (the guard shape and its bare-if twin).
+	// Divergence is `return` anywhere, or a bare halt/next inside a
+	// loop (at top level neither provably leaves).
+	if n == 2 && node.Children[1].Type == NODE_BLOCK &&
+		c.guardDiverges(node.Children[1]) {
+		if root, isNull, ok := nullImplies(node.Children[0], true); ok && !isNull {
+			c.nonNull[root] = true
+		}
+	}
 }
 
 // blockAlwaysReturns reports whether execution of a block can never fall off
@@ -1001,6 +1095,10 @@ func (c *checker) checkStatement(node *ASTNode) {
 				}
 			}
 		}
+		// Null tracking: a fresh declaration proves nothing yet (an
+		// uninitialized pointer holds NULL), except taking an address,
+		// which is never null.
+		c.trackNullStore(node.Value, childAt(node, 0))
 		// In-place array methods (push/sort/reverse/shuffle/fill/remove/insert/
 		// clear plus the append/erase aliases) return the SAME array they
 		// mutated. Binding that to a second name makes two scope-owned owners
@@ -1048,6 +1146,15 @@ func (c *checker) checkStatement(node *ASTNode) {
 					c.checkBufferLane("buffer["+lane+"]", c.argActualType(val), node, "field '"+target.Value+"'")
 				}
 			}
+		}
+		// Null tracking: a store invalidates what the flow knew about
+		// the name. Taking an address is never null; anything else is
+		// unknown again (element stores arr[i]/d<k> have no tracked
+		// name and are skipped).
+		if len(node.Children) == 1 && node.Value != "" {
+			c.trackNullStore(node.Value, childAt(node, 0))
+		} else if target := childAt(node, 0); target != nil && target.Type == NODE_MEMBER_ACCESS {
+			c.trackNullStore(nullRoot(target), childAt(node, 1))
 		}
 		// The parser already rejects assignment to an undeclared variable.
 		c.checkExpr(childAt(node, 0))
@@ -1115,20 +1222,7 @@ func (c *checker) checkStatement(node *ASTNode) {
 		c.checkBlock(node)
 
 	case NODE_IF_STATEMENT:
-		for i, child := range node.Children {
-			if i == 0 {
-				c.checkExpr(child)
-				continue
-			}
-			switch child.Type {
-			case NODE_BLOCK:
-				c.checkBlock(child)
-			case NODE_IF_STATEMENT:
-				c.checkStatement(child)
-			default:
-				c.checkExpr(child)
-			}
-		}
+		c.checkNullIf(node)
 
 	case NODE_WHILE_LOOP:
 		// `loop i:start while/until condition` and `loop i while/until condition` carry the
@@ -1140,12 +1234,12 @@ func (c *checker) checkStatement(node *ASTNode) {
 			for i := 1; i < len(node.Children)-1; i++ {
 				c.checkExpr(childAt(node, i))
 			}
-			c.checkBlock(childAt(node, len(node.Children)-1))
+			c.checkNullBlock(childAt(node, len(node.Children)-1))
 			c.popScope()
 			return
 		}
 		c.checkExpr(childAt(node, 0))
-		c.checkBlock(childAt(node, 1))
+		c.checkNullBlock(childAt(node, 1))
 
 	case NODE_FOR_RANGE_LOOP, NODE_FOR_COUNT_LOOP:
 		// loop var: start to end
@@ -1155,7 +1249,7 @@ func (c *checker) checkStatement(node *ASTNode) {
 		}
 		c.checkExpr(childAt(node, 1))
 		c.checkExpr(childAt(node, 2))
-		c.checkBlock(childAt(node, 3))
+		c.checkNullBlock(childAt(node, 3))
 		c.popScope()
 
 	case NODE_FOR_IN_ARRAY_LOOP:
@@ -1164,7 +1258,7 @@ func (c *checker) checkStatement(node *ASTNode) {
 		if v := childAt(node, 0); v != nil {
 			c.declare(v.Value)
 		}
-		c.checkBlock(childAt(node, 2))
+		c.checkNullBlock(childAt(node, 2))
 		c.popScope()
 
 	case NODE_FOR_IN_DICT_LOOP:
@@ -1176,18 +1270,23 @@ func (c *checker) checkStatement(node *ASTNode) {
 		if v := childAt(node, 1); v != nil {
 			c.declare(v.Value)
 		}
-		c.checkBlock(childAt(node, 3))
+		c.checkNullBlock(childAt(node, 3))
 		c.popScope()
 
 	case NODE_FOR_LOOP:
+		savedForNull := c.snapshotNull()
+		c.inLoop++
 		for _, child := range node.Children {
 			c.checkStatement(child)
 		}
+		c.inLoop--
+		c.restoreNull(savedForNull)
 
 	case NODE_WHEN_STATEMENT:
 		// `when NAME then ...` compiles only under -D NAME, but the body is
 		// always parsed. It was skipped here, so a declaration inside the block
 		// was invisible to the very next statement in the same block.
+		savedWhenNull := c.snapshotNull()
 		for _, child := range node.Children {
 			if child.Type == NODE_BLOCK {
 				c.checkBlock(child)
@@ -1195,6 +1294,7 @@ func (c *checker) checkStatement(node *ASTNode) {
 				c.checkStatement(child)
 			}
 		}
+		c.restoreNull(savedWhenNull)
 
 	case NODE_SWITCH_STATEMENT:
 		c.checkExpr(childAt(node, 0))
@@ -1270,11 +1370,15 @@ func (c *checker) checkSwitchCase(node *ASTNode) {
 				c.checkCaseValue(child)
 				continue
 			}
+			// Case arms are conditional: snapshot so proofs established
+			// inside one do not leak into the code after the switch.
+			saved := c.snapshotNull()
 			if child.Type == NODE_BLOCK {
 				c.checkBlock(child)
 			} else {
 				c.checkStatement(child)
 			}
+			c.restoreNull(saved)
 		}
 	default:
 		c.checkStatement(node)
@@ -1577,6 +1681,22 @@ func (c *checker) checkExpr(node *ASTNode) {
 				}
 			}
 		}
+		if node.Value == "^" {
+			// Dereferencing a possibly-null pointer crashes. Guarded
+			// (or address-taken) names are proved non-null; everything
+			// else nullable warns here rather than segfaulting there.
+			if operand := childAt(node, 0); operand != nil {
+				if root := nullRoot(operand); root != "" {
+					t := c.inferNodeType(operand)
+					if t == "" {
+						t = c.p.inferType(operand)
+					}
+					if nullableAhoyType(t) && !c.nonNull[root] {
+						c.warningAt(node, "Dereferencing '%s', which may be null; guard %s is not null first", root, root)
+					}
+				}
+			}
+		}
 		c.checkExpr(childAt(node, 0))
 
 	case NODE_TERNARY:
@@ -1705,9 +1825,17 @@ func (c *checker) checkLambda(node *ASTNode) {
 			c.declare(child.Value)
 		}
 	}
+	// A lambda body runs when called, not when defined: flow facts from
+	// the enclosing code (guard-narrowed non-nulls) do not hold inside.
+	savedNull := c.snapshotNull()
+	savedLambdaLoop := c.inLoop
+	c.nonNull = map[string]bool{}
+	c.inLoop = 0
 	for i := paramCount; i < len(node.Children); i++ {
 		c.checkExpr(node.Children[i])
 	}
+	c.inLoop = savedLambdaLoop
+	c.restoreNull(savedNull)
 	c.popScope()
 }
 
@@ -2045,6 +2173,49 @@ func bufferLaneOf(t string) (string, bool) {
 	return "", false
 }
 
+// checkNullBlock checks a conditional body (loop body, switch/when
+// arm) under a snapshot: proofs established inside must not leak into
+// the enclosing flow, which may never execute the body. Loop bodies
+// also count loop depth for the halt/next divergence rule below.
+func (c *checker) checkNullBlock(node *ASTNode) {
+	saved := c.snapshotNull()
+	c.inLoop++
+	c.checkBlock(node)
+	c.inLoop--
+	c.restoreNull(saved)
+}
+
+// guardDiverges reports whether a guard's else arm cannot fall through
+// to the code after it: `return` always diverges; a bare `halt`/`next`
+// diverges only inside a loop (at top level neither provably leaves).
+func (c *checker) guardDiverges(body *ASTNode) bool {
+	if blockAlwaysReturns(body) {
+		return true
+	}
+	if c.inLoop > 0 && body != nil && body.Type == NODE_BLOCK && len(body.Children) == 1 {
+		switch body.Children[0].Type {
+		case NODE_HALT, NODE_NEXT:
+			return true
+		}
+	}
+	return false
+}
+
+// snapshotNull copies the null-state for scoped checking (if arms,
+// lambdas); restoreNull puts it back. The maps are never mutated
+// through an alias afterwards — every snapshot is fresh.
+func (c *checker) snapshotNull() map[string]bool {
+	m := make(map[string]bool, len(c.nonNull))
+	for k, v := range c.nonNull {
+		m[k] = v
+	}
+	return m
+}
+
+func (c *checker) restoreNull(m map[string]bool) {
+	c.nonNull = m
+}
+
 // checkBufferSpelling rejects buffer element spellings with no lane.
 // buffer[int] used to be accepted and silently stored as float32, so
 // counts above 2^24 corrupted; an explicit error beats quiet loss.
@@ -2055,6 +2226,96 @@ func (c *checker) checkBufferSpelling(t string, node *ASTNode) {
 	if _, ok := bufferLaneOf(t); !ok {
 		c.errorAt(node, "Unknown buffer type '%s'; write buffer[f32] or buffer[int]", t)
 	}
+}
+
+// nullableAhoyType reports whether a value of this type can hold NULL:
+// pointers of any spelling, plus the heap-container spellings. Scalars
+// can never be null (comparing one to null is an error); anything
+// unknown stays silent (lenient unknown, like the grow rule).
+func nullableAhoyType(t string) bool {
+	if t == "" || t == "unknown" || t == "any" || t == "generic" {
+		return false
+	}
+	if strings.HasSuffix(t, "*") {
+		return true
+	}
+	if t == "array" || strings.HasPrefix(t, "array[") {
+		return true
+	}
+	if t == "dict" || strings.HasPrefix(t, "dict[") || strings.HasPrefix(t, "dict<") {
+		return true
+	}
+	if strings.HasPrefix(t, "buffer[") {
+		return true
+	}
+	return false
+}
+
+// scalarAhoyType reports whether a value of this type can never be null:
+// comparing one to null is provably dead code, not a maybe.
+func scalarAhoyType(t string) bool {
+	switch t {
+	case "int", "float", "double", "bool", "char", "f32", "f64",
+		"i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64":
+		return true
+	}
+	return false
+}
+
+// nullRoot names the tracked holder behind an expression: a bare
+// identifier, or a dotted member chain over identifiers
+// (h.ext, cur.swarm.sx). Calls, indices and anything else have no
+// stable name to track, so they read as untracked ("").
+func nullRoot(node *ASTNode) string {
+	if node == nil {
+		return ""
+	}
+	if node.Type == NODE_IDENTIFIER {
+		return node.Value
+	}
+	if node.Type == NODE_MEMBER_ACCESS && node.Value != "" && len(node.Children) > 0 {
+		if base := nullRoot(node.Children[0]); base != "" {
+			return base + "." + node.Value
+		}
+	}
+	return ""
+}
+
+// nullImplies reads a null test the way the flow needs it. negate=false
+// asks what the test's own arm knows (if X is null then A: X is null in
+// A); negate=true asks what the fall-through knows (the arm diverged,
+// so execution continues with the condition false). NOTs are counted,
+// so `if p is not null` (parser: not(p is null)) and guard's double
+// negation both resolve. Only a bare `is` against the null literal
+// counts; match lists, method calls and anything else is not a test.
+func nullImplies(cond *ASTNode, negate bool) (root string, isNull bool, ok bool) {
+	n := 0
+	for cond != nil && cond.Type == NODE_UNARY_OP && cond.Value == "not" && len(cond.Children) == 1 {
+		n++
+		cond = cond.Children[0]
+	}
+	if cond == nil || cond.Type != NODE_BINARY_OP || cond.Value != "is" || len(cond.Children) != 2 {
+		return "", false, false
+	}
+	left, right := cond.Children[0], cond.Children[1]
+	var subject *ASTNode
+	if right.Type == NODE_NULL_LITERAL {
+		subject = left
+	} else if left.Type == NODE_NULL_LITERAL {
+		subject = right
+	} else {
+		return "", false, false
+	}
+	root = nullRoot(subject)
+	if root == "" {
+		return "", false, false
+	}
+	// An even number of NOTs tests is-null; the fall-through inverts it.
+	isNull = n%2 == 0
+	if negate {
+		isNull = !isNull
+	}
+	return root, isNull, true
 }
 
 // checkBufferLane agrees a stored buffer value with its destination's
@@ -2068,6 +2329,20 @@ func (c *checker) checkBufferLane(want, got string, node *ASTNode, what string) 
 		return
 	}
 	c.errorAt(node, "%s wants %s but receives %s; convert explicitly or match the lane", what, want, got)
+}
+
+// trackNullStore updates null-state for a store to root holding value:
+// taking an address is never null, anything else is unknown again (a
+// previous proof died with the old value). Untrackable targets ("")
+// are ignored.
+func (c *checker) trackNullStore(root string, value *ASTNode) {
+	if root == "" {
+		return
+	}
+	delete(c.nonNull, root)
+	if value != nil && value.Type == NODE_UNARY_OP && value.Value == "&" {
+		c.nonNull[root] = true
+	}
 }
 
 // bufferFieldLane resolves the declared lane of a member-store target
@@ -2497,6 +2772,36 @@ func (c *checker) checkBinaryOp(node *ASTNode) {
 	op := node.Value
 	if bitwiseOps[op] {
 		c.checkBitwiseOperands(node, op)
+		return
+	}
+	if op == "is" {
+		// A scalar compared to null is provably dead: no int, float,
+		// bool or char is ever null. Pointers, containers and unknown
+		// shapes stay silent.
+		left, right := childAt(node, 0), childAt(node, 1)
+		if left != nil && right != nil {
+			lNull := left.Type == NODE_NULL_LITERAL
+			rNull := right.Type == NODE_NULL_LITERAL
+			if lNull != rNull {
+				other := right
+				if rNull {
+					other = left
+				}
+				t := c.inferNodeType(other)
+				if t == "" {
+					t = c.p.inferType(other)
+				}
+				if t == "" {
+					switch other.Type {
+					case NODE_NUMBER, NODE_BOOLEAN, NODE_CHAR:
+						t = "int"
+					}
+				}
+				if scalarAhoyType(t) {
+					c.errorAt(node, "Type '%s' can never be null; comparing it to null is always false", t)
+				}
+			}
+		}
 		return
 	}
 	if !arithmeticOps[op] && !orderingOps[op] {

@@ -66,10 +66,24 @@ are errors everywhere (`if`, `when`, `guard`) — same rule as the
 removed `elseif`/`anif` synonyms.
 4.4 `null` is the nil reference: the zero value of every pointer
 field, assignable to pointer targets, comparable with `is null` /
-`is not null` (pointer comparison, never `strcmp`). `guard p else
-return $` on a pointer therefore reads the check directly. Flow
-narrowing (knowing `p` is non-null after the guard) is still future
-work: the checker tracks no nullness, so the rule stays syntactic.
+`is not null` (pointer comparison, never `strcmp`). Comparing a
+scalar (`int`, `float`, `bool`, ...) to null is an error: it can
+never be null.
+
+4.5 Null narrowing (the checker tracks non-null names per function):
+`guard p is not null else <diverging> $` proves `p` afterwards;
+`if p is not null then ...` proves `p` inside the arm;
+`if p is null then <diverging>` (no else) proves `p` afterwards;
+`if p is null then ... else ...` proves `p` inside the else arm.
+Diverging is `return` anywhere, or a bare `halt`/`next` inside a
+loop (at top level neither provably leaves, so they do not narrow).
+Any store to a name clears its proof (taking an address, `&e,
+proves it fresh); proofs never cross a conditional arm, loop body,
+switch arm or lambda boundary.
+Dereferencing (`^p`) a possibly-null name warns; a proven name is
+clean. Member reads through a pointer (`h.ext.a`) are deliberately
+unchecked: Bell allocates every component in `node_make`, so a
+general rule would be all false positives there.
 
 ## 5. What is explicitly not promised (yet)
 

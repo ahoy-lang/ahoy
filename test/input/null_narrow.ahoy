@@ -1,0 +1,53 @@
+program null_narrow
+
+? Null narrowing: a guard (or null test) that diverges proves a name
+? non-null for the straight-line flow after it, and inside the arm it
+? guards. Dereferencing (^) a possibly-null pointer warns; a guarded
+? one is clean. Taking an address is never null. Comparing a scalar
+? to null is an error (checked by hand: see the commit message, since
+? error cases cannot live in the corpus). The unguarded deref below
+? runs only when asked, so the suite stays green while the warning
+? fires at lint.
+
+struct Ext:
+	a: float
+	b: int
+$
+
+@ main ||:
+	expected: []
+
+	e: Ext = Ext{a: 1.5, b: 2}
+	ep: Ext* = &e
+
+	? guarded deref is clean
+	guard ep is not null else return $
+	v: ^ep
+	print|v.a|
+	expected.push|"1.5"|
+
+	? in-arm narrowing is clean too
+	if ep is not null then
+		w: ^ep
+		print|w.b|
+		expected.push|"2"|
+	$
+
+	? address-taken is never null, no guard needed
+	p: &e
+	u: ^p
+	print|u.a|
+	expected.push|"1.5"|
+
+	? unguarded deref of a maybe-null pointer warns (tolerated here;
+	? the warning is the pin: it must name the holder; the branch
+	? never runs, so the suite stays green)
+	q: Ext* = null
+	do_it: false
+	if do_it then
+		nq: ^q
+		print|nq.a|
+	$
+
+	print|expected|
+$
