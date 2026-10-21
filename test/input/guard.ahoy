@@ -1,0 +1,36 @@
+expected: []
+? guard C else then B $ desugars to if not C then B $: early exits stay flat.
+
+@ check :: |v:int| int:
+	guard v >= 0 else then return -1 $
+	return v * 2
+$
+
+a: check|5|
+print|a|
+expected.push|"10"|
+b: check|-3|
+print|b|
+expected.push|"-1"|
+
+? guard inside a loop: skip without nesting
+total: 0
+loop i:0 to 4 do
+	guard i > 1 else then next $
+	total = total + i
+$
+print|total|
+expected.push|"5"|
+
+? guard with halt: flat early exit from a search loop
+found: -1
+loop i:0 to 10 do
+	if i is 7 then
+		found = i
+		halt
+	$
+$
+print|found|
+expected.push|"7"|
+
+print|expected|

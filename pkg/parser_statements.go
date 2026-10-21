@@ -32,6 +32,8 @@ func (p *Parser) parseStatement() *ASTNode {
 		return p.parseFunction()
 	case TOKEN_IF:
 		return p.parseIfStatement()
+	case TOKEN_GUARD:
+		return p.parseGuardStatement()
 	case TOKEN_SWITCH:
 		return p.parseSwitchStatement()
 	case TOKEN_LOOP:
@@ -127,6 +129,11 @@ func (p *Parser) parseStatement() *ASTNode {
 	case TOKEN_AT:
 		return p.parseFunctionDeclaration()
 	case TOKEN_IDENTIFIER:
+		// Contextual `guard C else then B $` (see isGuardStatement):
+		// a variable named `guard` still declares/assigns normally.
+		if p.isGuardStatement() {
+			return p.parseGuardStatement()
+		}
 		// Check for constant declaration (name ::)
 		nextType := p.peek(1).Type
 		if nextType == TOKEN_DOUBLE_COLON {
@@ -570,6 +577,108 @@ func (p *Parser) parseIfStatement() *ASTNode {
 	return ifStmt
 }
 
+// isGuardStatement reports whether the statement at the current position is
+// `guard C else …` rather than a use of a variable named `guard`. The
+// tokenizer leaves `guard` an identifier (Bell has 57 variable uses), so
+// this looks ahead: immediate `:`, `=`, `:=`, `,`, `.`, `[`, `|`, `::`
+// mean declaration/assignment/call/field access, otherwise a later `else`
+// before the newline/`$` makes it a guard.
+func (p *Parser) isGuardStatement() bool {
+	if p.current().Type == TOKEN_GUARD {
+		return true
+	}
+	if p.current().Type != TOKEN_IDENTIFIER || p.current().Value != "guard" {
+		return false
+	}
+	switch p.peek(1).Type {
+	case TOKEN_ASSIGN, TOKEN_EQUALS, TOKEN_WALRUS, TOKEN_COMMA,
+		TOKEN_DOT, TOKEN_LBRACKET, TOKEN_PIPE, TOKEN_DOUBLE_COLON:
+		return false
+	}
+	for i := 1; i < 40; i++ {
+		t := p.peek(i).Type
+		if t == TOKEN_ELSE {
+			return true
+		}
+		if t == TOKEN_NEWLINE || t == TOKEN_END || t == TOKEN_EOF {
+			return false
+		}
+	}
+	return false
+}
+
+// parseGuardStatement parses `guard C else then B $` as `if not C then B $`.
+// `guard` is a contextual keyword, not a reserved one: Bell uses `guard`
+// as a loop-counter name in 57 places, so the tokenizer leaves it an
+// identifier and only statement-start `guard … else` takes this path.
+// Desugar, not a new node type: the checker and codegen only ever see the
+// inverted NODE_IF_STATEMENT, so ownership, cleanup and C emission are
+// identical to the equivalent if. The point is readability: early exits
+// stay flat instead of nesting the rest of the function one level deeper.
+func (p *Parser) parseGuardStatement() *ASTNode {
+	startLine := p.current().Line
+	guardIndent := p.current().Indent
+	if p.current().Type == TOKEN_GUARD {
+		p.expect(TOKEN_GUARD)
+	} else {
+		p.expect(TOKEN_IDENTIFIER) // contextual `guard`
+	}
+
+	cond := p.parseExpression()
+
+	if p.current().Type == TOKEN_ELSE {
+		p.advance()
+	} else {
+		current := p.current()
+		errMsg := fmt.Sprintf("Expected 'else' after guard condition, got %s at line %d:%d",
+			tokenTypeName(current.Type), current.Line, current.Column)
+		if p.LintMode {
+			p.recordError(errMsg)
+		} else {
+			panic(errMsg)
+		}
+	}
+
+	if p.current().Type == TOKEN_THEN || p.current().Type == TOKEN_ASSIGN {
+		p.advance()
+	}
+
+	for p.current().Type == TOKEN_NEWLINE {
+		p.advance()
+	}
+
+	var savedVars map[string]int
+	var savedFVars map[string]string
+	var savedAliased bool
+	if p.LintMode {
+		savedVars = p.declaredVars
+		savedFVars = p.functionScope
+		savedAliased = p.scopeAliased
+		p.scopeAliased = true
+	}
+
+	p.skipWhitespace()
+	p.blockDepth++
+
+	savedConstructIndent := p.constructIndent
+	p.constructIndent = guardIndent
+	body := p.parseBlockUntilEnd("guard", startLine)
+	p.constructIndent = savedConstructIndent
+
+	if p.LintMode {
+		p.declaredVars = savedVars
+		p.functionScope = savedFVars
+		p.scopeAliased = savedAliased
+	}
+
+	neg := &ASTNode{Type: NODE_UNARY_OP, Value: "not", Children: []*ASTNode{cond}, Line: startLine}
+	return &ASTNode{
+		Type:     NODE_IF_STATEMENT,
+		Children: []*ASTNode{neg, body},
+		Line:     startLine,
+	}
+}
+
 // isKnownCaseConstant reports whether name resolves to a plain constant or
 // C header symbol (define, struct, typedef, function, enum type or member),
 // all of which are legal bare `on` values in a switch.
@@ -936,6 +1045,8 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 					stmt = p.parseReturnStatement()
 				case TOKEN_IF:
 					stmt = p.parseIfStatement()
+				case TOKEN_GUARD:
+					stmt = p.parseGuardStatement()
 				case TOKEN_SWITCH:
 					stmt = p.parseSwitchStatement()
 				case TOKEN_LOOP:
@@ -951,8 +1062,12 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 					p.advance()
 					stmt = &ASTNode{Type: NODE_NEXT, Line: stmtLine}
 				case TOKEN_IDENTIFIER:
-					// Could be assignment or expression
-					stmt = p.parseAssignmentOrExpression()
+					// Could be assignment or expression (or contextual guard)
+					if p.isGuardStatement() {
+						stmt = p.parseGuardStatement()
+					} else {
+						stmt = p.parseAssignmentOrExpression()
+					}
 				default:
 					// Try to parse as expression (potentially tuple)
 					stmt = p.parseSwitchCaseExpression()

@@ -106,6 +106,7 @@ const (
 	TOKEN_LABEL           // label (label declaration)
 	TOKEN_ASSERT          // assert (runtime assertion)
 	TOKEN_DEFER           // defer (deferred execution)
+	TOKEN_GUARD           // guard (early-exit: guard C else then B $)
 	TOKEN_DOUBLE_COLON    // ::
 	TOKEN_WALRUS          // := (for tuple assignment)
 	TOKEN_QUESTION        // ? (loop counter variable)

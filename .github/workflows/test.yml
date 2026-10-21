@@ -35,6 +35,11 @@ jobs:
           cd test
           go test -v
 
+      - name: Memory ownership gate
+        run: |
+          sudo apt-get install -y valgrind
+          bash tools/mem_check.sh
+
       - name: Upload test artifacts
         if: always()
         uses: actions/upload-artifact@v4
