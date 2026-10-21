@@ -37,7 +37,7 @@ buffer with the first elements copied. Seeded here for the future
 `buffer[T]` generalization, which keeps the layout and fixes the
 growth story (in-place grow, stable reads).
 2.4 Every index is runtime bounds-checked unless `-fast`. There is no
-elimination analysis yet (cf. Goose `checkfree fn`, item 7).
+elimination analysis yet (see item 7).
 
 ## 3. Lifetimes and loops
 
@@ -88,9 +88,9 @@ work: the checker tracks no nullness, so the rule stays syntactic.
 - Typed job values (item 6, mostly shipped): tasks take one value
   (`submit`) or up to four (`p.run`), and `float`/`double`/`f32`
   arguments and results travel as bit patterns through marshal
-  thunks; arity mismatches are compile errors. What remains is
-  Goose-style typed queues (one queue per value type, flat values
-  crossing as `memcpy`) rather than the untyped `intptr_t` slot.
+  thunks; arity mismatches are compile errors. What remains is typed
+  queues (one queue per value type, flat values crossing as `memcpy`)
+  rather than the untyped `intptr_t` slot.
 - No index types / checkfree (item 7): `checkfree fn` rejects a
   function if any bounds check survives elimination — which requires
   the elimination analysis first. Done looks like: (a) a bounds-check
