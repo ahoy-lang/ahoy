@@ -1,11 +1,12 @@
 program leak_bytes_roundtrip
 
 ? Verified-load serialization (ownership + functional pin): to_bytes
-? images a buffer[f32] as LE [u32 count][float32...] in an array[int];
-? from_bytes rebuilds it only when framing verifies exactly, else an
-? empty buffer; from_bytes_ok is the verifier alone. Under valgrind
-? this program must report zero lost bytes (tools/mem_check.sh): every
-? image and rebuild is scope-owned. See SPEC_CORE.md item 4.
+? images a buffer[f32] as LE [u32 count][u8 lane][float32...] in an
+? array[int]; from_bytes rebuilds it only when framing verifies exactly
+? AND the lane tag matches, else an empty buffer; from_bytes_ok is the
+? framing verifier alone. Under valgrind this program must report zero
+? lost bytes (tools/mem_check.sh): every image and rebuild is
+? scope-owned. See SPEC_CORE.md item 4.
 
 @ main ||:
 	expected: []
@@ -15,14 +16,16 @@ program leak_bytes_roundtrip
 	b[1] = -2.25
 	b[2] = 0.0
 
-	? image shape: 4 + 3*4 = 16 bytes, LE count 3
+	? image shape: 5 + 3*4 = 17 bytes, LE count 3, lane tag 0 (f32)
 	img: to_bytes|b|
 	il: len|img|
 	print|il|
-	expected.push|"16"|
+	expected.push|"17"|
 	print|img[0]|
 	expected.push|"3"|
 	print|img[1]|
+	expected.push|"0"|
+	print|img[4]|
 	expected.push|"0"|
 
 	? round trip is bit-exact
@@ -76,13 +79,13 @@ program leak_bytes_roundtrip
 	print|lok|
 	expected.push|"0"|
 
-	? non-int element fails closed (count 1, length 8, tag STRING at [4])
-	evil: [1, 0, 0, 0, "x", 1, 2, 3]
+	? non-int element fails closed (count 1, length 9, tag STRING at [5])
+	evil: [1, 0, 0, 0, 0, "x", 1, 2, 3]
 	e2: from_bytes_ok|evil|
 	print|e2|
 	expected.push|"0"|
 
-	? absurd count fails without allocating (len 4, count u32max)
+	? absurd count fails without allocating (len 4 < 5 header)
 	huge: [255, 255, 255, 255]
 	hok: from_bytes_ok|huge|
 	print|hok|
@@ -90,6 +93,19 @@ program leak_bytes_roundtrip
 	hback: from_bytes|huge|
 	hl: len|hback|
 	print|hl|
+	expected.push|"0"|
+
+	? wrong lane fails the reader but not the framing check: tag 1
+	? with valid int-looking length still verifies, yet the f32
+	? reader yields empty
+	relane: to_bytes|b|
+	relane[4] = 1
+	rok: from_bytes_ok|relane|
+	print|rok|
+	expected.push|"1"|
+	rback: from_bytes|relane|
+	rl: len|rback|
+	print|rl|
 	expected.push|"0"|
 
 	print|expected|

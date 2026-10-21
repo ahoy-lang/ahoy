@@ -73,7 +73,14 @@ work: the checker tracks no nullness, so the rule stays syntactic.
 
 ## 5. What is explicitly not promised (yet)
 
-- No stable references into growing arrays (item 5).
+- No stable references into growing arrays (item 5, lanes shipped):
+  `buffer[f32]` and `buffer[int]` are contiguous flat storage with
+  per-lane loads/stores (int32 exact past 2^24, where float storage
+  corrupted). Constructors carry the lane (`buffer|n|`,
+  `buffer_int|n|`); mixing lanes is a checker error; `grow` preserves
+  its source. `to_bytes`/`from_bytes` carry a lane tag and reject
+  cross-lane loads. What remains is wider element types (`u8` etc.)
+  and stable references into growing arrays.
 - Serialization covers flat `buffer[f32]` values (item 4, shipped):
   `to_bytes` / `from_bytes` / `from_bytes_ok` with exact framing
   checks; hostile bytes fail closed to empty/false. `array` and

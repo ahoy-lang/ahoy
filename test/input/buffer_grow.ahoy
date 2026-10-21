@@ -25,7 +25,7 @@ program buffer_grow
 	expected.push|2|
 	print|s[0]|
 	expected.push|"1.5"|
-	i: buffer[int] = buffer|2|
+	i: buffer[int] = buffer_int|2|
 	i[1] = 41
 	gi: grow|i, 5|
 	ngi: len|gi|

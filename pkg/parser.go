@@ -566,6 +566,25 @@ func (p *Parser) inferType(node *ASTNode) string {
 		// Handle function calls - infer return type from function signature
 		funcName := node.Value
 
+		// Buffer builtins carry their lane in the spelling; grow keeps
+		// its source's lane. The checker leans on these for lane rules.
+		switch funcName {
+		case "buffer", "from_bytes":
+			return "buffer[f32]"
+		case "buffer_int", "from_bytes_int":
+			return "buffer[int]"
+		case "to_bytes":
+			return "array"
+		case "from_bytes_ok":
+			return "bool"
+		}
+		if funcName == "grow" && len(node.Children) > 0 {
+			if t := p.inferType(node.Children[0]); strings.HasPrefix(t, "buffer[") {
+				return t
+			}
+			return "buffer[f32]"
+		}
+
 		// A distinct type name called with one argument is an explicit
 		// conversion: the result has the distinct type.
 		if _, isDistinct := p.distinctTypes[funcName]; isDistinct {

@@ -1463,6 +1463,20 @@ func (p *Parser) parseReservedStructField() *ASTNode {
 // no longer copies it, which is what makes a component-style layout (a small
 // core plus per-kind components) expressible at all. The C side already
 // maps `Ext*` to `Ext*`.
+// checkBufferElem rejects buffer element spellings with no lane. A
+// buffer[u8] (or any other future spelling) used to parse and then
+// silently store as float32; an explicit error beats quiet loss.
+func (p *Parser) checkBufferElem(elem string) {
+	if elem == "f32" || elem == "int" {
+		return
+	}
+	if p.LintMode {
+		p.recordError(fmt.Sprintf("Unknown buffer type 'buffer[%s]'; write buffer[f32] or buffer[int]", elem))
+	} else {
+		panic(fmt.Sprintf("Unknown buffer type 'buffer[%s]'; write buffer[f32] or buffer[int] (line %d)", elem, p.current().Line))
+	}
+}
+
 func (p *Parser) parsePointerSuffix(fieldType string) string {
 	for p.current().Type == TOKEN_MULTIPLY {
 		p.advance()
@@ -1509,6 +1523,7 @@ func (p *Parser) parseStructFieldTypeAfterColon() (string, *ASTNode) {
 		p.advance()
 		if p.current().Type == TOKEN_LBRACKET {
 			p.advance() // consume [
+			p.checkBufferElem(p.current().Value)
 			fieldType += "[" + p.current().Value
 			p.advance() // consume type
 			p.expect(TOKEN_RBRACKET)
@@ -1914,11 +1929,12 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 						fieldType += ">"
 					}
 				} else if p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "buffer" {
-					// Flat buffer field: buffer[f32] (f32 only for now).
+					// Flat buffer field: buffer[f32] or buffer[int].
 					fieldType = "buffer"
 					p.advance()
 					if p.current().Type == TOKEN_LBRACKET {
 						p.advance() // consume [
+						p.checkBufferElem(p.current().Value)
 						fieldType += "[" + p.current().Value
 						p.advance() // consume type
 						p.expect(TOKEN_RBRACKET)

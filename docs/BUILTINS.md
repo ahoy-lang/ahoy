@@ -82,18 +82,34 @@ They answer the questions that used to be four nested `if`s each. A
 rectangle is a position and a size: `x`, `y` is the top left, `w`, `h` the
 size.
 
+## The buffer builtins
+
+```
+buffer|n|            zeroed buffer[f32] of length n (contiguous float32)
+buffer_int|n|        zeroed buffer[int] of length n (contiguous int32)
+grow|buf, n|         new buffer of the source's lane, length n, min(len, n) copied
+```
+
+A buffer is one flat allocation: no boxing, no per-element tags, every
+index bounds-checked. The two lanes are distinct types — `buffer|n|`
+into a `buffer[int]` is a compile error, not a silent float. Use the
+int lane for counts, grids and lookup tables (exact past 2^24, where
+float storage rounded); the float lane for positions and physics.
+
 ## The serialization builtins
 
 ```
-to_bytes|buf|          image of a buffer[f32]: LE u32 count, then LE float32 bytes
-from_bytes|bytes|      the buffer rebuilt, verified; an empty buffer when framing fails
-from_bytes_ok|bytes|   the verifier alone: length, count, tags, ranges
+to_bytes|buf|          image of a buffer: LE u32 count, u8 lane tag, then LE payload
+from_bytes|bytes|      the buffer[f32] rebuilt, verified; empty when framing or lane fails
+from_bytes_int|bytes|  the buffer[int] rebuilt, verified; empty when framing or lane fails
+from_bytes_ok|bytes|   the framing verifier alone: length, count, tag, ranges
 ```
 
-They load what `to_bytes` wrote and nothing else. A short image, a
-count that disagrees with the length, a non-int tag, an out-of-range
-byte, or an absurd count fails closed: `from_bytes` yields an empty
-buffer and `from_bytes_ok` is false. A corrupt or hostile file is
+They load what `to_bytes` wrote and nothing else — each reader demands
+its own lane tag, so a cross-lane load fails closed too. A short image, a
+count that disagrees with the length, a bad lane tag, a non-int tag, an
+out-of-range byte, or an absurd count fails closed: the readers yield an
+empty buffer and `from_bytes_ok` is false. A corrupt or hostile file is
 never a wild reference. The format is a same-platform save image (the
 floats are the host's LE encoding), not portable interchange; `array`
 and `string` payloads are the next framing, not this one.

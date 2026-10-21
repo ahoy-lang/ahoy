@@ -1,0 +1,77 @@
+program leak_buffer_lanes
+
+? Item 5: buffer lanes. buffer[f32] stores float32; buffer[int] stores
+? int32. The int lane is exact where the old float storage corrupted
+? counts above 2^24. Constructors carry the lane (buffer|n| f32,
+? buffer_int|n| int); grow preserves its source. Mixing lanes is a
+? checker error, not a silent reinterpret. to_bytes/from_bytes carry
+? a lane tag; cross-lane loads fail closed. Under valgrind this must
+? report zero lost bytes.
+
+@ main ||:
+	expected: []
+
+	? int lane round-trips exactly, including > 2^24 (float32 would
+	? round 16777217 to 16777216) and negatives
+	ids: buffer[int] = buffer_int|4|
+	ids[0] = 41
+	ids[1] = -7
+	ids[2] = 16777217
+	ids[3] = 2147483647
+	print|ids[0]|
+	expected.push|"41"|
+	print|ids[1]|
+	expected.push|"-7"|
+	print|ids[2]|
+	expected.push|"16777217"|
+	print|ids[3]|
+	expected.push|"2147483647"|
+	print|ids|
+	expected.push|"[41, -7, 16777217, 2147483647]"|
+
+	? grow preserves the int lane and its values
+	g: grow|ids, 6|
+	print|g[2]|
+	expected.push|"16777217"|
+	gl: len|g|
+	print|gl|
+	expected.push|"6"|
+	print|g[5]|
+	expected.push|"0"|
+
+	? int images carry lane tag 1 and rebuild exactly
+	img: to_bytes|ids|
+	print|img[4]|
+	expected.push|"1"|
+	ok: from_bytes_ok|img|
+	print|ok|
+	expected.push|"1"|
+	back: from_bytes_int|img|
+	print|back[2]|
+	expected.push|"16777217"|
+
+	? cross-lane loads fail closed: f32 image into int reader
+	fb: buffer[f32] = buffer|1|
+	fb[0] = 1.5
+	fimg: to_bytes|fb|
+	print|fimg[4]|
+	expected.push|"0"|
+	xb: from_bytes_int|fimg|
+	xl: len|xb|
+	print|xl|
+	expected.push|"0"|
+	? ...and int image into the f32 reader
+	xf: from_bytes|img|
+	xfl: len|xf|
+	print|xfl|
+	expected.push|"0"|
+
+	? int tamper fails closed (count byte flipped)
+	bad: to_bytes|ids|
+	bad[0] = 99
+	bok: from_bytes_ok|bad|
+	print|bok|
+	expected.push|"0"|
+
+	print|expected|
+$

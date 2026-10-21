@@ -779,6 +779,9 @@ func (c *checker) checkFunction(node *ASTNode) {
 	if params != nil {
 		for _, param := range params.Children {
 			c.declareTyped(param.Value, param.DataType)
+			if strings.HasPrefix(param.DataType, "buffer[") {
+				c.checkBufferSpelling(param.DataType, param)
+			}
 			if param.Value != "" {
 				c.funcParams[param.Value] = true
 			}
@@ -980,6 +983,21 @@ func (c *checker) checkStatement(node *ASTNode) {
 			declType = c.inferVarType(childAt(node, 0))
 		}
 		c.declareTyped(node.Value, declType)
+		// Buffer lanes: validate the spelling, then agree the value's
+		// lane with the declaration's. Constructors carry their lane
+		// (buffer|n| is f32, buffer_int|n| int), so a bare buffer|n|
+		// into a buffer[int] declaration is an error here — not a
+		// silent float store downstream.
+		if strings.HasPrefix(declType, "buffer[") {
+			if node.DataType != "" {
+				c.checkBufferSpelling(node.DataType, node)
+			}
+			if rhs := childAt(node, 0); rhs != nil {
+				if got := c.argActualType(rhs); got != "" {
+					c.checkBufferLane(declType, got, node, "variable '"+node.Value+"'")
+				}
+			}
+		}
 		// -strict: an explicit annotation contradicting an array read
 		// (n: int = strs[i]) is shaped exactly like the lines[i]-as-int
 		// segfault. Flowing inference stays silent; only an explicit
@@ -1000,6 +1018,17 @@ func (c *checker) checkStatement(node *ASTNode) {
 		// Slices are read-only views: assign to s[i] or rebuild the string.
 		if target := childAt(node, 0); target != nil && target.Type == NODE_STRING_SLICE {
 			c.errorAt(target, "cannot assign to a string slice s[lo:hi]")
+		}
+		// Buffer lanes: a whole-container field store must agree with the
+		// field's lane (x.f = ...). Plain rebinds (x = ...) are already
+		// covered by the reassign type check; element stores (x[i] = v)
+		// convert at the lane's width instead.
+		if target := childAt(node, 0); target != nil && target.Type == NODE_MEMBER_ACCESS {
+			if val := childAt(node, 1); val != nil {
+				if lane, ok := c.bufferFieldLane(target); ok {
+					c.checkBufferLane("buffer["+lane+"]", c.argActualType(val), node, "field '"+target.Value+"'")
+				}
+			}
 		}
 		// The parser already rejects assignment to an undeclared variable.
 		c.checkExpr(childAt(node, 0))
@@ -1699,7 +1728,7 @@ func (c *checker) checkCall(node *ASTNode) {
 			c.errorAt(node.Children[0], "to_bytes needs a buffer source, not %s", actual)
 		}
 	}
-	if name == "from_bytes" || name == "from_bytes_ok" {
+	if name == "from_bytes" || name == "from_bytes_int" || name == "from_bytes_ok" {
 		if len(node.Children) != 1 {
 			c.errorAt(node, "%s takes exactly one argument: %s|bytes|", name, name)
 			return
@@ -1913,6 +1942,77 @@ func (c *checker) isTypeName(name string) bool {
 	}
 	_, ok := c.p.enums[name]
 	return ok
+}
+
+// bufferLaneOf splits a buffer spelling into its lane: "f32" or "int"
+// with true, or "" and false when the spelling names no lane at all
+// (unknown spellings are rejected where declarations are checked).
+func bufferLaneOf(t string) (string, bool) {
+	if !strings.HasPrefix(t, "buffer[") || !strings.HasSuffix(t, "]") {
+		return "", false
+	}
+	switch strings.TrimSuffix(strings.TrimPrefix(t, "buffer["), "]") {
+	case "f32":
+		return "f32", true
+	case "int":
+		return "int", true
+	}
+	return "", false
+}
+
+// checkBufferSpelling rejects buffer element spellings with no lane.
+// buffer[int] used to be accepted and silently stored as float32, so
+// counts above 2^24 corrupted; an explicit error beats quiet loss.
+func (c *checker) checkBufferSpelling(t string, node *ASTNode) {
+	if !strings.HasPrefix(t, "buffer[") {
+		return
+	}
+	if _, ok := bufferLaneOf(t); !ok {
+		c.errorAt(node, "Unknown buffer type '%s'; write buffer[f32] or buffer[int]", t)
+	}
+}
+
+// checkBufferLane agrees a stored buffer value with its destination's
+// lane. A mismatched lane would compile to an incompatible C pointer:
+// loud here, garbage there. Unknown sides stay silent (lenient unknown,
+// like the grow rule).
+func (c *checker) checkBufferLane(want, got string, node *ASTNode, what string) {
+	wantLane, wantOk := bufferLaneOf(want)
+	gotLane, gotOk := bufferLaneOf(got)
+	if !wantOk || !gotOk || wantLane == gotLane {
+		return
+	}
+	c.errorAt(node, "%s wants %s but receives %s; convert explicitly or match the lane", what, want, got)
+}
+
+// bufferFieldLane resolves the declared lane of a member-store target
+// x.f (one level; deeper chains fall back to the checker's silence and
+// the C compiler's pointer warning). Returns "", false when unknown.
+func (c *checker) bufferFieldLane(target *ASTNode) (string, bool) {
+	if target == nil || target.Type != NODE_MEMBER_ACCESS || target.Value == "" {
+		return "", false
+	}
+	if len(target.Children) == 0 || target.Children[0].Type != NODE_IDENTIFIER {
+		return "", false
+	}
+	holder := c.lookupType(target.Children[0].Value)
+	if holder == "" {
+		return "", false
+	}
+	holder = strings.TrimPrefix(holder, "struct:")
+	for _, name := range []string{holder, strings.ToLower(holder[:1]) + holder[1:]} {
+		if def, ok := c.p.structs[name]; ok {
+			for _, f := range def.Fields {
+				if f.Name == target.Value {
+					if lane, ok := bufferLaneOf(f.Type); ok {
+						return lane, true
+					}
+					return "", false
+				}
+			}
+		}
+	}
+	return "", false
 }
 
 // checkMethodDeclaration validates the type side of a method or associated

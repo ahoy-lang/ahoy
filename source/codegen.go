@@ -611,12 +611,21 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 	result.WriteString("    float data[];\n")
 	result.WriteString("} AhoyBufferF32;\n")
 	result.WriteString("char* print_buffer_helper(AhoyBufferF32* b);\n")
+	// Int lane (buffer[int]): contiguous int32 storage. Same shape, so
+	// length handling is shared; element access branches per lane.
+	result.WriteString("typedef struct {\n")
+	result.WriteString("    int length;\n")
+	result.WriteString("    int32_t data[];\n")
+	result.WriteString("} AhoyBufferI32;\n")
+	result.WriteString("char* print_buffer_int_helper(AhoyBufferI32* b);\n")
 	// Verified-load serialization (flat values only): framing is LE
 	// [u32 count][count x float32]; from_bytes checks it exactly. Gated
 	// on use so string-only programs never declare them.
 	if gen.arrayMethods["bytes"] {
 		result.WriteString("AhoyArray* ahoy_buffer_to_bytes(AhoyBufferF32* b);\n")
+		result.WriteString("AhoyArray* ahoy_buffer_int_to_bytes(AhoyBufferI32* b);\n")
 		result.WriteString("AhoyBufferF32* ahoy_buffer_from_bytes(AhoyArray* a);\n")
+		result.WriteString("AhoyBufferI32* ahoy_buffer_int_from_bytes(AhoyArray* a);\n")
 		result.WriteString("int ahoy_buffer_from_bytes_ok(AhoyArray* a);\n")
 	}
 	result.WriteString("\n")
@@ -2759,16 +2768,19 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	gen.declaredFunctionVars = make(map[string]bool) // Clear function-local declarations
 }
 
-// generateBufferWrite emits a float store into contiguous storage
-// (bounds-checked unless -fast).
-func (gen *CodeGenerator) generateBufferWrite(node *ahoy.ASTNode, arrayName string, indexNode *ahoy.ASTNode, valueNode *ahoy.ASTNode) {
+// generateBufferWrite emits a store into contiguous storage
+// (bounds-checked unless -fast). elem is the lane.
+func (gen *CodeGenerator) generateBufferWrite(node *ahoy.ASTNode, arrayName string, indexNode *ahoy.ASTNode, valueNode *ahoy.ASTNode, elem string) {
 	gen.writeIndent()
 	objExpr := gen.nameExpr(arrayName)
+	cStruct := bufferCStruct(elem)
+	cElem := bufferCarith(elem)
 	if gen.enableBoundsChecking {
 		gen.output.WriteString("{ int __idx = ")
 		gen.generateNode(indexNode)
 		gen.output.WriteString("; ")
-		gen.output.WriteString("AhoyBufferF32* __b = ")
+		gen.output.WriteString(cStruct)
+		gen.output.WriteString("* __b = ")
 		gen.output.WriteString(objExpr)
 		gen.output.WriteString("; ")
 		gen.output.WriteString("if (__idx < 0 || __idx >= __b->length) { ")
@@ -2785,7 +2797,9 @@ func (gen *CodeGenerator) generateBufferWrite(node *ahoy.ASTNode, arrayName stri
 		gen.output.WriteString("fprintf(stderr, \"  Index: %d\\n\", __idx); ")
 		gen.output.WriteString("fprintf(stderr, \"  Valid range: 0 to %d\\n\", __b->length - 1); ")
 		gen.output.WriteString("exit(1); } ")
-		gen.output.WriteString("__b->data[__idx] = (float)(")
+		gen.output.WriteString("__b->data[__idx] = (")
+		gen.output.WriteString(cElem)
+		gen.output.WriteString(")(")
 		gen.generateNode(valueNode)
 		gen.output.WriteString("); }\n")
 		return
@@ -2793,7 +2807,9 @@ func (gen *CodeGenerator) generateBufferWrite(node *ahoy.ASTNode, arrayName stri
 	gen.output.WriteString(objExpr)
 	gen.output.WriteString("->data[")
 	gen.generateNode(indexNode)
-	gen.output.WriteString("] = (float)(")
+	gen.output.WriteString("] = (")
+	gen.output.WriteString(cElem)
+	gen.output.WriteString(")(")
 	gen.generateNode(valueNode)
 	gen.output.WriteString(");\n")
 }
@@ -2831,9 +2847,9 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			indexNode := node.Children[0].Children[0]
 			valueNode := node.Children[1]
 
-			// Flat buffer store: contiguous float32 storage (no boxing).
+			// Flat buffer store: contiguous lanes, no boxing.
 			if gen.isBufferVar(arrayName) {
-				gen.generateBufferWrite(node, arrayName, indexNode, valueNode)
+				gen.generateBufferWrite(node, arrayName, indexNode, valueNode, gen.bufferElemOfVar(arrayName))
 				return
 			}
 
@@ -7127,7 +7143,11 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 						gen.output.WriteString(")")
 					} else if strings.HasPrefix(argType, "buffer[") {
 						gen.arrayMethods["print_buffer"] = true
-						gen.output.WriteString("print_buffer_helper(")
+						if bufferElemOf(argType) == "int" {
+							gen.output.WriteString("print_buffer_int_helper(")
+						} else {
+							gen.output.WriteString("print_buffer_helper(")
+						}
 						gen.generateNode(arg)
 						gen.output.WriteString(")")
 					} else if argType == "AhoyJSON*" || argType == "json" {
@@ -7393,8 +7413,13 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 		gen.output.WriteString(")")
 
 	case "__print_buffer_helper":
-		// Special case for buffer printing - don't convert to PascalCase
-		gen.output.WriteString("print_buffer_helper(")
+		// Special case for buffer printing - don't convert to PascalCase.
+		// Lane follows the argument's spelling (int lane prints %d).
+		if len(node.Children) > 0 && bufferElemOf(gen.inferType(node.Children[0])) == "int" {
+			gen.output.WriteString("print_buffer_int_helper(")
+		} else {
+			gen.output.WriteString("print_buffer_helper(")
+		}
 		for i, arg := range node.Children {
 			if i > 0 {
 				gen.output.WriteString(", ")
@@ -7485,11 +7510,32 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 		}
 		gen.output.WriteString("; if (__n < 0) __n = 0; AhoyBufferF32* __b = calloc(1, sizeof(AhoyBufferF32) + (size_t)__n * sizeof(float)); __b->length = __n; __b; })")
 
+	case "buffer_int":
+		// buffer_int|n| allocates a zeroed buffer[int] of length n: the
+		// int lane (int32 storage) for counts, grids and lookup tables.
+		gen.output.WriteString("({ int __n = ")
+		if len(node.Children) > 0 {
+			gen.generateNode(node.Children[0])
+		} else {
+			gen.output.WriteString("0")
+		}
+		gen.output.WriteString("; if (__n < 0) __n = 0; AhoyBufferI32* __b = calloc(1, sizeof(AhoyBufferI32) + (size_t)__n * sizeof(int32_t)); __b->length = __n; __b; })")
+
 	case "grow":
-		// grow|buf, n| -> new buffer of length n with min(len, n) copied.
-		// Element storage is flat floats for every buffer[T] spelling, so
-		// one implementation serves buffer[f32] and buffer[int] alike.
-		gen.output.WriteString("({ AhoyBufferF32* __old = ")
+		// grow|buf, n| -> new buffer of the source lane, length n, with
+		// min(len, n) copied. The source spelling decides the lane;
+		// unknown sources stay float, as before.
+		growElem := "f32"
+		if len(node.Children) > 0 {
+			if t := gen.inferType(node.Children[0]); strings.HasPrefix(t, "buffer[") {
+				growElem = bufferElemOf(t)
+			}
+		}
+		growStruct := bufferCStruct(growElem)
+		growArith := bufferCarith(growElem)
+		gen.output.WriteString("({ ")
+		gen.output.WriteString(growStruct)
+		gen.output.WriteString("* __old = ")
 		if len(node.Children) > 0 {
 			gen.generateNode(node.Children[0])
 		} else {
@@ -7501,11 +7547,27 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 		} else {
 			gen.output.WriteString("0")
 		}
-		gen.output.WriteString("; if (__n < 0) __n = 0; AhoyBufferF32* __nb = calloc(1, sizeof(AhoyBufferF32) + (size_t)__n * sizeof(float)); int __m = __old ? __old->length : 0; if (__m > __n) __m = __n; for (int __i = 0; __i < __m; __i++) __nb->data[__i] = __old->data[__i]; __nb->length = __n; __nb; })")
+		gen.output.WriteString("; if (__n < 0) __n = 0; ")
+		gen.output.WriteString(growStruct)
+		gen.output.WriteString("* __nb = calloc(1, sizeof(")
+		gen.output.WriteString(growStruct)
+		gen.output.WriteString(") + (size_t)__n * sizeof(")
+		gen.output.WriteString(growArith)
+		gen.output.WriteString(")); int __m = __old ? __old->length : 0; if (__m > __n) __m = __n; for (int __i = 0; __i < __m; __i++) __nb->data[__i] = __old->data[__i]; __nb->length = __n; __nb; })")
 
 	case "to_bytes":
-		// to_bytes|buf| -> array[int] image: [u32 LE count][float32 LE...].
+		// to_bytes|buf| -> array[int] image. Lane follows the source:
+		// f32 images carry float bits, int images int32 bits, each with
+		// a lane tag the matching reader requires.
 		gen.arrayMethods["bytes"] = true
+		if len(node.Children) > 0 {
+			if t := gen.inferType(node.Children[0]); strings.HasPrefix(t, "buffer[") && bufferElemOf(t) == "int" {
+				gen.output.WriteString("ahoy_buffer_int_to_bytes(")
+				gen.generateNode(node.Children[0])
+				gen.output.WriteString(")")
+				return
+			}
+		}
 		gen.output.WriteString("ahoy_buffer_to_bytes(")
 		if len(node.Children) > 0 {
 			gen.generateNode(node.Children[0])
@@ -7516,9 +7578,20 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 
 	case "from_bytes":
 		// from_bytes|bytes| -> buffer[f32]: verified rebuild, empty when
-		// the image is corrupt (length/count/tag/range/cap all checked).
+		// the image is corrupt or a different lane.
 		gen.arrayMethods["bytes"] = true
 		gen.output.WriteString("ahoy_buffer_from_bytes(")
+		if len(node.Children) > 0 {
+			gen.generateNode(node.Children[0])
+		} else {
+			gen.output.WriteString("0")
+		}
+		gen.output.WriteString(")")
+
+	case "from_bytes_int":
+		// from_bytes_int|bytes| -> buffer[int]: the int-lane reader.
+		gen.arrayMethods["bytes"] = true
+		gen.output.WriteString("ahoy_buffer_int_from_bytes(")
 		if len(node.Children) > 0 {
 			gen.generateNode(node.Children[0])
 		} else {
@@ -9825,7 +9898,120 @@ func (gen *CodeGenerator) nameExpr(name string) string {
 	return name
 }
 
-// isBufferVar reports whether name holds a buffer[f32].
+// bufferElemOf maps a buffer spelling to its element lane: "buffer[int]"
+// is the int lane, everything else (buffer[f32], and any unrecognized
+// spelling the checker did not reject) is the float lane.
+func bufferElemOf(langType string) string {
+	if langType == "buffer[int]" {
+		return "int"
+	}
+	return "f32"
+}
+
+// bufferCStruct names the C struct for a lane.
+func bufferCStruct(elem string) string {
+	if elem == "int" {
+		return "AhoyBufferI32"
+	}
+	return "AhoyBufferF32"
+}
+
+// bufferCarith names the C element type for value conversions.
+func bufferCarith(elem string) string {
+	if elem == "int" {
+		return "int32_t"
+	}
+	return "float"
+}
+
+// bufferElemOfVar resolves a variable's buffer lane from its declared
+// type, defaulting to the float lane for untyped or unknown holders
+// (the pre-lane behavior).
+func (gen *CodeGenerator) bufferElemOfVar(name string) string {
+	if varType, exists := gen.variables[name]; exists && strings.HasPrefix(varType, "buffer[") {
+		return bufferElemOf(varType)
+	}
+	if varType, exists := gen.functionVars[name]; exists && strings.HasPrefix(varType, "buffer[") {
+		return bufferElemOf(varType)
+	}
+	return "f32"
+}
+
+// bufferElemOfField resolves a struct field's buffer lane ("", unknown).
+func (gen *CodeGenerator) bufferElemOfField(structName, field string) string {
+	if info, ok := gen.structs[structName]; ok {
+		for _, f := range info.Fields {
+			if f.Name == field && strings.HasPrefix(f.AhoyType, "buffer[") {
+				return bufferElemOf(f.AhoyType)
+			}
+		}
+	}
+	if info, ok := gen.structs[capitalizeFirst(structName)]; ok {
+		for _, f := range info.Fields {
+			if f.Name == field && strings.HasPrefix(f.AhoyType, "buffer[") {
+				return bufferElemOf(f.AhoyType)
+			}
+		}
+	}
+	return ""
+}
+
+// bufferElemOfNode resolves the lane of a buffer-valued node: a named
+// variable by declaration, a member read via its struct's field, and a
+// buffer builtin result by its own spelling. Unknown shapes stay float,
+// preserving the pre-lane behavior.
+func (gen *CodeGenerator) bufferElemOfNode(node *ahoy.ASTNode) string {
+	if node == nil {
+		return "f32"
+	}
+	if node.Type == ahoy.NODE_IDENTIFIER && node.Value != "" {
+		if e := gen.bufferElemOfVar(node.Value); e != "" {
+			// bufferElemOfVar defaults f32; only trust it when the name
+			// is actually a known buffer holder.
+			if gen.isBufferVar(node.Value) {
+				return e
+			}
+		}
+	}
+	if node.Type == ahoy.NODE_MEMBER_ACCESS && node.Value != "" && len(node.Children) > 0 {
+		obj := node.Children[0]
+		objType := gen.inferType(obj)
+		if st, ok := gen.structs[strings.TrimPrefix(objType, "struct:")]; ok {
+			for _, f := range st.Fields {
+				if f.Name == node.Value && strings.HasPrefix(f.AhoyType, "buffer[") {
+					return bufferElemOf(f.AhoyType)
+				}
+			}
+		}
+		// Array-element member (nodes[i].field): element type carries it.
+		if obj.Type == ahoy.NODE_ARRAY_ACCESS && obj.Value != "" {
+			if et, exists := gen.arrayElementTypes[obj.Value]; exists {
+				if st, ok := gen.structs[et]; ok {
+					for _, f := range st.Fields {
+						if f.Name == node.Value && strings.HasPrefix(f.AhoyType, "buffer[") {
+							return bufferElemOf(f.AhoyType)
+						}
+					}
+				}
+			}
+		}
+	}
+	if node.Type == ahoy.NODE_CALL {
+		switch node.Value {
+		case "buffer_int", "from_bytes_int":
+			return "int"
+		case "grow":
+			if len(node.Children) > 0 {
+				if t := gen.inferType(node.Children[0]); strings.HasPrefix(t, "buffer[") {
+					return bufferElemOf(t)
+				}
+			}
+		}
+	}
+	return "f32"
+}
+
+// isBufferVar reports whether name holds a buffer (either lane).
 func (gen *CodeGenerator) isBufferVar(name string) bool {
 	if varType, exists := gen.variables[name]; exists {
 		if strings.HasPrefix(varType, "buffer[") {
@@ -9840,15 +10026,18 @@ func (gen *CodeGenerator) isBufferVar(name string) bool {
 	return false
 }
 
-// generateBufferRead emits a float load from contiguous storage
-// (bounds-checked unless -fast or an lvalue context).
-func (gen *CodeGenerator) generateBufferRead(node *ahoy.ASTNode, objExpr string, arrayName string) {
+// generateBufferRead emits a load from contiguous storage
+// (bounds-checked unless -fast or an lvalue context). elem is the lane:
+// "f32" reads float bits, "int" reads int32.
+func (gen *CodeGenerator) generateBufferRead(node *ahoy.ASTNode, objExpr string, arrayName string, elem string) {
+	cStruct := bufferCStruct(elem)
 	if gen.enableBoundsChecking && !gen.skipBoundsCheck {
 		gen.output.WriteString("({ ")
 		gen.output.WriteString("int __idx = ")
 		gen.generateNode(node.Children[0])
 		gen.output.WriteString("; ")
-		gen.output.WriteString("AhoyBufferF32* __b = ")
+		gen.output.WriteString(cStruct)
+		gen.output.WriteString("* __b = ")
 		gen.output.WriteString(objExpr)
 		gen.output.WriteString("; ")
 		gen.output.WriteString("if (__idx < 0 || __idx >= __b->length) { ")
@@ -9912,9 +10101,9 @@ func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 		}
 	}
 
-	// Flat buffer read: contiguous float32 storage, no boxing.
+	// Flat buffer read: contiguous lanes, no boxing.
 	if gen.isBufferVar(arrayName) {
-		gen.generateBufferRead(node, objExpr, arrayName)
+		gen.generateBufferRead(node, objExpr, arrayName, gen.bufferElemOfVar(arrayName))
 		return
 	}
 
@@ -10089,11 +10278,15 @@ func (gen *CodeGenerator) generateChainedArrayAccess(node *ahoy.ASTNode) {
 	if innerAccess.Type == ahoy.NODE_MEMBER_ACCESS {
 		arrayType := gen.inferType(innerAccess)
 		if arrayType == "buffer[f32]" || strings.HasPrefix(arrayType, "buffer[") {
-			// Buffer field index: bounds-checked float load (unless -fast).
+			// Buffer field index: bounds-checked lane load (unless -fast).
+			elemB := bufferElemOf(arrayType)
+			cStructB := bufferCStruct(elemB)
 			if gen.enableBoundsChecking && !gen.skipBoundsCheck {
 				gen.output.WriteString("({ int __idx = ")
 				gen.generateNode(outerIndex)
-				gen.output.WriteString("; AhoyBufferF32* __b = ")
+				gen.output.WriteString("; ")
+				gen.output.WriteString(cStructB)
+				gen.output.WriteString("* __b = ")
 				gen.generateNode(innerAccess)
 				gen.output.WriteString("; if (__idx < 0 || __idx >= __b->length) { ")
 				gen.output.WriteString("fprintf(stderr, \"RUNTIME ERROR: Buffer bounds violation\\n\"); ")
@@ -10169,21 +10362,26 @@ func (gen *CodeGenerator) generateChainedArrayAssignment(node *ahoy.ASTNode) {
 	innerAccess := accessNode.Children[0]
 	outerIndex := accessNode.Children[1]
 
-	// Buffer field store (h.b[i] = v): bounds-checked float store
+	// Buffer field store (h.b[i] = v): bounds-checked lane store
 	// (unless -fast), same shape as generateBufferWrite.
 	if innerAccess.Type == ahoy.NODE_MEMBER_ACCESS {
 		if t := gen.inferType(innerAccess); t == "buffer[f32]" || strings.HasPrefix(t, "buffer[") {
+			elemS := bufferElemOf(t)
 			if gen.enableBoundsChecking {
 				gen.output.WriteString("{ int __idx = ")
 				gen.generateNode(outerIndex)
-				gen.output.WriteString("; AhoyBufferF32* __b = ")
+				gen.output.WriteString("; ")
+				gen.output.WriteString(bufferCStruct(elemS))
+				gen.output.WriteString("* __b = ")
 				gen.generateNode(innerAccess)
 				gen.output.WriteString("; if (__idx < 0 || __idx >= __b->length) { ")
 				gen.output.WriteString("fprintf(stderr, \"RUNTIME ERROR: Buffer bounds violation\\n\"); ")
 				gen.output.WriteString("fprintf(stderr, \"  Index: %d\\n\", __idx); ")
 				gen.output.WriteString("fprintf(stderr, \"  Valid range: 0 to %d\\n\", __b->length - 1); ")
 				gen.output.WriteString("exit(1); } ")
-				gen.output.WriteString("__b->data[__idx] = (float)(")
+				gen.output.WriteString("__b->data[__idx] = (")
+				gen.output.WriteString(bufferCarith(elemS))
+				gen.output.WriteString(")(")
 				gen.generateNode(valueNode)
 				gen.output.WriteString("); }\n")
 				return
@@ -10192,7 +10390,9 @@ func (gen *CodeGenerator) generateChainedArrayAssignment(node *ahoy.ASTNode) {
 			gen.generateNode(innerAccess)
 			gen.output.WriteString(")->data[")
 			gen.generateNode(outerIndex)
-			gen.output.WriteString("] = (float)(")
+			gen.output.WriteString("] = (")
+			gen.output.WriteString(bufferCarith(elemS))
+			gen.output.WriteString(")(")
 			gen.generateNode(valueNode)
 			gen.output.WriteString(");\n")
 			return
@@ -10473,6 +10673,9 @@ func (gen *CodeGenerator) mapType(langType string) string {
 		return "AhoyArray*"
 	}
 	if strings.HasPrefix(langType, "buffer[") {
+		if langType == "buffer[int]" {
+			return "AhoyBufferI32*"
+		}
 		return "AhoyBufferF32*"
 	}
 	if strings.HasPrefix(langType, "dict[") || strings.HasPrefix(langType, "dict<") {
@@ -10635,6 +10838,13 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			}
 			return "buffer[f32]"
 		}
+		// buffer constructors carry their lane in the spelling.
+		if node.Value == "buffer" {
+			return "buffer[f32]"
+		}
+		if node.Value == "buffer_int" {
+			return "buffer[int]"
+		}
 		// Verified-load serialization: image is array[int] bytes,
 		// rebuilt value is buffer[f32], verdict is bool.
 		if node.Value == "to_bytes" {
@@ -10642,6 +10852,9 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		}
 		if node.Value == "from_bytes" {
 			return "buffer[f32]"
+		}
+		if node.Value == "from_bytes_int" {
+			return "buffer[int]"
 		}
 		if node.Value == "from_bytes_ok" {
 			return "bool"
@@ -10938,8 +11151,11 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 				elemType := strings.TrimSuffix(strings.TrimPrefix(arrayType, "array["), "]")
 				return elemType
 			}
-			// Flat buffer reads widen to float.
+			// Flat buffer reads widen to their lane: float, or int.
 			if strings.HasPrefix(arrayType, "buffer[") {
+				if bufferElemOf(arrayType) == "int" {
+					return "int"
+				}
 				return "float"
 			}
 			// Check if the inner array is a 2D array - return its element type
@@ -10974,8 +11190,11 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			return elemType
 		}
 
-		// Flat buffer reads widen to float.
+		// Flat buffer reads widen to their lane: float, or int.
 		if strings.HasPrefix(arrayType, "buffer[") {
+			if bufferElemOf(arrayType) == "int" {
+				return "int"
+			}
 			return "float"
 		}
 
@@ -13807,6 +14026,18 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 		gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \"]\");\n")
 		gen.funcDecls.WriteString("    return buffer;\n")
 		gen.funcDecls.WriteString("}\n\n")
+		gen.funcDecls.WriteString("char* print_buffer_int_helper(AhoyBufferI32* b) {\n")
+		gen.funcDecls.WriteString("    if (b == NULL || b->length == 0) return \"[]\";\n")
+		gen.funcDecls.WriteString("    char* buffer = malloc(4096);\n")
+		gen.funcDecls.WriteString("    int offset = 0;\n")
+		gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \"[\");\n")
+		gen.funcDecls.WriteString("    for (int i = 0; i < b->length; i++) {\n")
+		gen.funcDecls.WriteString("        if (i > 0) offset += sprintf(buffer + offset, \", \");\n")
+		gen.funcDecls.WriteString("        offset += sprintf(buffer + offset, \"%d\", (int)b->data[i]);\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \"]\");\n")
+		gen.funcDecls.WriteString("    return buffer;\n")
+		gen.funcDecls.WriteString("}\n\n")
 	}
 
 	// print_string_array helper - formats string array for printing
@@ -13826,36 +14057,42 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 		gen.funcDecls.WriteString("}\n\n")
 	}
 
-	// bytes framing (little-endian): [u32 count][count x float32].
-	// ahoy_bytes_valid verifies framing exactly before anything is built:
-	// short image, count/length mismatch, non-int tags, out-of-range
+	// bytes framing (little-endian): [u32 count][u8 lane][payload].
+	// lane 0 is float32 elements, lane 1 int32 elements. ahoy_bytes_valid
+	// verifies framing exactly before anything is built: short image,
+	// count/length mismatch, bad lane tag, non-int tags, out-of-range
 	// bytes, or absurd counts fail closed, so a corrupt or hostile image
-	// is an empty buffer (and false), never a wild reference. Float bytes
-	// are the host's own LE encoding (every target is LE); the format is
-	// a same-platform save image, not portable interchange.
+	// is an empty buffer (and false), never a wild reference. Readers
+	// additionally require their own lane, so a cross-lane load fails
+	// closed too. Float/int bytes are the host's own LE encoding (every
+	// target is LE); the format is a same-platform save image, not
+	// portable interchange.
 	if gen.arrayMethods["bytes"] {
-		gen.funcDecls.WriteString("static int ahoy_bytes_valid(AhoyArray* a, unsigned* countOut) {\n")
-		gen.funcDecls.WriteString("    unsigned count, i;\n")
-		gen.funcDecls.WriteString("    if (!a || !a->data || !a->types || a->length < 4) return 0;\n")
-		gen.funcDecls.WriteString("    for (i = 0; i < 4; i++) {\n")
+		gen.funcDecls.WriteString("static int ahoy_bytes_valid(AhoyArray* a, unsigned* countOut, unsigned* laneOut) {\n")
+		gen.funcDecls.WriteString("    unsigned count, i, lane;\n")
+		gen.funcDecls.WriteString("    if (!a || !a->data || !a->types || a->length < 5) return 0;\n")
+		gen.funcDecls.WriteString("    for (i = 0; i < 5; i++) {\n")
 		gen.funcDecls.WriteString("        if (a->types[i] != AHOY_TYPE_INT) return 0;\n")
 		gen.funcDecls.WriteString("        if (a->data[i] < 0 || a->data[i] > 255) return 0;\n")
 		gen.funcDecls.WriteString("    }\n")
 		gen.funcDecls.WriteString("    count = (unsigned)(a->data[0] & 0xff) | ((unsigned)(a->data[1] & 0xff) << 8) |\n")
 		gen.funcDecls.WriteString("            ((unsigned)(a->data[2] & 0xff) << 16) | ((unsigned)(a->data[3] & 0xff) << 24);\n")
+		gen.funcDecls.WriteString("    lane = (unsigned)(a->data[4] & 0xff);\n")
+		gen.funcDecls.WriteString("    if (lane > 1) return 0;\n")
 		gen.funcDecls.WriteString("    if (count > 8388608u) return 0;\n")
-		gen.funcDecls.WriteString("    if ((unsigned)a->length != 4u + count * 4u) return 0;\n")
-		gen.funcDecls.WriteString("    for (i = 4; i < (unsigned)a->length; i++) {\n")
+		gen.funcDecls.WriteString("    if ((unsigned)a->length != 5u + count * 4u) return 0;\n")
+		gen.funcDecls.WriteString("    for (i = 5; i < (unsigned)a->length; i++) {\n")
 		gen.funcDecls.WriteString("        if (a->types[i] != AHOY_TYPE_INT) return 0;\n")
 		gen.funcDecls.WriteString("        if (a->data[i] < 0 || a->data[i] > 255) return 0;\n")
 		gen.funcDecls.WriteString("    }\n")
 		gen.funcDecls.WriteString("    if (countOut) *countOut = count;\n")
+		gen.funcDecls.WriteString("    if (laneOut) *laneOut = lane;\n")
 		gen.funcDecls.WriteString("    return 1;\n")
 		gen.funcDecls.WriteString("}\n\n")
 		gen.funcDecls.WriteString("AhoyArray* ahoy_buffer_to_bytes(AhoyBufferF32* b) {\n")
 		gen.funcDecls.WriteString("    AhoyArray* arr = (AhoyArray*)malloc(sizeof(AhoyArray));\n")
 		gen.funcDecls.WriteString("    int n = (b && b->length > 0) ? b->length : 0;\n")
-		gen.funcDecls.WriteString("    int cap = 4 + n * 4, i, k;\n")
+		gen.funcDecls.WriteString("    int cap = 5 + n * 4, i, k;\n")
 		gen.funcDecls.WriteString("    unsigned u;\n")
 		gen.funcDecls.WriteString("    float f;\n")
 		gen.funcDecls.WriteString("    arr->length = 0;\n")
@@ -13865,6 +14102,7 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 		gen.funcDecls.WriteString("    arr->is_typed = 1;\n")
 		gen.funcDecls.WriteString("    arr->element_type = AHOY_TYPE_INT;\n")
 		gen.funcDecls.WriteString("    for (k = 0; k < 4; k++) { arr->data[arr->length] = (n >> (8 * k)) & 0xff; arr->types[arr->length] = AHOY_TYPE_INT; arr->length++; }\n")
+		gen.funcDecls.WriteString("    arr->data[arr->length] = 0; arr->types[arr->length] = AHOY_TYPE_INT; arr->length++;\n")
 		gen.funcDecls.WriteString("    for (i = 0; i < n; i++) {\n")
 		gen.funcDecls.WriteString("        f = b->data[i];\n")
 		gen.funcDecls.WriteString("        memcpy(&u, &f, 4);\n")
@@ -13872,16 +14110,37 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 		gen.funcDecls.WriteString("    }\n")
 		gen.funcDecls.WriteString("    return arr;\n")
 		gen.funcDecls.WriteString("}\n\n")
+		gen.funcDecls.WriteString("AhoyArray* ahoy_buffer_int_to_bytes(AhoyBufferI32* b) {\n")
+		gen.funcDecls.WriteString("    AhoyArray* arr = (AhoyArray*)malloc(sizeof(AhoyArray));\n")
+		gen.funcDecls.WriteString("    int n = (b && b->length > 0) ? b->length : 0;\n")
+		gen.funcDecls.WriteString("    int cap = 5 + n * 4, i, k;\n")
+		gen.funcDecls.WriteString("    unsigned u;\n")
+		gen.funcDecls.WriteString("    int32_t v;\n")
+		gen.funcDecls.WriteString("    arr->length = 0;\n")
+		gen.funcDecls.WriteString("    arr->capacity = cap;\n")
+		gen.funcDecls.WriteString("    arr->data = (intptr_t*)malloc((size_t)cap * sizeof(intptr_t));\n")
+		gen.funcDecls.WriteString("    arr->types = (AhoyValueType*)malloc((size_t)cap * sizeof(AhoyValueType));\n")
+		gen.funcDecls.WriteString("    arr->is_typed = 1;\n")
+		gen.funcDecls.WriteString("    arr->element_type = AHOY_TYPE_INT;\n")
+		gen.funcDecls.WriteString("    for (k = 0; k < 4; k++) { arr->data[arr->length] = (n >> (8 * k)) & 0xff; arr->types[arr->length] = AHOY_TYPE_INT; arr->length++; }\n")
+		gen.funcDecls.WriteString("    arr->data[arr->length] = 1; arr->types[arr->length] = AHOY_TYPE_INT; arr->length++;\n")
+		gen.funcDecls.WriteString("    for (i = 0; i < n; i++) {\n")
+		gen.funcDecls.WriteString("        v = b->data[i];\n")
+		gen.funcDecls.WriteString("        memcpy(&u, &v, 4);\n")
+		gen.funcDecls.WriteString("        for (k = 0; k < 4; k++) { arr->data[arr->length] = (intptr_t)((u >> (8 * k)) & 0xff); arr->types[arr->length] = AHOY_TYPE_INT; arr->length++; }\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    return arr;\n")
+		gen.funcDecls.WriteString("}\n\n")
 		gen.funcDecls.WriteString("AhoyBufferF32* ahoy_buffer_from_bytes(AhoyArray* a) {\n")
-		gen.funcDecls.WriteString("    unsigned count = 0, i;\n")
+		gen.funcDecls.WriteString("    unsigned count = 0, lane = 0, i;\n")
 		gen.funcDecls.WriteString("    AhoyBufferF32* out = (AhoyBufferF32*)calloc(1, sizeof(AhoyBufferF32));\n")
 		gen.funcDecls.WriteString("    out->length = 0;\n")
-		gen.funcDecls.WriteString("    if (!ahoy_bytes_valid(a, &count)) return out;\n")
+		gen.funcDecls.WriteString("    if (!ahoy_bytes_valid(a, &count, &lane) || lane != 0) return out;\n")
 		gen.funcDecls.WriteString("    if (count == 0) return out;\n")
 		gen.funcDecls.WriteString("    out = (AhoyBufferF32*)realloc(out, sizeof(AhoyBufferF32) + (size_t)count * sizeof(float));\n")
 		gen.funcDecls.WriteString("    for (i = 0; i < count; i++) {\n")
-		gen.funcDecls.WriteString("        unsigned u = (unsigned)(a->data[4 + i * 4] & 0xff) | ((unsigned)(a->data[4 + i * 4 + 1] & 0xff) << 8) |\n")
-		gen.funcDecls.WriteString("                ((unsigned)(a->data[4 + i * 4 + 2] & 0xff) << 16) | ((unsigned)(a->data[4 + i * 4 + 3] & 0xff) << 24);\n")
+		gen.funcDecls.WriteString("        unsigned u = (unsigned)(a->data[5 + i * 4] & 0xff) | ((unsigned)(a->data[5 + i * 4 + 1] & 0xff) << 8) |\n")
+		gen.funcDecls.WriteString("                ((unsigned)(a->data[5 + i * 4 + 2] & 0xff) << 16) | ((unsigned)(a->data[5 + i * 4 + 3] & 0xff) << 24);\n")
 		gen.funcDecls.WriteString("        float f;\n")
 		gen.funcDecls.WriteString("        memcpy(&f, &u, 4);\n")
 		gen.funcDecls.WriteString("        out->data[i] = f;\n")
@@ -13889,8 +14148,25 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 		gen.funcDecls.WriteString("    out->length = (int)count;\n")
 		gen.funcDecls.WriteString("    return out;\n")
 		gen.funcDecls.WriteString("}\n\n")
+		gen.funcDecls.WriteString("AhoyBufferI32* ahoy_buffer_int_from_bytes(AhoyArray* a) {\n")
+		gen.funcDecls.WriteString("    unsigned count = 0, lane = 0, i;\n")
+		gen.funcDecls.WriteString("    AhoyBufferI32* out = (AhoyBufferI32*)calloc(1, sizeof(AhoyBufferI32));\n")
+		gen.funcDecls.WriteString("    out->length = 0;\n")
+		gen.funcDecls.WriteString("    if (!ahoy_bytes_valid(a, &count, &lane) || lane != 1) return out;\n")
+		gen.funcDecls.WriteString("    if (count == 0) return out;\n")
+		gen.funcDecls.WriteString("    out = (AhoyBufferI32*)realloc(out, sizeof(AhoyBufferI32) + (size_t)count * sizeof(int32_t));\n")
+		gen.funcDecls.WriteString("    for (i = 0; i < count; i++) {\n")
+		gen.funcDecls.WriteString("        unsigned u = (unsigned)(a->data[5 + i * 4] & 0xff) | ((unsigned)(a->data[5 + i * 4 + 1] & 0xff) << 8) |\n")
+		gen.funcDecls.WriteString("                ((unsigned)(a->data[5 + i * 4 + 2] & 0xff) << 16) | ((unsigned)(a->data[5 + i * 4 + 3] & 0xff) << 24);\n")
+		gen.funcDecls.WriteString("        int32_t v;\n")
+		gen.funcDecls.WriteString("        memcpy(&v, &u, 4);\n")
+		gen.funcDecls.WriteString("        out->data[i] = v;\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    out->length = (int)count;\n")
+		gen.funcDecls.WriteString("    return out;\n")
+		gen.funcDecls.WriteString("}\n\n")
 		gen.funcDecls.WriteString("int ahoy_buffer_from_bytes_ok(AhoyArray* a) {\n")
-		gen.funcDecls.WriteString("    return ahoy_bytes_valid(a, 0);\n")
+		gen.funcDecls.WriteString("    return ahoy_bytes_valid(a, 0, 0);\n")
 		gen.funcDecls.WriteString("}\n\n")
 	}
 }
@@ -14476,6 +14752,8 @@ func (gen *CodeGenerator) getFormatSpec(typeName string) string {
 		return "%p" // Pointer
 	case "buffer[f32]":
 		return "%s" // print_buffer_helper
+	case "buffer[int]":
+		return "%s" // print_buffer_int_helper
 	case "dict":
 		return "%p" // Pointer
 	default:
