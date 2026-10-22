@@ -10,9 +10,8 @@ import "strings"
 //     the indentation of the line that opened it.
 //   - A block whose body is a single simple statement is written on one line
 //     ("if x > 0 then print|x| $") when that line fits within formatterMaxWidth.
-//     If it does not fit, the body moves onto its own indented line. Loops are
-//     never collapsed: the parser rejects a `$` on the same line as a one-line
-//     loop, so a loop always keeps its `$` on a line of its own.
+//     If it does not fit, the body moves onto its own indented line. Loops
+//     may be collapsed onto one line when they fit, like any other block.
 //   - A switch arm (`on ...:` / `_:`) with a single simple body joins onto one
 //     line under the same width rule (arms carry no `$`).
 //   - Blank lines are collapsed to at most one, with none at the start or end of
@@ -668,7 +667,8 @@ func collapseSwitchArms(lines []*fLine) []*fLine {
 }
 
 // collapseBlocks joins a short single-statement block onto one line and expands
-// one that does not fit. Loops are never joined.
+// one that does not fit. Loops may be joined when they fit (the parser
+// accepts a `$` on the same line as a one-line loop).
 func collapseBlocks(lines []*fLine) []*fLine {
 	out := make([]*fLine, 0, len(lines))
 	for i := 0; i < len(lines); i++ {
@@ -738,9 +738,6 @@ func collapseBlocks(lines []*fLine) []*fLine {
 // implicit `|a:int|: print|a| $`. Those keep their `$` on its own line.
 func canCollapse(header string) bool {
 	trimmed := strings.TrimSpace(header)
-	if hasKeywordOutsideStrings(trimmed, "do") {
-		return false
-	}
 	if strings.HasPrefix(trimmed, "@") {
 		return isConcreteReturnType(functionReturnType(trimmed))
 	}
