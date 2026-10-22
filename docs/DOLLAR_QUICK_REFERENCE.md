@@ -97,7 +97,7 @@ Check for $ errors without compiling:
 ## Syntax Highlighting
 
 Keywords now highlighted:
-- `do`, `to`, `till`, `in` - Loop keywords
+- `do`, `to`, `until`, `while`, `in` - Loop keywords (`till` was removed; use `until`/`while`)
 - `on` - Switch keyword
 - `halt`, `next` - Control flow
 

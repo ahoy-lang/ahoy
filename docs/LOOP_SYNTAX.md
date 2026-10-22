@@ -66,7 +66,7 @@ loop i:0 to 5 do
     print|f"Count {i}\n"|
 $
 
-? Loop conditional with word operators
+? Loop conditional with a comparison
 loop i:0 while i < 5 do print|f"Value: {i}\n"|
 
 ? Loop conditional with symbol operators
@@ -89,7 +89,7 @@ loop do
     ahoy|"Forever!\n"|
 
 ? Alternative syntax (also works)
-loop i:0 while i less_than 5 do
+loop i:0 while i < 5 do
     ahoy|"Count\n"|
 
 ? Alternative syntax (also works)

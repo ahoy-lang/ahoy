@@ -96,7 +96,9 @@ function that only reads it must still free at scope exit.
 
 **Buys:** no GC pause, no reference-count overhead, deterministic frees, and
 a C-shaped memory profile - which matters for a game engine that wants to
-hand buffers to C without a translation layer.
+hand buffers to C without a translation layer. Fallible operations use the
+`(value, err)` convention (`docs/ERROR_HANDLING.md`), not exceptions, so
+failure handling is data flow that composes with pass-through checks.
 
 **Costs:** lifetimes are a thing you have to think about. There is no
 `Option`, no `Result`, no borrow checker, and no "this is still alive"

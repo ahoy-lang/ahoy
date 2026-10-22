@@ -1,36 +1,60 @@
-expected: []
-? guard C else B $ desugars to if not C then B $: early exits stay flat.
+? `guard COND else BODY $` desugars to `if not COND then BODY $`:
+? early exits stay flat. The `else` must diverge (`return`, `halt`,
+? `next`); a conditional value wants plain `if`.
+
+struct Ext:
+	a: float
+	b: int
+$
 
 @ check :: |v:int| int:
 	guard v >= 0 else return -1 $
 	return v * 2
 $
 
-a: check|5|
-print|a|
-expected.push|"10"|
-b: check|-3|
-print|b|
-expected.push|"-1"|
+@ main ||:
+	expected: []
+	a: check|5|
+	print|a|
+	expected.push|"10"|
+	b: check|-3|
+	print|b|
+	expected.push|"-1"|
 
-? guard inside a loop: skip without nesting
-total: 0
-loop i:0 to 4 do
-	guard i > 1 else next $
-	total = total + i
-$
-print|total|
-expected.push|"5"|
+	? null narrowing: a deref after the guard is clean
+	e: Ext = Ext{a: 1.5, b: 2}
+	ep: Ext* = &e
+	guard ep is not null else return $
+	v: ^ep
+	print|v.a|
+	expected.push|"1.5"|
 
-? guard with halt: flat early exit from a search loop
-found: -1
-loop i:0 to 10 do
-	if i is 7 then
-		found = i
-		halt
+	? empty-string guard picks the title
+	sdl: true
+	guard sdl else return $
+	title: "bell editor (sdl)"
+	print|title|
+	expected.push|"bell editor (sdl)"|
+
+	? guard inside a loop: skip without nesting
+	total: 0
+	loop i:0 to 4 do
+		guard i > 1 else next $
+		total = total + i
 	$
-$
-print|found|
-expected.push|"7"|
+	print|total|
+	expected.push|"5"|
 
-print|expected|
+	? multi-line form: the else arm can be a block like any other
+	found: -1
+	loop i:0 to 10 do
+		guard i is not 7 else
+			found = i
+			halt
+		$
+	$
+	print|found|
+	expected.push|"7"|
+
+	print|expected|
+$

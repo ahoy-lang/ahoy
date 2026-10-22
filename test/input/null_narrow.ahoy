@@ -1,8 +1,8 @@
 program null_narrow
 
-? Null narrowing: a guard (or null test) that diverges proves a name
+? Null narrowing: a pass-through check (or null test) that diverges proves a name
 ? non-null for the straight-line flow after it, and inside the arm it
-? guards. Dereferencing (^) a possibly-null pointer warns; a guarded
+? checks. Dereferencing (^) a possibly-null pointer warns; a checked
 ? one is clean. Taking an address is never null. Comparing a scalar
 ? to null is an error (checked by hand: see the commit message, since
 ? error cases cannot live in the corpus). The unguarded deref below
@@ -20,8 +20,8 @@ $
 	e: Ext = Ext{a: 1.5, b: 2}
 	ep: Ext* = &e
 
-	? guarded deref is clean
-	guard ep is not null else return $
+	? checked deref is clean
+	if ep is not null pass else return $
 	v: ^ep
 	print|v.a|
 	expected.push|"1.5"|
@@ -33,7 +33,7 @@ $
 		expected.push|"2"|
 	$
 
-	? address-taken is never null, no guard needed
+	? address-taken is never null, no check needed
 	p: &e
 	u: ^p
 	print|u.a|

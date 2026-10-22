@@ -88,8 +88,16 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			Value: token.Value,
 			Line:  token.Line,
 		}
-		// Determine if it's int or float
+		// Determine if it's int or float. Prefixed integers (0x hex from
+		// 0x/0b literals, leading-0 octal from 0o) are always int;
+		// Atoi only understands decimal.
 		if _, err := strconv.Atoi(token.Value); err == nil {
+			node.DataType = "int"
+		} else if len(token.Value) > 2 && token.Value[0] == '0' &&
+			(token.Value[1] == 'x' || token.Value[1] == 'X') {
+			node.DataType = "int"
+		} else if len(token.Value) > 1 && token.Value[0] == '0' &&
+			token.Value[1] >= '0' && token.Value[1] <= '7' {
 			node.DataType = "int"
 		} else {
 			node.DataType = "float"

@@ -4,7 +4,7 @@
 Bell crashes without reading codegen. Companion to
 `docs/MEMORY_MODEL.md` (user-facing) and `docs/MEMORY_OWNERSHIP.md`
 (compiler-side). Nothing here changes behavior; it writes down what
-the compiler already does, so future features (guard, buffer[T],
+the compiler already does, so future features (pass checks, buffer[T],
 typed queues, serialization) have something to be checked against.*
 
 ## 1. What owns what
@@ -52,18 +52,26 @@ xs[0].strip||` used to free-then-read; the compiler now stashes first
 (`test/input/return_temp.ahoy`), but naming the local is still the
 clearest form.
 
-## 4. Guard (item 3, normative)
+## 4. Guard clauses (item 3, normative)
 
-4.1 `guard C else B $` is exactly `if not C then B $`. No new scope,
-no new codegen, no checker rule: the parser desugars to
-`NODE_IF_STATEMENT` with a `not` condition.
-4.2 Intended use is early exit: `B` ends in `return`, `halt`, or
-`next`. The code after the guard then knows `C` held, flat instead of
-nested. A guard whose `B` falls through is legal but pointless; prefer
-`if`.
-4.3 One way: `else` opens the block directly. `else then` and `else:`
-are errors everywhere (`if`, `when`, `guard`) — same rule as the
-removed `elseif`/`anif` synonyms.
+4.1 `guard C else B $` is exactly `if not C then B $`. `guard` is a
+reserved keyword; a guard states the condition that must hold. No new
+scope, no new codegen, no checker rule for the shape itself: the parser
+desugars to `NODE_IF_STATEMENT` with a `not` condition (marked
+`Value: "guard"` so the checker can tell a guard from a plain
+`if not C then B`, which stays legal with any body).
+4.2 Intended use is early exit: `B` must end in `return`, `halt`,
+or `next` — the checker errors otherwise. The code after the check
+then knows `C` held, flat instead of nested. A conditional value
+(`v = 8.0`, `flag = true`) is not a guard; write a plain
+`if not C then ...` instead.
+4.3 Guards take no `then` and no `elif`: `guard C then` and
+`guard C elif ...` are errors (a guard states one condition and
+diverges; a second test wants its own guard or a plain `if` chain).
+`else` opens the block directly, same one-way rule as everywhere
+(`else then` / `else:` are errors). The transitional
+`pass if C else ...` spelling was removed outright and reports an
+error; the older `if C pass else B $` still parses but is deprecated.
 4.4 `null` is the nil reference: the zero value of every pointer
 field, assignable to pointer targets, comparable with `is null` /
 `is not null` (pointer comparison, never `strcmp`). Comparing a
@@ -111,14 +119,14 @@ general rule would be all false positives there.
   pass that removes provably-safe checks and reports the rest
   (`--bce-lines` style); (b) index types for validated graph edges;
   (c) `checkfree` as a checker error naming the surviving check.
-  Until (a) exists, early `return`/`halt`/`guard` cover the uses.
+  Until (a) exists, early `return` / `halt` / `guard` cover the uses.
 - No long-distance return (item 8): `return E from f` needs call-graph
   ordering in the checker (every function containing such a return
   must lie inside a call of `f`) plus hidden-discriminant codegen with
   plain signatures between. Done looks like: statically-checked,
   unwinder-free, values built at the destination (like `to_bytes`
   builds into its destination today). Until the checker's cascade
-  problems are fixed, `guard` + multi-return cover the structured
+  problems are fixed, pass-through checks + multi-return cover the structured
   uses; this stays last.
 
 ## 6. How to check it

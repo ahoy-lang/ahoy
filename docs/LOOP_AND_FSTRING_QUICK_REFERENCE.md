@@ -95,7 +95,7 @@ F-strings automatically detect the correct format:
 ```ahoy
 x: 10
 y: 20
-result: x plus y
+result: x + y
 print|f"x={x}, y={y}, sum={result}\n"|
 ```
 
@@ -132,11 +132,11 @@ print|f"Processing scores for {name}\n"|
 
 total: 0
 loop score in scores do
-    total: total plus score
+    total: total + score
     print|f"Score: {score}, Running total: {total}\n"|
 $
 
-average: total div 5
+average: total / 5
 print|f"Average: {average}\n"|
 
 ? Grade determination
@@ -219,7 +219,7 @@ print|f"Blast off!\n"|
 ### Accumulation
 ```ahoy
 total: 0
-loop i:0 to 100 do total: total plus i
+loop i:0 to 100 do total: total + i
 print|f"Sum: {total}\n"|
 ```
 

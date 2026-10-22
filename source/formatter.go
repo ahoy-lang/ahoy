@@ -440,6 +440,9 @@ func isIfBranch(trimmed string) bool {
 
 // isIfHeader reports whether a line starts an if-chain.
 func isIfHeader(trimmed string) bool {
+	if strings.HasPrefix(trimmed, "guard ") || strings.HasPrefix(trimmed, "guard(") {
+		return true
+	}
 	return strings.HasPrefix(trimmed, "if ") || strings.HasPrefix(trimmed, "if(")
 }
 
@@ -474,6 +477,12 @@ func opensBlock(text string) bool {
 		if strings.HasPrefix(trimmed, keyword) {
 			return true
 		}
+	}
+	// A guard opens its `else` block the same way `if` does.
+	// (`guard C else` carries no `then`/`do`, so the keyword check
+	// below would miss it.)
+	if strings.HasPrefix(trimmed, "guard ") || strings.HasPrefix(trimmed, "guard(") {
+		return true
 	}
 	// `switch` may be preceded by an assignment: x:string= switch expr:
 	if hasKeywordOutsideStrings(trimmed, "switch") {

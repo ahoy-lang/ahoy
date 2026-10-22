@@ -947,6 +947,60 @@ $
 	}
 }
 
+// A switch case is spelled with `on`; using another language's `case`
+// keyword should point at the fix instead of an unrelated parse error.
+// Tuple targets take their types from the callee's explicit return list;
+// no :(bool, string) annotation is needed on the assignment.
+func TestTupleUnpackUsesDeclaredReturnTypes(t *testing.T) {
+	src := `@ pair || bool, string:
+	return true, "x"
+$
+
+@ main || void:
+	ok, label := pair||
+	if ok then
+		up: label.upper||
+		print|up|
+	$
+$
+`
+	if msgs := diagnosticsFor(src); len(msgs) != 0 {
+		t.Errorf("tuple unpack from a typed return should infer every target, got %v", msgs)
+	}
+}
+
+func TestSwitchCaseKeywordSuggestsOn(t *testing.T) {
+	src := `@ main || void:
+	x: 1
+	switch x:
+		case 1:
+			print|"one"|
+		_:
+			print|"other"|
+	$
+$
+`
+	msgs := diagnosticsFor(src)
+	wantError(t, msgs, "Use 'on' instead of 'case' in a switch")
+	wantNoError(t, msgs, "Expected '$' to close switch")
+}
+
+func TestSwitchOnKeywordStillParses(t *testing.T) {
+	src := `@ main || void:
+	x: 1
+	switch x:
+		on 1:
+			print|"one"|
+		_:
+			print|"other"|
+	$
+$
+`
+	if msgs := diagnosticsFor(src); len(msgs) != 0 {
+		t.Errorf("a switch using `on` should parse cleanly, got %v", msgs)
+	}
+}
+
 func TestStoreWarnPushHeap(t *testing.T) {
 	src := `@ main || void:
 	outer: []
@@ -1092,5 +1146,158 @@ $
 		if strings.Contains(e.Message, "previous contents") {
 			t.Errorf("did not expect a field-store warning, got %q", e.Message)
 		}
+	}
+}
+
+func TestGuardGuardMustDiverge(t *testing.T) {
+	msgs := diagnosticsFor(`program p
+@ main ||:
+	guard true else print|"oops"|
+	print|"after"|
+$
+`)
+	wantError(t, msgs, "must end in `return`, `halt` or `next`")
+}
+
+func TestIfPassGuardMustDiverge(t *testing.T) {
+	msgs := diagnosticsFor(`program p
+@ main ||:
+	if true pass else print|"oops"|
+	print|"after"|
+$
+`)
+	wantError(t, msgs, "must end in `return`, `halt` or `next`")
+}
+
+func TestGuardGuardReturnIsClean(t *testing.T) {
+	msgs := diagnosticsFor(`program p
+@ f ::|v:int| int:
+	guard v >= 0 else return -1 $
+	return v * 2
+$
+`)
+	wantNoError(t, msgs, "must end in")
+}
+
+func TestGuardTakesNoThen(t *testing.T) {
+	msgs := diagnosticsFor(`program p
+@ main ||:
+	guard true then print|"x"|
+$
+`)
+	wantError(t, msgs, "takes no `then`")
+}
+
+func TestGuardTakesNoElif(t *testing.T) {
+	msgs := diagnosticsFor(`program p
+@ main ||:
+	guard true elif true then print|"x"| else print|"y"| $
+$
+`)
+	wantError(t, msgs, "takes no `elif`")
+}
+
+func TestGuardNeedsElse(t *testing.T) {
+	msgs := diagnosticsFor(`program p
+@ main ||:
+	guard true $
+$
+`)
+	wantError(t, msgs, "a guard reads `guard COND else ...`")
+}
+
+func TestGuardConditionCannotDeclare(t *testing.T) {
+	msgs := diagnosticsFor(`program p
+@ get_user ::|v:int| int:
+	return v
+$
+@ main ||:
+	guard (user := get_user|1|) is not 0 else return $
+	print|"kept"|
+$
+`)
+	wantError(t, msgs, "cannot declare or assign")
+}
+
+func TestGuardConditionCannotAssignType(t *testing.T) {
+	msgs := diagnosticsFor(`program p
+@ get_user ::|v:int| int:
+	return v
+$
+@ main ||:
+	guard user:int = get_user|1| else return $
+	print|"kept"|
+$
+`)
+	wantError(t, msgs, "cannot declare or assign")
+}
+
+func TestIfConditionCannotDeclare(t *testing.T) {
+	msgs := diagnosticsFor(`program p
+@ get_user ::|v:int| int:
+	return v
+$
+@ main ||:
+	if (user := get_user|1|) is not 0 then print|"kept"|
+	$
+$
+`)
+	wantError(t, msgs, "cannot declare or assign")
+}
+
+func TestIfConditionSlicesAndCallsAreClean(t *testing.T) {
+	msgs := diagnosticsFor(`program p
+@ greet ::|name:string, greeting:string="Hi"| void:
+	print|name|
+$
+@ main ||:
+	s: "hello"
+	if s[0:2] is "he" then print|"he"|
+	$
+	greet|greeting: "yo"|
+$
+`)
+	wantNoError(t, msgs, "cannot declare or assign")
+}
+
+func TestGuardAssignInElseBodyIsGuardError(t *testing.T) {
+	msgs := diagnosticsFor(`program p
+@ main ||:
+	v: 9.0
+	guard v >= 8.0 else v = 8.0 $
+	print|v|
+$
+`)
+	wantError(t, msgs, "must end in `return`, `halt` or `next`")
+	wantNoError(t, msgs, "cannot declare or assign")
+}
+
+// The word operators (plus/minus/... and greater_than/less_than/...) were
+// removed; only symbols remain. Each spelling must point at its symbol
+// instead of parsing as an identifier and cascading into "not declared".
+func TestWordOperatorsWereRemoved(t *testing.T) {
+	cases := []struct{ expr, want string }{
+		{"a plus b", "`plus` was removed; write `+` instead"},
+		{"a minus b", "`minus` was removed; write `-` instead"},
+		{"a times b", "`times` was removed; write `*` instead"},
+		{"a div b", "`div` was removed; write `/` instead"},
+		{"a mod b", "`mod` was removed; write `%` instead"},
+		{"a pow b", "`pow` was removed; write `**` instead"},
+		{"a greater_than b", "`greater_than` was removed; write `>` instead"},
+		{"a lesser_than b", "`lesser_than` was removed; write `<` instead"},
+		{"a less_than b", "`less_than` was removed; write `<` instead"},
+		{"a greater b", "`greater` was removed; write `>` instead"},
+		{"a lesser b", "`lesser` was removed; write `<` instead"},
+		{"a less_equal b", "`less_equal` was removed; write `<=` instead"},
+		{"a greater_or_equal b", "`greater_or_equal` was removed; write `>=` instead"},
+		{"a greater_equal b", "`greater_equal` was removed; write `>=` instead"},
+		{"a lesser_equal b", "`lesser_equal` was removed; write `<=` instead"},
+		{"a greater_than_or_equal b", "`greater_than_or_equal` was removed; write `>=` instead"},
+		{"a lesser_than_or_equal b", "`lesser_than_or_equal` was removed; write `<=` instead"},
+	}
+	for _, c := range cases {
+		src := "program p\n@ f :: |a:int, b:int| int:\n\treturn " + c.expr + "\n$\n"
+		msgs := diagnosticsFor(src)
+		wantError(t, msgs, c.want)
 	}
 }

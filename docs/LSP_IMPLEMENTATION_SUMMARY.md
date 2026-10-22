@@ -63,8 +63,7 @@ ahoy/
 - **What it does:** Suggests keywords and operators
 - **How it works:** Analyzes cursor position and current word prefix
 - **Completions for:**
-  - Keywords (if, else, loop, func, return, etc.)
-  - Word operators (plus, minus, times, div, mod, etc.)
+  - Keywords (if, guard, else, elif, loop, return, etc.)
   - Types (int, float, string, bool, dict, etc.)
   - Boolean operators (and, or, not)
 
@@ -115,7 +114,6 @@ ahoy/
   - Add missing ':' for assignment
   - Suggest similar variable names for undefined symbols
 - **Refactorings:**
-  - Convert word operators to symbols (plus → +, minus → -, etc.)
   - Convert 'is' to '=='
   - Add function documentation comments
 

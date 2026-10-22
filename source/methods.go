@@ -58,7 +58,7 @@ func (gen *CodeGenerator) valueAllocatesString(node *ahoy.ASTNode) bool {
 	}
 	switch node.Type {
 	case ahoy.NODE_BINARY_OP:
-		if node.Value != "+" && node.Value != "plus" {
+		if node.Value != "+" {
 			return false
 		}
 		if len(node.Children) < 2 {

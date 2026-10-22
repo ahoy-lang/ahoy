@@ -114,32 +114,40 @@ The formatter automatically preserves inline conditionals:
 
 One-line conditionals stay on one line, multi-line conditionals stay multi-line.
 
-## Guard (early exit, flat instead of nested)
+## Guard clauses (early exit, flat instead of nested)
 
-`guard C else B $` is exactly `if not C then B $` — the parser
-desugars it, so the checker and codegen never see a new construct.
-Use it when the `B` block exits (`return`, `halt`, `next`): the code
-after the guard then knows `C` held, without indenting the rest of
-the function one level deeper:
+`guard C else B $` is a guard: `C` must hold, otherwise `B` runs. It is
+exactly `if not C then B $` — the parser desugars it, so the checker and
+codegen never see a new construct. `guard` is a keyword; a guard states
+one condition and does not chain. Use it when the `B` block exits
+(`return`, `halt`, `next`): the code after the check then knows `C`
+held, without indenting the rest of the function one level deeper:
 
 ```ahoy
 @ node_set_slot_w :: |nodes:array[Node], id:int, v:float| void:
     guard id >= 0 else return $
-    guard v >= 8.0 else v = 8.0 $
+    guard v >= 8.0 else return $
     cur: nodes[id]
     cur.slot.slot_w = v
     nodes[id] = cur
 $
 ```
 
-One way: `else` opens the block directly. `else then` and `else:`
-are errors — in `guard`, and in `if`/`when` too.
+**A guard `else` must diverge** (`return`, `halt`, `next`); the
+compiler errors otherwise. A conditional value wants plain `if`:
 
-`guard` is contextual, not reserved: a variable named `guard` (Bell
-uses it as a loop-counter name) still declares and assigns normally.
-Only statement-start `guard … else` takes the new path. A guard whose
-block falls through is legal but pointless — prefer `if` there.
-See `docs/SPEC_CORE.md` §4 for the normative rule.
+```ahoy
+    guard id >= 0 else return $
+    if v < 8.0 then v = 8.0 $
+```
+
+`guard` takes no `then` and no `elif` (a guard states one condition and
+diverges; a second test wants its own guard or a plain `if` chain).
+`guard C then`, `guard C elif ...` and a bare `guard C` with no `else`
+are all errors. `else` opens the block directly, same one-way rule as
+everywhere (`else then` / `else:` are errors). The transitional
+`pass if C else ...` spelling was removed outright and now reports an
+error. See `docs/SPEC_CORE.md` §4 for the normative rule.
 
 ## When to Use
 

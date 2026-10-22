@@ -16,11 +16,11 @@ halt
 **Exit loop when condition is met:**
 ```ahoy
 x: 0
-loop:x less_than 10 do
+loop:x < 10 do
     if x is 5 then
         halt
     print|"x = %d", x|
-    x: x plus 1
+    x: x + 1
 $
 ? Output: x = 0, 1, 2, 3, 4
 ```
@@ -42,14 +42,14 @@ $
 **Nested loops - halts only inner:**
 ```ahoy
 i: 0
-loop:i less_than 3 do
+loop:i < 3 do
     j: 0
-    loop:j less_than 5 do
+    loop:j < 5 do
         if j is 3 then
             halt  ? Exits inner loop only
         print|"[%d,%d]", i, j|
-        j: j plus 1
-    i: i plus 1
+        j: j + 1
+    i: i + 1
 ? Outer loop continues
 ```
 
@@ -67,9 +67,9 @@ next
 **next even numbers:**
 ```ahoy
 i: 0
-loop:i less_than 10 do
-    i: i plus 1
-    if i mod 2 is 0 then
+loop:i < 10 do
+    i: i + 1
+    if i % 2 is 0 then
         next
     print|"Odd: %d", i|
 ? Output: Odd: 1, 3, 5, 7, 9
@@ -80,7 +80,7 @@ loop:i less_than 10 do
 values: [-5, 10, 0, 15, -3, 20]
 
 loop val in values do
-    if val less_than 0 then
+    if val < 0 then
         next  ? next negative values
     print|"Valid: %d", val|
 ? Output: Valid: 10, 0, 15, 20
@@ -88,16 +88,16 @@ loop val in values do
 
 **next specific conditions:**
 ```ahoy
-loop:0 to 20 do
+loop i:0 to 20 do
     ? next multiples of 3
-    if ? mod 3 is 0 then
+    if i % 3 is 0 then
         next
 
     ? next multiples of 5
-    if ? mod 5 is 0 then
+    if i % 5 is 0 then
         next
 
-    print|"Number: %d", ?|
+    print|"Number: %d", i|
 ? Prints numbers that aren't multiples of 3 or 5
 ```
 
@@ -107,11 +107,11 @@ You can use both `halt` and `next` together:
 
 ```ahoy
 count: 0
-loop:count less_than 20 do
-    count: count plus 1
+loop:count < 20 do
+    count: count + 1
 
     ? next multiples of 3
-    if count mod 3 is 0 then
+    if count % 3 is 0 then
         next
 
     ? Stop at 15
@@ -130,9 +130,9 @@ Both `halt` and `next` work with all loop types:
 ### While-style loops:
 ```ahoy
 x: 0
-loop:x less_than 10 do
-    x: x plus 1
-    if x mod 2 is 0 then
+loop:x < 10 do
+    x: x + 1
+    if x % 2 is 0 then
         next
     print|"%d", x|
 ```

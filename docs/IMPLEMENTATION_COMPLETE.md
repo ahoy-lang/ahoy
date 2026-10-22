@@ -5,7 +5,7 @@
 ### 1. Core Syntax Changes
 - ✅ Arrays use `[]` syntax (changed from `<>`)
 - ✅ Objects/Dicts use `<>` syntax
-- ✅ `less_than` keyword (changed from `lesser_than`)
+- ✅ Symbol comparison operators (`<`, `>`, `<=`, `>=`); word forms removed
 - ✅ Loops use `do` keyword for inline; `:` for blocks
 - ✅ `?` token for loop counter variable
 - ✅ Comments with `?`

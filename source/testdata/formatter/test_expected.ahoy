@@ -16,9 +16,9 @@ check_positive :: |num:int|:
 $
 
 classify :: |num:int|:
-  if num > 0: ahoy|"Positive"|
-  anif num greater_than 0: ahoy|"Negative"|
-  else: ahoy|"Zero"|
+  if num > 0 then ahoy|"Positive"|
+  elif num < 0 then ahoy|"Negative"|
+  else ahoy|"Zero"|
   $
 $
 

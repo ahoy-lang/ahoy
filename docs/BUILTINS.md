@@ -113,3 +113,69 @@ empty buffer and `from_bytes_ok` is false. A corrupt or hostile file is
 never a wild reference. The format is a same-platform save image (the
 floats are the host's LE encoding), not portable interchange; `array`
 and `string` payloads are the next framing, not this one.
+
+## The trigonometry and clock builtins
+
+```
+sin|x| cos|x| tan|x|        sine, cosine, tangent (radians)
+asin|x| acos|x|             arcsine, arccosine (radians, input clamped to [-1, 1])
+atan|x| atan2|y, x|         arctangent; two-argument angle in radians (-pi to pi)
+fmod|x, y|                  floating-point remainder (0 when y is 0, like mod)
+ln|x|                       natural logarithm (0 when x is not positive)
+exp|x|                       e raised to x
+time_now||                  seconds since the program started (CPU time, monotonic)
+```
+
+`asin`/`acos` clamp out-of-range input instead of returning NaN, and
+`atan2|0, 0|` answers 0 — the total-function style the maths builtins
+already use. `time_now` reads libc `clock()`: it never goes backwards,
+but it is CPU time, not wall time — the frame clock for games is still
+the renderer's `frame_time`.
+
+## The random builtins
+
+```
+rand||               the whole libc range
+rand_range|lo, hi|   inclusive on both ends (raylib GetRandomValue semantics)
+```
+
+Seeded once at program start, so every call shares one stream.
+`shuffle` and `pick` draw from the same stream too (they used to reseed
+per call, repeating the sequence when called twice in one second).
+
+## The extended array builtins
+
+```
+xs.slice|lo, hi|        fresh array with elements [lo, hi), clamped
+xs.index_of|v|          first index whose slot equals v, else -1 (slot
+                        identity, like has; compare strings by value
+                        with find_index|it: it is "x"| instead)
+xs.reduce|init, f|      left fold over int slots: f(acc, el), e.g.
+                        xs.reduce|0, (acc:int, v:int): acc + v|
+xs.insert|i, v|         shift right and store (grows like push); same array
+xs.join|sep|            concatenate the string slots with sep between
+xs.append|v|            alias of push
+xs.erase|i|             alias of remove
+xs.size||               alias of length
+xs.clear||              drop every element (length goes to 0; slots are
+                        left for scope exit to reclaim — leak, never dangle)
+xs.dup||                shallow copy: new buffers, shared slots (the same
+                        aliasing push already has)
+```
+
+`insert` and `clear` mutate in place and return the same array, like
+`push`/`sort`/`reverse`/`shuffle`. Bind the result to a second name and
+both names own one allocation (double-free at scope exit) — the checker
+warns. Call them as statements, or rebind the same name:
+`xs.push|4|`, `xs = xs.sort||`.
+
+There is deliberately no `each`: a lambda body is a pure expression
+(calls do not parse there), so `each` could only silently do nothing.
+A missing name is a clean "no method" error instead of a C link error —
+write a loop instead.
+
+## Fallible builtins
+
+`read_json|path|` and `write_json|path, data|` return `(value, error)`
+with `null` for ok — the `(T, err)` convention every fallible function
+should follow. See `docs/ERROR_HANDLING.md`.

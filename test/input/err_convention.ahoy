@@ -1,0 +1,73 @@
+expected: []
+? Go-style (value, err) with null-on-ok: every fallible step names its
+? results, and the check reads at the site. See docs/ERROR_HANDLING.md.
+
+? A fallible loader: ok content + null, or "" + the reason.
+@ try_load |path:string| string, string:
+	if path is "" then return "", "missing file" $
+	return "data:" + path, null
+$
+
+? 1. error-first: the failure is handled, the happy path stays flat.
+body: string = ""
+err: string = ""
+body, err := try_load|"level.scene"|
+if err then
+	print|"handled"
+	expected.push|"handled"|
+$
+print|body|
+expected.push|"data:level.scene"|
+
+? 2. success-continuation: proceed only when there is no error.
+body2: string = ""
+err2: string = ""
+body2, err2 := try_load|"hud.scene"|
+if not err2 then
+	print|body2|
+	expected.push|"data:hud.scene"|
+$
+
+? 3. guard: early exit instead of nesting.
+@ use_guarded |path:string| string:
+	t: string = ""
+	p: string = ""
+	t, p := try_load|path|
+	if p is null pass else return "fell back" $
+	return t
+$
+
+g1: use_guarded|"ok.scene"|
+print|g1|
+expected.push|"data:ok.scene"|
+g2: use_guarded|""|
+print|g2|
+expected.push|"fell back"|
+
+? null (not "") is the only ok-value: "" is truthy, null is falsy.
+e_ok: string = null
+if e_ok then
+	print|"wrong branch"|
+	expected.push|"WRONG"|
+$
+if not e_ok then
+	print|"null is falsy"|
+	expected.push|"null is falsy"|
+$
+e_bad: string = ""
+if e_bad then
+	print|"empty is truthy"|
+	expected.push|"empty is truthy"|
+$
+
+? Missing input reports its reason through the error slot.
+m: string = ""
+re: string = ""
+m, re := try_load|""|
+if re is not null then
+	print|re|
+	expected.push|"missing file"|
+$
+
+? Print expected values for test validation
+print|expected|

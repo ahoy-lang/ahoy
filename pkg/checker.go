@@ -52,13 +52,13 @@ type checker struct {
 	// freedNames holds locals explicitly freed with free|x| (not deferred).
 	// Any later use warns (use-after-free); rebinding clears the entry.
 	freedNames map[string]bool
-	// inLoop counts enclosing loop bodies under check: a guard whose
+	// inLoop counts enclosing loop bodies under check: a pass-through check whose
 	// else arm is a bare halt/next diverges only inside a loop (at top
 	// level halt/next do not provably leave), so inLoop gates that
 	// narrowing. Saved and reset per function like the sets above.
 	inLoop int
-	// nonNull holds names proved not-null by a guard or null test in the
-	// straight-line flow (guard p is not null else return, or an if arm
+	// nonNull holds names proved not-null by a pass-through check or null test in the
+	// straight-line flow (if p is not null pass else return, or an if arm
 	// entered under p is not null). Any assignment clears the entry, so
 	// membership always means definitely-not-null here. Fresh per
 	// function, like freedNames.
@@ -861,10 +861,10 @@ func bodyHasValueReturn(node *ASTNode) bool {
 }
 
 // checkNullIf checks an if statement, threading null-state through its
-// arms: an arm entered under `X is not null` knows X inside (guarded
+// arms: an arm entered under `X is not null` knows X inside (checked
 // derefs stay clean); a diverging single arm entered under `X is null`
 // proves X for what follows when there is no else to sneak around
-// through (the guard shape, and the bare if-no-else shape). Every other
+// through (the pass-through shape, and the bare if-no-else shape). Every other
 // arm checks exactly as before, with the set restored afterwards, so a
 // conditional proof never leaks out of its arm.
 func (c *checker) checkNullIf(node *ASTNode) {
@@ -925,11 +925,11 @@ func (c *checker) checkNullIf(node *ASTNode) {
 		return
 	}
 	// No else, single then-arm, diverging body: the fall-through proves
-	// the condition false (the guard shape and its bare-if twin).
+	// the condition false (the pass-through shape and its bare-if twin).
 	// Divergence is `return` anywhere, or a bare halt/next inside a
 	// loop (at top level neither provably leaves).
 	if n == 2 && node.Children[1].Type == NODE_BLOCK &&
-		c.guardDiverges(node.Children[1]) {
+		c.passDiverges(node.Children[1]) {
 		if root, isNull, ok := nullImplies(node.Children[0], true); ok && !isNull {
 			c.nonNull[root] = true
 		}
@@ -1053,9 +1053,22 @@ func (c *checker) checkBlock(node *ASTNode) {
 		return
 	}
 	c.pushScope()
+	// Guard-dispatch heuristic: a run of 3+ consecutive guards that
+	// each return a different value is a dispatch table in disguise.
+	var run []*ASTNode
+	flush := func() {
+		c.checkGuardDispatch(run)
+		run = nil
+	}
 	for _, child := range node.Children {
+		if child != nil && (child.Value == "guard" || child.Value == "if-pass") {
+			run = append(run, child)
+		} else {
+			flush()
+		}
 		c.checkStatement(child)
 	}
+	flush()
 	c.popScope()
 }
 
@@ -1223,6 +1236,7 @@ func (c *checker) checkStatement(node *ASTNode) {
 
 	case NODE_IF_STATEMENT:
 		c.checkNullIf(node)
+		c.checkGuardDiverges(node)
 
 	case NODE_WHILE_LOOP:
 		// `loop i:start while/until condition` and `loop i while/until condition` carry the
@@ -1692,7 +1706,7 @@ func (c *checker) checkExpr(node *ASTNode) {
 						t = c.p.inferType(operand)
 					}
 					if nullableAhoyType(t) && !c.nonNull[root] {
-						c.warningAt(node, "Dereferencing '%s', which may be null; guard %s is not null first", root, root)
+						c.warningAt(node, "Dereferencing '%s', which may be null; check %s is not null first", root, root)
 					}
 				}
 			}
@@ -1826,7 +1840,7 @@ func (c *checker) checkLambda(node *ASTNode) {
 		}
 	}
 	// A lambda body runs when called, not when defined: flow facts from
-	// the enclosing code (guard-narrowed non-nulls) do not hold inside.
+	// the enclosing code (pass-through-narrowed non-nulls) do not hold inside.
 	savedNull := c.snapshotNull()
 	savedLambdaLoop := c.inLoop
 	c.nonNull = map[string]bool{}
@@ -2185,20 +2199,160 @@ func (c *checker) checkNullBlock(node *ASTNode) {
 	c.restoreNull(saved)
 }
 
-// guardDiverges reports whether a guard's else arm cannot fall through
-// to the code after it: `return` always diverges; a bare `halt`/`next`
+// checkGuardDiverges enforces the guard contract: a guard's `else` must
+// transfer control out of the scope (`return`, `halt`, `next`). A guard
+// whose `else` falls through is an error — the code after it would run
+// with the condition unproven. A conditional value wants plain `if`,
+// not a guard.
+func (c *checker) checkGuardDiverges(node *ASTNode) {
+	if node.Value != "guard" && node.Value != "if-pass" {
+		return
+	}
+	// Guard nodes always carry exactly [condition, else-body]: the
+	// parser rejects `then` and `elif` on both spellings, and `else`
+	// is required. Anything else is already a parse error.
+	if len(node.Children) != 2 {
+		return
+	}
+	if c.passDiverges(node.Children[1]) {
+		return
+	}
+	c.errorAt(node.Children[1], "guard `else` must end in `return`, `halt` or `next`; for a conditional value write plain `if not C then ...` instead")
+}
+
+// guardDispatchValue returns the returned expression of a guard's else
+// arm when that arm is a single `return <expr>` (possibly wrapped in a
+// block), or nil when the guard is a precondition-style exit. Used by
+// checkGuardDispatch to spot dispatch tables written as guard chains.
+func (c *checker) guardDispatchValue(node *ASTNode) *ASTNode {
+	if node == nil || (node.Value != "guard" && node.Value != "if-pass") {
+		return nil
+	}
+	if len(node.Children) != 2 {
+		return nil
+	}
+	// condition must be an `is not` comparison (membership/none-of),
+	// not a range or ordering precondition.
+	if !guardCondIsNot(node.Children[0]) {
+		return nil
+	}
+	body := node.Children[1]
+	// unwrap a single-statement block
+	if body != nil && body.Type == NODE_BLOCK && len(body.Children) == 1 {
+		body = body.Children[0]
+	}
+	if body == nil || body.Type != NODE_RETURN_STATEMENT || len(body.Children) != 1 {
+		return nil
+	}
+	return body.Children[0]
+}
+
+// guardCondIsNot reports whether a guard condition is an `is not` test
+// (binary `x is not y` or `x is not a, b, ...`).
+func guardCondIsNot(cond *ASTNode) bool {
+	if cond == nil {
+		return false
+	}
+	// walk the condition's children for a "not" token
+	found := false
+	var walk func(n *ASTNode)
+	walk = func(n *ASTNode) {
+		if n == nil || found {
+			return
+		}
+		if n.Value == "not" {
+			found = true
+			return
+		}
+		for _, ch := range n.Children {
+			walk(ch)
+		}
+	}
+	walk(cond)
+	return found
+}
+
+// checkGuardDispatch warns when a block contains 3+ consecutive guards
+// that all return a value via `is not` tests - that shape is a dispatch
+// table, which reads far better as a `switch` (with `on A, B:` groups)
+// or an `x is A, B, C` membership test.
+func (c *checker) checkGuardDispatch(stmts []*ASTNode) {
+	if len(stmts) < 3 {
+		return
+	}
+	var first *ASTNode
+	var vals []*ASTNode
+	allDispatch := true
+	for _, st := range stmts {
+		v := c.guardDispatchValue(st)
+		if v == nil {
+			allDispatch = false
+			break
+		}
+		if first == nil {
+			first = st
+		}
+		vals = append(vals, v)
+	}
+	if !allDispatch || first == nil {
+		return
+	}
+	// only warn when the returned values actually differ (a chain that
+	// returns the same value from every guard is a precondition chain,
+	// not a dispatch table).
+	allSame := true
+	for i := 1; i < len(vals); i++ {
+		if !exprEqual(vals[0], vals[i]) {
+			allSame = false
+			break
+		}
+	}
+	if allSame {
+		return
+	}
+	c.warningAt(first, "consecutive guards returning different values look like a dispatch table; prefer `switch` (with `on A, B:` groups) or `x is A, B, C`")
+}
+
+// exprEqual is a shallow structural equality check used by the dispatch
+// heuristic above.
+func exprEqual(a, b *ASTNode) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.Type != b.Type || a.Value != b.Value {
+		return false
+	}
+	if len(a.Children) != len(b.Children) {
+		return false
+	}
+	for i := range a.Children {
+		if !exprEqual(a.Children[i], b.Children[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// passDiverges reports whether a guard `else` arm cannot fall through
+// to the code after it: `return` anywhere diverges; a bare `halt`/`next`
 // diverges only inside a loop (at top level neither provably leaves).
-func (c *checker) guardDiverges(body *ASTNode) bool {
+// Work before a trailing `halt`/`next` is fine (`found = i; halt` still
+// never falls through) — only the last statement has to transfer out.
+func (c *checker) passDiverges(body *ASTNode) bool {
 	if blockAlwaysReturns(body) {
 		return true
 	}
-	if c.inLoop > 0 && body != nil && body.Type == NODE_BLOCK && len(body.Children) == 1 {
-		switch body.Children[0].Type {
+	if c.inLoop == 0 || body == nil {
+		return false
+	}
+	if body.Type == NODE_BLOCK && len(body.Children) > 0 {
+		switch body.Children[len(body.Children)-1].Type {
 		case NODE_HALT, NODE_NEXT:
 			return true
 		}
+		return false
 	}
-	return false
+	return body.Type == NODE_HALT || body.Type == NODE_NEXT
 }
 
 // snapshotNull copies the null-state for scoped checking (if arms,
@@ -2285,7 +2439,7 @@ func nullRoot(node *ASTNode) string {
 // asks what the test's own arm knows (if X is null then A: X is null in
 // A); negate=true asks what the fall-through knows (the arm diverged,
 // so execution continues with the condition false). NOTs are counted,
-// so `if p is not null` (parser: not(p is null)) and guard's double
+// so `if p is not null` (parser: not(p is null)) and the pass form's double
 // negation both resolve. Only a bare `is` against the null literal
 // counts; match lists, method calls and anything else is not a test.
 func nullImplies(cond *ASTNode, negate bool) (root string, isNull bool, ok bool) {
@@ -2726,13 +2880,10 @@ func (c *checker) checkNamespacedCall(node *ASTNode, namespace string) {
 
 var arithmeticOps = map[string]bool{
 	"+": true, "-": true, "*": true, "/": true, "%": true,
-	"plus": true, "minus": true, "times": true, "div": true, "mod": true,
 }
 
 var orderingOps = map[string]bool{
 	">": true, "<": true, ">=": true, "<=": true,
-	"greater_than": true, "lesser_than": true,
-	"greater_than_or_equal": true, "lesser_than_or_equal": true,
 }
 
 var bitwiseOps = map[string]bool{
@@ -2815,7 +2966,7 @@ func (c *checker) checkBinaryOp(node *ASTNode) {
 	rt := c.p.inferType(right)
 
 	// String concatenation: + on two strings builds a new string.
-	if (op == "+" || op == "plus") && isStringType(lt) && isStringType(rt) {
+	if op == "+" && isStringType(lt) && isStringType(rt) {
 		return
 	}
 
@@ -2824,7 +2975,7 @@ func (c *checker) checkBinaryOp(node *ASTNode) {
 	}
 	// -strict: integer division/modulo by a literal zero always SIGFPEs.
 	// Float division stays silent (it yields inf, which is legal).
-	if StrictLint && (op == "div" || op == "/" || op == "mod" || op == "%") {
+	if StrictLint && (op == "/" || op == "%") {
 		if right != nil && right.Type == NODE_NUMBER && strictZeroNumber(right.Value) {
 			floatLHS := lt == "float" || lt == "double"
 			if !floatLHS && left != nil && left.Type == NODE_IDENTIFIER {
@@ -2833,7 +2984,7 @@ func (c *checker) checkBinaryOp(node *ASTNode) {
 				}
 			}
 			if !floatLHS {
-				c.warningAt(node, "Division by zero always crashes; guard the divisor")
+				c.warningAt(node, "Division by zero always crashes; check the divisor first")
 			}
 		}
 	}

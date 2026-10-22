@@ -32,9 +32,9 @@ $
 	print|h.ext is not null|
 	expected.push|"1"|
 
-	? guard + null is the early-exit shape (no narrowing yet: the
+	? pass + null is the early-exit shape (narrowing pins the rest).
 	? check itself is the feature; flow types stay as declared)
-	guard h.ext is not null else return $
+	if h.ext is not null pass else return $
 	print|h.ext.a|
 	expected.push|"1.5"|
 

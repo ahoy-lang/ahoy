@@ -129,8 +129,8 @@ The grammar supports all Ahoy language features:
 - ✅ Loops (`loop:start to end`, `loop item in array`)
 - ✅ Arrays (`<1, 2, 3>`)
 - ✅ Dictionaries (`{"key":"value"}`)
-- ✅ Word operators (`plus`, `minus`, `times`, `div`, `mod`)
-- ✅ Comparisons (`greater_than`, `lesser_than`, `is`)
+- ✅ Symbol arithmetic operators (`+`, `-`, `*`, `/`, `%`, `**`); word forms removed
+- ✅ Comparisons (`<`, `>`, `<=`, `>=`, `is`); word forms removed
 - ✅ Comments (`? comment`)
 - ✅ Imports (`import "lib.h"`)
 - ✅ Compile-time conditionals (`when DEBUG then ...`)

@@ -1115,7 +1115,8 @@ func splitReturnTypes(typeStr string) []string {
 func (p *Parser) isTypeToken(tokenType TokenType) bool {
 	return tokenType == TOKEN_INT_TYPE || tokenType == TOKEN_FLOAT_TYPE ||
 		tokenType == TOKEN_STRING_TYPE || tokenType == TOKEN_BOOL_TYPE ||
-		tokenType == TOKEN_DICT_TYPE || tokenType == TOKEN_ARRAY_TYPE ||
+		tokenType == TOKEN_CHAR_TYPE || tokenType == TOKEN_DICT_TYPE ||
+		tokenType == TOKEN_ARRAY_TYPE ||
 		tokenType == TOKEN_ANY_TYPE || tokenType == TOKEN_IDENTIFIER ||
 		tokenType == TOKEN_FN
 }

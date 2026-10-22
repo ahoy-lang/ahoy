@@ -8300,36 +8300,6 @@ func (gen *CodeGenerator) generateBinaryOp(node *ahoy.ASTNode) {
 		gen.output.WriteString(" && ")
 		gen.generateNode(node.Children[1])
 		gen.output.WriteString(")")
-	case "plus":
-		gen.output.WriteString("(")
-		gen.generateNode(node.Children[0])
-		gen.output.WriteString(" + ")
-		gen.generateNode(node.Children[1])
-		gen.output.WriteString(")")
-	case "minus":
-		gen.output.WriteString("(")
-		gen.generateNode(node.Children[0])
-		gen.output.WriteString(" - ")
-		gen.generateNode(node.Children[1])
-		gen.output.WriteString(")")
-	case "times":
-		gen.output.WriteString("(")
-		gen.generateNode(node.Children[0])
-		gen.output.WriteString(" * ")
-		gen.generateNode(node.Children[1])
-		gen.output.WriteString(")")
-	case "div":
-		gen.output.WriteString("(")
-		gen.generateNode(node.Children[0])
-		gen.output.WriteString(" / ")
-		gen.generateNode(node.Children[1])
-		gen.output.WriteString(")")
-	case "mod":
-		gen.output.WriteString("(")
-		gen.generateNode(node.Children[0])
-		gen.output.WriteString(" % ")
-		gen.generateNode(node.Children[1])
-		gen.output.WriteString(")")
 	case "band":
 		gen.output.WriteString("(")
 		gen.generateNode(node.Children[0])
@@ -8454,18 +8424,6 @@ func (gen *CodeGenerator) generateBinaryOp(node *ahoy.ASTNode) {
 		gen.output.WriteString("pow(")
 		gen.generateNode(node.Children[0])
 		gen.output.WriteString(", ")
-		gen.generateNode(node.Children[1])
-		gen.output.WriteString(")")
-	case "greater_than":
-		gen.output.WriteString("(")
-		gen.generateNode(node.Children[0])
-		gen.output.WriteString(" > ")
-		gen.generateNode(node.Children[1])
-		gen.output.WriteString(")")
-	case "lesser_than", "less_than":
-		gen.output.WriteString("(")
-		gen.generateNode(node.Children[0])
-		gen.output.WriteString(" < ")
 		gen.generateNode(node.Children[1])
 		gen.output.WriteString(")")
 	default:
@@ -15072,7 +15030,7 @@ func (gen *CodeGenerator) getValueType(node *ahoy.ASTNode) string {
 			if leftType == "float" || leftType == "double" || rightType == "float" || rightType == "double" {
 				return "float"
 			}
-			if (node.Value == "+" || node.Value == "plus") && leftType == "string" && rightType == "string" {
+			if node.Value == "+" && leftType == "string" && rightType == "string" {
 				return "string"
 			}
 		}

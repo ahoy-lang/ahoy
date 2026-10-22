@@ -1,32 +1,31 @@
 # PyLang - Complete Feature Guide
 
+> **Historical:** this guide predates several syntax changes (`anif`,
+> `loop:`/`then` loops, `<>` arrays). See `README.md` for the current
+> syntax. The word operators it describes were removed outright.
+
 ## New Features Summary
 
-### 1. Word-Based Operators
+### 1. Word-Based Operators Were Removed
 
-You can now use readable word-based operators alongside symbols:
+Ahoy used to accept readable word operators (`plus`, `minus`, `times`,
+`div`, `mod`, `greater_than`, `lesser_than`, ...). They are gone: the
+parser rejects them and points at the symbol. Use:
 
-**Arithmetic:**
-- `plus` instead of `+`
-- `minus` instead of `-`
-- `times` instead of `*`
-- `div` instead of `/`
-- `mod` instead of `%`
-
-**Comparison:**
-- `greater` instead of `>`
-- `lesser` instead of `<`
+- `+`, `-`, `*`, `/`, `%`, `**`
+- `>`, `<`, `>=`, `<=`
 
 **Example:**
-```python
-result: x plus y times z
-if count greater 10 then
+```ahoy
+result: x + y * z
+if count > 10 then
     print|"Too many!"|
+$
 ```
 
 
 
-### 4. Inline Conditionals & anif Keyword
+### 4. Inline Conditionals & elif Keyword
 
 **Inline one-line conditionals** keep code concise when the condition and action are simple.
 
@@ -38,29 +37,29 @@ if condition then statement
 # Inline if-else
 if condition then statement else other_statement
 
-# Inline if-anif-else chain
-if x greater 90 then ahoy|"A"|
-anif x greater 80 then ahoy|"B"|
+# Inline if-elif-else chain
+if x > 90 then ahoy|"A"|
+elif x > 80 then ahoy|"B"|
 else ahoy|"C"|
 
 # Mix inline and multi-line
-if simple_condition then simple_action|| anif complex_condition then
+if simple_condition then simple_action|| elif complex_condition then
     complex_action||
     more_code||
 else default||
 ```
 
 **Features:**
-- Use `anif` instead of `elseif` for cleaner chaining (both work)
+- Use `elif` for chaining
 - Inline format puts condition and statement on same line
 - Multi-line format still supported
 - Can mix inline and multi-line in same if-chain
 - Formatter preserves inline structure
 
 **Example:**
-```python
+```ahoy
 temperature: 25
-if temperature greater 30 then ahoy|"Hot\n"| anif temperature greater 20 then ahoy|"Warm\n"| else ahoy|"Cold\n"|
+if temperature > 30 then ahoy|"Hot\n"| elif temperature > 20 then ahoy|"Warm\n"| else ahoy|"Cold\n"|
 ```
 
 ### 5. Enhanced Loop Syntax
@@ -74,9 +73,9 @@ loop:0 to 10 then
     process||
 
 # While loop: loop with condition
-loop:x lesser_than 100 then
+loop:x < 100 then
     process||
-    x: x plus 1
+    x: x + 1
 
 # Array iteration: loop through array elements
 numbers: <10, 20, 30>
@@ -192,21 +191,21 @@ pi: 3.14
 
 ### Operators
 
-**Arithmetic** (symbol or word):
-```python
-sum: a + b          # or: a plus b
-diff: a - b         # or: a minus b
-product: a * b      # or: a times b
-quotient: a / b     # or: a div b
-remainder: a % b    # or: a mod b
+**Arithmetic** (symbols only):
+```ahoy
+sum: a + b
+diff: a - b
+product: a * b
+quotient: a / b
+remainder: a % b
 ```
 
-**Comparison** (symbol or word):
-```python
-if x > y then       # or: x greater y
-if x < y then       # or: x lesser y
-if x >= y then      # or: x >= y
-if x <= y then      # or: x <= y
+**Comparison** (symbols only):
+```ahoy
+if x > y then       # greater than
+if x < y then       # less than
+if x >= y then      # greater than or equal
+if x <= y then      # less than or equal
 if x is y then      # equality
 ```
 
@@ -225,10 +224,10 @@ else default_action||
 
 # Inline conditionals (one-line)
 if x is 10 then ahoy|"x is 10\n"|
-if y greater_than 10 then ahoy|"Big\n"| else ahoy|"Small\n"|
+if y > 10 then ahoy|"Big\n"| else ahoy|"Small\n"|
 
 # Using anif (alternative to elseif)
-if score greater 90 then ahoy|"A\n"| anif score greater 80 then ahoy|"B\n"| else ahoy|"F\n"|
+if score > 90 then ahoy|"A\n"| elif score > 80 then ahoy|"B\n"| else ahoy|"F\n"|
 
 # Mix of inline and multi-line
 if condition then action|| anif other_condition then
@@ -241,9 +240,9 @@ loop:0 to 10 then
     process||
 
 # While loops
-loop:counter lesser_than 10 then
+loop:counter < 10 then
     process||
-    counter: counter plus 1
+    counter: counter + 1
 
 # Array iteration
 loop element in my_array then
@@ -257,7 +256,7 @@ loop key,value in my_dict then
 ### Functions
 ```python
 func calculate|x int, y int| int then
-    return x times y
+    return x * y
 ```
 
 ### Arrays

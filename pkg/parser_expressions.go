@@ -1839,21 +1839,25 @@ func (p *Parser) parseShiftExpression() *ASTNode {
 	return left
 }
 
-// Symbol equivalent of a removed arithmetic word operator (plus/minus/
-// times/div/mod were removed; only symbols remain). Empty when name
-// is not one.
 // Symbol equivalent of a removed comparison word (less_than etc. were
 // removed; only symbols remain). Empty when name is not one.
 func removedCmpOp(name string) string {
 	switch name {
 	case "less_than", "lesser_than", "lesser":
 		return "<"
+	case "less_equal", "lesser_equal", "less_than_or_equal", "lesser_than_or_equal":
+		return "<="
 	case "greater_than", "greater":
 		return ">"
+	case "greater_equal", "greater_than_or_equal", "greater_or_equal":
+		return ">="
 	}
 	return ""
 }
 
+// Symbol equivalent of a removed arithmetic word operator (plus/minus/
+// times/div/mod were removed; only symbols remain). Empty when name
+// is not one.
 func removedWordOp(name string) string {
 	switch name {
 	case "plus":

@@ -168,13 +168,14 @@ ahoy |f"The sum of {x} and {y} is {x + y}"|
 
 ### Operators
 
-**Arithmetic** (symbols or words):
+**Arithmetic** (symbols only):
 ```ahoy
-result: a + b       ? or: a plus b
-result: a - b       ? or: a minus b
-result: a * b       ? or: a times b
-result: a / b       ? or: a div b
-result: a % b       ? or: a mod b
+result: a + b
+result: a - b
+result: a * b
+result: a / b
+result: a % b
+result: a ** b      ? power
 ```
 
 **Bitwise** (words only; `&`, `^` and `|` already mean address-of,
@@ -191,10 +192,10 @@ back: value shr 2             ? right
 packed: r shl 16 bor g shl 8 bor b   ? colour packing
 ```
 
-**Comparison** (symbols or words):
+**Comparison** (symbols only):
 ```ahoy
-if x > y then       ? or: x greater_than y
-if x < y then       ? or: x lesser_than y
+if x > y then       ? greater than
+if x < y then       ? less than
 if x is y then      ? equality
 if x is not y then  ? inequality
 ```
@@ -231,7 +232,7 @@ result: this or that
 ? If statements
 if condition then
     action||
-else then
+else
     other_action||
 $
 
@@ -240,6 +241,17 @@ if   condition then action||
 elif other_condition then another_action||
 else no_action||
 $
+
+? Guard clauses: C must hold, otherwise the else arm diverges
+guard id >= 0 else return $
+guard v is not "" else return "none" $
+
+? A guard `else` must leave (`return`, `halt`, `next`) — the compiler
+? rejects a falling-through `else`. A conditional value wants plain `if`:
+if v < 8.0 then v = 8.0 $
+? Conditions test names; they never bind them:
+? `guard (u := f|...|) ...` is an error — bind first, then test.
+```
 
 
 ? Switch statements
@@ -254,10 +266,12 @@ $
 
 ? Loops (halt = break, next = continue)
 loop i:0 to 10 do
-    if i is 5
+    if i is 5 then
         next  ? Skip 5
-    if i is 8
+    $
+    if i is 8 then
         halt  ? Stop at 8
+    $
     ahoy |f"i = {i}"|
 $
 
@@ -579,8 +593,6 @@ struct Point:
   default_value:int = 10 ? Field with default value initilized to 10
   #my_static_value:int ? Static field accessable with Point.#my_static_value
   CONST_VALUE:int = 42 ? Constant field
-  type Polygon: ? struct type inherits properties from Point; to create object Point.Polygon{}
-    sides:int = 3
 $
 
 ? Typed object instantiation
@@ -730,9 +742,10 @@ TIMEOUT::float= 30.0
         attempt: attempt + 1
         result: try_process|data, timeout|
         
-        if result is true
+        if result is true:
             success: true
             halt
+        $
     $
     
     ? Postcondition validation
@@ -804,6 +817,13 @@ returned directly (`return switch x: ...`). See
 - `char` - Single characters
 - `array` - Arrays/lists
 - `dict` - Dictionaries/maps
+- `buffer[f32]` / `buffer[int]` - Flat contiguous POD buffers (see `docs/BUILTINS.md`)
+- `null` - The nil reference: the zero value of every pointer field,
+  comparable with `is null` / `is not null` (pointer comparison, never
+  `strcmp`). Comparing a scalar (`int`, `float`, `bool`, ...) to null
+  is an error. `guard p is not null else return $` proves `p`
+  non-null afterwards; the checker warns on dereferencing (`^p`) a
+  possibly-null name.
 - `vector2` - 2D vectors
 - `color` - Color values
 - `void` - No return value (functions)
@@ -890,6 +910,18 @@ The compiler automatically:
 | `int\|x\|` | Convert to integer | `int\|"42"\|` |
 | `float\|x\|` | Convert to float | `float\|"3.14"\|` |
 | `string\|x\|` | Convert to string | `string\|42\|` |
+| `sin\|x\|` `cos\|x\|` `tan\|x\|` | Trig in radians | `sin\|0.5\|` |
+| `asin\|x\|` `acos\|x\|` `atan\|x\|` `atan2\|y, x\|` | Inverse trig (asin/acos clamp to [-1, 1]) | `atan2\|1.0, 1.0\|` |
+| `ln\|x\|` `exp\|x\|` | Natural log (0 when x <= 0), e^x | `ln\|2.71828\|` |
+| `fmod\|x, y\|` | Float remainder (0 when y is 0) | `fmod\|7.5, 2.0\|` |
+| `time_now\|\|` | Seconds since program start | `time_now\|\|` |
+| `rand\|\|` | Random integer (whole libc range) | `rand\|\|` |
+| `rand_range\|lo, hi\|` | Random integer, both ends inclusive | `rand_range\|1, 6\|` |
+
+Fallible builtins (`read_json`, `write_json`) return `(value, error)`
+with `null` for ok — the `(T, err)` convention in `docs/ERROR_HANDLING.md`.
+Array methods beyond `push`/`pop`/`sort` (`slice`, `index_of`, `reduce`,
+`insert`, `join`, `clear`, `dup`, ...) are in `docs/BUILTINS.md`.
 
 ### LSP Features
 
@@ -952,6 +984,7 @@ All Ahoy source files use the `.ahoy` extension.
 | Variable | `name: value` | `x: 42` |
 | Variable (typed) | `name:type= value` | `age:int= 29` |
 | Fixed-width int | `i8`..`i64`, `u8`..`u64` | `x: i64 = 3000000000` |
+| Hex/binary/octal | `0x..`, `0b..`, `0o..` | `mask: 0xFF`, `flags: 0b1010`, `perm: 0o755` |
 | Cast | `type(value)` | `i64(3)`, `f32(1.5)` |
 | Constant | `NAME: value` | `MAX:: 100` |
 | Constant (typed) | `name::type= value` | `MAX::int= 100` |
@@ -967,8 +1000,9 @@ All Ahoy source files use the `.ahoy` extension.
 | Loop | `loop var:start to end do` | `loop i:0 to 10 do` |
 | Loop (array) | `loop item in array do` | `loop x in nums do` |
 | Loop (dict) | `loop key, val in dict do` | `loop k, v in data do` |
-| Break | `halt` | `if done halt` |
-| Continue | `next` | `if skip next` |
+| Break | `halt` | `if done then halt $` |
+| Continue | `next` | `if skipped then next $` |
+| Guard | `guard C else B $` (`B` must diverge) | `guard id >= 0 else return $` |
 | Switch | `switch x:` + `on` per case + `$` | `switch x:` / `on 1:` / `_: ...` / `$` |
 | Switch range | `on lo to hi:` (inclusive) | `on 1 to 5:` |
 | Match list | `x is A, B` / `x is not A, B` | `if k is 1, 2, 3 then` |
@@ -1004,12 +1038,12 @@ ahoy-lang/
 - ✅ Type inference with `:`
 - ✅ Optional type annotations with `:type=`
 - ✅ Pipe syntax `func|args|` for calls
-- ✅ Word-based operators (plus, minus, times, div, mod)
+- ✅ Symbol operators (`+`, `-`, `*`, `/`, `%`, `**`); the word forms were removed
 - ✅ F-strings with `f"...{expr}..."`
 - ✅ Ternary operator `condition ?? true : false`
 - ✅ Arrays with `[...]` syntax
-- ✅ Objects with `<key: value>` syntax
-- ✅ Dictionaries with `{...}`
+- ✅ Objects with `{...}` syntax
+- ✅ Dictionaries with `<key: value>` syntax
 - ✅ Enums and pattern matching
 - ✅ `ahoy` print shorthand
 - ✅ Single-line statements with `;`
@@ -1026,16 +1060,15 @@ ahoy-lang/
 
 ## Examples in Repository
 
-### Basic Examples
-- `test_simple_assert_defer.ahoy` - Assert and defer basics
-- `test_simple_defaults.ahoy` - Default arguments
-- `test_typing_simple.ahoy` - Type annotations
+## Examples in Repository
 
-### Comprehensive Examples
-- `test_assert_defer.ahoy` - All assert/defer patterns
-- `test_default_args.ahoy` - Default arguments with validation
-- `test_type_annotations.ahoy` - Type system features
-- `test_comprehensive.ahoy` - All language features
+Test programs live in `test/input/*.ahoy`. Each declares `expected: []`
+inside `@ main`, pushes expected values as it prints them, and ends with
+`print|expected|` so the runner can compare output line by line. Notable
+fixtures: `guard.ahoy` (guard clauses, inline and block), `pass.ahoy`
+(the deprecated `if C pass else` spelling), `null_narrow.ahoy` (null
+narrowing), `err_convention.ahoy` (the `(value, err)` convention),
+`bool_cond_calls.ahoy`, `buffer_basics.ahoy`.
 
 ## Best Practices
 
@@ -1116,9 +1149,15 @@ cd ahoy/source && go test ./...   # Compiler frontend tests
 cd ahoy/test && go test ./...     # Lint + end-to-end: every input/*.ahoy is compiled with gcc and run
 ```
 
-Test programs live in `ahoy/test/input/`: each declares `expected: []`
-inside `@ main`, pushes expected values as it prints them, and ends with
-`print|expected|` so the runner can compare output line by line.
+Test programs live in `ahoy/test/input/` (see "Examples in Repository"
+above): each declares `expected: []` inside `@ main`, pushes expected
+values as it prints them, and ends with `print|expected|` so the runner
+can compare output line by line. `test/README.md` documents the
+formatter-test layout (`fmt_input/` / `fmt_output/`).
+
+GitHub Actions runs the suites on every push to `master`/`main`:
+compiles all test files, executes and validates output, stores test
+artifacts.
 
 ## Notes
 
@@ -1147,23 +1186,6 @@ inside `@ main`, pushes expected values as it prints them, and ends with
 - ✅ Function call validation
 
 Ahoy! 🏴‍☠️
-
-## Testing
-
-### Run All Tests
-```bash
-cd into folder: ahoy/test
-$ go test -v
-```
-
-### Continuous Integration
-
-GitHub Actions automatically runs tests on every push to `master`/`main`:
-- Compiles all test files
-- Executes and validates output
-- Stores test artifacts
-
-See [TESTING.md](TESTING.md) for detailed testing documentation.
 
 ## Contributing
 

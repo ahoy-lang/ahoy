@@ -1,0 +1,46 @@
+expected: []
+? if C pass else B $ desugars to if not C then B $: the pass-through
+? check lets the rest of the function stay flat. `pass` names the
+? empty then-arm (the bouncer lets you through); B usually exits.
+
+@ check :: |v:int| int:
+	if v >= 0 pass else return -1 $
+	return v * 2
+$
+
+a: check|5|
+print|a|
+expected.push|"10"|
+b: check|-3|
+print|b|
+expected.push|"-1"|
+
+? pass inside a loop: skip without nesting
+total: 0
+loop i:0 to 4 do
+	if i > 1 pass else next $
+	total = total + i
+$
+print|total|
+expected.push|"5"|
+
+? multi-line form: the else arm can be a block like any other
+found: -1
+loop i:0 to 10 do
+	if i is not 7 pass else
+		found = i
+		halt
+	$
+$
+print|found|
+expected.push|"7"|
+
+? a conditional value wants plain `if`, not a guard
+?(a guard `else` must end in `return`, `halt` or `next`)
+ptr: 0
+flag: false
+if ptr is not 0 then flag = true $
+print|flag|
+expected.push|"0"|
+
+print|expected|

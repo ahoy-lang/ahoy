@@ -180,7 +180,7 @@ func (c *checker) heapStoreValue(node *ASTNode) bool {
 	if node.Type == NODE_F_STRING {
 		return true
 	}
-	if node.Type == NODE_BINARY_OP && (node.Value == "+" || node.Value == "plus") &&
+	if node.Type == NODE_BINARY_OP && node.Value == "+" &&
 		len(node.Children) >= 2 &&
 		c.exprIsString(node.Children[0]) && c.exprIsString(node.Children[1]) {
 		return true
@@ -248,7 +248,7 @@ func (c *checker) inferNodeType(node *ASTNode) string {
 		}
 		return ""
 	}
-	if node.Type == NODE_BINARY_OP && (node.Value == "+" || node.Value == "plus") &&
+	if node.Type == NODE_BINARY_OP && node.Value == "+" &&
 		len(node.Children) >= 2 &&
 		c.exprIsString(node.Children[0]) && c.exprIsString(node.Children[1]) {
 		return "string"
@@ -267,7 +267,7 @@ func (c *checker) inferVarType(node *ASTNode) string {
 	if node == nil {
 		return ""
 	}
-	if node.Type == NODE_BINARY_OP && (node.Value == "+" || node.Value == "plus") &&
+	if node.Type == NODE_BINARY_OP && node.Value == "+" &&
 		len(node.Children) >= 2 &&
 		c.exprIsString(node.Children[0]) && c.exprIsString(node.Children[1]) {
 		return "string"

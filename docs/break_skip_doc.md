@@ -14,7 +14,7 @@ loop x:0 to 10 do if x is 5 then halt; print|"should not execute if x 5",x|
 ### Skip Example:
 ```ahoy
 loop:0 to 10:
-    if x mod 2 is 0 do skip
+    if x % 2 is 0 do skip
     ahoy|"Odd: %d", x|
 ```
 

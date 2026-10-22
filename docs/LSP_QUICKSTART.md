@@ -5,18 +5,19 @@ Get the Ahoy Language Server running in your editor in 5 minutes!
 ## Step 1: Install the LSP Server (2 minutes)
 
 ```bash
-cd /path/to/ahoy-lang/ahoy
-./install_lsp.sh
+cd /path/to/ahoy-lang/ahoy-lsp
+make install
 ```
 
-Follow the prompts:
-- Choose option **1** for system-wide install (recommended)
-- Or option **2** for user install (no sudo needed)
+This creates `~/.local/bin/ahoy-lsp` as a symlink to the repository binary, so
+future builds update the command automatically. Do not copy the binary; a copy
+goes stale on the next build.
 
 Verify installation:
 ```bash
 which ahoy-lsp
-# Should output: /usr/local/bin/ahoy-lsp
+readlink -f "$(which ahoy-lsp)"
+ahoy-lsp --version
 ```
 
 ## Step 2: Set Up Your Editor (1 minute)

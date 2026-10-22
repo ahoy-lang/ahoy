@@ -24,6 +24,7 @@ const (
 	TOKEN_THEN     // then
 	TOKEN_ON       // on (for switch statements)
 	TOKEN_IF
+	TOKEN_GUARD
 	TOKEN_ELSE
 	TOKEN_ELSEIF // kept for the removal error; elseif was removed, use elif
 	TOKEN_ELIF   // elif (the one else-if spelling)
@@ -51,12 +52,6 @@ const (
 	TOKEN_DIVIDE        // /
 	TOKEN_MODULO        // %
 	TOKEN_POWER         // ** (exponentiation)
-	TOKEN_PLUS_WORD     // plus
-	TOKEN_MINUS_WORD    // minus
-	TOKEN_TIMES_WORD    // times
-	TOKEN_DIV_WORD      // div
-	TOKEN_MOD_WORD      // mod
-	TOKEN_POW_WORD      // pow (exponentiation keyword)
 	TOKEN_BAND          // band (bitwise and)
 	TOKEN_BOR           // bor (bitwise or)
 	TOKEN_BXOR          // bxor (bitwise xor)
@@ -67,8 +62,6 @@ const (
 	TOKEN_GREATER       // >
 	TOKEN_LESS_EQUAL    // <=
 	TOKEN_GREATER_EQUAL // >=
-	TOKEN_LESSER_WORD   // lesser
-	TOKEN_GREATER_WORD  // greater
 	TOKEN_PIPE          // |
 	TOKEN_LPAREN        // (
 	TOKEN_RPAREN        // )
@@ -107,7 +100,6 @@ const (
 	TOKEN_LABEL           // label (label declaration)
 	TOKEN_ASSERT          // assert (runtime assertion)
 	TOKEN_DEFER           // defer (deferred execution)
-	TOKEN_GUARD           // guard (early-exit: guard C else then B $)
 	TOKEN_DOUBLE_COLON    // ::
 	TOKEN_WALRUS          // := (for tuple assignment)
 	TOKEN_QUESTION        // ? (loop counter variable)
@@ -144,6 +136,7 @@ type Token struct {
 // Keywords map for tokenization
 var keywords = map[string]TokenType{
 	"if":       TOKEN_IF,
+	"guard":    TOKEN_GUARD,
 	"else":     TOKEN_ELSE,
 	"elif":     TOKEN_ELIF,
 	"switch":   TOKEN_SWITCH,
@@ -282,10 +275,46 @@ func Tokenize(input string) []Token {
 				break // Skip rest of line
 			}
 
-			// Numbers (supports underscores for readability like 1_000_000)
+			// Numbers (supports underscores for readability like 1_000_000,
+			// plus 0x/0b/0o prefixed integers). Prefixed forms keep C
+			// spelling (0x stays, 0b/0o convert to hex/octal) so bit
+			// patterns survive exactly.
 			// ascii version: if isDigit(content[i]) {
 			if unicode.IsDigit(rune(content[i])) {
 				start := i
+				if content[i] == '0' && i+1 < len(content) &&
+					(content[i+1] == 'x' || content[i+1] == 'X' ||
+						content[i+1] == 'b' || content[i+1] == 'B' ||
+						content[i+1] == 'o' || content[i+1] == 'O') &&
+					i+2 < len(content) && isBaseDigit(content[i+2], content[i+1]) {
+					i += 2
+					var sb strings.Builder
+					for i < len(content) && (isBaseDigit(content[i], content[start+1]) || content[i] == '_') {
+						if content[i] != '_' {
+							sb.WriteByte(content[i])
+						}
+						i++
+					}
+					digits := sb.String()
+					var numValue string
+					switch content[start+1] {
+					case 'x', 'X':
+						numValue = "0x" + digits
+					case 'b', 'B':
+						numValue = "0x" + baseToHex(digits, 2)
+					default:
+						// Octal keeps its digits: C reads a leading 0
+						// as base 8, exactly what 0o meant.
+						numValue = "0" + digits
+					}
+					tokens = append(tokens, Token{
+						Type:   TOKEN_NUMBER,
+						Value:  numValue,
+						Line:   lineNum + 1,
+						Column: start + 1,
+					})
+					continue
+				}
 				// ascii version for i < len(content) && (isDigit(content[i]) || content[i] == '.' || content[i] == '_') {
 				for i < len(content) && (unicode.IsDigit(rune(content[i])) || content[i] == '.' || content[i] == '_') {
 					i++
@@ -545,6 +574,48 @@ func isSpace(c byte) bool {
 
 func isDigit(c byte) bool {
 	return c >= '0' && c <= '9'
+}
+
+// isBaseDigit reports whether c is a digit in the base named by prefix
+// ('x' hex, 'b' binary, 'o' octal); upper- and lower-case both count.
+func isBaseDigit(c byte, prefix byte) bool {
+	switch prefix {
+	case 'x', 'X':
+		return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
+	case 'b', 'B':
+		return c == '0' || c == '1'
+	default:
+		return c >= '0' && c <= '7'
+	}
+}
+
+// baseToHex renders base-2/8 digits as hexadecimal (no prefix), so 0b and
+// 0o literals reach C in spelling every target accepts (tcc, gcc, emcc).
+func baseToHex(digits string, base int) string {
+	var n uint64
+	for i := 0; i < len(digits); i++ {
+		c := digits[i]
+		var v uint64
+		switch {
+		case c >= '0' && c <= '9':
+			v = uint64(c - '0')
+		case c >= 'a' && c <= 'f':
+			v = uint64(c-'a') + 10
+		default:
+			v = uint64(c-'A') + 10
+		}
+		n = n*uint64(base) + v
+	}
+	if n == 0 {
+		return "0"
+	}
+	const hexdigits = "0123456789abcdef"
+	var out []byte
+	for n > 0 {
+		out = append([]byte{hexdigits[n&0xf]}, out...)
+		n >>= 4
+	}
+	return string(out)
 }
 
 func isLetter(c byte) bool {

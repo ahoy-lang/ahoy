@@ -5,7 +5,7 @@
 ### Syntax Changes
 ✅ Arrays now use `[]` (changed from `<>`)
 ✅ Objects/Dicts use `<>` (changed from `{}`)  
-✅ `less_than` keyword (changed from `lesser_than`)
+✅ Symbol comparison operators (`<`, `>`, `<=`, `>=`); word forms removed
 ✅ Loops use `do` keyword
 ✅ `?` token for loop counter variable
 ✅ Comments with `?` or `#`

@@ -89,6 +89,8 @@ $
 
 - Close every switch with `$`, even a one-line switch:
   `switch x: on 1: print|"one"| _: print|"other"| $`
+- `case` is not an Ahoy keyword: every switch label starts with `on`, and
+  the compiler points that out when it sees `case`.
 - There is no fallthrough: every case ends after its body.
 - For an inline test (not a block) the same comma list reads
   `x is A, B` (`x is not A, B` for none-of); see the Comparison section in
@@ -154,6 +156,5 @@ loop end, because a plain C `break` would only exit the switch. Case heap
 locals are freed before the jump. In a switch outside any loop, `halt`
 just ends the case. Block-scoped defers pending at a `halt`/`next` still
 run (the jump skips their block end, so they are flushed first, exactly
-once); function-level defers still run once at function end. (All loop forms — counted, `to`, `till`, `in`, dict —
-work in case bodies, including `halt`/`next` inside loops nested there,
+once); function-level defers still run once at function end. (All loop forms — counted, `to`, `until`/`while`, `in`, dict —work in case bodies, including `halt`/`next` inside loops nested there,
 which target the inner loop as usual.)

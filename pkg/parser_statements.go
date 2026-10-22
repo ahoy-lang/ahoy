@@ -129,10 +129,21 @@ func (p *Parser) parseStatement() *ASTNode {
 	case TOKEN_AT:
 		return p.parseFunctionDeclaration()
 	case TOKEN_IDENTIFIER:
-		// Contextual `guard C else then B $` (see isGuardStatement):
-		// a variable named `guard` still declares/assigns normally.
-		if p.isGuardStatement() {
-			return p.parseGuardStatement()
+		// `pass if` was the transitional spelling; it now points at
+		// `guard`. `pass` itself stays an ordinary identifier.
+		if p.current().Value == "pass" && p.peek(1).Type == TOKEN_IF {
+			msg := "`pass if` was removed; write `guard COND else ...` instead"
+			if p.LintMode {
+				p.recordError(msg)
+			} else {
+				panic(msg)
+			}
+			// Skip the rest of the line so parsing resumes cleanly on
+			// the next statement instead of spinning on `pass`.
+			for p.current().Type != TOKEN_NEWLINE && p.current().Type != TOKEN_END && p.current().Type != TOKEN_EOF {
+				p.advance()
+			}
+			return nil
 		}
 		// Check for constant declaration (name ::)
 		nextType := p.peek(1).Type
@@ -380,30 +391,12 @@ func (p *Parser) parseIfStatement() *ASTNode {
 
 	var condition *ASTNode
 
-	// Check for "is i not" error pattern (starts with IS)
-	if p.current().Type == TOKEN_IS {
-		p.recordError("expected is not got is i not")
-		// Consume tokens to recover
-		p.advance() // consume is
-		if p.current().Type == TOKEN_IDENTIFIER {
-			p.advance() // consume identifier
-		}
-		if p.current().Type == TOKEN_NOT {
-			p.advance() // consume not
-		}
-		// Create dummy condition to continue parsing
-		condition = &ASTNode{Type: NODE_BOOLEAN, Value: "false"}
-	} else {
-		condition = p.parseExpression()
-	}
-
-	// Only accept 'then' for if statements
-	if p.current().Type == TOKEN_THEN {
-		p.advance()
-	} else {
-		current := p.current()
-		errMsg := fmt.Sprintf("Expected 'then', got %s at line %d:%d",
-			tokenTypeName(current.Type), current.Line, current.Column)
+	// Conditions test names; they never bind them. A declaration in a
+	// condition cannot compile anyway — name the fix instead of
+	// cascading. (Falls through to the normal parse, whose own error
+	// then positions the offending token.)
+	if snippet := p.condDeclAttempt(); snippet != "" {
+		errMsg := fmt.Sprintf("`if` conditions cannot declare or assign (%s); bind it first (`user: ...`), then test the name", snippet)
 		if p.LintMode {
 			p.recordError(errMsg)
 		} else {
@@ -411,50 +404,132 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		}
 	}
 
-	// Both inline and multiline now require $ to close
-	// Skip optional newlines after then/do/colon
-	for p.current().Type == TOKEN_NEWLINE {
-		p.advance()
+	// Conditions test names; they never bind them. A declaration in a
+	// condition cannot compile anyway — name the fix instead of
+	// cascading. (Falls through to the normal parse, whose own error
+	// then positions the offending token; the guard path below recovers
+	// more precisely because a guard's shape is fixed.)
+	declBroken := false
+	if snippet := p.condDeclAttempt(); snippet != "" {
+		errMsg := fmt.Sprintf("`if` conditions cannot declare or assign (%s); bind it first (`user: ...`), then test the name", snippet)
+		if p.LintMode {
+			p.recordError(errMsg)
+			// Recover with a dummy condition and parse the real
+			// arms, so one error is reported instead of a cascade.
+			condition = &ASTNode{Type: NODE_BOOLEAN, Value: "false", Line: p.current().Line}
+			p.skipToThen(ifIndent)
+			declBroken = true
+		} else {
+			panic(errMsg)
+		}
 	}
 
-	// Branch scopes alias the enclosing maps (no copies here); each arm
-	// below re-arms the alias on entry and restores the saved triple on
-	// exit, and ensureOwnScope clones on first declaration inside an arm.
-	// A quirk below is preserved on purpose: after an else arm, functionScope
-	// keeps the else arm's map while declaredVars is restored, matching the
-	// old copy-based behavior exactly.
+	if !declBroken {
+		// Check for "is i not" error pattern (starts with IS)
+		if p.current().Type == TOKEN_IS {
+			p.recordError("expected is not got is i not")
+			// Consume tokens to recover
+			p.advance() // consume is
+			if p.current().Type == TOKEN_IDENTIFIER {
+				p.advance() // consume identifier
+			}
+			if p.current().Type == TOKEN_NOT {
+				p.advance() // consume not
+			}
+			// Create dummy condition to continue parsing
+			condition = &ASTNode{Type: NODE_BOOLEAN, Value: "false"}
+		} else {
+			condition = p.parseExpression()
+		}
+	} // end if !declBroken: failed declaration check recovers above
+
+	// Only accept 'then' for if statements - or `pass`, which marks an
+	// empty then-arm (a pass-through check: `if C pass else B $` is
+	// exactly `if not C then B $`, so the condition inverts here and
+	// the `else` arm below becomes the whole statement).
+	passThrough := false
+	if p.current().Type == TOKEN_THEN {
+		p.advance()
+	} else if p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "pass" && p.peek(1).Type == TOKEN_ELSE {
+		p.advance() // consume pass
+		condition = &ASTNode{Type: NODE_UNARY_OP, Value: "not", Children: []*ASTNode{condition}, Line: startLine}
+		passThrough = true
+	} else {
+		current := p.current()
+		errMsg := fmt.Sprintf("Expected 'then', got %s at line %d:%d",
+			tokenTypeName(current.Type), current.Line, current.Column)
+		if p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "pass" {
+			errMsg += " (for a guard, write 'guard COND else ...')"
+		}
+		if p.LintMode {
+			p.recordError(errMsg)
+		} else {
+			panic(errMsg)
+		}
+	}
+
 	var savedVars map[string]int
 	var savedFVars map[string]string
 	var savedAliased bool
 	sawElse := false
-	if p.LintMode {
-		savedVars = p.declaredVars
-		savedFVars = p.functionScope
-		savedAliased = p.scopeAliased
-		p.scopeAliased = true
-	}
+	var ifBody *ASTNode
 
-	p.skipWhitespace()
-	p.blockDepth++ // Opening a block (inline or multiline)
+	// The pass-through form (`if C pass else ...`) has no then-arm:
+	// skip straight to the `else` below, which becomes the whole
+	// statement. Otherwise parse the then-arm as before.
+	if !passThrough {
+		// Both inline and multiline now require $ to close
+		// Skip optional newlines after then/do/colon
+		for p.current().Type == TOKEN_NEWLINE {
+			p.advance()
+		}
 
-	// The if arm runs on the aliased parent maps (set above).
-	// The block stops at an else/elif at this if's own level.
-	savedConstructIndent := p.constructIndent
-	p.constructIndent = ifIndent
-	ifBody := p.parseBlockUntilEnd("if", startLine)
-	p.constructIndent = savedConstructIndent
+		// Branch scopes alias the enclosing maps (no copies here); each arm
+		// below re-arms the alias on entry and restores the saved triple on
+		// exit, and ensureOwnScope clones on first declaration inside an arm.
+		// A quirk below is preserved on purpose: after an else arm, functionScope
+		// keeps the else arm's map while declaredVars is restored, matching the
+		// old copy-based behavior exactly.
+		if p.LintMode {
+			savedVars = p.declaredVars
+			savedFVars = p.functionScope
+			savedAliased = p.scopeAliased
+			p.scopeAliased = true
+		}
 
-	// Restore the saved triple after the if arm so elseif/else and the code
-	// after the statement see the parent maps, never the arm's declares.
-	if p.LintMode {
-		p.declaredVars = savedVars
-		p.functionScope = savedFVars
-		p.scopeAliased = savedAliased
-	}
+		p.skipWhitespace()
+		p.blockDepth++ // Opening a block (inline or multiline)
+
+		// The if arm runs on the aliased parent maps (set above).
+		// The block stops at an else/elif at this if's own level.
+		savedConstructIndent := p.constructIndent
+		p.constructIndent = ifIndent
+		ifBody = p.parseBlockUntilEnd("if", startLine)
+		p.constructIndent = savedConstructIndent
+
+		// Restore the saved triple after the if arm so elseif/else and the code
+		// after the statement see the parent maps, never the arm's declares.
+		if p.LintMode {
+			p.declaredVars = savedVars
+			p.functionScope = savedFVars
+			p.scopeAliased = savedAliased
+		}
+
+	} // end if !passThrough (then-arm)
 
 	ifStmt := &ASTNode{
 		Type:     NODE_IF_STATEMENT,
-		Children: []*ASTNode{condition, ifBody},
+		Children: []*ASTNode{condition},
+	}
+
+	// The pass-through form has no then-arm: the `else` below is the
+	// whole statement, already inverted above. Mark it as a guard so
+	// the checker can enforce the diverging-`else` contract (a plain
+	// `if not C then B` stays legal with any body).
+	if !passThrough {
+		ifStmt.Children = append(ifStmt.Children, ifBody)
+	} else {
+		ifStmt.Value = "if-pass"
 	}
 
 	// Skip any newlines, semicolons, or dedents before checking for elif
@@ -462,10 +537,31 @@ func (p *Parser) parseIfStatement() *ASTNode {
 		p.advance()
 	}
 
+	// No `elif` on a guard: with no then-arm the elif condition would
+	// land where a body belongs and miscompile. (Zero bell/test sites
+	// use it; a second test wants its own `if`.)
+	if passThrough && (p.current().Type == TOKEN_ELIF ||
+		(p.current().Type == TOKEN_IDENTIFIER && (p.current().Value == "elseif" || p.current().Value == "anif"))) &&
+		p.current().Indent == ifIndent {
+		errMsg := "`if ... pass` takes no `elif`; write a separate `if` for the next test"
+		if p.LintMode {
+			p.recordError(errMsg)
+			// Skip the rejected arm so the guard's own `else`
+			// still parses: one error, not a cascade.
+			p.skipToGuardElse(ifIndent)
+		} else {
+			panic(errMsg)
+		}
+		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_DEDENT || p.current().Type == TOKEN_SEMICOLON {
+			p.advance()
+		}
+	}
+
 	// Handle elif chains (`elseif` and `anif` were removed: use `elif`).
 	// An `elif` belongs to this if only when it is at the same level: one
-	// that follows a nested if belongs to the outer if.
-	for (p.current().Type == TOKEN_ELIF ||
+	// that follows a nested if belongs to the outer if. Guards never take
+	// `elif` (rejected above), so the loop is plain-`if` only.
+	for !passThrough && (p.current().Type == TOKEN_ELIF ||
 		(p.current().Type == TOKEN_IDENTIFIER && (p.current().Value == "elseif" || p.current().Value == "anif"))) &&
 		p.current().Indent == ifIndent {
 		if p.current().Type == TOKEN_IDENTIFIER {
@@ -578,108 +674,266 @@ func (p *Parser) parseIfStatement() *ASTNode {
 	return ifStmt
 }
 
-// isGuardStatement reports whether the statement at the current position is
-// `guard C else …` rather than a use of a variable named `guard`. The
-// tokenizer leaves `guard` an identifier (Bell has 57 variable uses), so
-// this looks ahead: immediate `:`, `=`, `:=`, `,`, `.`, `[`, `|`, `::`
-// mean declaration/assignment/call/field access, otherwise a later `else`
-// before the newline/`$` makes it a guard.
-func (p *Parser) isGuardStatement() bool {
-	if p.current().Type == TOKEN_GUARD {
-		return true
-	}
-	if p.current().Type != TOKEN_IDENTIFIER || p.current().Value != "guard" {
-		return false
-	}
-	switch p.peek(1).Type {
-	case TOKEN_ASSIGN, TOKEN_EQUALS, TOKEN_WALRUS, TOKEN_COMMA,
-		TOKEN_DOT, TOKEN_LBRACKET, TOKEN_PIPE, TOKEN_DOUBLE_COLON:
-		return false
-	}
-	for i := 1; i < 40; i++ {
-		t := p.peek(i).Type
-		if t == TOKEN_ELSE {
-			return true
+// condDeclAttempt scans the rest of the line for declaration/assignment
+// tokens that can never appear in a condition: `:=` anywhere, or `=` /
+// `:` outside pipe spans and brackets. Slices (`s[1:2]`), dict literals,
+// lambdas and named arguments (`f|x=1|`) all live inside those spans; a
+// bare ternary `:` with no `=` after it is left alone. It returns the
+// offending spelling for the diagnostic, or "" when the line is clean.
+// Single-line only: a condition split across lines skips the check and
+// parses as before.
+func (p *Parser) condDeclAttempt() string {
+	depth := 0
+	pipes := 0
+	for i := p.pos; i < len(p.tokens); i++ {
+		t := p.tokens[i]
+		switch t.Type {
+		case TOKEN_NEWLINE, TOKEN_END, TOKEN_EOF:
+			return ""
+		case TOKEN_ELSE, TOKEN_THEN:
+			// The condition ends where its statement continues:
+			// anything after the guard's `else` / the plain `if`'s
+			// `then` belongs to a body, not the condition.
+			if depth == 0 && pipes%2 == 0 {
+				return ""
+			}
+		case TOKEN_WALRUS:
+			return "`:=`"
+		case TOKEN_LPAREN, TOKEN_LBRACKET, TOKEN_LBRACE:
+			depth++
+		case TOKEN_RPAREN, TOKEN_RBRACKET, TOKEN_RBRACE:
+			if depth > 0 {
+				depth--
+			}
+		case TOKEN_PIPE:
+			pipes++
+		case TOKEN_EQUALS:
+			// `=` never appears in an expression outside named
+			// arguments (`f|x=1|`), which live inside pipes.
+			// (`==` does not exist; equality is `is`.)
+			if depth == 0 && pipes%2 == 0 {
+				return "`=`"
+			}
+		case TOKEN_ASSIGN:
+			// Single `:` outside pipes/brackets is a declaration
+			// colon only when a value follows (`name: Type = ...`).
+			if depth == 0 && pipes%2 == 0 && p.lineHasEquals(i+1) {
+				return "`:`"
+			}
 		}
-		if t == TOKEN_NEWLINE || t == TOKEN_END || t == TOKEN_EOF {
+	}
+	return ""
+}
+
+// lineHasEquals reports whether a `=` follows later on the same line at
+// the same nesting level, which is what makes a bare `:` a declaration
+// rather than a ternary or typo. Stops at the line/block end and at the
+// statement keywords that bound a condition (`else` for guards, `then`
+// for plain `if`s).
+func (p *Parser) lineHasEquals(from int) bool {
+	depth := 0
+	pipes := 0
+	for i := from; i < len(p.tokens); i++ {
+		t := p.tokens[i]
+		switch t.Type {
+		case TOKEN_NEWLINE, TOKEN_END, TOKEN_EOF:
 			return false
+		case TOKEN_ELSE, TOKEN_THEN:
+			if depth == 0 && pipes%2 == 0 {
+				return false
+			}
+		case TOKEN_LPAREN, TOKEN_LBRACKET, TOKEN_LBRACE:
+			depth++
+		case TOKEN_RPAREN, TOKEN_RBRACKET, TOKEN_RBRACE:
+			if depth > 0 {
+				depth--
+			}
+		case TOKEN_PIPE:
+			pipes++
+		case TOKEN_EQUALS:
+			if depth == 0 && pipes%2 == 0 {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-// parseGuardStatement parses `guard C else then B $` as `if not C then B $`.
-// `guard` is a contextual keyword, not a reserved one: Bell uses `guard`
-// as a loop-counter name in 57 places, so the tokenizer leaves it an
-// identifier and only statement-start `guard … else` takes this path.
-// Desugar, not a new node type: the checker and codegen only ever see the
-// inverted NODE_IF_STATEMENT, so ownership, cleanup and C emission are
-// identical to the equivalent if. The point is readability: early exits
-// stay flat instead of nesting the rest of the function one level deeper.
+// parseGuardStatement parses the leading guard:
+// `guard COND else BODY $` — exactly `if not COND then BODY $`
+// (desugared the same way, so the checker, narrowing and codegen never
+// see a new construct). The `else` is required, must diverge (return,
+// halt or next) and there is no `then` and no `elif`: a guard states one
+// condition and does not chain.
 func (p *Parser) parseGuardStatement() *ASTNode {
 	startLine := p.current().Line
+	// The indentation of the `guard` itself: a block is closed by `$`,
+	// not by indentation, so an `else` at a different level belongs to
+	// an outer `if` — same one-level rule as parseIfStatement.
 	guardIndent := p.current().Indent
-	if p.current().Type == TOKEN_GUARD {
-		p.expect(TOKEN_GUARD)
-	} else {
-		p.expect(TOKEN_IDENTIFIER) // contextual `guard`
-	}
+	p.advance() // consume guard
 
-	cond := p.parseExpression()
+	var condition *ASTNode
 
-	if p.current().Type == TOKEN_ELSE {
-		p.advance()
-	} else {
-		current := p.current()
-		errMsg := fmt.Sprintf("Expected 'else' after guard condition, got %s at line %d:%d",
-			tokenTypeName(current.Type), current.Line, current.Column)
+	// Guards test names; they never bind them. Assignment in a condition
+	// cannot compile anyway — name the fix instead of cascading.
+	declBroken := false
+	if snippet := p.condDeclAttempt(); snippet != "" {
+		errMsg := fmt.Sprintf("`guard` conditions cannot declare or assign (%s); bind it first (`user: ...`), then test the name", snippet)
 		if p.LintMode {
 			p.recordError(errMsg)
 		} else {
 			panic(errMsg)
 		}
+		if p.LintMode {
+			// Recover with a dummy condition and parse the real
+			// body, so one error is reported instead of a cascade.
+			condition = &ASTNode{Type: NODE_UNARY_OP, Value: "not", Children: []*ASTNode{
+				{Type: NODE_BOOLEAN, Value: "false", Line: startLine},
+			}, Line: startLine}
+			p.skipToGuardElse(guardIndent)
+			declBroken = true
+		}
 	}
 
-	// One way: `else` opens the block directly. `else then` / `else:` is an
-	// error (see elseWordError), not a third spelling.
-	if p.current().Type == TOKEN_THEN || p.current().Type == TOKEN_ASSIGN {
+	if !declBroken {
+		// Same recovery as parseIfStatement for the "is i not" typo.
+		if p.current().Type == TOKEN_IS {
+			p.recordError("expected is not got is i not")
+			p.advance() // consume is
+			if p.current().Type == TOKEN_IDENTIFIER {
+				p.advance() // consume identifier
+			}
+			if p.current().Type == TOKEN_NOT {
+				p.advance() // consume not
+			}
+			// Create dummy condition to continue parsing
+			condition = &ASTNode{Type: NODE_BOOLEAN, Value: "false"}
+		} else {
+			condition = p.parseExpression()
+		}
+		condition = &ASTNode{Type: NODE_UNARY_OP, Value: "not", Children: []*ASTNode{condition}, Line: startLine}
+
+		// No `then`: `guard` and `then` mix the two spellings.
+		if p.current().Type == TOKEN_THEN {
+			errMsg := fmt.Sprintf("`guard` takes no `then`; write `guard COND else ...` instead (line %d)", p.current().Line)
+			if p.LintMode {
+				p.recordError(errMsg)
+			} else {
+				panic(errMsg)
+			}
+			p.advance()
+		}
+
+		// Both inline and multiline now require $ to close.
+		// Skip optional newlines, semicolons, or dedents before the `else`.
+		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_SEMICOLON || p.current().Type == TOKEN_DEDENT {
+			p.advance()
+		}
+
+		// No `elif`: a guard is one condition plus its diverging else.
+		// (The old `if C pass elif ...` form parsed but miscompiled: with
+		// no then-arm the elif condition lands where a body belongs.)
+		if p.current().Type == TOKEN_ELIF ||
+			(p.current().Type == TOKEN_IDENTIFIER && (p.current().Value == "elseif" || p.current().Value == "anif")) {
+			errMsg := "`guard` takes no `elif`; write a separate `if` for the next test"
+			if p.LintMode {
+				p.recordError(errMsg)
+				// Skip the rejected arm so the guard's own `else`
+				// still parses: one error, not a cascade.
+				p.skipToGuardElse(guardIndent)
+			} else {
+				panic(errMsg)
+			}
+			for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_SEMICOLON || p.current().Type == TOKEN_DEDENT {
+				p.advance()
+			}
+		} // end no-`elif`: a guard states one condition and does not chain
+	} // end if !declBroken: failed declaration check recovers above
+
+	if p.current().Type != TOKEN_ELSE || p.current().Indent != guardIndent {
+		current := p.current()
+		errMsg := fmt.Sprintf("Expected 'else', got %s at line %d:%d (a guard reads `guard COND else ...`)",
+			tokenTypeName(current.Type), current.Line, current.Column)
+		if p.LintMode {
+			p.recordError(errMsg)
+			return &ASTNode{
+				Type:     NODE_IF_STATEMENT,
+				Children: []*ASTNode{condition, &ASTNode{Type: NODE_BLOCK}},
+			}
+		}
+		panic(errMsg)
+	}
+	p.advance() // consume else
+
+	if p.current().Type == TOKEN_ASSIGN || p.current().Type == TOKEN_THEN {
 		p.elseWordError()
 		p.advance()
 	}
 
+	// Both inline and multiline now require $ to close.
+	// Skip optional newlines after else.
 	for p.current().Type == TOKEN_NEWLINE {
 		p.advance()
 	}
 
+	p.skipWhitespace()
+	p.blockDepth++ // Opening a block (inline or multiline)
+
 	var savedVars map[string]int
-	var savedFVars map[string]string
 	var savedAliased bool
 	if p.LintMode {
 		savedVars = p.declaredVars
-		savedFVars = p.functionScope
 		savedAliased = p.scopeAliased
 		p.scopeAliased = true
 	}
+	elseBody := p.parseBlockUntilEnd("else", startLine)
 
-	p.skipWhitespace()
-	p.blockDepth++
-
-	savedConstructIndent := p.constructIndent
-	p.constructIndent = guardIndent
-	body := p.parseBlockUntilEnd("guard", startLine)
-	p.constructIndent = savedConstructIndent
-
+	// Restore the parent scope but keep the else arm's map in
+	// functionScope — exactly what parseIfStatement does when an
+	// `else` is present (it restores declaredVars only), so both
+	// spellings check identically.
 	if p.LintMode {
 		p.declaredVars = savedVars
-		p.functionScope = savedFVars
 		p.scopeAliased = savedAliased
 	}
 
-	neg := &ASTNode{Type: NODE_UNARY_OP, Value: "not", Children: []*ASTNode{cond}, Line: startLine}
 	return &ASTNode{
 		Type:     NODE_IF_STATEMENT,
-		Children: []*ASTNode{neg, body},
-		Line:     startLine,
+		Value:    "guard",
+		Children: []*ASTNode{condition, elseBody},
+	}
+}
+
+// skipToThen advances to the plain-`if`'s own `then` (same level), so a
+// rejected declaration in the condition reports one error instead of a
+// cascade. Stops at newline, `$` or EOF when there is no `then`.
+func (p *Parser) skipToThen(levelIndent int) {
+	for {
+		t := p.current().Type
+		if t == TOKEN_EOF || t == TOKEN_NEWLINE || t == TOKEN_END {
+			return
+		}
+		if t == TOKEN_THEN && p.current().Indent == levelIndent {
+			return
+		}
+		p.advance()
+	}
+}
+
+// skipToGuardElse advances past a rejected `elif` arm to the guard's own
+// `else` (same level), so a stray arm reports one error instead of a
+// cascade. Stops at newline, `$` or EOF when there is no `else`.
+func (p *Parser) skipToGuardElse(levelIndent int) {
+	for {
+		t := p.current().Type
+		if t == TOKEN_EOF || t == TOKEN_NEWLINE || t == TOKEN_END {
+			return
+		}
+		if t == TOKEN_ELSE && p.current().Indent == levelIndent {
+			return
+		}
+		p.advance()
 	}
 }
 
@@ -798,6 +1052,13 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 			p.advance() // consume 'on'
 		} else if p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "_" {
 			isDefaultCase = true
+		} else if p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "case" {
+			// `case` is not an Ahoy keyword: switch bodies start with `on`.
+			// Report the fix here (the parser would otherwise bail with a
+			// confusing "expected '$'" message), then recover by treating
+			// the token as the label so the rest of the switch still parses.
+			p.recordError("Use 'on' instead of 'case' in a switch (e.g. 'on 1: print|\"one\"|')")
+			p.advance() // consume 'case'
 		} else {
 			// No more cases to parse
 			break
@@ -813,12 +1074,23 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 
 				// Parse single case value
 				var caseValue *ASTNode
+				// Allow a leading '-' on a case value (e.g. `on -1:`) so
+				// negative literals work as case labels.
+				neg := false
+				if p.current().Type == TOKEN_MINUS {
+					neg = true
+					p.advance()
+				}
 				if p.current().Type == TOKEN_NUMBER {
 					tok := p.current()
 					p.advance()
+					val := tok.Value
+					if neg {
+						val = "-" + val
+					}
 					caseValue = &ASTNode{
 						Type:  NODE_NUMBER,
-						Value: tok.Value,
+						Value: val,
 					}
 				} else if p.current().Type == TOKEN_CHAR {
 					tok := p.current()
@@ -1004,8 +1276,10 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 			p.scopeAliased = true
 		}
 
-		// Check if we're starting a new case immediately (empty case)
-		if p.current().Type == TOKEN_ON || (p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "_") ||
+		// Check if we're starting a new case immediately (empty case).
+		// `case` is included so a misspelled label ends the previous body
+		// and reaches the case-start check, which reports the fix.
+		if p.current().Type == TOKEN_ON || (p.current().Type == TOKEN_IDENTIFIER && (p.current().Value == "_" || p.current().Value == "case")) ||
 			p.current().Type == TOKEN_END || p.current().Type == TOKEN_DEDENT {
 			// Empty case body
 			caseBody = &ASTNode{Type: NODE_BLOCK}
@@ -1027,8 +1301,9 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 					p.advance()
 				}
 
-				// Check for end of case
-				if p.current().Type == TOKEN_ON || (p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "_") ||
+				// Check for end of case (`case` reaches the start-of-case
+				// check, which explains that the keyword is `on`).
+				if p.current().Type == TOKEN_ON || (p.current().Type == TOKEN_IDENTIFIER && (p.current().Value == "_" || p.current().Value == "case")) ||
 					p.current().Type == TOKEN_END || p.current().Type == TOKEN_EOF {
 					break
 				}
@@ -1066,9 +1341,20 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 					p.advance()
 					stmt = &ASTNode{Type: NODE_NEXT, Line: stmtLine}
 				case TOKEN_IDENTIFIER:
-					// Could be assignment or expression (or contextual guard)
-					if p.isGuardStatement() {
-						stmt = p.parseGuardStatement()
+					// `pass if` was the transitional spelling; point at
+					// `guard`. Anything else starting with an identifier
+					// could be assignment or expression.
+					if p.current().Value == "pass" && p.peek(1).Type == TOKEN_IF {
+						msg := "`pass if` was removed; write `guard COND else ...` instead"
+						if p.LintMode {
+							p.recordError(msg)
+						} else {
+							panic(msg)
+						}
+						stmt = nil
+						for p.current().Type != TOKEN_NEWLINE && p.current().Type != TOKEN_END && p.current().Type != TOKEN_EOF {
+							p.advance()
+						}
 					} else {
 						stmt = p.parseAssignmentOrExpression()
 					}
@@ -1092,7 +1378,7 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 					}
 
 					// Check if we're at the end of this case
-					if p.current().Type == TOKEN_ON || (p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "_") ||
+					if p.current().Type == TOKEN_ON || (p.current().Type == TOKEN_IDENTIFIER && (p.current().Value == "_" || p.current().Value == "case")) ||
 						p.current().Type == TOKEN_END || p.current().Type == TOKEN_EOF {
 						break
 					}
