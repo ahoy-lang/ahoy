@@ -348,6 +348,10 @@ func (p *Parser) parseFunctionDeclaration() *ASTNode {
 // recorded on the AST node.
 func (p *Parser) parseFunctionWithDoubleColon(name Token, recvParam *ASTNode, method *MethodInfo) *ASTNode {
 	startLine := name.Line
+	// Function-local name frame (restored on return): locals and params
+	// recorded while parsing this body must not shadow zero-arg C calls
+	// in functions parsed later.
+	defer p.pushKnownVarFrame()()
 	fn := &ASTNode{
 		Type:   NODE_FUNCTION,
 		Value:  name.Value,
@@ -491,6 +495,10 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token, recvParam *ASTNode, me
 			p.functionScope[recvParam.Value] = recvParam.DataType
 		}
 	}
+
+	// Parameters (including an unshifted receiver) read as variables,
+	// never as same-named zero-arg C calls.
+	p.recordKnownParams(params)
 
 	// Return type (optional, can be multiple types separated by comma)
 	var returnType string

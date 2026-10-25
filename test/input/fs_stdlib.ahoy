@@ -93,11 +93,11 @@ program fs_stdlib
 	$
 	subd: path_join|scrub, "sub"|
 	kids: fs_list|subd|
-	first: kids[0]
-	if first is "deep" then
+	if kids.has|"deep"| then
 		print|"hasdeep"
 		expected.push|"hasdeep"|
 	$
+	first: kids[0]
 	print|first|
 	expected.push|"deep"|
 

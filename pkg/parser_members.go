@@ -719,6 +719,37 @@ func (p *Parser) recordKnownVar(name string) {
 	p.knownVars[name] = true
 }
 
+// pushKnownVarFrame opens a function-local name frame and returns its pop
+// function (use as `defer p.pushKnownVarFrame()()`). The new frame starts
+// as a copy, so the body sees globals and enclosing names, while names
+// recorded inside it vanish on pop. Bare-identifier shadowing of zero-arg
+// C functions is therefore per-function: a local named clock hides the C
+// clock() only inside its own function, and a later function calling
+// clock() bare still reaches C.
+func (p *Parser) pushKnownVarFrame() func() {
+	saved := p.knownVars
+	fresh := make(map[string]bool, len(saved))
+	for k := range saved {
+		fresh[k] = true
+	}
+	p.knownVars = fresh
+	return func() { p.knownVars = saved }
+}
+
+// recordKnownParams records a function's parameter names as variables so
+// a bare use reads the parameter instead of a same-named zero-arg C
+// function (same rule as locals).
+func (p *Parser) recordKnownParams(params *ASTNode) {
+	if params == nil {
+		return
+	}
+	for _, paramNode := range params.Children {
+		if paramNode != nil && paramNode.Value != "" {
+			p.recordKnownVar(paramNode.Value)
+		}
+	}
+}
+
 // resolveTypeAlias resolves a type alias to its underlying type
 func (p *Parser) resolveTypeAlias(typeName string) string {
 	// Recursively resolve aliases

@@ -196,6 +196,10 @@ func (p *Parser) parseFunction() *ASTNode {
 	p.expect(TOKEN_FUNC)
 	name := p.expect(TOKEN_IDENTIFIER)
 
+	// Function-local name frame (restored on return): see
+	// pushKnownVarFrame.
+	defer p.pushKnownVarFrame()()
+
 	fn := &ASTNode{
 		Type:  NODE_FUNCTION,
 		Value: name.Value,
@@ -318,6 +322,9 @@ func (p *Parser) parseFunction() *ASTNode {
 
 	// Skip optional whitespace/indent after keyword
 	p.skipWhitespace()
+
+	// Parameters read as variables, never as same-named zero-arg C calls.
+	p.recordKnownParams(params)
 
 	// Parse body
 	var body *ASTNode

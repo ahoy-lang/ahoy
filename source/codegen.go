@@ -623,7 +623,7 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 			result.WriteString("int ahoy_array_sum(AhoyArray* arr);\n")
 		}
 		if gen.arrayMethods["has"] {
-			result.WriteString("int ahoy_array_has(AhoyArray* arr, intptr_t value);\n")
+			result.WriteString("int ahoy_array_has(AhoyArray* arr, intptr_t value, AhoyValueType vtype);\n")
 		}
 		if gen.arrayMethods["sort"] {
 			result.WriteString("AhoyArray* ahoy_array_sort(AhoyArray* arr);\n")
@@ -4857,7 +4857,15 @@ func (gen *CodeGenerator) generateWhenStatement(node *ahoy.ASTNode) {
 	gen.output.WriteString("\n")
 
 	gen.indent++
+	// The branch is a scope like an if-block: declarations inside it are
+	// freed before the #endif, never at function scope after it (their
+	// storage does not exist when the flag is off, so a trailing free
+	// would not compile).
+	gen.enterScope()
 	gen.generateNodeInternal(node.Children[0], false)
+	if cleanup := gen.exitScope(); cleanup != "" {
+		gen.output.WriteString(cleanup)
+	}
 	gen.indent--
 
 	// Optional else branch (Children[1]) compiles to `#else`. Older ASTs
@@ -4867,7 +4875,11 @@ func (gen *CodeGenerator) generateWhenStatement(node *ahoy.ASTNode) {
 		gen.output.WriteString("#else\n")
 
 		gen.indent++
+		gen.enterScope()
 		gen.generateNodeInternal(node.Children[1], false)
+		if cleanup := gen.exitScope(); cleanup != "" {
+			gen.output.WriteString(cleanup)
+		}
 		gen.indent--
 	}
 
@@ -7311,7 +7323,39 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 			gen.output.WriteString(")")
 			return
 		} else {
-			// Multiple arguments without format string - print on one line with spaces (Python-style)
+			// Multiple arguments without format string - print on one line with spaces (Python-style).
+			// Heap-owned argument images (container print helpers, fresh
+			// strings) are bound to temporaries up front and freed after
+			// the printf; every other argument streams exactly as before,
+			// so programs without such arguments emit byte-identical C.
+			var argTemps []printTemp
+			argTempFor := make(map[int]string)
+			for idx, arg := range printArgs {
+				helper := gen.printHelperName(arg)
+				if helper == "" && !gen.valueAllocatesString(arg) {
+					continue
+				}
+				tmp := fmt.Sprintf("__ph_%d", gen.varCounter)
+				gen.varCounter++
+				var init string
+				if helper != "" {
+					init = helper + "(" + gen.bufferedNode(arg) + ")"
+				} else {
+					init = gen.bufferedNode(arg)
+				}
+				argTemps = append(argTemps, printTemp{name: tmp, init: init})
+				argTempFor[idx] = tmp
+			}
+			if len(argTemps) > 0 {
+				gen.output.WriteString("({ ")
+				for _, t := range argTemps {
+					gen.output.WriteString("char* ")
+					gen.output.WriteString(t.name)
+					gen.output.WriteString(" = ")
+					gen.output.WriteString(t.init)
+					gen.output.WriteString("; ")
+				}
+			}
 			gen.output.WriteString("printf(")
 			if len(printArgs) > 0 {
 				formatParts := []string{}
@@ -7438,8 +7482,12 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 				gen.output.WriteString("\"")
 
 				// Output all arguments
-				for _, arg := range printArgs {
+				for idx, arg := range printArgs {
 					gen.output.WriteString(", ")
+					if tmp, ok := argTempFor[idx]; ok {
+						gen.output.WriteString(tmp)
+						continue
+					}
 					argType := gen.inferType(arg)
 
 					// Check if argument is an enum itself (print the whole enum)
@@ -7583,6 +7631,14 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 				}
 			}
 			gen.output.WriteString(")")
+			if len(argTemps) > 0 {
+				for _, t := range argTemps {
+					gen.output.WriteString("; free(")
+					gen.output.WriteString(t.name)
+					gen.output.WriteString(")")
+				}
+				gen.output.WriteString("; })")
+			}
 			return
 		}
 
@@ -7654,7 +7710,6 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 				gen.output.WriteString("\")")
 			} else if firstIsString && (strings.Contains(node.Children[0].Value, "{}") || strings.Contains(node.Children[0].Value, "%")) {
 				// Format string with placeholders
-				gen.output.WriteString("printf(")
 				formatStr := node.Children[0].Value
 				args := node.Children[1:]
 
@@ -7664,15 +7719,56 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 					processedFormat += "\\n"
 				}
 
+				// Heap-owned arguments (%v array/buffer images, fresh
+				// strings) are bound to temporaries and freed after the
+				// printf; everything else streams exactly as before.
+				var fmtTemps []printTemp
+				fmtTempFor := make(map[int]string)
+				for idx, arg := range processedArgs {
+					isMarker := arg.Type == ahoy.NODE_CALL && (arg.Value == "__print_array_helper" || arg.Value == "__print_buffer_helper")
+					if !isMarker && !gen.valueAllocatesString(arg) {
+						continue
+					}
+					// Method markings for the marker helpers were already
+					// recorded by processFormatString; the buffered
+					// generation below emits the helper call itself.
+					tmp := fmt.Sprintf("__ph_%d", gen.varCounter)
+					gen.varCounter++
+					fmtTemps = append(fmtTemps, printTemp{name: tmp, init: gen.bufferedNode(arg)})
+					fmtTempFor[idx] = tmp
+				}
+				if len(fmtTemps) > 0 {
+					gen.output.WriteString("({ ")
+					for _, t := range fmtTemps {
+						gen.output.WriteString("char* ")
+						gen.output.WriteString(t.name)
+						gen.output.WriteString(" = ")
+						gen.output.WriteString(t.init)
+						gen.output.WriteString("; ")
+					}
+				}
+				gen.output.WriteString("printf(")
 				gen.output.WriteString("\"")
 				gen.output.WriteString(processedFormat)
 				gen.output.WriteString("\"")
 
-				for _, arg := range processedArgs {
+				for idx, arg := range processedArgs {
 					gen.output.WriteString(", ")
+					if tmp, ok := fmtTempFor[idx]; ok {
+						gen.output.WriteString(tmp)
+						continue
+					}
 					gen.generateNode(arg)
 				}
 				gen.output.WriteString(")")
+				if len(fmtTemps) > 0 {
+					for _, t := range fmtTemps {
+						gen.output.WriteString("; free(")
+						gen.output.WriteString(t.name)
+						gen.output.WriteString(")")
+					}
+					gen.output.WriteString("; })")
+				}
 			} else {
 				// Multiple arguments or single non-string
 				gen.output.WriteString("printf(")
@@ -8541,6 +8637,67 @@ func (gen *CodeGenerator) checkedArrayElem(arrayName string, node *ahoy.ASTNode)
 		gen.hasError = true
 	}
 	return want, true
+}
+
+// printTemp is one bound temporary for a printf argument whose image is
+// heap-owned (a container print helper result or a fresh string): bound
+// before the printf, freed after it.
+type printTemp struct {
+	name string
+	init string
+}
+
+// printHelperName reports the C helper a path-3 print argument needs, or ""
+// when the argument streams inline. Mirrors the emission branches exactly
+// (including their method-marking side effects, which gate the helper
+// definitions); the caller binds the result to a temporary and frees it.
+func (gen *CodeGenerator) printHelperName(arg *ahoy.ASTNode) string {
+	argType := gen.inferType(arg)
+	if arg.Type == ahoy.NODE_IDENTIFIER && gen.isEnumType(arg.Value) {
+		return "print_" + arg.Value
+	}
+	if argType == "array" || strings.HasPrefix(argType, "array[") {
+		if arg.Type == ahoy.NODE_IDENTIFIER {
+			if elemType, exists := gen.arrayElementTypes[arg.Value]; exists {
+				if elemType == "char*" || elemType == "string" {
+					gen.arrayMethods["print_string_array"] = true
+					return "print_string_array_helper"
+				}
+				gen.arrayMethods["print_array"] = true
+				return "print_array_helper"
+			}
+			gen.arrayMethods["print_array"] = true
+			return "print_array_helper"
+		}
+		gen.arrayMethods["print_array"] = true
+		return "print_array_helper"
+	}
+	if argType == "dict" || strings.HasPrefix(argType, "dict[") {
+		gen.dictMethods["print_dict"] = true
+		return "print_dict_helper"
+	}
+	if strings.HasPrefix(argType, "buffer[") {
+		gen.arrayMethods["print_buffer"] = true
+		if bufferElemOf(argType) == "int" {
+			return "print_buffer_int_helper"
+		}
+		return "print_buffer_helper"
+	}
+	if argType == "struct" || gen.structs[argType] != nil || gen.structs[strings.ToLower(argType)] != nil {
+		gen.arrayMethods["print_struct"] = true
+		funcName := ""
+		if structInfo := gen.structs[argType]; structInfo != nil {
+			funcName = toCFuncName(structInfo.Name)
+		} else if structInfo := gen.structs[strings.ToLower(argType)]; structInfo != nil {
+			funcName = toCFuncName(structInfo.Name)
+		} else {
+			funcName = toCFuncName(argType)
+		}
+		return "print_struct_helper_" + funcName
+	}
+	// ahoy_json_stringify, format_dict_value and plain values use static
+	// or borrowed storage: inline, nothing to free.
+	return ""
 }
 
 func (gen *CodeGenerator) generateBinaryOp(node *ahoy.ASTNode) {
@@ -9705,6 +9862,14 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 				}
 				// For push and fill, also pass the type
 				if methodName == "push" && i == 0 {
+					valueType := gen.getValueType(arg)
+					gen.output.WriteString(", ")
+					gen.output.WriteString(gen.getAhoyTypeEnum(valueType))
+				}
+				// has compares strings by content: the helper needs the
+				// needle type so it only strcmps string-vs-string (an int
+				// needle against a string element stays a safe mismatch).
+				if methodName == "has" && i == 0 {
 					valueType := gen.getValueType(arg)
 					gen.output.WriteString(", ")
 					gen.output.WriteString(gen.getAhoyTypeEnum(valueType))
@@ -14470,6 +14635,17 @@ const char* volatile __ahoy_func = "";
 #include <ucontext.h>
 #endif
 
+// The Windows SDK has no glibc FPE_* codes (MSVC/mingw headers): give them
+// the C standard values so cross builds compile (same fallback bell's
+// engine/glue.h uses). Other targets keep their own macros. The Windows
+// crash path always passes fpe=0, so these values never fire there.
+#ifndef FPE_INTDIV
+#define FPE_INTDIV 1
+#endif
+#ifndef FPE_INTOVF
+#define FPE_INTOVF 2
+#endif
+
 static void ahoy_crash_write(const char* s) {
     size_t n = 0;
     size_t off = 0;
@@ -14699,7 +14875,7 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 	// print_array helper - formats array for printing with type support
 	if gen.arrayMethods["print_array"] {
 		gen.funcDecls.WriteString("char* print_array_helper(AhoyArray* arr) {\n")
-		gen.funcDecls.WriteString("    if (arr == NULL || arr->length == 0) return \"[]\";\n")
+		gen.funcDecls.WriteString("    if (arr == NULL || arr->length == 0) return strdup(\"[]\");\n")
 		gen.funcDecls.WriteString("    char* buffer = malloc(4096);\n")
 		gen.funcDecls.WriteString("    int offset = 0;\n")
 		gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \"[\");\n")
@@ -14728,7 +14904,7 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 	// print_buffer helper - formats buffer[f32] for printing
 	if gen.arrayMethods["print_buffer"] {
 		gen.funcDecls.WriteString("char* print_buffer_helper(AhoyBufferF32* b) {\n")
-		gen.funcDecls.WriteString("    if (b == NULL || b->length == 0) return \"[]\";\n")
+		gen.funcDecls.WriteString("    if (b == NULL || b->length == 0) return strdup(\"[]\");\n")
 		gen.funcDecls.WriteString("    char* buffer = malloc(4096);\n")
 		gen.funcDecls.WriteString("    int offset = 0;\n")
 		gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \"[\");\n")
@@ -14740,7 +14916,7 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 		gen.funcDecls.WriteString("    return buffer;\n")
 		gen.funcDecls.WriteString("}\n\n")
 		gen.funcDecls.WriteString("char* print_buffer_int_helper(AhoyBufferI32* b) {\n")
-		gen.funcDecls.WriteString("    if (b == NULL || b->length == 0) return \"[]\";\n")
+		gen.funcDecls.WriteString("    if (b == NULL || b->length == 0) return strdup(\"[]\");\n")
 		gen.funcDecls.WriteString("    char* buffer = malloc(4096);\n")
 		gen.funcDecls.WriteString("    int offset = 0;\n")
 		gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \"[\");\n")
@@ -14756,7 +14932,7 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 	// print_string_array helper - formats string array for printing
 	if gen.arrayMethods["print_string_array"] {
 		gen.funcDecls.WriteString("char* print_string_array_helper(AhoyArray* arr) {\n")
-		gen.funcDecls.WriteString("    if (arr == NULL || arr->length == 0) return \"[]\";\n")
+		gen.funcDecls.WriteString("    if (arr == NULL || arr->length == 0) return strdup(\"[]\");\n")
 		gen.funcDecls.WriteString("    char* buffer = malloc(4096);\n")
 		gen.funcDecls.WriteString("    int offset = 0;\n")
 		gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \"[\");\n")
@@ -14918,7 +15094,7 @@ func (gen *CodeGenerator) writeDictHelperFunctions() {
 	// print_dict helper - formats dict for printing (keep inline since it's complex)
 	if gen.dictMethods["print_dict"] {
 		gen.funcDecls.WriteString("char* print_dict_helper(HashMap* dict) {\n")
-		gen.funcDecls.WriteString("    if (dict == NULL || dict->size == 0) return \"{}\";\n")
+		gen.funcDecls.WriteString("    if (dict == NULL || dict->size == 0) return strdup(\"{}\");\n")
 		gen.funcDecls.WriteString("    char* buffer = malloc(4096);\n")
 		gen.funcDecls.WriteString("    int offset = 0;\n")
 		gen.funcDecls.WriteString("    offset += sprintf(buffer + offset, \"{\");\n")
@@ -15981,7 +16157,7 @@ func (gen *CodeGenerator) writeStructHelperFunctions() {
 		gen.funcDecls.WriteString(" obj) {\n")
 		// Use malloc instead of static buffer to avoid overwrites in nested calls
 		gen.funcDecls.WriteString("    char* buffer = malloc(1024);\n")
-		gen.funcDecls.WriteString("    if (!buffer) return \"<out of memory>\";\n")
+		gen.funcDecls.WriteString("    if (!buffer) return strdup(\"<out of memory>\");\n")
 
 		// Anonymous structs use {} format, named structs use name{} format
 		if strings.HasPrefix(structInfo.Name, "__anon_struct_") {

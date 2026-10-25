@@ -37,8 +37,8 @@ var ArrayMethods = map[string]StdlibFunc{
 	},
 	"has": {
 		Name: "ahoy_array_has", Category: "array", MethodName: "has", ReturnType: "bool",
-		Params: "arr:array, value:any", Doc: "Checks if the array contains a specific element",
-		Code: "int ahoy_array_has(AhoyArray* arr, intptr_t value) {\n    for (int i = 0; i < arr->length; i++) {\n        if (arr->data[i] == value) return 1;\n    }\n    return 0;\n}\n",
+		Params: "arr:array, value:any", Doc: "Checks if the array contains a specific element (strings compare by content)",
+		Code: "int ahoy_array_has(AhoyArray* arr, intptr_t value, AhoyValueType vtype) {\n    int i;\n    if (arr == NULL) return 0;\n    for (i = 0; i < arr->length; i++) {\n        if (vtype == AHOY_TYPE_STRING && arr->types != NULL && arr->types[i] == AHOY_TYPE_STRING) {\n            const char* a = (const char*)(intptr_t)arr->data[i];\n            const char* b = (const char*)(intptr_t)value;\n            if (a != NULL && b != NULL && strcmp(a, b) == 0) return 1;\n            if (a == NULL && b == NULL) return 1;\n        } else if (arr->data[i] == value) return 1;\n    }\n    return 0;\n}\n",
 	},
 	"sort": {
 		Name: "ahoy_array_sort", Category: "array", MethodName: "sort", ReturnType: "array",
