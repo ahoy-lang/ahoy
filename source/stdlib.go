@@ -45,6 +45,11 @@ var ArrayMethods = map[string]StdlibFunc{
 		Params: "arr:array", Doc: "Sorts the array in ascending order",
 		Code: "int __ahoy_compare_int(const void* a, const void* b) {\n    return (*(intptr_t*)a - *(intptr_t*)b);\n}\n\nAhoyArray* ahoy_array_sort(AhoyArray* arr) {\n    qsort(arr->data, arr->length, sizeof(intptr_t), __ahoy_compare_int);\n    return arr;\n}\n",
 	},
+	"sort_strings": {
+		Name: "ahoy_array_sort_strings", Category: "array", MethodName: "sort_strings", ReturnType: "array",
+		Params: "arr:array[string]", Doc: "Sorts a string array with strcmp (for fs_list-style listings)",
+		Code: "int __ahoy_compare_str(const void* a, const void* b) {\n    const char* sa = *(char* const*)a;\n    const char* sb = *(char* const*)b;\n    if (!sa) sa = \"\";\n    if (!sb) sb = \"\";\n    return strcmp(sa, sb);\n}\n\nAhoyArray* ahoy_array_sort_strings(AhoyArray* arr) {\n    qsort(arr->data, arr->length, sizeof(intptr_t), __ahoy_compare_str);\n    return arr;\n}\n",
+	},
 	"reverse": {
 		Name: "ahoy_array_reverse", Category: "array", MethodName: "reverse", ReturnType: "array",
 		Params: "arr:array", Doc: "Reverses the array in place",
@@ -213,6 +218,46 @@ var StringMethods = map[string]StdlibFunc{
 		Params: "s:string, delimiter:string", Doc: "Splits string by delimiter",
 		Code: "char** ahoy_string_split(const char* str, const char* delim) {\n    if (!str || !delim) return NULL;\n    char* str_copy = ahoy_string_dup(str);\n    int count = 1;\n    for (const char* p = str; *p; p++) {\n        if (strstr(p, delim) == p) count++;\n    }\n    char** result = malloc((count + 1) * sizeof(char*));\n    char* token = strtok(str_copy, delim);\n    int i = 0;\n    while (token != NULL) {\n        result[i++] = ahoy_string_dup(token);\n        token = strtok(NULL, delim);\n    }\n    result[i] = NULL;\n    free(str_copy);\n    return result;\n}\n",
 	},
+	"contains_ci": {
+		Name: "ahoy_string_contains_ci", Category: "string", MethodName: "contains_ci", ReturnType: "bool",
+		Params: "s:string, substr:string", Doc: "Case-insensitive substring check",
+		Code: "bool ahoy_string_contains_ci(const char* str, const char* substr) {\n    size_t i, j;\n    size_t n, m;\n    if (!str || !substr || !substr[0]) return false;\n    n = strlen(str); m = strlen(substr);\n    if (m > n) return false;\n    for (i = 0; i + m <= n; i++) {\n        for (j = 0; j < m; j++) {\n            if (tolower((unsigned char)str[i + j]) != tolower((unsigned char)substr[j])) break;\n        }\n        if (j == m) return true;\n    }\n    return false;\n}\n",
+	},
+	"byte_at": {
+		Name: "ahoy_string_byte_at", Category: "string", MethodName: "byte_at", ReturnType: "int",
+		Params: "s:string, i:int", Doc: "Byte at index i (0-255), -1 when out of range",
+		Code: "int ahoy_string_byte_at(const char* text, int i) {\n    const char* base = text ? text : \"\";\n    size_t n = strlen(base);\n    if (i < 0 || (size_t)i >= n) return -1;\n    return (unsigned char)base[i];\n}\n",
+	},
+	"byte_len": {
+		Name: "ahoy_string_byte_len", Category: "string", MethodName: "byte_len", ReturnType: "int",
+		Params: "s:string", Doc: "Byte length (same as length; explicit for UTF-8 code)",
+		Code: "int ahoy_string_byte_len(const char* text) {\n    return (int)strlen(text ? text : \"\");\n}\n",
+	},
+	"byte_slice": {
+		Name: "ahoy_string_byte_slice", Category: "string", MethodName: "byte_slice", ReturnType: "string",
+		Params: "s:string, a:int, b:int", Doc: "UTF-8-safe slice: positions snap down to lead bytes",
+		Code: "char* ahoy_string_byte_slice(const char* text, int a, int b) {\n    const char* base = text ? text : \"\";\n    size_t len = strlen(base);\n    size_t s0 = ahoy_string_snap(base, len, a < 0 ? 0 : (size_t)a);\n    size_t s1 = ahoy_string_snap(base, len, b < 0 ? 0 : (size_t)b);\n    if (s1 < s0) s1 = s0;\n    char* out = malloc(s1 - s0 + 1);\n    memcpy(out, base + s0, s1 - s0);\n    out[s1 - s0] = 0;\n    return out;\n}\n",
+	},
+	"prefix": {
+		Name: "ahoy_string_prefix", Category: "string", MethodName: "prefix", ReturnType: "string",
+		Params: "s:string, n:int", Doc: "First n bytes snapped down to a UTF-8 boundary",
+		Code: "char* ahoy_string_prefix(const char* text, int n) {\n    const char* base = text ? text : \"\";\n    size_t len = strlen(base);\n    size_t k = ahoy_string_snap(base, len, n < 0 ? 0 : (size_t)n);\n    char* out = malloc(k + 1);\n    memcpy(out, base, k);\n    out[k] = 0;\n    return out;\n}\n",
+	},
+	"insert_at": {
+		Name: "ahoy_string_insert_at", Category: "string", MethodName: "insert_at", ReturnType: "string",
+		Params: "s:string, pos:int, code:int", Doc: "Insert codepoint at byte pos (snapped); encodes as UTF-8",
+		Code: "char* ahoy_string_insert_at(const char* text, int pos, int ch) {\n    const char* base = text ? text : \"\";\n    size_t len = strlen(base);\n    size_t at = ahoy_string_snap(base, len, pos < 0 ? 0 : (size_t)pos);\n    char enc[4]; int nb = 1;\n    if (ch < 0) ch = 0;\n    if (ch < 0x80) { enc[0] = (char)ch; nb = 1; }\n    else if (ch < 0x800) { enc[0] = (char)(0xC0 | (ch >> 6)); enc[1] = (char)(0x80 | (ch & 0x3F)); nb = 2; }\n    else if (ch < 0x10000) { enc[0] = (char)(0xE0 | (ch >> 12)); enc[1] = (char)(0x80 | ((ch >> 6) & 0x3F)); enc[2] = (char)(0x80 | (ch & 0x3F)); nb = 3; }\n    else { enc[0] = '?'; nb = 1; }\n    char* out = malloc(len + (size_t)nb + 1);\n    memcpy(out, base, at);\n    memcpy(out + at, enc, (size_t)nb);\n    memcpy(out + at + (size_t)nb, base + at, len - at + 1);\n    return out;\n}\n",
+	},
+	"delete_range": {
+		Name: "ahoy_string_delete_range", Category: "string", MethodName: "delete_range", ReturnType: "string",
+		Params: "s:string, a:int, b:int", Doc: "Delete byte range [a,b) snapped to UTF-8 boundaries",
+		Code: "char* ahoy_string_delete_range(const char* text, int a, int b) {\n    const char* base = text ? text : \"\";\n    size_t len = strlen(base);\n    size_t s0 = ahoy_string_snap(base, len, a < 0 ? 0 : (size_t)a);\n    size_t s1 = ahoy_string_snap(base, len, b < 0 ? 0 : (size_t)b);\n    if (s1 < s0) s1 = s0;\n    char* out = malloc(len - (s1 - s0) + 1);\n    memcpy(out, base, s0);\n    memcpy(out + s0, base + s1, len - s1 + 1);\n    return out;\n}\n",
+	},
+	"utf8_len": {
+		Name: "ahoy_string_utf8_len", Category: "string", MethodName: "utf8_len", ReturnType: "int",
+		Params: "s:string", Doc: "Unicode character count (lead bytes); byte_len counts bytes",
+		Code: "int ahoy_string_utf8_len(const char* text) {\n    const char* s = text ? text : \"\";\n    int n = 0;\n    for (; *s; s++) if (((unsigned char)*s & 0xC0) != 0x80) n++;\n    return n;\n}\n",
+	},
 }
 
 // BuiltinFuncs contains built-in function definitions
@@ -240,6 +285,7 @@ var BuiltinFuncs = map[string]StdlibFunc{
 	"u64":        {Name: "u64", Category: "builtin", MethodName: "u64", ReturnType: "u64", Params: "value:any", Doc: "Casts to an unsigned 64-bit integer"},
 	"buffer":     {Name: "buffer", Category: "builtin", MethodName: "buffer", ReturnType: "buffer[f32]", Params: "n:int", Doc: "Allocates a zeroed flat buffer[f32] of length n"},
 	"buffer_int": {Name: "buffer_int", Category: "builtin", MethodName: "buffer_int", ReturnType: "buffer[int]", Params: "n:int", Doc: "Allocates a zeroed flat buffer[int] of length n"},
+	"from_code": {Name: "from_code", Category: "builtin", MethodName: "from_code", ReturnType: "string", Params: "code:int", Doc: "Encodes a Unicode codepoint as UTF-8 (1-3 bytes; out-of-range yields '?')"},
 	"grow":       {Name: "grow", Category: "builtin", MethodName: "grow", ReturnType: "buffer", Params: "buf:buffer, n:int", Doc: "Returns a new buffer of length n with the first elements copied over"},
 	"to_bytes":   {Name: "to_bytes", Category: "builtin", MethodName: "to_bytes", ReturnType: "array", Params: "buf:buffer", Doc: "Serializes a buffer[f32] to an array[int] image: LE u32 count followed by LE float32 bytes"},
 	"from_bytes": {Name: "from_bytes", Category: "builtin", MethodName: "from_bytes", ReturnType: "buffer[f32]", Params: "bytes:array", Doc: "Rebuilds a buffer[f32] from an image, verifying framing exactly; corrupt images yield an empty buffer"},
@@ -278,6 +324,43 @@ var BuiltinFuncs = map[string]StdlibFunc{
 	// The geometry builtins.
 	"rect_contains": {Name: "rect_contains", Category: "builtin", MethodName: "rect_contains", ReturnType: "bool", Params: "x:float, y:float, rx:float, ry:float, rw:float, rh:float", Doc: "Is the point inside the rectangle"},
 	"rect_intersects": {Name: "rect_intersects", Category: "builtin", MethodName: "rect_intersects", ReturnType: "bool", Params: "ax:float, ay:float, aw:float, ah:float, bx:float, by:float, bw:float, bh:float", Doc: "Do two rectangles overlap"},
+	// Paths: pure string shaping, no syscalls. Both separators are
+	// understood, so the same code works on Linux and Windows.
+	"path_join":      {Name: "path_join", Category: "builtin", MethodName: "path_join", ReturnType: "string", Params: "a:string, b:string", Doc: "Joins two path parts with exactly one separator"},
+	"path_parent":    {Name: "path_parent", Category: "builtin", MethodName: "path_parent", ReturnType: "string", Params: "path:string", Doc: "One directory up: 'a/b/c' -> 'a/b', 'a' -> '.', '' -> '.'"},
+	"path_name":      {Name: "path_name", Category: "builtin", MethodName: "path_name", ReturnType: "string", Params: "path:string", Doc: "Final component: 'a/b/c' -> 'c'"},
+	"path_ends_with": {Name: "path_ends_with", Category: "builtin", MethodName: "path_ends_with", ReturnType: "bool", Params: "path:string, suffix:string", Doc: "Does the path end with the suffix (extension check)"},
+	// Filesystem: stat/dir/file syscalls behind bools and fresh strings.
+	// fs_list returns names only (parallel to bell's cached listing);
+	// join with the dir for full paths. Missing/unreadable inputs yield
+	// false, -1/0 or "" — never null.
+	"fs_exists":    {Name: "fs_exists", Category: "builtin", MethodName: "fs_exists", ReturnType: "bool", Params: "path:string", Doc: "Does the path exist (file or directory)"},
+	"fs_is_dir":    {Name: "fs_is_dir", Category: "builtin", MethodName: "fs_is_dir", ReturnType: "bool", Params: "path:string", Doc: "Is the path an existing directory"},
+	"fs_mkdir":     {Name: "fs_mkdir", Category: "builtin", MethodName: "fs_mkdir", ReturnType: "bool", Params: "path:string", Doc: "Creates one directory; false when it exists or fails"},
+	"fs_mkdirp":    {Name: "fs_mkdirp", Category: "builtin", MethodName: "fs_mkdirp", ReturnType: "bool", Params: "path:string", Doc: "Creates a directory and every missing parent (mkdir -p)"},
+	"fs_write":     {Name: "fs_write", Category: "builtin", MethodName: "fs_write", ReturnType: "bool", Params: "path:string, text:string", Doc: "Writes text to a file, truncating; false on failure"},
+	"fs_remove":    {Name: "fs_remove", Category: "builtin", MethodName: "fs_remove", ReturnType: "bool", Params: "path:string", Doc: "Removes a file or an empty directory"},
+	"fs_copy":      {Name: "fs_copy", Category: "builtin", MethodName: "fs_copy", ReturnType: "bool", Params: "src:string, dst:string", Doc: "Copies a file byte for byte; a failed copy removes the partial dst"},
+	"fs_rename":    {Name: "fs_rename", Category: "builtin", MethodName: "fs_rename", ReturnType: "bool", Params: "from:string, to:string", Doc: "Renames (moves) a file or directory"},
+	"fs_list":      {Name: "fs_list", Category: "builtin", MethodName: "fs_list", ReturnType: "array[string]", Params: "dir:string", Doc: "Sorted entry names of a directory (directories first); empty when unreadable"},
+	"fs_mtime":     {Name: "fs_mtime", Category: "builtin", MethodName: "fs_mtime", ReturnType: "int", Params: "path:string", Doc: "Modification time (seconds since epoch); 0 when unknown"},
+	"fs_read_text": {Name: "fs_read_text", Category: "builtin", MethodName: "fs_read_text", ReturnType: "string", Params: "path:string", Doc: "Reads a whole text file; '' when missing or unreadable (never null)"},
+	// Clock and place: wall-clock string, monotonic milliseconds,
+	// and where the program is.
+	"clock_string": {Name: "clock_string", Category: "builtin", MethodName: "clock_string", ReturnType: "string", Params: "", Doc: "Local wall-clock time as HH:MM:SS"},
+	"clock_ms":     {Name: "clock_ms", Category: "builtin", MethodName: "clock_ms", ReturnType: "float", Params: "", Doc: "Monotonic milliseconds for timing (never goes backwards)"},
+	"cwd":          {Name: "cwd", Category: "builtin", MethodName: "cwd", ReturnType: "string", Params: "", Doc: "Current working directory; '' when unknown"},
+	"exe_dir":      {Name: "exe_dir", Category: "builtin", MethodName: "exe_dir", ReturnType: "string", Params: "", Doc: "Folder holding the running program; '' when unknown"},
+	// Processes: launch, poll, kill. Unix only — on Windows spawn
+	// returns -1 and the rest report false (a stub, like bell's glue).
+	"spawn_detached": {Name: "spawn_detached", Category: "builtin", MethodName: "spawn_detached", ReturnType: "int", Params: "cmd:string", Doc: "Runs cmd via sh detached; the child pid, or -1 (Unix only)"},
+	"pid_alive":      {Name: "pid_alive", Category: "builtin", MethodName: "pid_alive", ReturnType: "bool", Params: "pid:int", Doc: "Is the detached child still running (always false on Windows)"},
+	"proc_kill":      {Name: "proc_kill", Category: "builtin", MethodName: "proc_kill", ReturnType: "bool", Params: "pid:int", Doc: "Terminates the detached child and its group (false on Windows)"},
+	"open_folder":    {Name: "open_folder", Category: "builtin", MethodName: "open_folder", ReturnType: "bool", Params: "path:string", Doc: "Reveals the path in the OS file manager"},
+	// Low-level OS errors for user-authored syscalls (Tier-3 Feature 1).
+	"errno":       {Name: "errno", Category: "builtin", MethodName: "errno", ReturnType: "int", Params: "", Doc: "Current errno value (0 when the last syscall succeeded)"},
+	"errno_str":   {Name: "errno_str", Category: "builtin", MethodName: "errno_str", ReturnType: "string", Params: "", Doc: "strerror(errno): human-readable OS error (fresh string)"},
+	"time_format": {Name: "time_format", Category: "builtin", MethodName: "time_format", ReturnType: "string", Params: "fmt:string", Doc: "strftime local time with fmt (e.g. \"%H:%M:%S\"); fresh string"},
 }
 
 // GetAllStdlibFuncs returns all stdlib functions

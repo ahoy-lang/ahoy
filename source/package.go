@@ -353,6 +353,26 @@ func (pm *PackageManager) ResolveImport(importPath string, fromFile string) (*Pa
 	// Check if path is a directory or file
 	info, err := os.Stat(resolvedPath)
 	if err != nil {
+		// System C headers (`import "dirent.h"`, `import "sys/stat.h"`):
+		// resolve via the toolchain include dirs. Codegen emits
+		// `#include <...>` and parses via /usr/include; the package
+		// itself is empty (no Ahoy files).
+		if strings.HasSuffix(importPath, ".h") {
+			for _, loc := range []string{
+				"/usr/include/" + importPath,
+				"/usr/local/include/" + importPath,
+				"/usr/include/x86_64-linux-gnu/" + importPath,
+			} {
+				if fi, statErr := os.Stat(loc); statErr == nil && !fi.IsDir() {
+					pkg := &Package{
+						Name:  filepath.Base(importPath),
+						Files: []PackageFile{},
+					}
+					pm.ImportedPaths[importPath] = pkg
+					return pkg, nil
+				}
+			}
+		}
 		return nil, fmt.Errorf("import path not found: %s", importPath)
 	}
 

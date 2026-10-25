@@ -2228,7 +2228,16 @@ func (p *Parser) parseWhenStatement() *ASTNode {
 	// belongs to an outer block, not to this one.
 	whenIndent := p.current().Indent
 	p.expect(TOKEN_WHEN)
+	negated := false
+	if p.current().Type == TOKEN_NOT {
+		negated = true
+		p.advance()
+	}
 	condition := p.expect(TOKEN_IDENTIFIER) // Compile-time condition like DEBUG, RELEASE
+	condValue := condition.Value
+	if negated {
+		condValue = "!" + condValue
+	}
 	if p.current().Type == TOKEN_THEN || p.current().Type == TOKEN_DO {
 		p.advance()
 	} else {
@@ -2256,7 +2265,7 @@ func (p *Parser) parseWhenStatement() *ASTNode {
 
 	whenStmt := &ASTNode{
 		Type:     NODE_WHEN_STATEMENT,
-		Value:    condition.Value,
+		Value:    condValue,
 		Children: []*ASTNode{body},
 	}
 
@@ -2827,16 +2836,31 @@ func (p *Parser) parseImportStatement() *ASTNode {
 		resolvedPath = filepath.Clean(resolvedPath)
 	}
 
-	// Check if file exists (for linting)
+	// Check if file exists (for linting). System headers (`dirent.h`,
+	// `sys/stat.h`) resolve via /usr/include; anything else must exist
+	// relative to the source file.
 	if p.LintMode {
 		if _, err := os.Stat(resolvedPath); os.IsNotExist(err) {
-			errMsg := fmt.Sprintf("Import path does not exist: %s", path)
-			p.recordErrorAtLine(errMsg, importToken.Line)
-			// Continue parsing, but don't try to load the header
-			return &ASTNode{
-				Type:     NODE_IMPORT_STATEMENT,
-				Value:    path,
-				DataType: namespace,
+			isSystemHeader := false
+			if strings.HasSuffix(path, ".h") && !strings.HasPrefix(path, "./") &&
+				!strings.HasPrefix(path, "../") && !filepath.IsAbs(path) {
+				for _, loc := range []string{"/usr/include/" + path, "/usr/local/include/" + path, "/usr/include/x86_64-linux-gnu/" + path} {
+					if _, serr := os.Stat(loc); serr == nil {
+						isSystemHeader = true
+						resolvedPath = loc
+						break
+					}
+				}
+			}
+			if !isSystemHeader {
+				errMsg := fmt.Sprintf("Import path does not exist: %s", path)
+				p.recordErrorAtLine(errMsg, importToken.Line)
+				// Continue parsing, but don't try to load the header
+				return &ASTNode{
+					Type:     NODE_IMPORT_STATEMENT,
+					Value:    path,
+					DataType: namespace,
+				}
 			}
 		}
 	}

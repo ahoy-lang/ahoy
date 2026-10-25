@@ -73,7 +73,19 @@ func (gen *CodeGenerator) valueAllocatesString(node *ahoy.ASTNode) bool {
 	case ahoy.NODE_STRING_SLICE:
 		return true
 	case ahoy.NODE_CALL:
-		return node.Value == "sprintf"
+		// sprintf plus the fresh-string stdlib builtins: every one of
+		// these returns caller-owned heap (never a static buffer), so
+		// the result is tracked and freed at scope exit like any other
+		// fresh string. Predicates and int/float builtins are absent:
+		// they allocate nothing.
+		switch node.Value {
+		case "sprintf", "format", "from_code", "errno_str", "time_format",
+			"path_join", "path_parent", "path_name",
+			"fs_read_text",
+			"clock_string", "cwd", "exe_dir":
+			return true
+		}
+		return false
 	case ahoy.NODE_METHOD_CALL:
 		return ahoy.FreshStringMethods[node.Value]
 	}

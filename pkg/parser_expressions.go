@@ -11,21 +11,58 @@ import (
 // pointerTypeAhead reports whether the tokens after the current type name are
 // a pointer suffix followed by `=`: `x: Ext* = &ext`. A multiplication is
 // not a pointer type - `x: a * b` declares a value.
+// `**` lexes as TOKEN_POWER (exponentiation), so `char** =` counts as two
+// stars here too.
 func (p *Parser) pointerTypeAhead() bool {
 	i := 1
-	for p.peek(i).Type == TOKEN_MULTIPLY {
-		i++
+	for {
+		t := p.peek(i).Type
+		if t == TOKEN_MULTIPLY {
+			i++
+		} else if t == TOKEN_POWER {
+			i++
+		} else {
+			break
+		}
 	}
 	return p.peek(i).Type == TOKEN_EQUALS
 }
 
 func (p *Parser) parseAssignmentOrExpression() *ASTNode {
+	// `static name: Type = value` — function-local persistent storage.
+	// Consume the prefix here; every declaration return below is patched
+	// with IsStatic before it leaves this function.
+	isStatic := false
+	if p.current().Type == TOKEN_STATIC {
+		// Only a declaration can follow: `static x: ...`. A bare `static`
+		// elsewhere is a parse error, not an identifier.
+		isStatic = true
+		p.advance()
+		if p.LintMode {
+			// `static x: T = v` is IDENT ASSIGN after the prefix; anything
+			// else (`static x = v`, `static x.y: v`, `static ^p: v`) is
+			// misuse — the declaration paths below re-report precisely,
+			// this guards the early-return assignment paths above them.
+			if !(p.current().Type == TOKEN_IDENTIFIER && p.pos+1 < len(p.tokens) &&
+				(p.tokens[p.pos+1].Type == TOKEN_ASSIGN)) {
+				// Defer the exact diagnostic to the declaration site when
+				// it looks like one; otherwise flag it now.
+				isDeclLike := p.current().Type == TOKEN_IDENTIFIER
+				if !isDeclLike {
+					p.recordErrorAtLine("`static` needs a declaration (`static x: Type = value`)", p.current().Line)
+				}
+			}
+		}
+	}
 	// Check for unary expression assignment: ^ptr: value or &var: value
 	if p.current().Type == TOKEN_CARET || p.current().Type == TOKEN_AMPERSAND {
 		// Look ahead to see if this is an assignment pattern
 		if p.pos+2 < len(p.tokens) &&
 			p.tokens[p.pos+1].Type == TOKEN_IDENTIFIER &&
 			p.tokens[p.pos+2].Type == TOKEN_ASSIGN {
+			if isStatic && p.LintMode {
+				p.recordErrorAtLine("`static` needs a declaration (`static x: Type = value`); cannot apply to `^`/`&` assignment", p.current().Line)
+			}
 			// Parse the unary expression
 			target := p.parseUnaryExpression()
 			p.expect(TOKEN_ASSIGN)
@@ -589,11 +626,17 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			}
 		}
 
+		if isStatic {
+			if p.LintMode {
+				p.recordErrorAtLine("`static` needs a declaration (`static x: Type = value`); this is not one", line)
+			}
+		}
 		return &ASTNode{
 			Type:     NODE_VARIABLE_DECLARATION,
 			Value:    name.Value,
 			DataType: "", // Empty means type is inferred
 			Line:     line,
+			IsStatic: isStatic,
 			Children: []*ASTNode{value},
 		}
 	}
@@ -832,7 +875,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 						p.advance() // consume =
 					}
 					// If TOKEN_LANGLE, DON'T consume it - but we need to handle it specially below
-				} else if p.peek(1).Type == TOKEN_MULTIPLY && p.pointerTypeAhead() {
+				} else if (p.peek(1).Type == TOKEN_MULTIPLY || p.peek(1).Type == TOKEN_POWER) && p.pointerTypeAhead() {
 					// A pointer type: `p: Ext* = &ext`. The type name is
 					// followed by the pointer stars, then the value. A
 					// multiplication is not a pointer type: `x: a * b`
@@ -1070,11 +1113,15 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 		if isDeclaration {
 			nodeType = NODE_VARIABLE_DECLARATION
 		}
+		if isStatic && nodeType != NODE_VARIABLE_DECLARATION && p.LintMode {
+			p.recordErrorAtLine("`static` needs a declaration (`static x: Type = value`); this is not one", line)
+		}
 
 		return &ASTNode{
 			Type:     nodeType,
 			Value:    name.Value,
 			DataType: explicitType,
+			IsStatic: isStatic && nodeType == NODE_VARIABLE_DECLARATION,
 			Children: []*ASTNode{value},
 			Line:     line,
 		}

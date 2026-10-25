@@ -566,8 +566,12 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 
 		// Check if this is a zero-arg function that can be called without ||
 		// Only do this at top-level (not inside another function call, and not
-		// under & where the name itself is the function value)
-		if p.inFunctionCall == 0 && !p.inFunctionReference && p.zeroArgFunctions[token.Value] {
+		// under & where the name itself is the function value). A declared
+		// variable shadows the C function (same rule as the identifier||
+		// guard above): without this, every libc zero-arg function the
+		// header follower registers (clock, system, ...) hijacks same-named
+		// locals, emitting clock() for a char* variable.
+		if p.inFunctionCall == 0 && !p.inFunctionReference && p.zeroArgFunctions[token.Value] && !p.nameIsKnownVariable(token.Value) {
 			return &ASTNode{
 				Type:     NODE_CALL,
 				Value:    token.Value,

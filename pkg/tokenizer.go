@@ -119,6 +119,7 @@ const (
 	TOKEN_AMPERSAND       // & (address-of, Pascal-style)
 	TOKEN_HASH            // # (static property prefix)
 	TOKEN_UNDERSCORE      // _ (discard placeholder in multiple returns)
+	TOKEN_STATIC          // static (function-local persistent storage)
 )
 
 type Token struct {
@@ -194,6 +195,7 @@ var keywords = map[string]TokenType{
 	"infer":    TOKEN_INFER,
 	"void":     TOKEN_VOID,
 	"any":      TOKEN_ANY_TYPE,
+	"static":   TOKEN_STATIC,
 }
 
 // Tokenize converts source code into tokens

@@ -113,6 +113,7 @@ var FreshStringMethods = map[string]bool{
 	"lpad": true, "rpad": true, "pad": true,
 	"camel_case": true, "snake_case": true, "pascal_case": true, "kebab_case": true,
 	"get_file": true, "dup": true,
+	"prefix": true, "byte_slice": true, "insert_at": true, "delete_range": true,
 }
 
 // isHeapTrackedType reports whether a type string denotes heap-owned data

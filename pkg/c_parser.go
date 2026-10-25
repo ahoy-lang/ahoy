@@ -115,8 +115,7 @@ func parseCHeaderUncached(path string) (*CHeaderInfo, error) {
 	lines := strings.Split(string(content), "\n")
 
 	// Parse line by line
-	for i, line := range lines {
-		line = strings.TrimSpace(line)
+	for i, line := range lines {		line = strings.TrimSpace(line)
 		lineNum := i + 1
 
 		// Parse RLAPI/RMAPI function declarations
@@ -137,6 +136,14 @@ func parseCHeaderUncached(path string) (*CHeaderInfo, error) {
 		// Parse typedef struct
 		if strings.HasPrefix(line, "typedef struct") {
 			parseStruct(lines, i, path, info)
+		}
+
+		// Plain `struct NAME { ... };` (Tier-3 Feature 3): system headers
+		// define `struct dirent`, `struct stat` without typedef. The
+		// typedef pass above misses them, so member typing (`e.d_name`,
+		// `st.st_mode`) cannot resolve.
+		if strings.HasPrefix(line, "struct ") && !strings.Contains(line, "(") && !strings.Contains(line, ";") {
+			parsePlainStruct(lines, i, path, info)
 		}
 
 		// Parse typedef enum
@@ -160,7 +167,182 @@ func parseCHeaderUncached(path string) (*CHeaderInfo, error) {
 		}
 	}
 
+	// Follow #includes (Tier-3 Feature 1 + math-wrapper removal): the header
+	// comment's gap #1 was "the C header parser does not follow #include",
+	// so `sinf`/`cosf` (via math.h) and `struct dirent` (via bits/dirent.h)
+	// were invisible when only the top header was imported. Merge one level
+	// of direct includes (with cycle guard); deeper chains resolve through
+	// the cache on their own pass.
+	followHeaderIncludes(path, string(content), info, make(map[string]bool))
+
+	// Second pass for system headers (Tier-3 Feature 1): GNU libc splits
+	// declarations across lines (`extern DIR *opendir (...)` + attributes
+	// on the next line) and decorates them (`__nonnull`, `__THROW`,
+	// `__REDIRECT`). The line loop above only sees single-line `...);`,
+	// so multi-line decls are missed and user syscalls (`opendir`,
+	// `readdir`, `stat`, `mkdir`) report "not defined". Re-split the file
+	// into `;`-terminated statements, collapse newlines, and retry the
+	// ones the first pass could not have seen.
+	for _, stmt := range strings.Split(string(content), ";") {
+		// Strip block comments: `/* Open a directory ... , or NULL ... */`
+		// carries a top-level comma that looksLikeCStatement rejects.
+		clean := stmt
+		for {
+			s := strings.Index(clean, "/*")
+			e := strings.Index(clean, "*/")
+			if s == -1 || e == -1 || e < s {
+				break
+			}
+			clean = clean[:s] + " " + clean[e+2:]
+		}
+		// Drop preprocessor lines (`# endif`, `# if ...`): a declaration
+		// following one shares its `;`-chunk, so the flat form starts
+		// with `#` and is skipped as a directive.
+		kept := make([]string, 0, 8)
+		for _, ln := range strings.Split(clean, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(ln), "#") {
+				continue
+			}
+			kept = append(kept, ln)
+		}
+		clean = strings.Join(kept, "\n")
+		flat := strings.Join(strings.Fields(clean), " ")
+		flat = strings.TrimSpace(flat)
+		if flat == "" || !strings.Contains(flat, "(") || !strings.Contains(flat, ")") {
+			continue
+		}
+		if strings.HasPrefix(flat, "typedef ") || strings.HasPrefix(flat, "#") {
+			continue
+		}
+		// System multi-line decls are `extern ...`; anything else is a
+		// macro fragment or comment residue (the first pass owns the
+		// single-line cases).
+		if !strings.Contains(flat, "extern ") {
+			continue
+		}
+		if looksLikeCStatement(flat) {
+			continue
+		}
+		// Skip if already captured (single-line pass handles the common case).
+		parenIdx := strings.Index(flat, "(")
+		before := strings.TrimSpace(flat[:parenIdx])
+		parts := strings.Fields(before)
+		if len(parts) == 0 {
+			continue
+		}
+		cand, _ := splitCFuncName(parts[len(parts)-1])
+		if cand == "" {
+			continue
+		}
+		if _, ok := info.Functions[cand]; ok {
+			continue
+		}
+		// Only retry statements that span lines (the first pass had no
+		// chance); single-line misses are real non-declarations.
+		if !strings.Contains(stmt, "\n") {
+			continue
+		}
+		parseRLAPIFunction(flat, 1, path, info)
+	}
+
 	return info, nil
+}
+
+// followHeaderIncludes merges one level of #include'd headers into info.
+// Quoted includes resolve relative to the including file; angle includes
+// resolve via /usr/include (+ multi-arch). Guarded by visited so diamond
+// includes (raylib.h via glue.h + direct) parse once.
+func followHeaderIncludes(path, content string, info *CHeaderInfo, visited map[string]bool) {
+	if visited[path] {
+		return
+	}
+	visited[path] = true
+	baseDir := filepath.Dir(path)
+	for _, line := range strings.Split(content, "\n") {
+		t := strings.TrimSpace(line)
+		if !strings.HasPrefix(t, "#include") {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(t, "#include"))
+		var inc string
+		var isSystem bool
+		if strings.HasPrefix(rest, "\"") {
+			end := strings.Index(rest[1:], "\"")
+			if end == -1 {
+				continue
+			}
+			inc = rest[1 : 1+end]
+		} else if strings.HasPrefix(rest, "<") {
+			end := strings.Index(rest, ">")
+			if end == -1 {
+				continue
+			}
+			inc = rest[1:end]
+			isSystem = true
+		} else {
+			continue
+		}
+		// Skip C++-only or heavy toolchain headers that never carry Ahoy
+		// declarations (they slow the parse and add garbage functions).
+		if strings.HasSuffix(inc, ".hh") || strings.HasSuffix(inc, ".hpp") {
+			continue
+		}
+		var cand string
+		if !isSystem && !filepath.IsAbs(inc) {
+			cand = filepath.Join(baseDir, inc)
+			if _, err := os.Stat(cand); err != nil {
+				cand = ""
+			}
+		}
+		if cand == "" && isSystem {
+			for _, loc := range []string{
+				"/usr/include/" + inc,
+				"/usr/local/include/" + inc,
+				"/usr/include/x86_64-linux-gnu/" + inc,
+			} {
+				if _, err := os.Stat(loc); err == nil {
+					cand = loc
+					break
+				}
+			}
+		}
+		if cand == "" {
+			continue
+		}
+		// Never recurse into the including file itself.
+		if cand == path {
+			continue
+		}
+		sub, err := ParseCHeader(cand)
+		if err != nil || sub == nil {
+			continue
+		}
+		for n, f := range sub.Functions {
+			if _, ok := info.Functions[n]; !ok {
+				info.Functions[n] = f
+			}
+		}
+		for n, s := range sub.Structs {
+			if _, ok := info.Structs[n]; !ok {
+				info.Structs[n] = s
+			}
+		}
+		for n, e := range sub.Enums {
+			if _, ok := info.Enums[n]; !ok {
+				info.Enums[n] = e
+			}
+		}
+		for n, d := range sub.Defines {
+			if _, ok := info.Defines[n]; !ok {
+				info.Defines[n] = d
+			}
+		}
+		for n, td := range sub.Typedefs {
+			if _, ok := info.Typedefs[n]; !ok {
+				info.Typedefs[n] = td
+			}
+		}
+	}
 }
 
 // looksLikeCStatement reports whether a line that happens to contain "(" and
@@ -506,6 +688,10 @@ func parseDefine(line string, lineNum int, filePath string, info *CHeaderInfo) {
 func parseStruct(lines []string, startIdx int, filePath string, info *CHeaderInfo) {
 	line := lines[startIdx]
 
+	// parseStruct only runs on `typedef struct` lines, so a closing alias
+	// is a real typedef name (not a plain-struct tag).
+	isTypedef := strings.HasPrefix(strings.TrimSpace(line), "typedef")
+
 	var structName string
 	if strings.Contains(line, "{") {
 		parts := strings.Fields(strings.Replace(line, "{", "", 1))
@@ -520,8 +706,28 @@ func parseStruct(lines []string, startIdx int, filePath string, info *CHeaderInf
 
 		if strings.HasPrefix(line, "}") {
 			parts := strings.Fields(line)
-			if len(parts) >= 2 && structName == "" {
-				structName = strings.TrimSuffix(parts[1], ";")
+			if len(parts) >= 2 {
+				alias := strings.TrimSuffix(parts[1], ";")
+				if structName == "" {
+					structName = alias
+				}
+				// `typedef struct Tag {...} Alias;`: record the alias.
+				// Without this, typedef'd structs (Model, Font, Vector3
+				// in raylib.h) look like plain structs downstream and
+				// mapType emits `struct Tag`, breaking every bare-name
+				// registry comparison (struct array push/access degrades
+				// to int casts). True plain structs (`struct stat`, no
+				// typedef) keep the prefix, correctly.
+				if isTypedef && alias != "" && info.Typedefs != nil {
+					if _, exists := info.Typedefs[alias]; !exists {
+						info.Typedefs[alias] = &CTypedef{
+							AliasName: alias,
+							BaseType:  structName,
+							Line:      i + 1,
+							File:      filePath,
+						}
+					}
+				}
 			}
 			break
 		}
@@ -541,10 +747,81 @@ func parseStruct(lines []string, startIdx int, filePath string, info *CHeaderInf
 	}
 }
 
+// parsePlainStruct parses `struct NAME { ... };` without typedef (system
+// headers: `struct dirent`, `struct stat`). Brace may sit on the next line.
+func parsePlainStruct(lines []string, startIdx int, filePath string, info *CHeaderInfo) {
+	line := strings.TrimSpace(lines[startIdx])
+	// `struct NAME`, `struct NAME {`, or `struct NAME __attr {` — name is the
+	// first identifier after `struct`.
+	rest := strings.TrimSpace(strings.TrimPrefix(line, "struct "))
+	if rest == "" {
+		return
+	}
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return
+	}
+	structName := fields[0]
+	// Skip forward declarations (`struct foo;`) and function params.
+	if strings.Contains(rest, ";") && !strings.Contains(rest, "{") {
+		return
+	}
+	structName = strings.Trim(structName, "{")
+	if structName == "" || strings.Contains(structName, "(") {
+		return
+	}
+	if _, ok := info.Structs[structName]; ok {
+		return
+	}
+	var collected []CStructField
+	// Start after the opening brace (same line or a later one).
+	started := strings.Contains(line, "{")
+	for i := startIdx + 1; i < len(lines) && i < startIdx+80; i++ {
+		l := strings.TrimSpace(lines[i])
+		if !started {
+			if strings.Contains(l, "{") {
+				started = true
+			}
+			continue
+		}
+		if strings.HasPrefix(l, "}") {
+			break
+		}
+		if l == "" || strings.HasPrefix(l, "//") || strings.HasPrefix(l, "#") {
+			continue
+		}
+		// Skip nested struct/union openings; their fields still parse as lines.
+		if strings.HasPrefix(l, "struct ") || strings.HasPrefix(l, "union ") {
+			continue
+		}
+		parseStructField(l, &collected)
+	}
+	if len(collected) == 0 {
+		return
+	}
+	info.Structs[structName] = &CStruct{
+		Name:   structName,
+		Fields: collected,
+		Line:   startIdx + 1,
+		File:   filePath,
+	}
+}
+
 // parseStructField parses a struct field line
 func parseStructField(line string, fields *[]CStructField) {
 	if idx := strings.Index(line, "//"); idx != -1 {
 		line = line[:idx]
+	}
+	// Strip block comments (`/* ... */`): system headers annotate array
+	// sizes (`char d_name[256]; /* ... */`) and the tail would otherwise
+	// register as the field name.
+	for {
+		s := strings.Index(line, "/*")
+		e := strings.Index(line, "*/")
+		if s == -1 || e == -1 || e < s {
+			break
+		}
+		line = line[:s] + " " + line[e+2:]
 	}
 	line = strings.TrimSpace(line)
 	line = strings.TrimSuffix(line, ";")
@@ -553,6 +830,25 @@ func parseStructField(line string, fields *[]CStructField) {
 	if len(parts) >= 2 {
 		fieldType := strings.Join(parts[:len(parts)-1], " ")
 		fieldName := parts[len(parts)-1]
+		// Leading stars belong to the type (`char **paths` or `char *paths`):
+		// without this the field registers as `**paths` and member typing
+		// (char** indexing, dirent/stat reads) cannot resolve it.
+		stars := 0
+		for strings.HasPrefix(fieldName, "*") {
+			stars++
+			fieldName = strings.TrimPrefix(fieldName, "*")
+		}
+		if stars > 0 {
+			fieldType = strings.TrimSpace(fieldType) + strings.Repeat("*", stars)
+		}
+		// Trailing array size belongs to the type (`char d_name[256]`):
+		// keep the bare name so `e.d_name` resolves, and record the
+		// array shape for direct indexing.
+		if idx := strings.Index(fieldName, "["); idx != -1 {
+			arrSuffix := fieldName[idx:]
+			fieldName = fieldName[:idx]
+			fieldType = strings.TrimSpace(fieldType) + arrSuffix
+		}
 
 		*fields = append(*fields, CStructField{
 			Name: fieldName,

@@ -982,6 +982,7 @@ func tokenTypeName(t TokenType) string {
 		TOKEN_ASSERT: "'assert'", TOKEN_DEFER: "'defer'",
 		TOKEN_DOUBLE_COLON: "'::'", TOKEN_WALRUS: "':='", TOKEN_QUESTION: "'?'", TOKEN_TERNARY: "'??'",
 		TOKEN_EQUALS: "'='", TOKEN_INFER: "'infer'", TOKEN_VOID: "'void'",
+		TOKEN_STATIC: "'static'",
 		TOKEN_AT: "'@'", TOKEN_END: "'$'",
 		TOKEN_PLUS_ASSIGN: "'+='", TOKEN_MINUS_ASSIGN: "'-='",
 		TOKEN_MULTIPLY_ASSIGN: "'*='", TOKEN_DIVIDE_ASSIGN: "'/='", TOKEN_MODULO_ASSIGN: "'%='",

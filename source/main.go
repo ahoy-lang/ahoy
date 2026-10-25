@@ -954,6 +954,41 @@ func withDefines(args []string) []string {
 	return args
 }
 
+// hostOSDefines returns the automatic OS names for `when OS then` blocks.
+// The codegen maps these to predefined C macros, so these -D flags only
+// help user C code; the `when` gating itself never depends on them.
+// An explicit -target overrides the host (cross-builds gate on the target).
+func hostOSDefines(target string) []string {
+	switch strings.ToLower(strings.TrimSpace(target)) {
+	case "windows":
+		return []string{"WINDOWS"}
+	case "linux":
+		return []string{"LINUX", "POSIX", "UNIX"}
+	case "macos", "darwin":
+		return []string{"MACOS", "POSIX", "UNIX"}
+	case "web", "emscripten", "wasm":
+		return []string{"WEB", "POSIX", "UNIX"}
+	case "all":
+		// Each C target keeps its own predefined macro; still expose the
+		// host pair so host-side tools keep a sane default.
+		return hostOSFromRuntime()
+	case "":
+		return hostOSFromRuntime()
+	}
+	return hostOSFromRuntime()
+}
+
+func hostOSFromRuntime() []string {
+	switch runtime.GOOS {
+	case "windows":
+		return []string{"WINDOWS"}
+	case "darwin":
+		return []string{"MACOS", "POSIX", "UNIX"}
+	default:
+		return []string{"LINUX", "POSIX", "UNIX"}
+	}
+}
+
 // watchHeapMB samples the Go heap every interval; after two consecutive
 // samples above capMB it calls onFire (in MB) and keeps sampling — the
 // caller decides whether to exit. Two consecutive samples (rather than one)
@@ -1020,6 +1055,15 @@ func main() {
 	if *releaseFlag {
 		defines = append(defines, "RELEASE")
 	}
+
+	// Auto OS defines for `when WINDOWS/LINUX/MACOS/POSIX/WEB then`.
+	// The codegen maps these to the C toolchain's predefined macros
+	// (_WIN32, __linux__, ...), so the -D flags here are a convenience for
+	// user C code that tests #ifdef LINUX etc. The target flag wins over
+	// the host OS so cross-builds (`-target windows` from linux) gate
+	// correctly; `-target all` and `-target web` define WEB plus the host
+	// pair is left alone (each C target keeps its own predefined macro).
+	defines = append(defines, hostOSDefines(*targetFlag)...)
 
 	buildDefines = defines
 

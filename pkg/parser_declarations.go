@@ -1444,6 +1444,17 @@ func (p *Parser) parsePointerSuffix(fieldType string) string {
 		p.advance()
 		fieldType += "*"
 	}
+	// `**` lexes as POWER: `char**` is two stars, not exponentiation.
+	for p.current().Type == TOKEN_POWER {
+		p.advance()
+		fieldType += "**"
+	}
+	// Mixed `*` + `**` (e.g. `char* **` with spaces is already split, but
+	// `char***` lexes as `**` + `*`): drain any remainder.
+	for p.current().Type == TOKEN_MULTIPLY {
+		p.advance()
+		fieldType += "*"
+	}
 	return fieldType
 }
 

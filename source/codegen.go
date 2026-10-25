@@ -180,6 +180,7 @@ type CodeGenerator struct {
 	arrayImpls                    bool                                    // Track if we've added array implementation
 	arrayMethods                  map[string]bool                         // Track which array methods are used
 	mathBuiltins                  map[string]bool                         // Track which math/geometry builtins are used
+	fsBuiltins                    map[string]bool                         // Track which fs/path/clock/proc stdlib builtins are used
 	randHelperEmitted             bool                                    // rand/rand_range used: helpers emitted in final assembly
 	stringMethods                 map[string]bool                         // Track which string methods are used
 	dictMethods                   map[string]bool                         // Track which dict methods are used
@@ -250,6 +251,7 @@ type CodeGenerator struct {
 	cTypedefs                     map[string]string                       // typedef alias -> base type
 	cFunctionParamTypes           map[string][]string                     // C function name (snake_case) -> parameter types
 	cFuncPtrTypedefs              map[string]*ahoy.CFuncPtrTypedef        // C callback typedef name -> signature
+	staticVars                    map[string]bool                         // function-local `static x` names: C static storage, never auto-freed
 	parsedCHeaders                map[string]*ahoy.CHeaderInfo            // In-memory cache for parsed C headers (path -> info)
 	parsedCHeadersMu              sync.Mutex                              // Mutex for parsedCHeaders
 	lambdaValues                  map[string]*ahoy.ASTNode                // var name -> lambda value node (for capture propagation)
@@ -319,6 +321,7 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		arrayImpls:            false,
 		arrayMethods:          make(map[string]bool),
 		mathBuiltins:          make(map[string]bool),
+		fsBuiltins:            make(map[string]bool),
 		stringMethods:         make(map[string]bool),
 		dictMethods:           make(map[string]bool),
 		hasMainFunc:           false,
@@ -364,6 +367,7 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		cTypedefs:             make(map[string]string),
 		cFunctionParamTypes:   make(map[string][]string),
 		cFuncPtrTypedefs:      make(map[string]*ahoy.CFuncPtrTypedef),
+		staticVars:            make(map[string]bool),
 		jobResultTypes:        make(map[string]string),
 		parsedCHeaders:        make(map[string]*ahoy.CHeaderInfo),
 		// lambdaValues is append-only (never reset per function): per-function
@@ -471,6 +475,9 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 
 	// Generate the math and geometry builtins the program uses
 	gen.writeMathHelperFunctions()
+
+	// Generate the fs/path/clock/process stdlib builtins the program uses
+	gen.writeFsStdlibHelpers()
 
 	// Random helpers (rand/rand_range), written once at top level
 	gen.writeRandHelperFunctions()
@@ -621,6 +628,9 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		if gen.arrayMethods["sort"] {
 			result.WriteString("AhoyArray* ahoy_array_sort(AhoyArray* arr);\n")
 		}
+		if gen.arrayMethods["sort_strings"] {
+			result.WriteString("AhoyArray* ahoy_array_sort_strings(AhoyArray* arr);\n")
+		}
 		if gen.arrayMethods["reverse"] {
 			result.WriteString("AhoyArray* ahoy_array_reverse(AhoyArray* arr);\n")
 		}
@@ -630,7 +640,8 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 		if gen.arrayMethods["pick"] {
 			result.WriteString("intptr_t ahoy_array_pick(AhoyArray* arr);\n")
 		}
-		result.WriteString("char* print_array_helper(AhoyArray* arr);\n")
+			result.WriteString("char* print_array_helper(AhoyArray* arr);\n")
+		result.WriteString("char* print_string_array_helper(AhoyArray* arr);\n")
 		result.WriteString("AhoyArray* ahoy_string_split_array(const char* str, const char* delim);\n")
 		result.WriteString("\n")
 	}
@@ -718,6 +729,90 @@ func generateC(ast *ahoy.ASTNode, filename string) string {
 	result.WriteString("char* ahoy_string_rpad(const char* str, int length, const char* pad);\n")
 	result.WriteString("char* ahoy_string_pad(const char* str, int length, const char* pad);\n")
 	result.WriteString("char* ahoy_string_get_file(const char* path);\n")
+	result.WriteString("bool ahoy_string_contains_ci(const char* str, const char* substr);\n")
+	result.WriteString("int ahoy_string_byte_at(const char* text, int i);\n")
+	result.WriteString("int ahoy_string_byte_len(const char* text);\n")
+	result.WriteString("char* ahoy_string_prefix(const char* text, int n);\n")
+	result.WriteString("char* ahoy_string_byte_slice(const char* text, int a, int b);\n")
+	result.WriteString("char* ahoy_string_insert_at(const char* text, int pos, int ch);\n")
+	result.WriteString("char* ahoy_string_delete_range(const char* text, int a, int b);\n")
+	result.WriteString("int ahoy_string_utf8_len(const char* text);\n")
+
+	// Forward declarations for the fs/path/clock/process stdlib. The
+	// definitions are static in funcDecls, so the declarations are
+	// static too (a non-static prototype before a static definition is
+	// a hard error). Gated on use; fs_list needs AhoyArray, whose
+	// typedef is above whenever arrayImpls is set (the case branch for
+	// fs_list sets it).
+	if gen.fsBuiltins["path_join"] {
+		result.WriteString("static char* ahoy_std_path_join(const char* a, const char* b);\n")
+	}
+	if gen.fsBuiltins["path_parent"] {
+		result.WriteString("static char* ahoy_std_path_parent(const char* path);\n")
+	}
+	if gen.fsBuiltins["path_name"] {
+		result.WriteString("static char* ahoy_std_path_name(const char* path);\n")
+	}
+	if gen.fsBuiltins["path_ends_with"] {
+		result.WriteString("static int ahoy_std_path_ends_with(const char* path, const char* suffix);\n")
+	}
+	if gen.fsBuiltins["fs_exists"] {
+		result.WriteString("static int ahoy_std_fs_exists(const char* path);\n")
+	}
+	if gen.fsBuiltins["fs_is_dir"] {
+		result.WriteString("static int ahoy_std_fs_is_dir(const char* path);\n")
+	}
+	if gen.fsBuiltins["fs_mkdir"] {
+		result.WriteString("static int ahoy_std_fs_mkdir(const char* path);\n")
+	}
+	if gen.fsBuiltins["fs_mkdirp"] {
+		result.WriteString("static int ahoy_std_fs_mkdirp(const char* path);\n")
+	}
+	if gen.fsBuiltins["fs_write"] {
+		result.WriteString("static int ahoy_std_fs_write(const char* path, const char* text);\n")
+	}
+	if gen.fsBuiltins["fs_remove"] {
+		result.WriteString("static int ahoy_std_fs_remove(const char* path);\n")
+	}
+	if gen.fsBuiltins["fs_copy"] {
+		result.WriteString("static int ahoy_std_fs_copy(const char* src, const char* dst);\n")
+	}
+	if gen.fsBuiltins["fs_rename"] {
+		result.WriteString("static int ahoy_std_fs_rename(const char* from, const char* to);\n")
+	}
+	if gen.fsBuiltins["fs_list"] {
+		result.WriteString("static AhoyArray* ahoy_std_fs_list(const char* dir);\n")
+	}
+	if gen.fsBuiltins["fs_mtime"] {
+		result.WriteString("static int ahoy_std_fs_mtime(const char* path);\n")
+	}
+	if gen.fsBuiltins["fs_read_text"] {
+		result.WriteString("static char* ahoy_std_fs_read_text(const char* path);\n")
+	}
+	if gen.fsBuiltins["clock_string"] {
+		result.WriteString("static char* ahoy_std_clock_string(void);\n")
+	}
+	if gen.fsBuiltins["clock_ms"] {
+		result.WriteString("static double ahoy_std_clock_ms(void);\n")
+	}
+	if gen.fsBuiltins["cwd"] {
+		result.WriteString("static char* ahoy_std_cwd(void);\n")
+	}
+	if gen.fsBuiltins["exe_dir"] {
+		result.WriteString("static char* ahoy_std_exe_dir(void);\n")
+	}
+	if gen.fsBuiltins["spawn_detached"] {
+		result.WriteString("static int ahoy_std_spawn_detached(const char* cmd);\n")
+	}
+	if gen.fsBuiltins["pid_alive"] {
+		result.WriteString("static int ahoy_std_pid_alive(int pid);\n")
+	}
+	if gen.fsBuiltins["proc_kill"] {
+		result.WriteString("static int ahoy_std_proc_kill(int pid);\n")
+	}
+	if gen.fsBuiltins["open_folder"] {
+		result.WriteString("static int ahoy_std_open_folder(const char* path);\n")
+	}
 
 	// Add forward declarations for dict helper functions if needed
 	if gen.dictMethods["print_dict"] {
@@ -1654,6 +1749,7 @@ func (gen *CodeGenerator) scanImports(node *ahoy.ASTNode) {
 					resolvedHeaderName,
 					"/usr/include/" + resolvedHeaderName,
 					"/usr/local/include/" + resolvedHeaderName,
+					"/usr/include/x86_64-linux-gnu/" + resolvedHeaderName,
 					"repos/raylib/src/" + resolvedHeaderName,
 				}
 				for _, loc := range locations {
@@ -3396,7 +3492,7 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 		// (`y: x`) would dangle. Skipping leaks the old value instead, which
 		// is always the safe direction.
 		varName := node.Value
-		if gen.currentFunction != "" && gen.heapAllocatedVars[varName] && !gen.functionParameters[varName] && !gen.escapingVars[varName] && len(gen.aliasEdges[varName]) == 0 {
+		if gen.currentFunction != "" && !gen.isStaticVar(varName) && gen.heapAllocatedVars[varName] && !gen.functionParameters[varName] && !gen.escapingVars[varName] && len(gen.aliasEdges[varName]) == 0 {
 			// Get the variable type
 			varType := gen.heapVarTypes[varName]
 			if varType == "" {
@@ -3561,6 +3657,20 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 	} else {
 		// Type inference and declaration
 		valueNode := node.Children[0]
+
+		// Function-local `static x: T = v` persists across calls (exe-dir
+		// cache, fs-listing cache, shader registries). Emit C `static` and
+		// never auto-free it; reassignments leak soundly (see above).
+		if node.IsStatic {
+			if gen.currentFunction == "" {
+				// Global `static` is redundant (globals already persist);
+				// accept it and emit plain storage.
+			} else {
+				gen.markStaticVar(node.Value)
+				gen.escapingVars[node.Value] = true
+				gen.output.WriteString("static ")
+			}
+		}
 
 		// Check if we have an explicit type annotation
 		explicitType := node.DataType
@@ -3793,7 +3903,7 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 						// Callee-propagated piece ownership (see
 						// generateReturnStatement): the caller's array
 						// takes over the returned pieces by reference.
-						if gen.funcReturnsOwnedStrings[valueNode.Value] {
+						if gen.funcReturnsOwnedStrings[valueNode.Value] || valueNode.Value == "fs_list" {
 							gen.heapArrayOwnsStrings[node.Value] = true
 						}
 					}
@@ -4695,10 +4805,55 @@ func (gen *CodeGenerator) generateSwitchCaseValue(val *ahoy.ASTNode, switchExprT
 	gen.generateNode(val)
 }
 
+// whenCCondition maps an Ahoy `when` name to the C preprocessor symbol to
+// test. OS names use the toolchain's predefined macros so cross-compilation
+// (e.g. -target windows from linux) stays correct without extra -D flags.
+// The second return flips the sense: POSIX/UNIX mean "not WINDOWS".
+func whenCCondition(name string) (string, bool) {
+	switch strings.ToUpper(name) {
+	case "WINDOWS":
+		return "_WIN32", false
+	case "LINUX":
+		return "__linux__", false
+	case "MACOS", "DARWIN":
+		return "__APPLE__", false
+	case "WEB", "EMSCRIPTEN", "WASM":
+		return "__EMSCRIPTEN__", false
+	case "POSIX", "UNIX":
+		return "_WIN32", true
+	}
+	return name, false
+}
+
 func (gen *CodeGenerator) generateWhenStatement(node *ahoy.ASTNode) {
+	// `when NAME then A $ else B $` compiles to `#ifdef NAME / #else / #endif`.
+	// `when not NAME then` compiles to `#ifndef NAME`.
+	//
+	// OS names map to the C compiler's own predefined macros so portable
+	// Tier-1 code (mkdir, spawn) compiles correctly even when
+	// cross-compiling: no -D flag is required for these.
+	//   WINDOWS -> _WIN32        LINUX -> __linux__
+	//   MACOS   -> __APPLE__     WEB   -> __EMSCRIPTEN__
+	//   POSIX   -> not _WIN32     UNIX  -> not _WIN32
+	cond := node.Value
+	negated := false
+	if strings.HasPrefix(cond, "!") {
+		negated = true
+		cond = strings.TrimPrefix(cond, "!")
+	}
+	// Map to C predefined macros. Returns the #ifdef/#ifndef target and
+	// whether the sense must flip (POSIX/UNIX are defined as NOT WINDOWS).
+	target, flip := whenCCondition(cond)
+	if flip {
+		negated = !negated
+	}
 	gen.writeIndent()
-	gen.output.WriteString("#ifdef ")
-	gen.output.WriteString(node.Value)
+	if negated {
+		gen.output.WriteString("#ifndef ")
+	} else {
+		gen.output.WriteString("#ifdef ")
+	}
+	gen.output.WriteString(target)
 	gen.output.WriteString("\n")
 
 	gen.indent++
@@ -5835,6 +5990,12 @@ func (gen *CodeGenerator) setArrayStringOwnership(varName string, valueNode *aho
 		gen.heapArrayOwnsStrings[varName] = true
 		return
 	}
+	// fs_list returns a fresh array of fresh name strings: same ownership
+	// as split pieces, so scope exit frees the pieces with the shell.
+	if valueNode != nil && valueNode.Type == ahoy.NODE_CALL && valueNode.Value == "fs_list" {
+		gen.heapArrayOwnsStrings[varName] = true
+		return
+	}
 	delete(gen.heapArrayOwnsStrings, varName)
 }
 
@@ -6055,11 +6216,50 @@ func (gen *CodeGenerator) registerHeapAllocation(varName string, varType string)
 	if gen.functionParameters[varName] {
 		return
 	}
+	// Function-local `static` storage persists across calls: never auto-free
+	// it (scope exit would dangle the next call). Reassignments leak the old
+	// value, soundly.
+	if gen.isStaticVar(varName) {
+		return
+	}
 
 	gen.heapAllocatedVars[varName] = true
 	gen.heapVarScopes[varName] = gen.scopeDepth
 	gen.heapVarTypes[varName] = varType
 	gen.appendScopeAllocation(gen.scopeDepth, varName)
+}
+
+// staticKey qualifies a function-local name so two functions can each have
+// their own `static n` without sharing tracking.
+func (gen *CodeGenerator) staticKey(name string) string {
+	if gen.currentFunction != "" {
+		return gen.currentFunction + "\x00" + name
+	}
+	return "\x00" + name
+}
+
+// isStaticVar reports whether name was declared `static` in the current function.
+func (gen *CodeGenerator) isStaticVar(name string) bool {
+	if gen.staticVars == nil {
+		return false
+	}
+	return gen.staticVars[gen.staticKey(name)]
+}
+
+// markStaticVar records a function-local `static` declaration.
+func (gen *CodeGenerator) markStaticVar(name string) {
+	if gen.staticVars == nil {
+		gen.staticVars = make(map[string]bool)
+	}
+	gen.staticVars[gen.staticKey(name)] = true
+}
+
+// staticPrefix returns the C storage prefix for a declaration node.
+func staticPrefix(node *ahoy.ASTNode) string {
+	if node != nil && node.IsStatic {
+		return "static "
+	}
+	return ""
 }
 
 // enterScope increments scope depth for tracking nested allocations
@@ -6687,6 +6887,7 @@ func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
 					resolvedHeaderName,
 					"/usr/include/" + resolvedHeaderName,
 					"/usr/local/include/" + resolvedHeaderName,
+					"/usr/include/x86_64-linux-gnu/" + resolvedHeaderName,
 					"repos/raylib/src/" + resolvedHeaderName,
 				}
 				for _, loc := range locations {
@@ -6967,6 +7168,44 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 		// Seconds since the program started (CPU time, monotonic).
 		// time.h is always included: main() seeds rand from it.
 		gen.output.WriteString("((double)clock() / (double)CLOCKS_PER_SEC)")
+		return
+	case "errno":
+		// Current errno (Tier-3 Feature 1): user-authored syscalls
+		// (opendir, stat, …) report failures here.
+		if !gen.includes["errno.h"] {
+			gen.includes["errno.h"] = true
+			gen.orderedIncludes = append(gen.orderedIncludes, "errno.h")
+		}
+		gen.output.WriteString("(errno)")
+		return
+	case "errno_str":
+		// strerror(errno) as a fresh string.
+		if !gen.includes["errno.h"] {
+			gen.includes["errno.h"] = true
+			gen.orderedIncludes = append(gen.orderedIncludes, "errno.h")
+		}
+		if !gen.includes["string.h"] {
+			gen.includes["string.h"] = true
+			gen.orderedIncludes = append(gen.orderedIncludes, "string.h")
+		}
+		gen.stringMethods["dup"] = true
+		gen.output.WriteString("(ahoy_string_dup(strerror(errno)))")
+		return
+	case "time_format":
+		// strftime local time with a user format (Tier-3 smaller gap:
+		// localtime/strftime). Fresh string; "" when formatting fails.
+		if !gen.includes["time.h"] {
+			gen.includes["time.h"] = true
+			gen.orderedIncludes = append(gen.orderedIncludes, "time.h")
+		}
+		gen.stringMethods["dup"] = true
+		gen.output.WriteString("({ char __tf_b[256]; time_t __tf_t = time(NULL); struct tm* __tf_tm = localtime(&__tf_t); const char* __tf_f = ")
+		if len(node.Children) > 0 {
+			gen.generateNode(node.Children[0])
+		} else {
+			gen.output.WriteString("\"%H:%M:%S\"")
+		}
+		gen.output.WriteString("; size_t __tf_n = (__tf_tm ? strftime(__tf_b, sizeof(__tf_b), __tf_f, __tf_tm) : 0); (__tf_n ? ahoy_string_dup(__tf_b) : ahoy_string_dup(\"\")); })")
 		return
 	case "len", "length":
 		// len/length function - returns length of array, dict, string, etc.
@@ -7485,27 +7724,41 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 		gen.output.WriteString("; exit(1); })")
 		return
 
-	case "sprintf":
-		// sprintf returns a string - need to allocate buffer
-		gen.output.WriteString("({ char* __str_buf = malloc(256); sprintf(__str_buf")
-
-		// Process format string
+	case "sprintf", "format":
+		// `sprintf|fmt, args...|` and `format|fmt, args...|` return a fresh
+		// heap string. Sizing is dynamic (snprintf(NULL,0) probe + exact
+		// malloc), so long paths (mkdir -p, exe-dir joins) never truncate
+		// the way a fixed 256-byte buffer would. This is the user-level
+		// replacement for C variadic snprintf: Ahoy has no direct variadic
+		// C-call syntax, so all formatted building goes through here.
+		// NOTE: arguments with side effects (calls) evaluate twice
+		// (size probe + format); bind them first (`t: foo||` then
+		// `format|"%d", t|`). Pure values (vars, literals) are unaffected.
 		if len(node.Children) > 0 && node.Children[0].Type == ahoy.NODE_STRING {
 			formatStr := node.Children[0].Value
 			args := node.Children[1:]
 
 			processedFormat, processedArgs := gen.processFormatString(formatStr, args)
 
-			gen.output.WriteString(", \"")
+			gen.output.WriteString("({ int __fmt_n = snprintf(NULL, 0, \"")
 			gen.output.WriteString(processedFormat)
 			gen.output.WriteString("\"")
-
 			for _, arg := range processedArgs {
 				gen.output.WriteString(", ")
 				gen.generateNode(arg)
 			}
+			gen.output.WriteString("); char* __fmt_b = malloc(__fmt_n + 1); snprintf(__fmt_b, __fmt_n + 1, \"")
+			gen.output.WriteString(processedFormat)
+			gen.output.WriteString("\"")
+			for _, arg := range processedArgs {
+				gen.output.WriteString(", ")
+				gen.generateNode(arg)
+			}
+			gen.output.WriteString("); __fmt_b; })")
+		} else {
+			// Non-literal format: fall back to empty string (checker flags it).
+			gen.output.WriteString("ahoy_string_dup(\"\")")
 		}
-		gen.output.WriteString("); __str_buf; })")
 
 	case "__print_array_helper":
 		// Special case for array printing - don't convert to PascalCase
@@ -7781,6 +8034,48 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 		if len(node.Children) > 1 {
 			gen.output.WriteString(", ")
 			gen.generateNode(node.Children[1])
+		}
+		gen.output.WriteString(")")
+
+	case "from_code":
+		// from_code|cp| encodes one Unicode codepoint as UTF-8 (fresh
+		// string). Mirrors the insert_at encoder so text-area code can
+		// build strings without C pointer arithmetic.
+		gen.output.WriteString("({ int __cp = ")
+		if len(node.Children) > 0 {
+			gen.generateNode(node.Children[0])
+		} else {
+			gen.output.WriteString("0")
+		}
+		gen.output.WriteString("; char* __s = malloc(4); int __n = 1;")
+		gen.output.WriteString(" if (__cp < 0) __cp = 0;")
+		gen.output.WriteString(" if (__cp < 0x80) { __s[0]=(char)__cp; __n=1; }")
+		gen.output.WriteString(" else if (__cp < 0x800) { __s[0]=(char)(0xC0|(__cp>>6)); __s[1]=(char)(0x80|(__cp&0x3F)); __n=2; }")
+		gen.output.WriteString(" else if (__cp < 0x10000) { __s[0]=(char)(0xE0|(__cp>>12)); __s[1]=(char)(0x80|((__cp>>6)&0x3F)); __s[2]=(char)(0x80|(__cp&0x3F)); __n=3; }")
+		gen.output.WriteString(" else { __s[0]='?'; __n=1; } __s[__n]=0; __s; })")
+
+	case "path_join", "path_parent", "path_name", "path_ends_with",
+		"fs_exists", "fs_is_dir", "fs_mkdir", "fs_mkdirp", "fs_write",
+		"fs_remove", "fs_copy", "fs_rename", "fs_list", "fs_mtime",
+		"fs_read_text",
+		"clock_string", "clock_ms", "cwd", "exe_dir",
+		"spawn_detached", "pid_alive", "proc_kill", "open_folder":
+		// Filesystem/path/clock/process stdlib: one C helper per
+		// builtin, emitted on demand by writeFsStdlibHelpers. Helpers
+		// use the ahoy_std_ prefix so they never collide with bell's
+		// glue.h (ahoy_fs_list et al. are static there).
+		gen.fsBuiltins[node.Value] = true
+		if node.Value == "fs_list" {
+			gen.arrayImpls = true
+		}
+		gen.output.WriteString("ahoy_std_")
+		gen.output.WriteString(node.Value)
+		gen.output.WriteString("(")
+		for i, child := range node.Children {
+			if i > 0 {
+				gen.output.WriteString(", ")
+			}
+			gen.generateNode(child)
 		}
 		gen.output.WriteString(")")
 
@@ -9092,10 +9387,14 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 
 	// List of string-only methods (not ambiguous)
 	stringOnlyMethods := []string{
-		"upper", "lower", "replace", "contains",
+		"upper", "lower", "replace", "contains", "contains_ci",
 		"camel_case", "snake_case", "pascal_case", "kebab_case",
 		"match", "split", "count", "lpad", "rpad", "pad",
 		"strip", "get_file", "dup",
+		// Byte-level UTF-8-safe editing (Tier-3 Feature 2): snap-down
+		// positions never split a sequence; insert_at encodes a codepoint.
+		"byte_at", "byte_len", "byte_slice", "prefix",
+		"insert_at", "delete_range", "utf8_len",
 	}
 
 	// List of dictionary-only methods (not ambiguous)
@@ -10303,6 +10602,40 @@ func escapeCharLiteral(r rune) string {
 	return string(r)
 }
 
+// isCDirectIndexType reports whether a variable type is a raw C pointer that
+// indexes directly (`pp[i]` -> `pp[i]`), rather than an AhoyArray (`->data`).
+// Ahoy runtime pointers (arrays, dicts, buffers, pools, jobs, JSON) are
+// excluded; everything else ending in `*` (char**, struct dirent*,
+// struct stat*, FileList*) is direct. Fixed-size C arrays (`char[256]`,
+// as in `struct dirent.d_name`) are direct too.
+func isCDirectIndexType(t string) bool {
+	if t == "" {
+		return false
+	}
+	if strings.Contains(t, "[") && strings.Contains(t, "]") {
+		// `char[256]`, `int[4]`: C array field, direct `a[i]`.
+		if strings.HasPrefix(t, "array[") || strings.HasPrefix(t, "buffer[") {
+			return false
+		}
+		return true
+	}
+	if !strings.HasSuffix(t, "*") {
+		return false
+	}
+	if t == "AhoyArray*" || t == "HashMap*" || t == "AhoyBufferF32*" ||
+		t == "AhoyBufferI32*" || t == "AhoyPool*" || t == "AhoyJob*" ||
+		t == "AhoyJSON*" || t == "char*" {
+		// char* has its own byte-index path (generateStringIndex); it never
+		// reaches here, but exclude it for clarity.
+		return false
+	}
+	// Buffers by Ahoy spelling also stay on their path (checked before this).
+	if strings.HasPrefix(t, "buffer[") {
+		return false
+	}
+	return true
+}
+
 func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 	// Check if this is a chained array access (2D array): grid[r][c]
 	// In this case, Value is empty and Children[0] is the inner array access, Children[1] is the outer index
@@ -10313,6 +10646,29 @@ func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 
 	arrayName := node.Value
 	objExpr := gen.nameExpr(arrayName)
+
+	// C-pointer indexing (Tier-3 Feature 3): `pp[i]` where pp is char** or
+	// T* emits direct C `pp[i]`, not AhoyArray `->data`. This unblocks
+	// FileList.paths-style char** fields and readdir/stat out-params.
+	// Ahoy runtime pointers (AhoyArray*, HashMap*, buffers) keep their paths.
+	if varType, exists := gen.variables[arrayName]; exists {
+		if isCDirectIndexType(varType) {
+			gen.output.WriteString(objExpr)
+			gen.output.WriteString("[")
+			gen.generateNode(node.Children[0])
+			gen.output.WriteString("]")
+			return
+		}
+	}
+	if varType, exists := gen.functionVars[arrayName]; exists {
+		if isCDirectIndexType(varType) {
+			gen.output.WriteString(objExpr)
+			gen.output.WriteString("[")
+			gen.generateNode(node.Children[0])
+			gen.output.WriteString("]")
+			return
+		}
+	}
 
 	// Check if the variable type is intptr_t, void*, generic, or any (might need casting to AhoyArray*)
 	needsArrayCast := false
@@ -10515,6 +10871,16 @@ func (gen *CodeGenerator) generateChainedArrayAccess(node *ahoy.ASTNode) {
 	// same as 2D chained access).
 	if innerAccess.Type == ahoy.NODE_MEMBER_ACCESS {
 		arrayType := gen.inferType(innerAccess)
+		// Raw C-pointer field (char** paths, DIR*, struct dirent*): direct
+		// `field[i]`, not AhoyArray `->data`. This is the FileList.paths
+		// gap: "indexing a member of a C struct is not supported".
+		if isCDirectIndexType(arrayType) {
+			gen.generateNode(innerAccess)
+			gen.output.WriteString("[")
+			gen.generateNode(outerIndex)
+			gen.output.WriteString("]")
+			return
+		}
 		if arrayType == "buffer[f32]" || strings.HasPrefix(arrayType, "buffer[") {
 			// Buffer field index: bounds-checked lane load (unless -fast).
 			elemB := bufferElemOf(arrayType)
@@ -10991,6 +11357,14 @@ func (gen *CodeGenerator) mapType(langType string) string {
 
 	// Check if exact match exists in C types (case-sensitive)
 	if gen.cTypeDefinitions[langType] {
+		// Plain `struct NAME` (no typedef): C needs the `struct` prefix
+		// (`struct dirent`, `struct stat`). Typedefs (`FileList`, `DIR`)
+		// and Ahoy structs use the bare name.
+		if _, isTypedef := gen.cTypedefs[langType]; !isTypedef {
+			if _, isStruct := gen.cStructFields[langType]; isStruct {
+				return "struct " + langType
+			}
+		}
 		return langType
 	}
 
@@ -11067,6 +11441,9 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		if node.Value == "sprintf" {
 			return "string"
 		}
+		if node.Value == "format" {
+			return "string"
+		}
 		// grow|buf, n| keeps the source buffer's element type.
 		if node.Value == "grow" && len(node.Children) > 0 {
 			if at := gen.inferType(node.Children[0]); strings.HasPrefix(at, "buffer[") {
@@ -11081,6 +11458,9 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		if node.Value == "buffer_int" {
 			return "buffer[int]"
 		}
+		if node.Value == "format" || node.Value == "from_code" {
+			return "string"
+		}
 		// Verified-load serialization: image is array[int] bytes,
 		// rebuilt value is buffer[f32], verdict is bool.
 		if node.Value == "to_bytes" {
@@ -11094,6 +11474,39 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		}
 		if node.Value == "from_bytes_ok" {
 			return "bool"
+		}
+		// Filesystem/path/clock/process stdlib builtins.
+		if node.Value == "path_join" || node.Value == "path_parent" ||
+			node.Value == "path_name" || node.Value == "fs_read_text" ||
+			node.Value == "clock_string" || node.Value == "cwd" ||
+			node.Value == "exe_dir" {
+			return "string"
+		}
+		if node.Value == "path_ends_with" || node.Value == "fs_exists" ||
+			node.Value == "fs_is_dir" || node.Value == "fs_mkdir" ||
+			node.Value == "fs_mkdirp" || node.Value == "fs_write" ||
+			node.Value == "fs_remove" || node.Value == "fs_copy" ||
+			node.Value == "fs_rename" || node.Value == "pid_alive" ||
+			node.Value == "proc_kill" || node.Value == "open_folder" {
+			return "bool"
+		}
+		if node.Value == "fs_list" {
+			return "array[string]"
+		}
+		if node.Value == "fs_mtime" || node.Value == "spawn_detached" {
+			return "int"
+		}
+		if node.Value == "errno" {
+			return "int"
+		}
+		if node.Value == "errno_str" || node.Value == "time_format" {
+			return "string"
+		}
+		if node.Value == "clock_ms" {
+			return "float"
+		}
+		if node.Value == "time_now" {
+			return "float"
 		}
 		// A struct allocator: ahoy_alloc_NodeVis() -> NodeVis*
 		if structName := ahoy.AllocStructName(node.Value); structName != "" {
@@ -11218,12 +11631,16 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			node.Value == "snake_case" || node.Value == "pascal_case" ||
 			node.Value == "kebab_case" || node.Value == "strip" ||
 			node.Value == "lpad" || node.Value == "rpad" ||
-			node.Value == "dup" ||
+			node.Value == "dup" || node.Value == "prefix" ||
+			node.Value == "byte_slice" || node.Value == "insert_at" ||
+			node.Value == "delete_range" ||
 			node.Value == "pad" || node.Value == "get_file" {
 			return "string"
 		}
 		// String methods that return int
-		if node.Value == "length" || node.Value == "count" {
+		if node.Value == "length" || node.Value == "count" ||
+			node.Value == "byte_at" || node.Value == "byte_len" ||
+			node.Value == "utf8_len" {
 			return "int"
 		}
 		// String methods that return bool
@@ -11253,7 +11670,7 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 
 		// Array methods that return arrays
 		if node.Value == "map" || node.Value == "filter" ||
-			node.Value == "sort" || node.Value == "reverse" ||
+			node.Value == "sort" || node.Value == "sort_strings" || node.Value == "reverse" ||
 			node.Value == "shuffle" || node.Value == "push" ||
 			node.Value == "fill" || node.Value == "remove" {
 			return "array"
@@ -11399,6 +11816,15 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 				}
 				return "float"
 			}
+			// Raw C-pointer indexing (Tier-3 Feature 3): `fl.paths[i]`
+			// strips one star. `char**` -> `char*`, `int*` -> `int`.
+			// Fixed C arrays (`char[256]`) strip the size: `char`.
+			if isCDirectIndexType(arrayType) {
+				if idx := strings.Index(arrayType, "["); idx != -1 {
+					return strings.TrimSpace(arrayType[:idx])
+				}
+				return strings.TrimSuffix(arrayType, "*")
+			}
 			// Check if the inner array is a 2D array - return its element type
 			if arrayExpr.Type == ahoy.NODE_ARRAY_ACCESS && arrayExpr.Value != "" {
 				if elemType, exists := gen.array2DElementTypes[arrayExpr.Value]; exists {
@@ -11442,6 +11868,15 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 		// String indexing reads a byte: s[i] is a char.
 		if isStringLikeType(arrayType) {
 			return "char"
+		}
+
+		// Raw C-pointer indexing (Tier-3 Feature 3): `pp[i]` strips one star.
+		// Fixed C arrays (`char[256]`) strip the size.
+		if isCDirectIndexType(arrayType) {
+			if idx := strings.Index(arrayType, "["); idx != -1 {
+				return strings.TrimSpace(arrayType[:idx])
+			}
+			return strings.TrimSuffix(arrayType, "*")
 		}
 
 		// If array is generic/any, elements are also generic/any (intptr_t)
@@ -11534,6 +11969,15 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			// Look up C struct fields
 			if fields, exists := gen.cStructFields[lookupType]; exists {
 				if fieldType, found := fields[memberName]; found {
+					// Fixed C arrays decay to pointers: `char[256]` (d_name)
+					// reads as a string.
+					if idx := strings.Index(fieldType, "["); idx != -1 {
+						base := strings.TrimSpace(fieldType[:idx])
+						if base == "char" {
+							return "string"
+						}
+						return base
+					}
 					return fieldType
 				}
 			}
@@ -11568,6 +12012,13 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 					// Try C structs again
 					if fields, exists := gen.cStructFields[lookupType]; exists {
 						if fieldType, found := fields[memberName]; found {
+							if idx := strings.Index(fieldType, "["); idx != -1 {
+								base := strings.TrimSpace(fieldType[:idx])
+								if base == "char" {
+									return "string"
+								}
+								return base
+							}
 							return fieldType
 						}
 					}
@@ -14235,7 +14686,7 @@ func (gen *CodeGenerator) writeArrayHelperFunctions() {
 	gen.includes["time.h"] = true // For shuffle
 
 	// Use stdlib definitions for standard array methods
-	stdlibMethods := []string{"length", "push", "pop", "sum", "has", "sort", "reverse", "shuffle", "pick", "fill", "remove"}
+	stdlibMethods := []string{"length", "push", "pop", "sum", "has", "sort", "sort_strings", "reverse", "shuffle", "pick", "fill", "remove"}
 	for _, method := range stdlibMethods {
 		if gen.arrayMethods[method] {
 			if stdlibFunc, ok := ArrayMethods[method]; ok {
@@ -15723,6 +16174,435 @@ func (gen *CodeGenerator) writeMathHelperFunctions() {
 
 }
 
+// writeFsStdlibHelpers emits the C behind the fs/path/clock/process
+// stdlib builtins (path_join, fs_exists, fs_list, clock_ms, ...). Only the
+// helpers the program actually calls are written. Every helper carries the
+// ahoy_std_ prefix so it never collides with bell's glue.h, which defines
+// same-named statics (ahoy_fs_list et al.) in game translation units.
+//
+// Portability: sys/stat.h and dirent.h exist on Linux and on Windows
+// (mingw and the vendored tcc headers), so they ride the normal include
+// list. unistd.h does NOT exist on tcc-win, fork/exec/waitpid do not exist
+// on Windows at all, and mkdir takes one argument there — those ride an
+// inline #ifdef block, and the process trio are documented Unix-only stubs
+// on Windows (same contract as bell's glue.h).
+func (gen *CodeGenerator) writeFsStdlibHelpers() {
+	if len(gen.fsBuiltins) == 0 {
+		return
+	}
+	use := func(name string) bool { return gen.fsBuiltins[name] }
+	addInclude := func(name string) {
+		if !gen.includes[name] {
+			gen.includes[name] = true
+			gen.orderedIncludes = append(gen.orderedIncludes, name)
+		}
+	}
+
+	needStat := use("fs_exists") || use("fs_is_dir") || use("fs_mtime") ||
+		use("fs_list") || use("fs_mkdirp")
+	if needStat {
+		addInclude("sys/stat.h")
+	}
+	if use("fs_list") {
+		addInclude("dirent.h")
+	}
+	// getcwd/readlink/fork/waitpid live here on POSIX, direct.h on Windows.
+	if use("cwd") || use("exe_dir") || use("spawn_detached") ||
+		use("pid_alive") || use("proc_kill") || use("fs_mkdir") || use("fs_mkdirp") {
+		gen.funcDecls.WriteString("#ifdef _WIN32\n")
+		gen.funcDecls.WriteString("#include <direct.h>\n")
+		gen.funcDecls.WriteString("#else\n")
+		gen.funcDecls.WriteString("#include <unistd.h>\n")
+		gen.funcDecls.WriteString("#include <sys/wait.h>\n")
+		gen.funcDecls.WriteString("#include <signal.h>\n")
+		gen.funcDecls.WriteString("#include <errno.h>\n")
+		gen.funcDecls.WriteString("#endif\n")
+	}
+
+	gen.funcDecls.WriteString("// Filesystem/path/clock/process stdlib (ahoy_std_*)\n")
+
+	// ---- paths: pure strings, both separators understood ----
+	if use("path_join") {
+		gen.funcDecls.WriteString("static char* ahoy_std_path_join(const char* a, const char* b) {\n")
+		gen.funcDecls.WriteString("    const char* left = (a && a[0]) ? a : \"\";\n")
+		gen.funcDecls.WriteString("    const char* right = (b && b[0]) ? b : \"\";\n")
+		gen.funcDecls.WriteString("    size_t la = strlen(left), lb = strlen(right);\n")
+		gen.funcDecls.WriteString("    int slash = (la > 0 && (left[la-1] == '/' || left[la-1] == '\\\\'));\n")
+		gen.funcDecls.WriteString("    char* out = (char*)malloc(la + (slash ? 0 : 1) + lb + 1);\n")
+		gen.funcDecls.WriteString("    memcpy(out, left, la);\n")
+		gen.funcDecls.WriteString("    if (!slash) out[la++] = '/';\n")
+		gen.funcDecls.WriteString("    memcpy(out + la, right, lb + 1);\n")
+		gen.funcDecls.WriteString("    return out;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	if use("path_parent") {
+		gen.funcDecls.WriteString("static char* ahoy_std_path_parent(const char* path) {\n")
+		gen.funcDecls.WriteString("    const char* p = (path && path[0]) ? path : \".\";\n")
+		gen.funcDecls.WriteString("    size_t n = strlen(p), i, e;\n")
+		gen.funcDecls.WriteString("    char* out;\n")
+		gen.funcDecls.WriteString("    while (n > 0 && (p[n-1] == '/' || p[n-1] == '\\\\')) n--;\n")
+		gen.funcDecls.WriteString("    if (n == 0) return strdup(\".\");\n")
+		gen.funcDecls.WriteString("    if (n == 2 && p[1] == ':' && ((p[0] >= 'A' && p[0] <= 'Z') || (p[0] >= 'a' && p[0] <= 'z'))) return strdup(p);\n")
+		gen.funcDecls.WriteString("    i = n;\n")
+		gen.funcDecls.WriteString("    while (i > 0 && p[i-1] != '/' && p[i-1] != '\\\\') i--;\n")
+		gen.funcDecls.WriteString("    if (i == 0) return strdup(\".\");\n")
+		gen.funcDecls.WriteString("    e = i;\n")
+		gen.funcDecls.WriteString("    while (e > 0 && (p[e-1] == '/' || p[e-1] == '\\\\')) e--;\n")
+		gen.funcDecls.WriteString("    if (e == 0) e = i;\n")
+		gen.funcDecls.WriteString("    out = (char*)malloc(e + 1);\n")
+		gen.funcDecls.WriteString("    memcpy(out, p, e);\n")
+		gen.funcDecls.WriteString("    out[e] = '\\0';\n")
+		gen.funcDecls.WriteString("    return out;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	if use("path_name") {
+		gen.funcDecls.WriteString("static char* ahoy_std_path_name(const char* path) {\n")
+		gen.funcDecls.WriteString("    const char* p = path ? path : \"\";\n")
+		gen.funcDecls.WriteString("    const char* s1 = strrchr(p, '/');\n")
+		gen.funcDecls.WriteString("    const char* s2 = strrchr(p, '\\\\');\n")
+		gen.funcDecls.WriteString("    const char* s = (s1 && s2) ? (s1 > s2 ? s1 : s2) : (s1 ? s1 : s2);\n")
+		gen.funcDecls.WriteString("    return strdup(s ? s + 1 : p);\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	if use("path_ends_with") {
+		gen.funcDecls.WriteString("static int ahoy_std_path_ends_with(const char* path, const char* suffix) {\n")
+		gen.funcDecls.WriteString("    size_t lp, ls;\n")
+		gen.funcDecls.WriteString("    if (!path || !suffix) return 0;\n")
+		gen.funcDecls.WriteString("    lp = strlen(path); ls = strlen(suffix);\n")
+		gen.funcDecls.WriteString("    if (ls > lp) return 0;\n")
+		gen.funcDecls.WriteString("    return strcmp(path + lp - ls, suffix) == 0 ? 1 : 0;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// ---- stat core shared by exists/is_dir/mtime/mkdirp ----
+	if needStat {
+		gen.funcDecls.WriteString("static int ahoy_std_stat_is_dir(const char* path) {\n")
+		gen.funcDecls.WriteString("    struct stat st;\n")
+		gen.funcDecls.WriteString("    if (!path || stat(path, &st) != 0) return 0;\n")
+		gen.funcDecls.WriteString("    return S_ISDIR(st.st_mode) ? 1 : 0;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	if use("fs_exists") {
+		gen.funcDecls.WriteString("static int ahoy_std_fs_exists(const char* path) {\n")
+		gen.funcDecls.WriteString("    struct stat st;\n")
+		gen.funcDecls.WriteString("    if (!path || !path[0]) return 0;\n")
+		gen.funcDecls.WriteString("    return stat(path, &st) == 0 ? 1 : 0;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	if use("fs_is_dir") {
+		gen.funcDecls.WriteString("static int ahoy_std_fs_is_dir(const char* path) {\n")
+		gen.funcDecls.WriteString("    if (!path || !path[0]) return 0;\n")
+		gen.funcDecls.WriteString("    return ahoy_std_stat_is_dir(path);\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	if use("fs_mtime") {
+		gen.funcDecls.WriteString("static int ahoy_std_fs_mtime(const char* path) {\n")
+		gen.funcDecls.WriteString("    struct stat st;\n")
+		gen.funcDecls.WriteString("    if (!path || stat(path, &st) != 0) return 0;\n")
+		gen.funcDecls.WriteString("    return (int)st.st_mtime;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// ---- mutations: mkdir wraps the 1-arg Windows spelling ----
+	if use("fs_mkdir") || use("fs_mkdirp") {
+		gen.funcDecls.WriteString("static int ahoy_std_mkdir_one(const char* path) {\n")
+		gen.funcDecls.WriteString("#ifdef _WIN32\n")
+		gen.funcDecls.WriteString("    return _mkdir(path);\n")
+		gen.funcDecls.WriteString("#else\n")
+		gen.funcDecls.WriteString("    return mkdir(path, 0755);\n")
+		gen.funcDecls.WriteString("#endif\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	if use("fs_mkdir") {
+		gen.funcDecls.WriteString("static int ahoy_std_fs_mkdir(const char* path) {\n")
+		gen.funcDecls.WriteString("    if (!path || !path[0]) return 0;\n")
+		gen.funcDecls.WriteString("    return ahoy_std_mkdir_one(path) == 0 ? 1 : 0;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	if use("fs_mkdirp") {
+		gen.funcDecls.WriteString("static int ahoy_std_fs_mkdirp(const char* path) {\n")
+		gen.funcDecls.WriteString("    char tmp[2048];\n")
+		gen.funcDecls.WriteString("    size_t len, i;\n")
+		gen.funcDecls.WriteString("    if (!path || !path[0]) return 0;\n")
+		gen.funcDecls.WriteString("    len = strlen(path);\n")
+		gen.funcDecls.WriteString("    if (len >= sizeof(tmp)) return 0;\n")
+		gen.funcDecls.WriteString("    memcpy(tmp, path, len + 1);\n")
+		gen.funcDecls.WriteString("    for (i = 1; i < len; i++) {\n")
+		gen.funcDecls.WriteString("        if (tmp[i] == '/' || tmp[i] == '\\\\') { tmp[i] = '\\0'; ahoy_std_mkdir_one(tmp); tmp[i] = (path[i] == '\\\\' ? '\\\\' : '/'); }\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    if (ahoy_std_mkdir_one(tmp) != 0 && !ahoy_std_stat_is_dir(tmp)) return 0;\n")
+		gen.funcDecls.WriteString("    return 1;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	if use("fs_write") {
+		gen.funcDecls.WriteString("static int ahoy_std_fs_write(const char* path, const char* text) {\n")
+		gen.funcDecls.WriteString("    FILE* f;\n")
+		gen.funcDecls.WriteString("    const char* body;\n")
+		gen.funcDecls.WriteString("    size_t len, wrote;\n")
+		gen.funcDecls.WriteString("    if (!path) return 0;\n")
+		gen.funcDecls.WriteString("    f = fopen(path, \"wb\");\n")
+		gen.funcDecls.WriteString("    if (!f) return 0;\n")
+		gen.funcDecls.WriteString("    body = text ? text : \"\";\n")
+		gen.funcDecls.WriteString("    len = strlen(body);\n")
+		gen.funcDecls.WriteString("    wrote = fwrite(body, 1, len, f);\n")
+		gen.funcDecls.WriteString("    fclose(f);\n")
+		gen.funcDecls.WriteString("    return (wrote == len) ? 1 : 0;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	if use("fs_remove") {
+		gen.funcDecls.WriteString("static int ahoy_std_fs_remove(const char* path) {\n")
+		gen.funcDecls.WriteString("    if (!path || !path[0]) return 0;\n")
+		gen.funcDecls.WriteString("    if (ahoy_std_stat_is_dir(path)) return (rmdir(path) == 0) ? 1 : 0;\n")
+		gen.funcDecls.WriteString("    return (remove(path) == 0) ? 1 : 0;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	if use("fs_copy") {
+		gen.funcDecls.WriteString("static int ahoy_std_fs_copy(const char* src, const char* dst) {\n")
+		gen.funcDecls.WriteString("    FILE* in; FILE* out;\n")
+		gen.funcDecls.WriteString("    char buf[8192];\n")
+		gen.funcDecls.WriteString("    size_t n;\n")
+		gen.funcDecls.WriteString("    int ok = 1;\n")
+		gen.funcDecls.WriteString("    if (!src || !dst || !src[0] || !dst[0]) return 0;\n")
+		gen.funcDecls.WriteString("    in = fopen(src, \"rb\");\n")
+		gen.funcDecls.WriteString("    if (!in) return 0;\n")
+		gen.funcDecls.WriteString("    out = fopen(dst, \"wb\");\n")
+		gen.funcDecls.WriteString("    if (!out) { fclose(in); return 0; }\n")
+		gen.funcDecls.WriteString("    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {\n")
+		gen.funcDecls.WriteString("        if (fwrite(buf, 1, n, out) != n) { ok = 0; break; }\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    if (ferror(in)) ok = 0;\n")
+		gen.funcDecls.WriteString("    fclose(in);\n")
+		gen.funcDecls.WriteString("    fclose(out);\n")
+		gen.funcDecls.WriteString("    if (!ok) { remove(dst); return 0; }\n")
+		gen.funcDecls.WriteString("    return 1;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	if use("fs_rename") {
+		gen.funcDecls.WriteString("static int ahoy_std_fs_rename(const char* from, const char* to) {\n")
+		gen.funcDecls.WriteString("    if (!from || !to) return 0;\n")
+		gen.funcDecls.WriteString("    return (rename(from, to) == 0) ? 1 : 0;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// ---- listing: names only, directories first, then A-Z ci ----
+	if use("fs_list") {
+		gen.funcDecls.WriteString("#define AHOY_STD_LIST_MAX 8192\n")
+		gen.funcDecls.WriteString("static char ahoy_std_list_names[AHOY_STD_LIST_MAX][256];\n")
+		gen.funcDecls.WriteString("static int ahoy_std_list_dirs[AHOY_STD_LIST_MAX];\n")
+		gen.funcDecls.WriteString("static int ahoy_std_list_cmp(const void* a, const void* b) {\n")
+		gen.funcDecls.WriteString("    int ia = *(const int*)a, ib = *(const int*)b;\n")
+		gen.funcDecls.WriteString("    size_t i;\n")
+		gen.funcDecls.WriteString("    if (ahoy_std_list_dirs[ia] != ahoy_std_list_dirs[ib]) return ahoy_std_list_dirs[ib] - ahoy_std_list_dirs[ia];\n")
+		gen.funcDecls.WriteString("    for (i = 0; ; i++) {\n")
+		gen.funcDecls.WriteString("        unsigned char ca = (unsigned char)ahoy_std_list_names[ia][i];\n")
+		gen.funcDecls.WriteString("        unsigned char cb = (unsigned char)ahoy_std_list_names[ib][i];\n")
+		gen.funcDecls.WriteString("        int la = tolower(ca), lb = tolower(cb);\n")
+		gen.funcDecls.WriteString("        if (la != lb) return la - lb;\n")
+		gen.funcDecls.WriteString("        if (ca == '\\0') return 0;\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("}\n")
+		gen.funcDecls.WriteString("static AhoyArray* ahoy_std_fs_list(const char* dir) {\n")
+		gen.funcDecls.WriteString("    AhoyArray* arr = (AhoyArray*)malloc(sizeof(AhoyArray));\n")
+		gen.funcDecls.WriteString("    DIR* d;\n")
+		gen.funcDecls.WriteString("    struct dirent* entry;\n")
+		gen.funcDecls.WriteString("    int order[AHOY_STD_LIST_MAX];\n")
+		gen.funcDecls.WriteString("    int count = 0, i;\n")
+		gen.funcDecls.WriteString("    arr->length = 0;\n")
+		gen.funcDecls.WriteString("    arr->capacity = 4;\n")
+		gen.funcDecls.WriteString("    arr->data = (intptr_t*)malloc(4 * sizeof(intptr_t));\n")
+		gen.funcDecls.WriteString("    arr->types = (AhoyValueType*)malloc(4 * sizeof(AhoyValueType));\n")
+		gen.funcDecls.WriteString("    arr->is_typed = 1;\n")
+		gen.funcDecls.WriteString("    arr->element_type = AHOY_TYPE_STRING;\n")
+		gen.funcDecls.WriteString("    if (!dir || !dir[0]) return arr;\n")
+		gen.funcDecls.WriteString("    d = opendir(dir);\n")
+		gen.funcDecls.WriteString("    if (!d) return arr;\n")
+		gen.funcDecls.WriteString("    while ((entry = readdir(d)) != NULL && count < AHOY_STD_LIST_MAX) {\n")
+		gen.funcDecls.WriteString("        const char* name = entry->d_name;\n")
+		gen.funcDecls.WriteString("        size_t n = strlen(name);\n")
+		gen.funcDecls.WriteString("        char full[2304];\n")
+		gen.funcDecls.WriteString("        if (n == 0 || n >= 256) continue;\n")
+		gen.funcDecls.WriteString("        if (strcmp(name, \".\") == 0 || strcmp(name, \"..\") == 0) continue;\n")
+		gen.funcDecls.WriteString("        memcpy(ahoy_std_list_names[count], name, n + 1);\n")
+		gen.funcDecls.WriteString("        snprintf(full, sizeof(full), \"%s/%s\", dir, name);\n")
+		gen.funcDecls.WriteString("        ahoy_std_list_dirs[count] = ahoy_std_stat_is_dir(full);\n")
+		gen.funcDecls.WriteString("        order[count] = count;\n")
+		gen.funcDecls.WriteString("        count++;\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    closedir(d);\n")
+		gen.funcDecls.WriteString("    qsort(order, (size_t)count, sizeof(int), ahoy_std_list_cmp);\n")
+		gen.funcDecls.WriteString("    for (i = 0; i < count; i++) {\n")
+		gen.funcDecls.WriteString("        char* piece = strdup(ahoy_std_list_names[order[i]]);\n")
+		gen.funcDecls.WriteString("        if (arr->length == arr->capacity) {\n")
+		gen.funcDecls.WriteString("            arr->capacity *= 2;\n")
+		gen.funcDecls.WriteString("            arr->data = (intptr_t*)realloc(arr->data, arr->capacity * sizeof(intptr_t));\n")
+		gen.funcDecls.WriteString("            arr->types = (AhoyValueType*)realloc(arr->types, arr->capacity * sizeof(AhoyValueType));\n")
+		gen.funcDecls.WriteString("        }\n")
+		gen.funcDecls.WriteString("        arr->data[arr->length] = (intptr_t)piece;\n")
+		gen.funcDecls.WriteString("        arr->types[arr->length] = AHOY_TYPE_STRING;\n")
+		gen.funcDecls.WriteString("        arr->length++;\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    return arr;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// ---- whole-file read: fresh string, "" when missing ----
+	if use("fs_read_text") {
+		gen.funcDecls.WriteString("#define AHOY_STD_READ_MAX (8 * 1024 * 1024)\n")
+		gen.funcDecls.WriteString("static char* ahoy_std_fs_read_text(const char* path) {\n")
+		gen.funcDecls.WriteString("    FILE* f;\n")
+		gen.funcDecls.WriteString("    long size;\n")
+		gen.funcDecls.WriteString("    size_t n;\n")
+		gen.funcDecls.WriteString("    char* out;\n")
+		gen.funcDecls.WriteString("    if (!path || !path[0]) return strdup(\"\");\n")
+		gen.funcDecls.WriteString("    f = fopen(path, \"rb\");\n")
+		gen.funcDecls.WriteString("    if (!f) return strdup(\"\");\n")
+		gen.funcDecls.WriteString("    fseek(f, 0, SEEK_END);\n")
+		gen.funcDecls.WriteString("    size = ftell(f);\n")
+		gen.funcDecls.WriteString("    fseek(f, 0, SEEK_SET);\n")
+		gen.funcDecls.WriteString("    if (size < 0 || size > AHOY_STD_READ_MAX) { fclose(f); return strdup(\"\"); }\n")
+		gen.funcDecls.WriteString("    out = (char*)malloc((size_t)size + 1);\n")
+		gen.funcDecls.WriteString("    n = fread(out, 1, (size_t)size, f);\n")
+		gen.funcDecls.WriteString("    fclose(f);\n")
+		gen.funcDecls.WriteString("    out[n] = '\\0';\n")
+		gen.funcDecls.WriteString("    return out;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// ---- clock ----
+	if use("clock_string") {
+		gen.funcDecls.WriteString("static char* ahoy_std_clock_string(void) {\n")
+		gen.funcDecls.WriteString("    char buf[16];\n")
+		gen.funcDecls.WriteString("    time_t t = time(NULL);\n")
+		gen.funcDecls.WriteString("    struct tm* lt = localtime(&t);\n")
+		gen.funcDecls.WriteString("    if (!lt) return strdup(\"--:--:--\");\n")
+		gen.funcDecls.WriteString("    snprintf(buf, sizeof(buf), \"%02d:%02d:%02d\", lt->tm_hour, lt->tm_min, lt->tm_sec);\n")
+		gen.funcDecls.WriteString("    return strdup(buf);\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	if use("clock_ms") {
+		gen.funcDecls.WriteString("static double ahoy_std_clock_ms(void) {\n")
+		gen.funcDecls.WriteString("#if defined(CLOCK_MONOTONIC) && !defined(_WIN32)\n")
+		gen.funcDecls.WriteString("    struct timespec ts;\n")
+		gen.funcDecls.WriteString("    clock_gettime(CLOCK_MONOTONIC, &ts);\n")
+		gen.funcDecls.WriteString("    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1000000.0;\n")
+		gen.funcDecls.WriteString("#else\n")
+		gen.funcDecls.WriteString("    return (double)clock() * 1000.0 / (double)CLOCKS_PER_SEC;\n")
+		gen.funcDecls.WriteString("#endif\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// ---- place ----
+	if use("cwd") {
+		gen.funcDecls.WriteString("static char* ahoy_std_cwd(void) {\n")
+		gen.funcDecls.WriteString("    char* buf = (char*)malloc(4096);\n")
+		gen.funcDecls.WriteString("#ifdef _WIN32\n")
+		gen.funcDecls.WriteString("    if (_getcwd(buf, 4096) != NULL) return buf;\n")
+		gen.funcDecls.WriteString("#else\n")
+		gen.funcDecls.WriteString("    if (getcwd(buf, 4096) != NULL) return buf;\n")
+		gen.funcDecls.WriteString("#endif\n")
+		gen.funcDecls.WriteString("    buf[0] = '\\0';\n")
+		gen.funcDecls.WriteString("    return buf;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	if use("exe_dir") {
+		gen.funcDecls.WriteString("#ifdef _WIN32\n")
+		gen.funcDecls.WriteString("__declspec(dllimport) unsigned long __stdcall GetModuleFileNameA(void* module, char* filename, unsigned long size);\n")
+		gen.funcDecls.WriteString("#endif\n")
+		gen.funcDecls.WriteString("static char* ahoy_std_exe_dir(void) {\n")
+		gen.funcDecls.WriteString("    char* buf = (char*)malloc(4096);\n")
+		gen.funcDecls.WriteString("#ifdef _WIN32\n")
+		gen.funcDecls.WriteString("    {\n")
+		gen.funcDecls.WriteString("        unsigned long n = GetModuleFileNameA(NULL, buf, 4096);\n")
+		gen.funcDecls.WriteString("        if (n > 0 && n < 4096) {\n")
+		gen.funcDecls.WriteString("            char* s1 = strrchr(buf, '\\\\');\n")
+		gen.funcDecls.WriteString("            char* s2 = strrchr(buf, '/');\n")
+		gen.funcDecls.WriteString("            char* s = (s1 && s2) ? (s1 > s2 ? s1 : s2) : (s1 ? s1 : s2);\n")
+		gen.funcDecls.WriteString("            if (s) { *s = '\\0'; return buf; }\n")
+		gen.funcDecls.WriteString("        }\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("#else\n")
+		gen.funcDecls.WriteString("    {\n")
+		gen.funcDecls.WriteString("        ssize_t n = readlink(\"/proc/self/exe\", buf, 4095);\n")
+		gen.funcDecls.WriteString("        if (n > 0) {\n")
+		gen.funcDecls.WriteString("            char* s;\n")
+		gen.funcDecls.WriteString("            buf[n] = '\\0';\n")
+		gen.funcDecls.WriteString("            s = strrchr(buf, '/');\n")
+		gen.funcDecls.WriteString("            if (s) { *s = '\\0'; return buf; }\n")
+		gen.funcDecls.WriteString("        }\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("#endif\n")
+		gen.funcDecls.WriteString("    buf[0] = '\\0';\n")
+		gen.funcDecls.WriteString("    return buf;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// ---- processes: Unix only, stubs on Windows (bell's contract) ----
+	if use("spawn_detached") {
+		gen.funcDecls.WriteString("static int ahoy_std_spawn_detached(const char* cmd) {\n")
+		gen.funcDecls.WriteString("#ifdef _WIN32\n")
+		gen.funcDecls.WriteString("    (void)cmd;\n")
+		gen.funcDecls.WriteString("    return -1;\n")
+		gen.funcDecls.WriteString("#else\n")
+		gen.funcDecls.WriteString("    int pid;\n")
+		gen.funcDecls.WriteString("    if (!cmd || !cmd[0]) return -1;\n")
+		gen.funcDecls.WriteString("    pid = (int)fork();\n")
+		gen.funcDecls.WriteString("    if (pid < 0) return -1;\n")
+		gen.funcDecls.WriteString("    if (pid == 0) {\n")
+		gen.funcDecls.WriteString("        if (setsid() < 0) _exit(127);\n")
+		gen.funcDecls.WriteString("        execl(\"/bin/sh\", \"sh\", \"-c\", cmd, (char*)NULL);\n")
+		gen.funcDecls.WriteString("        _exit(127);\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    return pid;\n")
+		gen.funcDecls.WriteString("#endif\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	if use("pid_alive") {
+		gen.funcDecls.WriteString("static int ahoy_std_pid_alive(int pid) {\n")
+		gen.funcDecls.WriteString("#ifdef _WIN32\n")
+		gen.funcDecls.WriteString("    (void)pid;\n")
+		gen.funcDecls.WriteString("    return 0;\n")
+		gen.funcDecls.WriteString("#else\n")
+		gen.funcDecls.WriteString("    int status = 0;\n")
+		gen.funcDecls.WriteString("    pid_t r;\n")
+		gen.funcDecls.WriteString("    if (pid <= 0) return 0;\n")
+		gen.funcDecls.WriteString("    r = waitpid((pid_t)pid, &status, WNOHANG);\n")
+		gen.funcDecls.WriteString("    if (r == (pid_t)pid) return 0;\n")
+		gen.funcDecls.WriteString("    if (r == 0) return 1;\n")
+		gen.funcDecls.WriteString("    if (errno == ECHILD) {\n")
+		gen.funcDecls.WriteString("        if (kill((pid_t)pid, 0) == 0) return 1;\n")
+		gen.funcDecls.WriteString("        return 0;\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    return 0;\n")
+		gen.funcDecls.WriteString("#endif\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	if use("proc_kill") {
+		gen.funcDecls.WriteString("static int ahoy_std_proc_kill(int pid) {\n")
+		gen.funcDecls.WriteString("#ifdef _WIN32\n")
+		gen.funcDecls.WriteString("    (void)pid;\n")
+		gen.funcDecls.WriteString("    return 0;\n")
+		gen.funcDecls.WriteString("#else\n")
+		gen.funcDecls.WriteString("    if (pid <= 0) return 0;\n")
+		gen.funcDecls.WriteString("    if (kill((pid_t)-pid, SIGTERM) == 0) return 1;\n")
+		gen.funcDecls.WriteString("    if (kill((pid_t)pid, SIGTERM) == 0) return 1;\n")
+		gen.funcDecls.WriteString("    return 0;\n")
+		gen.funcDecls.WriteString("#endif\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	if use("open_folder") {
+		gen.funcDecls.WriteString("static int ahoy_std_open_folder(const char* path) {\n")
+		gen.funcDecls.WriteString("    char cmd[2304];\n")
+		gen.funcDecls.WriteString("    const char* p = (path && path[0]) ? path : \".\";\n")
+		gen.funcDecls.WriteString("#ifdef _WIN32\n")
+		gen.funcDecls.WriteString("    snprintf(cmd, sizeof(cmd), \"explorer \\\"%s\\\"\", p);\n")
+		gen.funcDecls.WriteString("#else\n")
+		gen.funcDecls.WriteString("    snprintf(cmd, sizeof(cmd), \"xdg-open \\\"%s\\\" >/dev/null 2>&1 &\", p);\n")
+		gen.funcDecls.WriteString("#endif\n")
+		gen.funcDecls.WriteString("    return (system(cmd) == 0) ? 1 : 0;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+}
+
 func (gen *CodeGenerator) writeStringHelperFunctions() {
 	if len(gen.stringMethods) == 0 {
 		return
@@ -15790,6 +16670,23 @@ func (gen *CodeGenerator) writeStringHelperFunctions() {
 		gen.funcDecls.WriteString("        result[i] = toupper(result[i]);\n")
 		gen.funcDecls.WriteString("    }\n")
 		gen.funcDecls.WriteString("    return result;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// contains_ci method - case-insensitive substring (tolower loop: no strings.h needed)
+	if gen.stringMethods["contains_ci"] {
+		gen.funcDecls.WriteString("bool ahoy_string_contains_ci(const char* str, const char* substr) {\n")
+		gen.funcDecls.WriteString("    size_t i, j, n, m;\n")
+		gen.funcDecls.WriteString("    if (!str || !substr || !substr[0]) return false;\n")
+		gen.funcDecls.WriteString("    n = strlen(str); m = strlen(substr);\n")
+		gen.funcDecls.WriteString("    if (m > n) return false;\n")
+		gen.funcDecls.WriteString("    for (i = 0; i + m <= n; i++) {\n")
+		gen.funcDecls.WriteString("        for (j = 0; j < m; j++) {\n")
+		gen.funcDecls.WriteString("            if (tolower((unsigned char)str[i + j]) != tolower((unsigned char)substr[j])) break;\n")
+		gen.funcDecls.WriteString("        }\n")
+		gen.funcDecls.WriteString("        if (j == m) return true;\n")
+		gen.funcDecls.WriteString("    }\n")
+		gen.funcDecls.WriteString("    return false;\n")
 		gen.funcDecls.WriteString("}\n\n")
 	}
 
@@ -16076,6 +16973,99 @@ func (gen *CodeGenerator) writeStringHelperFunctions() {
 		gen.funcDecls.WriteString("        start = hit + dlen;\n")
 		gen.funcDecls.WriteString("    }\n")
 		gen.funcDecls.WriteString("    return arr;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+
+	// Byte-level UTF-8-safe editing (Tier-3 Feature 2). Positions snap down
+	// to lead bytes so ops never split a sequence; insert_at encodes a
+	// Unicode codepoint (1-3 bytes, '?' when out of range). Ported from
+	// bell's glue.h ahoy_str_* so the same text-area code can move to Ahoy.
+	if gen.stringMethods["byte_at"] {
+		gen.funcDecls.WriteString("int ahoy_string_byte_at(const char* text, int i) {\n")
+		gen.funcDecls.WriteString("    const char* base = text ? text : \"\";\n")
+		gen.funcDecls.WriteString("    size_t n = strlen(base);\n")
+		gen.funcDecls.WriteString("    if (i < 0 || (size_t)i >= n) return -1;\n")
+		gen.funcDecls.WriteString("    return (unsigned char)base[i];\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	if gen.stringMethods["byte_len"] {
+		gen.funcDecls.WriteString("int ahoy_string_byte_len(const char* text) {\n")
+		gen.funcDecls.WriteString("    return (int)strlen(text ? text : \"\");\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	// Shared snap helper: defined once when any snapping op is used.
+	if gen.stringMethods["prefix"] || gen.stringMethods["byte_slice"] ||
+		gen.stringMethods["insert_at"] || gen.stringMethods["delete_range"] {
+		gen.funcDecls.WriteString("static int ahoy_string_is_cont(const char* s, size_t i) {\n")
+		gen.funcDecls.WriteString("    return ((unsigned char)s[i] & 0xC0) == 0x80;\n")
+		gen.funcDecls.WriteString("}\n")
+		gen.funcDecls.WriteString("static size_t ahoy_string_snap(const char* s, size_t n, size_t pos) {\n")
+		gen.funcDecls.WriteString("    while (pos > 0 && pos < n && ahoy_string_is_cont(s, pos)) pos--;\n")
+		gen.funcDecls.WriteString("    if (pos > n) pos = n;\n")
+		gen.funcDecls.WriteString("    return pos;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	if gen.stringMethods["prefix"] {
+		gen.funcDecls.WriteString("char* ahoy_string_prefix(const char* text, int n) {\n")
+		gen.funcDecls.WriteString("    const char* base = text ? text : \"\";\n")
+		gen.funcDecls.WriteString("    size_t len = strlen(base);\n")
+		gen.funcDecls.WriteString("    size_t k = ahoy_string_snap(base, len, n < 0 ? 0 : (size_t)n);\n")
+		gen.funcDecls.WriteString("    char* out = malloc(k + 1);\n")
+		gen.funcDecls.WriteString("    memcpy(out, base, k);\n")
+		gen.funcDecls.WriteString("    out[k] = 0;\n")
+		gen.funcDecls.WriteString("    return out;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	if gen.stringMethods["byte_slice"] {
+		gen.funcDecls.WriteString("char* ahoy_string_byte_slice(const char* text, int a, int b) {\n")
+		gen.funcDecls.WriteString("    const char* base = text ? text : \"\";\n")
+		gen.funcDecls.WriteString("    size_t len = strlen(base);\n")
+		gen.funcDecls.WriteString("    size_t s0 = ahoy_string_snap(base, len, a < 0 ? 0 : (size_t)a);\n")
+		gen.funcDecls.WriteString("    size_t s1 = ahoy_string_snap(base, len, b < 0 ? 0 : (size_t)b);\n")
+		gen.funcDecls.WriteString("    if (s1 < s0) s1 = s0;\n")
+		gen.funcDecls.WriteString("    char* out = malloc(s1 - s0 + 1);\n")
+		gen.funcDecls.WriteString("    memcpy(out, base + s0, s1 - s0);\n")
+		gen.funcDecls.WriteString("    out[s1 - s0] = 0;\n")
+		gen.funcDecls.WriteString("    return out;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	if gen.stringMethods["insert_at"] {
+		gen.funcDecls.WriteString("char* ahoy_string_insert_at(const char* text, int pos, int ch) {\n")
+		gen.funcDecls.WriteString("    const char* base = text ? text : \"\";\n")
+		gen.funcDecls.WriteString("    size_t len = strlen(base);\n")
+		gen.funcDecls.WriteString("    size_t at = ahoy_string_snap(base, len, pos < 0 ? 0 : (size_t)pos);\n")
+		gen.funcDecls.WriteString("    char enc[4]; int nb = 1;\n")
+		gen.funcDecls.WriteString("    if (ch < 0) ch = 0;\n")
+		gen.funcDecls.WriteString("    if (ch < 0x80) { enc[0] = (char)ch; nb = 1; }\n")
+		gen.funcDecls.WriteString("    else if (ch < 0x800) { enc[0] = (char)(0xC0 | (ch >> 6)); enc[1] = (char)(0x80 | (ch & 0x3F)); nb = 2; }\n")
+		gen.funcDecls.WriteString("    else if (ch < 0x10000) { enc[0] = (char)(0xE0 | (ch >> 12)); enc[1] = (char)(0x80 | ((ch >> 6) & 0x3F)); enc[2] = (char)(0x80 | (ch & 0x3F)); nb = 3; }\n")
+		gen.funcDecls.WriteString("    else { enc[0] = '?'; nb = 1; }\n")
+		gen.funcDecls.WriteString("    char* out = malloc(len + (size_t)nb + 1);\n")
+		gen.funcDecls.WriteString("    memcpy(out, base, at);\n")
+		gen.funcDecls.WriteString("    memcpy(out + at, enc, (size_t)nb);\n")
+		gen.funcDecls.WriteString("    memcpy(out + at + (size_t)nb, base + at, len - at + 1);\n")
+		gen.funcDecls.WriteString("    return out;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	if gen.stringMethods["delete_range"] {
+		gen.funcDecls.WriteString("char* ahoy_string_delete_range(const char* text, int a, int b) {\n")
+		gen.funcDecls.WriteString("    const char* base = text ? text : \"\";\n")
+		gen.funcDecls.WriteString("    size_t len = strlen(base);\n")
+		gen.funcDecls.WriteString("    size_t s0 = ahoy_string_snap(base, len, a < 0 ? 0 : (size_t)a);\n")
+		gen.funcDecls.WriteString("    size_t s1 = ahoy_string_snap(base, len, b < 0 ? 0 : (size_t)b);\n")
+		gen.funcDecls.WriteString("    if (s1 < s0) s1 = s0;\n")
+		gen.funcDecls.WriteString("    char* out = malloc(len - (s1 - s0) + 1);\n")
+		gen.funcDecls.WriteString("    memcpy(out, base, s0);\n")
+		gen.funcDecls.WriteString("    memcpy(out + s0, base + s1, len - s1 + 1);\n")
+		gen.funcDecls.WriteString("    return out;\n")
+		gen.funcDecls.WriteString("}\n\n")
+	}
+	if gen.stringMethods["utf8_len"] {
+		gen.funcDecls.WriteString("int ahoy_string_utf8_len(const char* text) {\n")
+		gen.funcDecls.WriteString("    const char* s = text ? text : \"\";\n")
+		gen.funcDecls.WriteString("    int n = 0;\n")
+		gen.funcDecls.WriteString("    for (; *s; s++) if (((unsigned char)*s & 0xC0) != 0x80) n++;\n")
+		gen.funcDecls.WriteString("    return n;\n")
 		gen.funcDecls.WriteString("}\n\n")
 	}
 }

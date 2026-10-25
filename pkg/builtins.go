@@ -35,6 +35,17 @@ func init() {
 		// monotonic clock (seconds since program start)
 		"time_now",
 		"rect_contains", "rect_intersects",
+		// paths, filesystem, clock/place, processes
+		"path_join", "path_parent", "path_name", "path_ends_with",
+		"fs_exists", "fs_is_dir", "fs_mkdir", "fs_mkdirp", "fs_write",
+		"fs_remove", "fs_copy", "fs_rename", "fs_list", "fs_mtime",
+		"fs_read_text",
+		"clock_string", "clock_ms", "cwd", "exe_dir",
+		"spawn_detached", "pid_alive", "proc_kill", "open_folder",
+		// low-level OS errors for user-authored syscalls (Tier-3 Feature 1)
+		"errno", "errno_str",
+		// wall-clock formatting (strftime wrapper; complements clock_string)
+		"time_format",
 		// flat POD buffer constructor: buffer|n| -> buffer[f32]
 		"buffer",
 		// int-lane buffer constructor: buffer_int|n| -> buffer[int]
@@ -58,15 +69,18 @@ func init() {
 	// tolerated as bare calls.
 	for _, name := range []string{
 		// array
-		"length", "push", "pop", "sum", "has", "sort", "reverse", "shuffle",
+		"length", "push", "pop", "sum", "has", "sort", "sort_strings", "reverse", "shuffle",
 		"pick", "fill", "remove", "dup", "clear", "size",
 		"slice", "index_of", "reduce", "insert", "join", "append", "erase",
 		// dict
 		"has_all", "keys", "values", "stable_sort", "merge",
 		// string
-		"upper", "lower", "replace", "contains", "strip", "count", "lpad",
+		"upper", "lower", "replace", "contains", "contains_ci", "strip", "count", "lpad",
 		"rpad", "pad", "match", "get_file", "camel_case", "snake_case",
 		"pascal_case", "kebab_case", "split",
+		// byte-level UTF-8-safe editing (Tier-3 Feature 2)
+		"byte_at", "byte_len", "byte_slice", "prefix",
+		"insert_at", "delete_range", "utf8_len",
 	} {
 		builtinMethodNames[name] = true
 		builtinCallNames[name] = true
@@ -75,7 +89,9 @@ func init() {
 	// Handled directly by the code generator rather than by stdlib.go.
 	for _, name := range []string{
 		"ahoy",    // alias for print
-		"sprintf", // C
+		"sprintf", // C (dynamic sizing; see format)
+		"format",  // safe dynamic formatter (snprintf probe + malloc)
+		"from_code", // UTF-8 encode of a codepoint (Tier-3 Feature 2)
 		"malloc",  // C
 		"char",    // cast
 		"string",  // cast
