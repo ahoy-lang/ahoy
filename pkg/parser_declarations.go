@@ -134,44 +134,6 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 		} else if p.current().Type == TOKEN_LBRACE {
 			// Dict literal
 			valueNode = p.parseDictLiteral()
-		} else if p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "vector2" {
-			// Parse vector2<x,y>
-			typeName := p.current().Value
-			typeToken := p.current()
-			p.advance() // consume type name
-
-			if p.current().Type == TOKEN_LANGLE {
-				p.advance() // consume '<'
-				values := []*ASTNode{}
-
-				// Parse comma-separated values
-				for p.current().Type != TOKEN_RANGLE && p.current().Type != TOKEN_EOF && p.current().Type != TOKEN_END {
-					if p.current().Type == TOKEN_NUMBER {
-						values = append(values, &ASTNode{
-							Type:  NODE_NUMBER,
-							Value: p.current().Value,
-							Line:  p.current().Line,
-						})
-						p.advance()
-					} else if p.current().Type == TOKEN_COMMA {
-						p.advance() // skip comma
-					} else {
-						// Unexpected token
-						p.advance()
-					}
-				}
-
-				if p.current().Type == TOKEN_RANGLE {
-					p.advance() // consume '>'
-				}
-
-				valueNode = &ASTNode{
-					Type:     NODE_OBJECT_LITERAL,
-					Value:    typeName,
-					Children: values,
-					Line:     typeToken.Line,
-				}
-			}
 		}
 		// If no value was parsed, it will be auto-assigned (for int enums) or use default
 

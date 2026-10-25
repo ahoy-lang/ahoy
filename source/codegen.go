@@ -10970,8 +10970,6 @@ func (gen *CodeGenerator) mapType(langType string) string {
 		return "AhoyJSON*"
 	case "void":
 		return "void"
-	case "vector2":
-		return "Vector2"
 	case "pool":
 		return "AhoyPool*"
 	case "job":
@@ -13477,12 +13475,7 @@ func (gen *CodeGenerator) generateDefaultValue(node *ahoy.ASTNode) string {
 		}
 		return "false"
 	case ahoy.NODE_CALL:
-		// Handle old-style function calls (backward compatibility)
-		if node.Value == "vector2" && len(node.Children) == 2 {
-			x := gen.generateDefaultValue(node.Children[0])
-			y := gen.generateDefaultValue(node.Children[1])
-			return fmt.Sprintf("(Vector2){.x = %s, .y = %s}", x, y)
-		}
+		// Calls have no meaningful zero value; callers handle them directly.
 	case ahoy.NODE_OBJECT_LITERAL:
 		// Handle object literal default values like Color{r:10, g:20, b:30, a:255}
 		if node.Value != "" {

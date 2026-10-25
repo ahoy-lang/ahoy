@@ -292,12 +292,13 @@ func (p *Parser) inferMemberAccessType(node *ASTNode) string {
 			}
 		}
 
-		// Check for built-in types with fields (vector2, color)
-		if objType == "vector2" {
+		// Check for built-in types with fields (Vector2/Color, exact C casing;
+		// lowercase spellings still match so older code degrades gracefully)
+		if objType == "vector2" || objType == "Vector2" {
 			if node.Value == "x" || node.Value == "y" {
 				return "float"
 			}
-		} else if objType == "color" {
+		} else if objType == "color" || objType == "Color" {
 			if node.Value == "r" || node.Value == "g" || node.Value == "b" || node.Value == "a" {
 				return "int"
 			}
@@ -367,15 +368,16 @@ func (p *Parser) validateMemberAccess(object *ASTNode, memberName string, line i
 	// Normalize struct type
 	objectType = strings.TrimPrefix(objectType, "struct:")
 
-	// Check for built-in types with fields (vector2, color)
-	if objectType == "vector2" {
+	// Check for built-in types with fields (Vector2/Color, exact C casing;
+	// lowercase spellings still match so older code degrades gracefully)
+	if objectType == "vector2" || objectType == "Vector2" {
 		if memberName != "x" && memberName != "y" {
 			errMsg := fmt.Sprintf("Property not found: '%s' does not exist on type 'vector2' (line %d)",
 				memberName, line)
 			p.recordError(errMsg)
 		}
 		return
-	} else if objectType == "color" {
+	} else if objectType == "color" || objectType == "Color" {
 		if memberName != "r" && memberName != "g" && memberName != "b" && memberName != "a" {
 			errMsg := fmt.Sprintf("Property not found: '%s' does not exist on type 'color' (line %d)",
 				memberName, line)
