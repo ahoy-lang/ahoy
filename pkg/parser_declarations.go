@@ -134,8 +134,8 @@ func (p *Parser) parseEnumDeclaration() *ASTNode {
 		} else if p.current().Type == TOKEN_LBRACE {
 			// Dict literal
 			valueNode = p.parseDictLiteral()
-		} else if p.current().Type == TOKEN_IDENTIFIER && (p.current().Value == "color" || p.current().Value == "vector2") {
-			// Parse color<r,g,b,a> or vector2<x,y>
+		} else if p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "vector2" {
+			// Parse vector2<x,y>
 			typeName := p.current().Value
 			typeToken := p.current()
 			p.advance() // consume type name

@@ -49,7 +49,7 @@ print|names.jared,names.jacinda,names.bob|
 expected.push|"jared jacinda bob"|
 
 ? NOTE: Color enums temporarily disabled due to C keyword 'default' and parser complexity
-? Will re-enable after fixing parser lookahead for color<...> syntax
+? (Angle-bracket color<r,g,b,a> literals were removed; use Color{r:, g:, b:, a:} instead.)
 
 ? mixed enums like in programming languages that support mixed enums such as typescript
 enum mixed_enum:
