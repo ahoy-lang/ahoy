@@ -363,6 +363,30 @@ var BuiltinFuncs = map[string]StdlibFunc{
 	"time_format": {Name: "time_format", Category: "builtin", MethodName: "time_format", ReturnType: "string", Params: "fmt:string", Doc: "strftime local time with fmt (e.g. \"%H:%M:%S\"); fresh string"},
 }
 
+// stdlibReturnType reports the declared Ahoy return type of a stdlib
+// builtin call, or "" when the builtin is unknown or its result shape is
+// context-dependent (multi-value returns like read_json's "json, string",
+// "any" results, or the un-laned "buffer" of grow, whose lane the call
+// sites resolve from the source buffer instead).
+//
+// This centralizes the registry so inferType/getValueType/getNodeType
+// agree. Previously every builtin without a hardcoded branch inferred
+// int, silently truncating floats: x: sin|1.57| declared an int and read
+// back 0.
+func stdlibReturnType(name string) string {
+	fn, ok := BuiltinFuncs[name]
+	if !ok {
+		return ""
+	}
+	switch fn.ReturnType {
+	case "float", "int", "bool", "string", "void", "array", "dict",
+		"array[string]", "buffer[f32]", "buffer[int]",
+		"i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "f32":
+		return fn.ReturnType
+	}
+	return ""
+}
+
 // GetAllStdlibFuncs returns all stdlib functions
 func GetAllStdlibFuncs() []StdlibFunc {
 	var all []StdlibFunc

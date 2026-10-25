@@ -57,6 +57,32 @@ program math_builtins
 	print|l|
 	expected.push|"1024"|
 
+	? inferred declarations keep the builtin's own type (this used to
+	? fall back to int, truncating every float result toward zero)
+	s0: sin|0.0|
+	print|s0|
+	expected.push|"0"|
+
+	c0: cos|0.0|
+	print|c0|
+	expected.push|"1"|
+
+	t2: sqrt|2.0|
+	print|t2|
+	expected.push|"1.41421"|
+
+	a4: atan2|1.0, 1.0|
+	print|a4|
+	expected.push|"0.785398"|
+
+	a1: asin|1.0|
+	print|a1|
+	expected.push|"1.5708"|
+
+	sg2: sign|-4.0|
+	print|sg2|
+	expected.push|"-1"|
+
 	m: float = hypot|3.0, 4.0|
 	print|m|
 	expected.push|"5"|

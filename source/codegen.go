@@ -11706,6 +11706,12 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			// For multiple returns, this will be used in tuple assignment context
 			return returnTypes[0]
 		}
+		// Stdlib builtins declare their return types in the registry.
+		// Without this every builtin fell through to int, silently
+		// truncating floats (x: sin|1.57| read back 0).
+		if rt := stdlibReturnType(node.Value); rt != "" {
+			return rt
+		}
 		return "int"
 	case ahoy.NODE_METHOD_CALL:
 		// Job pool methods
@@ -15565,6 +15571,13 @@ func (gen *CodeGenerator) getNodeType(node *ahoy.ASTNode) string {
 			return normalizeCollectionType(varType)
 		}
 		return "int" // Default
+	case ahoy.NODE_CALL:
+		// A builtin call formats by its declared return type (collections
+		// collapse to their base kind, like identifiers do above).
+		if rt := stdlibReturnType(node.Value); rt != "" {
+			return normalizeCollectionType(rt)
+		}
+		return "int" // Default
 	default:
 		return "int" // Default
 	}
@@ -15733,6 +15746,32 @@ func (gen *CodeGenerator) getValueType(node *ahoy.ASTNode) string {
 		// operators keep the historical int fallback.
 		if node.Value == "-" && len(node.Children) > 0 {
 			return gen.getValueType(node.Children[0])
+		}
+		return "int"
+	case ahoy.NODE_CALL:
+		// A builtin call's lane follows its declared return type, so a
+		// float result boxes as float instead of truncating to int.
+		// Bools travel as ints (codegen stores bool as int).
+		if rt := stdlibReturnType(node.Value); rt != "" {
+			switch rt {
+			case "string":
+				return "string"
+			case "float", "double":
+				return "float"
+			case "int", "bool":
+				return "int"
+			case "char":
+				return "char"
+			}
+			// Struct-typed results keep their type so containers box
+			// them as structs rather than intptr_t bit patterns.
+			if _, isStruct := gen.structs[rt]; isStruct {
+				return rt
+			}
+			if cType := gen.mapType(rt); gen.cTypeDefinitions[cType] && !strings.HasSuffix(cType, "*") &&
+				cType != "int" && cType != "double" && cType != "char*" && cType != "bool" {
+				return rt
+			}
 		}
 		return "int"
 	default:
