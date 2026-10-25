@@ -229,7 +229,8 @@ typedef struct {
     void (*set_state)(AhoyHotReloadState*);
     AhoyHotReloadState* (*get_state)(void);
     const char* version;
-    time_t last_modified;
+    long long last_modified;
+    char loaded_path[800];
 } GameLibrary;
 
 static GameLibrary g_lib = {0};
@@ -283,19 +284,44 @@ int init_raylib_library(void) {`)
 
 	code.WriteString(`}
 
-/* Get file modification time */
-time_t get_file_mtime(const char* path) {
+/* Get file modification time in nanoseconds: second-resolution mtimes can
+   stamp two quick saves identically, which made the watcher miss a reload. */
+long long get_file_mtime(const char* path) {
     struct stat st;
     if (stat(path, &st) == 0) {
-        return st.st_mtime;
+        return (long long)st.st_mtim.tv_sec * 1000000000LL + (long long)st.st_mtim.tv_nsec;
     }
     return 0;
 }
 
-/* Load or reload the game library */
-int load_game_library(const char* lib_path, int is_reload) {
-    time_t current_mtime = get_file_mtime(lib_path);
+/* Copy the just-built library to a unique pathname. glibc's dynamic loader
+   keys loaded objects by pathname, so dlopen("libgame.so") after a rebuild
+   can hand back the OLD object. A per-reload name sidesteps that entirely
+   and also lets the previous build stay mapped until the new one is known
+   to be good. */
+int copy_file(const char* src, const char* dst) {
+    FILE* in = NULL;
+    FILE* out = NULL;
+    char buf[65536];
+    size_t n = 0;
+    in = fopen(src, "rb");
+    if (!in) return 0;
+    out = fopen(dst, "wb");
+    if (!out) { fclose(in); return 0; }
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) { fclose(in); fclose(out); remove(dst); return 0; }
+    }
+    fclose(in);
+    if (fflush(out) != 0) { fclose(out); remove(dst); return 0; }
+    fclose(out);
+    return 1;
+}
 
+/* Load or reload the game library. Never exits on a failed reload: the
+   previously loaded build keeps running so a compile error in the source
+   (or a transiently incomplete .so) cannot kill the dev session. */
+int load_game_library(const char* lib_path, int is_reload) {
+    long long current_mtime = get_file_mtime(lib_path);
     if (is_reload && current_mtime <= g_lib.last_modified) {
         return 0; /* No changes */
     }
@@ -304,62 +330,50 @@ int load_game_library(const char* lib_path, int is_reload) {
 
     if (is_reload && g_lib.handle) {
         printf("\n\033[33m[Hot Reload]\033[0m Detected library change, reloading...\n");
-
-        /* Save state before unloading */
+        /* Keep the old handle mapped until the new library has loaded and
+           every required symbol resolved. */
         if (g_lib.get_state) {
             AhoyHotReloadState* lib_state = g_lib.get_state();
             if (lib_state) {
                 g_state = *lib_state;
             }
         }
-
-        /* The previous library MUST be unloaded before the new one is
-           dlopen'd. glibc matches already-loaded objects by pathname, so
-           while the old library is still loaded dlopen(lib_path) returns
-           the OLD object even though the file on disk has been replaced -
-           every reload would silently keep running the original code.
-           game_main has already returned, so nothing executes from it. */
-        dlclose(g_lib.handle);
-        g_lib.handle = NULL;
-        usleep(300000); /* 300ms - wait for unload to complete */
-
-        /* Wait for file to be fully written */
-        usleep(250000); /* 250ms */
+        usleep(150000); /* let the writer finish before we copy */
     }
 
-    /* Try loading the library with retries */
+    char unique_path[1024];
+    snprintf(unique_path, sizeof(unique_path), "%s.%lld.%d.so", lib_path, (long long)time(NULL), (int)getpid());
+    if (!copy_file(lib_path, unique_path)) {
+        fprintf(stderr, "\033[31m[Hot Reload]\033[0m Could not copy %s (build still in progress?) - keeping the running build\n", lib_path);
+        pthread_mutex_unlock(&g_reload_mutex);
+        return -1;
+    }
+
+    /* Try loading the unique copy with retries. */
     void* handle = NULL;
     int attempts = 0;
     const int max_attempts = 3;
-    
     while (attempts < max_attempts && !handle) {
         if (attempts > 0) {
-            usleep(100000 * attempts); /* Exponential backoff: 100ms, 200ms */
+            usleep(100000 * attempts); /* 100ms, 200ms */
         }
-        
         /* RTLD_LOCAL keeps each reloaded library's symbols out of the global
            scope, so a still-loaded previous version can never interpose the
            new library's calls to its own functions (ahoy_check_reload etc.). */
-        handle = dlopen(lib_path, RTLD_NOW | RTLD_LOCAL);
-        if (!handle) {
-            attempts++;
-            if (attempts < max_attempts) {
-                /* Wait and retry */
-                continue;
-            }
-            fprintf(stderr, "\033[31m[Hot Reload]\033[0m Error loading library after %d attempts: %s\n", 
-                    max_attempts, dlerror());
-            
-            fprintf(stderr, "\033[31m[Hot Reload]\033[0m Fatal: Cannot continue without library\n");
-            pthread_mutex_unlock(&g_reload_mutex);
-            exit(1);
-        }
+        handle = dlopen(unique_path, RTLD_NOW | RTLD_LOCAL);
+        if (!handle) attempts++;
+    }
+    if (!handle) {
+        fprintf(stderr, "\033[31m[Hot Reload]\033[0m Error loading new library: %s\n", dlerror());
+        remove(unique_path);
+        fprintf(stderr, "\033[33m[Hot Reload]\033[0m Keeping the previous build running\n");
+        pthread_mutex_unlock(&g_reload_mutex);
+        return -1;
     }
 
-    /* Clear any existing error */
+    /* Clear any existing error. */
     dlerror();
 
-    /* Load function pointers */
     int (*game_main)(int, char**) = dlsym(handle, "ahoy_game_main");
     void (*on_reload)(void) = dlsym(handle, "ahoy_on_reload");
     void (*request_reload)(void) = dlsym(handle, "ahoy_request_reload");
@@ -374,11 +388,16 @@ int load_game_library(const char* lib_path, int is_reload) {
         fprintf(stderr, "\033[31m[Hot Reload]\033[0m Error: ahoy_game_main not found: %s\n",
                 dl_error ? dl_error : "symbol not found");
         dlclose(handle);
-        
-        fprintf(stderr, "\033[31m[Hot Reload]\033[0m Fatal: Cannot continue without game_main\n");
+        remove(unique_path);
+        fprintf(stderr, "\033[33m[Hot Reload]\033[0m Keeping the previous build running\n");
         pthread_mutex_unlock(&g_reload_mutex);
-        exit(1);
+        return -1;
     }
+
+    /* Swap in the new library, then release the old one. */
+    void* old_handle = g_lib.handle;
+    char old_path[800];
+    snprintf(old_path, sizeof(old_path), "%s", g_lib.loaded_path);
 
     g_lib.handle = handle;
     g_lib.game_main = game_main;
@@ -389,15 +408,19 @@ int load_game_library(const char* lib_path, int is_reload) {
     g_lib.get_state = get_state;
     g_lib.version = version;
     g_lib.last_modified = current_mtime;
+    snprintf(g_lib.loaded_path, sizeof(g_lib.loaded_path), "%s", unique_path);
 
-    /* Restore state */
+    /* Restore state and clear the reload flag in the new library. */
     if (g_lib.set_state) {
         g_lib.set_state(&g_state);
     }
-
-    /* Clear the reload flag in the new library */
     if (g_lib.clear_reload) {
         g_lib.clear_reload();
+    }
+
+    if (old_handle) {
+        dlclose(old_handle);
+        if (old_path[0]) remove(old_path);
     }
 
     if (is_reload && g_lib.on_reload) {
@@ -410,7 +433,7 @@ int load_game_library(const char* lib_path, int is_reload) {
             printf("\033[32m[Hot Reload]\033[0m Version: %s\n", g_lib.version);
         }
     } else {
-        printf("\033[32m[Hot Reload]\033[0m ✓ Reload complete\n");
+        printf("\033[32m[Hot Reload]\033[0m \xe2\x9c\x93 Reload complete\n");
     }
 
     pthread_mutex_unlock(&g_reload_mutex);
@@ -424,7 +447,7 @@ void* file_watcher_thread(void* arg) {
     while (g_running) {
         sleep(1); /* Check every second */
 
-        time_t current_mtime = get_file_mtime(lib_path);
+        long long current_mtime = get_file_mtime(lib_path);
 
         pthread_mutex_lock(&g_reload_mutex);
         if (current_mtime > g_lib.last_modified) {
@@ -513,8 +536,12 @@ int main(int argc, char** argv) {
             printf("\n\033[33m[Hot Reload]\033[0m Reloading library...\n");
 
             if (load_game_library(lib_path, 1) < 0) {
-                fprintf(stderr, "\033[31m[Hot Reload]\033[0m Reload failed, exiting\n");
-                break;
+                fprintf(stderr, "\033[33m[Hot Reload]\033[0m Reload failed; keeping the previous build\n");
+                if (g_lib.clear_reload) {
+                    g_lib.clear_reload();
+                }
+                g_reload_requested = 0;
+                continue;
             }
 
             printf("\033[32m[Hot Reload]\033[0m Restarting game...\n\n");
@@ -531,6 +558,8 @@ int main(int argc, char** argv) {
 
     if (g_lib.handle) {
         dlclose(g_lib.handle);
+        g_lib.handle = NULL;
+        if (g_lib.loaded_path[0]) remove(g_lib.loaded_path);
     }
 
     /* Close the Raylib window if it's still open */

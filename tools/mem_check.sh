@@ -17,17 +17,32 @@ TESTDIR="$ROOT/test"
 OUT="$TESTDIR/output"
 BIN="$OUT/ahoy-memcheck-bin"
 
+# Portable scratch dir for the compiled leak binaries. The old script used
+# a hardcoded /tmp/opencode path which only exists on one dev machine, so
+# fresh GitHub runners failed with:
+#   ld: cannot open output file /tmp/opencode/memcheck_*: No such file or directory
+# Use mktemp (with a $$ fallback) under $TMPDIR so this works anywhere.
+MEMTMP="$(mktemp -d "${TMPDIR:-/tmp}/ahoy-memcheck.XXXXXX" 2>/dev/null || echo "${TMPDIR:-/tmp}/ahoy-memcheck-$$")"
+mkdir -p "$OUT" "$MEMTMP" || { echo "cannot create scratch dirs"; exit 1; }
+trap 'rm -rf "$MEMTMP"' EXIT
+
+command -v valgrind >/dev/null 2>&1 || { echo "valgrind not found; install valgrind"; exit 1; }
+
 cd "$SRC" || exit 1
 go build -o "$BIN" . || { echo "compiler build failed"; exit 1; }
 
 fail=0
 for prog in "$TESTDIR"/input/leak_*.ahoy; do
+    [ -e "$prog" ] || { echo "no leak_*.ahoy inputs found"; fail=1; break; }
     base="$(basename "$prog" .ahoy)"
     cfile="$OUT/$base.c"
-    exe="/tmp/opencode/memcheck_$base"
+    exe="$MEMTMP/memcheck_$base"
     echo "== $base =="
     "$BIN" -f "$prog" >/dev/null 2>&1 || { echo "  ahoy compile FAILED"; fail=1; continue; }
+    if [ ! -f "$cfile" ]; then echo "  missing $cfile"; fail=1; continue; fi
+    rm -f "$exe"
     gcc -O1 -g "$cfile" -o "$exe" -lm 2>&1 | head -5
+    if [ ! -x "$exe" ]; then echo "  gcc FAILED (no binary produced)"; fail=1; continue; fi
     out="$("$exe")" || { echo "  run FAILED"; fail=1; continue; }
     echo "  output tail: $(echo "$out" | tail -1)"
     report="$(valgrind --leak-check=full --errors-for-leaks=yes "$exe" 2>&1 | tail -20)"

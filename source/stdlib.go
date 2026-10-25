@@ -1,5 +1,7 @@
 package main
 
+import "strings"
+
 // StdlibFunc represents a stdlib function definition
 type StdlibFunc struct {
 	Name       string
@@ -328,27 +330,30 @@ func GenerateStdlibAhoyFile() string {
 	output += "? API REFERENCE\n"
 	output += "? ========================================\n\n"
 	
+	// Signature lines are `? `-prefixed doc comments (not code) so this file
+	// stays valid Ahoy: editors and `ahoy -lint` parse it cleanly, and the
+	// LSP loader strips the marker before reading the signature.
 	output += "? Arrays\n"
 	for _, f := range categories["array"] {
-		output += "array." + f.MethodName + "|" + f.Params + "| ? -> " + f.ReturnType + "\n"
+		output += "? array." + f.MethodName + "|" + f.Params + "| ? -> " + f.ReturnType + "\n"
 	}
 	output += "\n"
-	
+
 	output += "? Dictionaries\n"
 	for _, f := range categories["dict"] {
-		output += "dict." + f.MethodName + "|" + f.Params + "| ? -> " + f.ReturnType + "\n"
+		output += "? dict." + f.MethodName + "|" + f.Params + "| ? -> " + f.ReturnType + "\n"
 	}
 	output += "\n"
-	
+
 	output += "? Strings\n"
 	for _, f := range categories["string"] {
-		output += "string." + f.MethodName + "|" + f.Params + "| ? -> " + f.ReturnType + "\n"
+		output += "? string." + f.MethodName + "|" + f.Params + "| ? -> " + f.ReturnType + "\n"
 	}
 	output += "\n"
-	
+
 	output += "? Built-in Functions\n"
 	for _, f := range categories["builtin"] {
-		output += f.Name + "|" + f.Params + "| ? -> " + f.ReturnType + "\n"
+		output += "? " + f.Name + "|" + f.Params + "| ? -> " + f.ReturnType + "\n"
 	}
 	output += "\n"
 	
@@ -369,7 +374,12 @@ func GenerateStdlibAhoyFile() string {
 			output += "? Parameters: " + f.Params + "\n"
 			output += "? Returns: " + f.ReturnType + "\n"
 			output += "? C Implementation:\n"
-			output += "`\n" + f.Code + "`\n\n"
+			// Fence + code stay comments too, so the file parses as Ahoy.
+			output += "? `\n"
+			for _, cl := range strings.Split(f.Code, "\n") {
+				output += "? " + cl + "\n"
+			}
+			output += "? `\n\n"
 		}
 	}
 	

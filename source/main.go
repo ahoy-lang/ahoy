@@ -354,6 +354,25 @@ func sdlRootFromContent(content string) string {
 	return ""
 }
 
+// absFromFile resolves an import string to an absolute path using the
+// importing file's directory for relative imports. Absolute imports pass
+// through unchanged. This keeps -I/link-root detection working when sources
+// use portable relative imports (absolute-in, absolute-out either way).
+func absFromFile(fromFile, importVal string) string {
+	if filepath.IsAbs(importVal) {
+		return importVal
+	}
+	base := ""
+	if fromFile != "" {
+		base = filepath.Dir(fromFile)
+	}
+	abs, err := filepath.Abs(filepath.Join(base, importVal))
+	if err != nil {
+		return importVal
+	}
+	return abs
+}
+
 // detectSDL reports whether any file in the main package or its resolved
 // imports (directory imports included) pulls an SDL3 module header shaped
 // .../SDL3/include/SDL3/<Module>.h, plus the SDL3 root for sdlLinkArgs.
@@ -365,7 +384,7 @@ func detectSDL(pkg *Package, imports map[string]*Package) (bool, string) {
 			for _, child := range file.AST.Children {
 				if child.Type == ahoy.NODE_IMPORT_STATEMENT {
 					if r := sdlRootFromImport(child.Value); r != "" {
-						return true, r
+						return true, absFromFile(file.Path, r)
 					}
 				}
 			}
@@ -373,7 +392,7 @@ func detectSDL(pkg *Package, imports map[string]*Package) (bool, string) {
 	}
 	for _, file := range pkg.Files {
 		if r := sdlRootFromContent(file.Content); r != "" {
-			return true, r
+			return true, absFromFile(file.Path, r)
 		}
 	}
 	for _, importedPkg := range imports {
@@ -382,7 +401,7 @@ func detectSDL(pkg *Package, imports map[string]*Package) (bool, string) {
 		}
 		for _, file := range importedPkg.Files {
 			if r := sdlRootFromContent(file.Content); r != "" {
-				return true, r
+				return true, absFromFile(file.Path, r)
 			}
 		}
 	}
@@ -451,7 +470,7 @@ func detectBox2D(pkg *Package, imports map[string]*Package) (bool, string) {
 			for _, child := range file.AST.Children {
 				if child.Type == ahoy.NODE_IMPORT_STATEMENT {
 					if r := box2dRootFromImport(child.Value); r != "" {
-						return true, r
+						return true, absFromFile(file.Path, r)
 					}
 				}
 			}
@@ -459,7 +478,7 @@ func detectBox2D(pkg *Package, imports map[string]*Package) (bool, string) {
 	}
 	for _, file := range pkg.Files {
 		if r := box2dRootFromContent(file.Content); r != "" {
-			return true, r
+			return true, absFromFile(file.Path, r)
 		}
 	}
 	for _, importedPkg := range imports {
@@ -468,7 +487,7 @@ func detectBox2D(pkg *Package, imports map[string]*Package) (bool, string) {
 		}
 		for _, file := range importedPkg.Files {
 			if r := box2dRootFromContent(file.Content); r != "" {
-				return true, r
+				return true, absFromFile(file.Path, r)
 			}
 		}
 	}
@@ -552,7 +571,7 @@ func detectBox3D(pkg *Package, imports map[string]*Package) (bool, string) {
 			for _, child := range file.AST.Children {
 				if child.Type == ahoy.NODE_IMPORT_STATEMENT {
 					if r := box3dRootFromImport(child.Value); r != "" {
-						return true, r
+						return true, absFromFile(file.Path, r)
 					}
 				}
 			}
@@ -560,7 +579,7 @@ func detectBox3D(pkg *Package, imports map[string]*Package) (bool, string) {
 	}
 	for _, file := range pkg.Files {
 		if r := box3dRootFromContent(file.Content); r != "" {
-			return true, r
+			return true, absFromFile(file.Path, r)
 		}
 	}
 	for _, importedPkg := range imports {
@@ -569,7 +588,7 @@ func detectBox3D(pkg *Package, imports map[string]*Package) (bool, string) {
 		}
 		for _, file := range importedPkg.Files {
 			if r := box3dRootFromContent(file.Content); r != "" {
-				return true, r
+				return true, absFromFile(file.Path, r)
 			}
 		}
 	}
@@ -1435,7 +1454,7 @@ func main() {
 			for _, child := range file.AST.Children {
 				if child.Type == ahoy.NODE_IMPORT_STATEMENT && strings.Contains(child.Value, "raylib.h") {
 					hasRaylib = true
-					raylibPath = filepath.Dir(child.Value)
+					raylibPath = filepath.Dir(absFromFile(file.Path, child.Value))
 					break
 				}
 			}
@@ -1491,6 +1510,10 @@ func main() {
 
 	// Create output directory if it doesn't exist
 	os.MkdirAll(outputDir, 0755)
+
+	// Portability: quoted #includes are emitted relative to the generated
+	// file so the C artifact compiles wherever the tree lives.
+	cCode = relativizeCIncludes(cCode, outputFile)
 
 	// Write C file
 	err = os.WriteFile(outputFile, []byte(cCode), 0644)
@@ -1613,7 +1636,7 @@ func main() {
 				for _, child := range file.AST.Children {
 					if child.Type == ahoy.NODE_IMPORT_STATEMENT && strings.Contains(child.Value, "raylib.h") {
 						hasRaylib = true
-						raylibPath = filepath.Dir(child.Value)
+						raylibPath = filepath.Dir(absFromFile(file.Path, child.Value))
 						break
 					}
 				}
@@ -1657,7 +1680,10 @@ func resolveImports(pkg *Package, pm *PackageManager, fromFile string) (map[stri
 			for _, child := range file.AST.Children {
 				if child.Type == ahoy.NODE_IMPORT_STATEMENT {
 					importPath := child.Value
-					importedPkg, err := pm.ResolveImport(importPath, fromFile)
+					// Resolve against the importing file's own path, so
+					// relative imports in directory-pulled files (e.g.
+					// engine/core.ahoy's ./glue.h) anchor correctly.
+					importedPkg, err := pm.ResolveImport(importPath, file.Path)
 					if err != nil {
 						return nil, fmt.Errorf("failed to resolve import '%s': %v", importPath, err)
 					}
@@ -2127,6 +2153,8 @@ func handleHotReload(sourceFile string, ast *ahoy.ASTNode, absPath string, hasRa
 	libFile := filepath.Join(outputDir, "libgame.so")
 	hostBinary := filepath.Join(outputDir, "hotreload_host")
 
+	libraryCode = relativizeCIncludes(libraryCode, libSourceFile)
+
 	err := os.WriteFile(libSourceFile, []byte(libraryCode), 0644)
 	if err != nil {
 		fmt.Printf("Error writing library source: %v\n", err)
@@ -2146,9 +2174,10 @@ func handleHotReload(sourceFile string, ast *ahoy.ASTNode, absPath string, hasRa
 	var compiler string
 	var libArgs []string
 
+	initialTempLib := libFile + ".init.tmp"
 	if tccPath != "" {
 		compiler = tccPath
-		libArgs = []string{"-shared", "-o", libFile, libSourceFile}
+		libArgs = []string{"-shared", "-o", initialTempLib, libSourceFile}
 
 		if hasRaylib {
 			if raylibPath != "" {
@@ -2162,7 +2191,7 @@ func handleHotReload(sourceFile string, ast *ahoy.ASTNode, absPath string, hasRa
 	} else {
 		fmt.Println("⚠️  TCC not found, falling back to GCC...")
 		compiler = "gcc"
-		libArgs = []string{"-shared", "-fPIC", "-o", libFile, libSourceFile, "-O0", "-g"}
+		libArgs = []string{"-shared", "-fPIC", "-o", initialTempLib, libSourceFile, "-O0", "-g"}
 
 		if hasRaylib {
 			if raylibPath != "" {
@@ -2188,7 +2217,13 @@ func handleHotReload(sourceFile string, ast *ahoy.ASTNode, absPath string, hasRa
 	cmd := exec.Command(compiler, libArgs...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		os.Remove(initialTempLib)
 		fmt.Printf("Error compiling library:\n%s\n", output)
+		os.Exit(1)
+	}
+	if err := os.Rename(initialTempLib, libFile); err != nil {
+		os.Remove(initialTempLib)
+		fmt.Printf("Error installing library: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -2305,6 +2340,84 @@ func handleColdReload(sourceFile string, absPath string) {
 	}
 }
 
+// collectHotWatchDirs walks sourceFile and every .ahoy import it reaches,
+// recording each directory in dirs. Directory imports (bell's `../../engine`)
+// expand to all .ahoy files in that directory, and relative imports resolve
+// against the importing file. Headers and generated output are skipped.
+func collectHotWatchDirs(path string, dirs map[string]bool, seen map[string]bool) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	abs = filepath.Clean(abs)
+	if seen[abs] {
+		return
+	}
+	seen[abs] = true
+
+	info, err := os.Stat(abs)
+	if err != nil {
+		return
+	}
+	if info.IsDir() {
+		dirs[abs] = true
+		entries, err := os.ReadDir(abs)
+		if err != nil {
+			return
+		}
+		for _, ent := range entries {
+			if ent.IsDir() {
+				continue
+			}
+			if strings.HasSuffix(ent.Name(), ".ahoy") {
+				collectHotWatchDirs(filepath.Join(abs, ent.Name()), dirs, seen)
+			}
+		}
+		return
+	}
+	if !strings.HasSuffix(abs, ".ahoy") {
+		return
+	}
+	dirs[filepath.Dir(abs)] = true
+
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "import ") {
+			continue
+		}
+		raw := strings.TrimSpace(strings.TrimPrefix(line, "import "))
+		raw = strings.Trim(raw, "\"'")
+		if raw == "" || strings.HasSuffix(raw, ".h") || strings.HasSuffix(raw, ".c") {
+			continue
+		}
+		if !filepath.IsAbs(raw) {
+			raw = filepath.Join(filepath.Dir(abs), raw)
+		}
+		collectHotWatchDirs(raw, dirs, seen)
+	}
+}
+
+// refreshHotWatchDirs adds any newly imported directories to the watcher, so
+// adding an import while the game is running starts receiving events too.
+func refreshHotWatchDirs(watcher *fsnotify.Watcher, sourceFile string, watched map[string]bool) {
+	dirs := make(map[string]bool)
+	seen := make(map[string]bool)
+	collectHotWatchDirs(sourceFile, dirs, seen)
+	for dir := range dirs {
+		if watched[dir] {
+			continue
+		}
+		if err := watcher.Add(dir); err == nil {
+			watched[dir] = true
+			fmt.Printf("👁️  Watching: %s\n", dir)
+		}
+	}
+}
+
 // watchAndRecompileHot watches for file changes and recompiles the library for hot reload
 func watchAndRecompileHot(sourceFile, sourceDir string, libSourceFile, libFile string, hasRaylib bool, raylibPath string, hasSDL bool, sdlRoot string, hasBox2D bool, box2dRoot string, hasBox3D bool, box3dRoot string) {
 	watcher, err := fsnotify.NewWatcher()
@@ -2314,12 +2427,10 @@ func watchAndRecompileHot(sourceFile, sourceDir string, libSourceFile, libFile s
 	}
 	defer watcher.Close()
 
-	// Watch the source directory
-	err = watcher.Add(sourceDir)
-	if err != nil {
-		fmt.Printf("Error watching directory: %v\n", err)
-		return
-	}
+	// Watch the source file, its directory, and every directory reached by
+	// its imports (engine included). New imports are added on later events.
+	watchedDirs := make(map[string]bool)
+	refreshHotWatchDirs(watcher, sourceFile, watchedDirs)
 
 	// Also watch common shader directories if they exist
 	shaderDirs := []string{
@@ -2330,6 +2441,7 @@ func watchAndRecompileHot(sourceFile, sourceDir string, libSourceFile, libFile s
 	for _, dir := range shaderDirs {
 		if info, err := os.Stat(dir); err == nil && info.IsDir() {
 			if err := watcher.Add(dir); err == nil {
+				watchedDirs[dir] = true
 				fmt.Printf("👁️  Also watching: %s\n", filepath.Base(dir))
 			}
 		}
@@ -2343,10 +2455,14 @@ func watchAndRecompileHot(sourceFile, sourceDir string, libSourceFile, libFile s
 			// Watch for .ahoy, .vs (vertex shader), and .fs (fragment shader) files
 			isWatchedFile := strings.HasSuffix(event.Name, ".ahoy") ||
 				strings.HasSuffix(event.Name, ".vs") ||
-				strings.HasSuffix(event.Name, ".fs")
+				strings.HasSuffix(event.Name, ".fs") ||
+				strings.HasSuffix(event.Name, ".shader")
 
 			if !isWatchedFile {
 				continue
+			}
+			if strings.HasSuffix(event.Name, ".ahoy") {
+				refreshHotWatchDirs(watcher, sourceFile, watchedDirs)
 			}
 
 			// A save is not always a plain write: editors (and `sed -i`) often
@@ -2361,11 +2477,14 @@ func watchAndRecompileHot(sourceFile, sourceDir string, libSourceFile, libFile s
 				// Show which file triggered the reload
 				fileName := filepath.Base(event.Name)
 				fileType := "code"
-				if strings.HasSuffix(event.Name, ".vs") || strings.HasSuffix(event.Name, ".fs") {
+				if strings.HasSuffix(event.Name, ".vs") || strings.HasSuffix(event.Name, ".fs") ||
+					strings.HasSuffix(event.Name, ".shader") {
 					fileType = "shader"
 				}
 
-				debounceTimer = time.AfterFunc(10*time.Millisecond, func() {
+				// 120ms absorbs editor temp-file/rename sequences and the
+				// tail of a slow save without making reloads feel laggy.
+				debounceTimer = time.AfterFunc(120*time.Millisecond, func() {
 					fmt.Printf("\n📝 %s file changed: %s\n", fileType, fileName)
 					recompileLibraryHot(sourceFile, libSourceFile, libFile, hasRaylib, raylibPath, hasSDL, sdlRoot, hasBox2D, box2dRoot, hasBox3D, box3dRoot)
 				})
@@ -2411,6 +2530,8 @@ func recompileLibraryHot(sourceFile, libSourceFile, libFile string, hasRaylib bo
 
 	// Regenerate C code
 	libraryCode, _ := GenerateCWithHotReload(ast, sourceFile, hasRaylib, raylibPath)
+
+	libraryCode = relativizeCIncludes(libraryCode, libSourceFile)
 
 	err = os.WriteFile(libSourceFile, []byte(libraryCode), 0644)
 	if err != nil {
@@ -2532,6 +2653,8 @@ func compileAndRunCold(sourceFile string, isInitial bool) {
 	outputFile := filepath.Join(outputDir, baseName+".c")
 	executable := filepath.Join(outputDir, baseName)
 
+	cCode = relativizeCIncludes(cCode, outputFile)
+
 	err = os.WriteFile(outputFile, []byte(cCode), 0644)
 	if err != nil {
 		fmt.Printf("❌ Error writing C file: %v\n", err)
@@ -2546,7 +2669,7 @@ func compileAndRunCold(sourceFile string, isInitial bool) {
 			for _, child := range file.AST.Children {
 				if child.Type == ahoy.NODE_IMPORT_STATEMENT && strings.Contains(child.Value, "raylib.h") {
 					hasRaylib = true
-					raylibPath = filepath.Dir(child.Value)
+					raylibPath = filepath.Dir(absFromFile(file.Path, child.Value))
 					break
 				}
 			}

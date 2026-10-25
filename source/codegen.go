@@ -6652,11 +6652,16 @@ func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
 	headerName := node.Value
 	namespace := node.DataType // Namespace is stored in DataType field
 
-	// Resolve relative paths to absolute paths
+	// Resolve relative paths to absolute paths, anchored at the importing
+	// file (node.File) so directory-pulled files resolve correctly. Falls
+	// back to the main source file when the node carries no path.
 	resolvedHeaderName := headerName
 	if strings.HasSuffix(headerName, ".h") && (strings.HasPrefix(headerName, "./") || strings.HasPrefix(headerName, "../")) {
-		// It's a relative path - resolve it based on the source file location
+		// It's a relative path - resolve it based on the importing file's location
 		sourceDir := filepath.Dir(gen.sourceFilename)
+		if node.File != "" {
+			sourceDir = filepath.Dir(node.File)
+		}
 		absPath, err := filepath.Abs(filepath.Join(sourceDir, headerName))
 		if err == nil {
 			// Verify the file exists
@@ -11729,8 +11734,7 @@ func (gen *CodeGenerator) isEnumType(name string) bool {
 // reorderRaylibIncludes ensures raylib.h comes before raymath.h and raygui.h to avoid duplicate type definitions
 // raylib.h defines RL_VECTOR2_TYPE, RL_VECTOR3_TYPE, etc. which raymath.h checks
 // raygui.h also depends on raylib.h being included first
-func (gen *CodeGenerator) reorderRaylibIncludes() {
-	var raylibIdx, raymathIdx, rayguiIdx int = -1, -1, -1
+func (gen *CodeGenerator) reorderRaylibIncludes() {	var raylibIdx, raymathIdx, rayguiIdx int = -1, -1, -1
 
 	// Find indices of raylib.h, raymath.h, and raygui.h
 	for i, include := range gen.orderedIncludes {
@@ -11763,6 +11767,35 @@ func (gen *CodeGenerator) reorderRaylibIncludes() {
 	}
 }
 
+// relativizeCIncludes rewrites absolute quoted #include paths in generated C
+// to paths relative to the generated file's directory, so the artifact
+// compiles anywhere the project tree lives instead of only on the machine
+// that ran the compiler. Non-absolute includes pass through untouched, and
+// unresolvable paths keep their absolute form rather than breaking the build.
+func relativizeCIncludes(cCode, outputFile string) string {
+	outDir, err := filepath.Abs(filepath.Dir(outputFile))
+	if err != nil {
+		return cCode
+	}
+	lines := strings.Split(cCode, "\n")
+	for i, ln := range lines {
+		t := strings.TrimSpace(ln)
+		const prefix = "#include \""
+		if !strings.HasPrefix(t, prefix) || !strings.HasSuffix(t, "\"") {
+			continue
+		}
+		p := t[len(prefix) : len(t)-1]
+		if !filepath.IsAbs(p) {
+			continue
+		}
+		rel, err := filepath.Rel(outDir, p)
+		if err != nil || rel == "" {
+			continue
+		}
+		lines[i] = "#include \"" + filepath.ToSlash(rel) + "\""
+	}
+	return strings.Join(lines, "\n")
+}
 // isConstantOrEnum checks if a name is a constant (Ahoy constant, C #define, or enum value)
 func (gen *CodeGenerator) isConstantOrEnum(name string) bool {
 	// Check if it's an Ahoy constant
