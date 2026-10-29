@@ -2991,6 +2991,15 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			indexNode := node.Children[0].Children[0]
 			valueNode := node.Children[1]
 
+			// Slot outlives the statement but a heap string value may not
+			// (block-local freed at scope exit, f-string static buffers,
+			// owned pieces): same protection as struct-field stores.
+			if gen.slotStoreNeedsDup(valueNode) {
+				gen.markEscapingVariables(valueNode)
+				gen.markStoredVariables(valueNode)
+				gen.markValueDeps(valueNode)
+			}
+
 			// Flat buffer store: contiguous lanes, no boxing.
 			if gen.isBufferVar(arrayName) {
 				gen.generateBufferWrite(node, arrayName, indexNode, valueNode, gen.bufferElemOfVar(arrayName))
@@ -3127,7 +3136,7 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 						gen.generateNode(indexNode)
 						gen.output.WriteString("] = (void*)")
 					}
-					if gen.ownedReadNeedsDup(valueNode) {
+					if gen.slotStoreNeedsDup(valueNode) {
 						gen.output.WriteString("strdup(")
 						gen.generateNode(valueNode)
 						gen.output.WriteString(")")
@@ -3171,7 +3180,7 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 					gen.generateNode(indexNode)
 					gen.output.WriteString("] = (void*)(intptr_t)")
 				}
-				if gen.ownedReadNeedsDup(valueNode) {
+				if gen.slotStoreNeedsDup(valueNode) {
 					gen.output.WriteString("strdup(")
 					gen.generateNode(valueNode)
 					gen.output.WriteString(")")
@@ -3242,6 +3251,13 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			outerIndex := chainedAccess.Children[1]
 			valueNode := node.Children[1]
 
+			// Slot-outlives-statement protection, as for plain stores.
+			if gen.slotStoreNeedsDup(valueNode) {
+				gen.markEscapingVariables(valueNode)
+				gen.markStoredVariables(valueNode)
+				gen.markValueDeps(valueNode)
+			}
+
 			// Get the 2D array's nested element type
 			var elemType string
 			if innerAccess.Type == ahoy.NODE_ARRAY_ACCESS && innerAccess.Value != "" {
@@ -3272,7 +3288,13 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 					gen.output.WriteString("])->")
 					gen.output.WriteString(memberName)
 					gen.output.WriteString(" = ")
-					gen.generateNode(valueNode)
+					if gen.slotStoreNeedsDup(valueNode) {
+						gen.output.WriteString("strdup(")
+						gen.generateNode(valueNode)
+						gen.output.WriteString(")")
+					} else {
+						gen.generateNode(valueNode)
+					}
 					gen.output.WriteString(";\n")
 					return
 				}
@@ -3289,6 +3311,14 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			arrayName := arrayAccessNode.Value
 			indexNode := arrayAccessNode.Children[0]
 			valueNode := node.Children[1]
+
+			// Same slot-outlives-statement protection as plain element
+			// stores: a heap string value would otherwise dangle.
+			if gen.slotStoreNeedsDup(valueNode) {
+				gen.markEscapingVariables(valueNode)
+				gen.markStoredVariables(valueNode)
+				gen.markValueDeps(valueNode)
+			}
 
 			// Get array element type
 			var elemType string
@@ -3339,7 +3369,13 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 						gen.output.WriteString("*)__arr->data[__idx])->")
 						gen.output.WriteString(memberName)
 						gen.output.WriteString(" = ")
-						gen.generateNode(valueNode)
+						if gen.slotStoreNeedsDup(valueNode) {
+							gen.output.WriteString("strdup(")
+							gen.generateNode(valueNode)
+							gen.output.WriteString(")")
+						} else {
+							gen.generateNode(valueNode)
+						}
 						gen.output.WriteString("; }\n")
 					} else {
 						gen.output.WriteString("((")
@@ -3351,7 +3387,13 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 						gen.output.WriteString("])->")
 						gen.output.WriteString(memberName)
 						gen.output.WriteString(" = ")
-						gen.generateNode(valueNode)
+						if gen.slotStoreNeedsDup(valueNode) {
+							gen.output.WriteString("strdup(")
+							gen.generateNode(valueNode)
+							gen.output.WriteString(")")
+						} else {
+							gen.generateNode(valueNode)
+						}
 						gen.output.WriteString(";\n")
 					}
 					return
@@ -6038,6 +6080,25 @@ func (gen *CodeGenerator) fieldStoreNeedsDup(valueNode *ahoy.ASTNode) bool {
 		return isStringLikeType(gen.inferType(valueNode))
 	}
 	return false
+}
+
+// slotStoreNeedsDup reports whether storing valueNode into a slot that
+// outlives the statement (array element, dict entry) must duplicate it:
+// the same cases as struct fields (f-string statics, owned pieces,
+// bare/borrowed string reads). Fresh values (calls, concatenations,
+// literals, methods) are immortal or static and stay raw, exactly like
+// the struct-field site.
+func (gen *CodeGenerator) slotStoreNeedsDup(valueNode *ahoy.ASTNode) bool {
+	if valueNode == nil {
+		return false
+	}
+	if valueNode.Type == ahoy.NODE_F_STRING {
+		return true
+	}
+	if gen.ownedReadNeedsDup(valueNode) {
+		return true
+	}
+	return gen.fieldStoreNeedsDup(valueNode)
 }
 
 // ownedReadNeedsDup reports whether valueNode reads an element from an
@@ -11319,6 +11380,13 @@ func (gen *CodeGenerator) generateDictAccess(node *ahoy.ASTNode) {
 // because the runtime keeps AHOY_TYPE_FLOAT values as double* (see hashMapGetTyped).
 // dictExpr is emitted verbatim, so a caller that needs a cast must include it.
 func (gen *CodeGenerator) generateDictPutTyped(dictExpr string, keyNode, valueNode *ahoy.ASTNode) {
+	// Entry outlives the statement but a heap string value may not:
+	// same protection as struct-field and array-element stores.
+	if gen.slotStoreNeedsDup(valueNode) {
+		gen.markEscapingVariables(valueNode)
+		gen.markStoredVariables(valueNode)
+		gen.markValueDeps(valueNode)
+	}
 	valueType := gen.inferType(valueNode)
 	ahoyTypeEnum := gen.getAhoyTypeEnum(valueType)
 
@@ -11342,9 +11410,9 @@ func (gen *CodeGenerator) generateDictPutTyped(dictExpr string, keyNode, valueNo
 		gen.output.WriteString("; })")
 	} else {
 		gen.output.WriteString("(void*)(intptr_t)")
-		// Owned-read element stored into a dict: duplicate so the entry
-		// survives the source array's scope exit (same C type either way).
-		if gen.ownedReadNeedsDup(valueNode) {
+		// Slot outlives the statement: duplicate f-string statics, owned
+		// pieces and bare/borrowed string reads (same C type either way).
+		if gen.slotStoreNeedsDup(valueNode) {
 			gen.output.WriteString("strdup(")
 			gen.generateNode(valueNode)
 			gen.output.WriteString(")")
