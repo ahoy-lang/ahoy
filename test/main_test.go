@@ -187,8 +187,7 @@ func TestConsolidatedFiles(t *testing.T) {
 		testName = strings.Title(testName) + " Test"
 
 		t.Run(testName, func(t *testing.T) {
-			t.Parallel()
-			output, err := compileAndRun(t, file, compilerPath)
+				output, err := compileAndRun(t, file, compilerPath)
 			if err != nil {
 				t.Fatalf("Failed to compile and run: %v", err)
 			}
@@ -324,6 +323,16 @@ func compileAndRun(t *testing.T, ahoyFile string, compilerPath string) (string, 
 	baseName := strings.TrimSuffix(filepath.Base(ahoyFile), ".ahoy")
 	outputDir := "output"
 	os.MkdirAll(outputDir, 0755)
+	// Clean stale artifacts for this test to avoid cross-test contamination.
+	os.Remove(filepath.Join(outputDir, baseName+".c"))
+	os.Remove(filepath.Join(outputDir, baseName))
+	os.Remove(filepath.Join(outputDir, "main.h"))
+	if matches, _ := filepath.Glob(filepath.Join(outputDir, "main_*.c")); matches != nil {
+		for _, m := range matches { os.Remove(m) }
+	}
+	if matches, _ := filepath.Glob(filepath.Join(outputDir, "main_*.h")); matches != nil {
+		for _, m := range matches { os.Remove(m) }
+	}
 
 	cFile := filepath.Join(outputDir, baseName+".c")
 	executable := filepath.Join(outputDir, baseName)
@@ -344,8 +353,15 @@ func compileAndRun(t *testing.T, ahoyFile string, compilerPath string) (string, 
 		return "", fmt.Errorf("failed to read C file: %v", err)
 	}
 
+	// Compile all generated TUs (main.c + main_<slug>.c).
+	cFiles := []string{cFile}
+	if matches, _ := filepath.Glob(filepath.Join(outputDir, "main_*.c")); len(matches) > 0 {
+		cFiles = append(cFiles, matches...)
+	}
+
 	// Build compile command with appropriate flags
-	compileArgs := []string{"-o", executable, cFile}
+	compileArgs := []string{"-o", executable}
+	compileArgs = append(compileArgs, cFiles...)
 
 	// If raylib is included, add raylib linking
 	if strings.Contains(string(cFileContent), "raylib.h") {

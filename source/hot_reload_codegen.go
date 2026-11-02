@@ -11,7 +11,11 @@ import (
 // Returns: (libraryCode, hostCode)
 func GenerateCWithHotReload(ast *ahoy.ASTNode, filename string, hasRaylib bool, raylibPath string) (string, string) {
 	// Generate the normal C code
-	normalCode := generateC(ast, filename)
+	_, files := generateC(ast, filename)
+	normalCode := ""
+	if c, ok := files["main.c"]; ok {
+		normalCode = c
+	}
 
 	// Transform it into a hot-reloadable library
 	libraryCode := transformToLibrary(normalCode, hasRaylib)

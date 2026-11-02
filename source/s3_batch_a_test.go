@@ -14,7 +14,8 @@ func generateForTest(t *testing.T, src string) string {
 	t.Helper()
 	tokens := ahoy.Tokenize(formatSource(src))
 	ast := ahoy.Parse(tokens)
-	return generateC(ast, "test.ahoy")
+	_, c := generateC(ast, "test.ahoy")
+	return c
 }
 
 func TestFastFlagDropsBoundsChecks(t *testing.T) {

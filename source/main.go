@@ -816,7 +816,7 @@ func getZigTarget(platform string) string {
 }
 
 // buildForTarget compiles for a specific target
-func buildForTarget(target *CrossCompileTarget, cFile, baseName, sourceDir string, hasRaylib bool, raylibPath string, hasSDL bool, sdlRoot string, hasBox2D bool, box2dRoot string, hasBox3D bool, box3dRoot string) error {
+func buildForTarget(target *CrossCompileTarget, cFiles []string, baseName, sourceDir string, hasRaylib bool, raylibPath string, hasSDL bool, sdlRoot string, hasBox2D bool, box2dRoot string, hasBox3D bool, box3dRoot string) error {
 	// Create output directory
 	if err := os.MkdirAll(target.OutputDir, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory: %v", err)
@@ -932,35 +932,95 @@ func buildForTarget(target *CrossCompileTarget, cFile, baseName, sourceDir strin
 		addCompile("-D" + d)
 	}
 
-	// Compile step
-	objFile := filepath.Join(target.OutputDir, baseName+".o")
-	compileArgs := append([]string{}, cflags...)
-	compileArgs = append(compileArgs, "-c", cFile, "-o", objFile)
-	compiler := target.Compiler
-	if os.Getenv("AHOY_CCACHE") != "0" {
-		if cc, err := exec.LookPath("ccache"); err == nil {
-			base := filepath.Base(compiler)
-			if base == "gcc" || base == "clang" || base == "cc" {
-				compileArgs = append([]string{compiler}, compileArgs...)
-				compiler = cc
+	// Compile step. tcc is a single-pass compiler and re-parses every
+	// header per TU, so for tcc builds we concatenate all TUs into one
+	// file (unity build) for speed; gcc/clang keep per-TU .o for ccache.
+	isTCC := strings.EqualFold(filepath.Base(target.Compiler), "tcc") || strings.EqualFold(filepath.Base(target.Compiler), "tcc.exe")
+	var objFiles []string
+	if isTCC {
+		// tcc is single-pass: concatenate all TUs into one file (unity
+		// build) for speed. Include guards in engine headers prevent
+		// redefinition across the concatenated includes.
+		combined := filepath.Join(target.OutputDir, baseName+"_unity.c")
+		// Unity build: concatenate all TUs, but deduplicate #include and
+		// #define lines so headers without include guards are only
+		// processed once (robust against missing guards in projects).
+		var buf strings.Builder
+		seenInc := make(map[string]bool)
+		seenDef := make(map[string]bool)
+		for _, cf := range cFiles {
+			data, err := os.ReadFile(cf)
+			if err != nil {
+				return fmt.Errorf("reading %s: %v", cf, err)
+			}
+			for _, line := range strings.Split(string(data), "\n") {
+				tl := strings.TrimSpace(line)
+				if strings.HasPrefix(tl, "#include") {
+					if seenInc[tl] {
+						continue
+					}
+					seenInc[tl] = true
+				} else if strings.HasPrefix(tl, "#define AHOY_MAIN_TU") {
+					if seenDef[tl] {
+						continue
+					}
+					seenDef[tl] = true
+				}
+				buf.WriteString(line)
+				buf.WriteString("\n")
+			}
+			buf.WriteString("\n")
+		}
+		if err := os.WriteFile(combined, []byte(buf.String()), 0644); err != nil {
+			return fmt.Errorf("writing unity file: %v", err)
+		}
+		objFile := filepath.Join(target.OutputDir, baseName+".o")
+		objFiles = append(objFiles, objFile)
+		compileArgs := append([]string{}, cflags...)
+		compileArgs = append(compileArgs, "-c", combined, "-o", objFile)
+		compiler := target.Compiler
+		cmd := exec.Command(compiler, compileArgs...)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("compilation failed for %s (unity):\n%s", target.Name, output)
+		}
+	} else {
+		for _, cf := range cFiles {
+			tuBase := strings.TrimSuffix(filepath.Base(cf), ".c")
+			objFile := filepath.Join(target.OutputDir, tuBase+".o")
+			objFiles = append(objFiles, objFile)
+			compileArgs := append([]string{}, cflags...)
+			compileArgs = append(compileArgs, "-c", cf, "-o", objFile)
+			compiler := target.Compiler
+			if os.Getenv("AHOY_CCACHE") != "0" {
+				if cc, err := exec.LookPath("ccache"); err == nil {
+					base := filepath.Base(compiler)
+					if base == "gcc" || base == "clang" || base == "cc" {
+						compileArgs = append([]string{compiler}, compileArgs...)
+						compiler = cc
+					}
+				}
+			}
+			if len(target.Args) > 0 && target.Args[0] == "cc" {
+				// target.Args already starts with "cc"; compiler is zig.
+				compiler = target.Compiler
+			}
+			cmd := exec.Command(compiler, compileArgs...)
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("compilation failed for %s (%s):\n%s", target.Name, cf, output)
 			}
 		}
 	}
-	cmd := exec.Command(compiler, compileArgs...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("compilation failed for %s:\n%s", target.Name, output)
-	}
 
 	// Link step
-	linkArgs := append([]string{objFile}, ldflags...)
+	linkArgs := append([]string{}, objFiles...)
+	linkArgs = append(linkArgs, ldflags...)
 	linkArgs = append(linkArgs, "-o", executable)
-	// zig is invoked as "zig cc ..."; emcc/gcc are single executables.
 	linkCompiler := target.Compiler
 	linkPrefix := []string{}
 	if len(target.Args) > 0 && target.Args[0] == "cc" {
 		linkPrefix = append(linkPrefix, "cc")
-		// carry the target flag (and harmless compile flags) into the link
 		linkPrefix = append(linkPrefix, target.Args[1:]...)
 	}
 	linkCmd := exec.Command(linkCompiler, append(linkPrefix, linkArgs...)...)
@@ -1095,6 +1155,7 @@ func main() {
 	genStdlibFlag := flag.Bool("gen_stdlib_docs", false, "Generate stdlib documentation as .ahoy file")
 	hotReloadFlag := flag.Bool("hotreload", false, "Enable hot code reloading (keeps window open, reloads on file changes) - development only")
 	coldReloadFlag := flag.Bool("coldreload", false, "Enable cold reload (auto-recompile and restart on file changes) - development only")
+	singleTUFlag := flag.Bool("single-tu", false, "Force single-translation-unit codegen (legacy fallback)")
 	noSemanticsFlag := flag.Bool("no_semantics", false, "Skip semantic validation (type errors, undeclared names, duplicate definitions)")
 	strictFlag := flag.Bool("strict", true, "Extra dev-time warnings for bug classes that segfault (array-type contradictions, literal division by zero)")
 	fastFlag := flag.Bool("fast", false, "Disable runtime array bounds checks (opt-in: only for programs proven in-bounds; violations become silent memory bugs)")
@@ -1125,6 +1186,7 @@ func main() {
 	defines = append(defines, hostOSDefines(*targetFlag)...)
 
 	buildDefines = defines
+	singleTU = *singleTUFlag
 
 	// Check for conflicting flags
 	if *hotReloadFlag && *releaseFlag {
@@ -1539,7 +1601,12 @@ func main() {
 	CrashLineTracking = !noBoundsChecks
 
 	// Generate C code with source filename for better error messages
-	cCode := generateC(ast, sourceFile)
+	headerCode, files := generateC(ast, sourceFile)
+	cCode, ok := files["main.c"]
+	if !ok || cCode == "" {
+		fmt.Println("❌ Code generation failed")
+		return
+	}
 
 	codegenTime := time.Since(codegenStart)
 
@@ -1625,6 +1692,24 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Write every generated TU: main.c + main_<slug>.c, plus main.h.
+	for fname, content := range files {
+		path := filepath.Join(outputDir, fname)
+		written := content
+		if fname != "main.h" {
+			written = relativizeCIncludes(content, path)
+		}
+		if err := os.WriteFile(path, []byte(written), 0644); err != nil {
+			fmt.Printf("Error writing %s: %v\n", fname, err)
+			os.Exit(1)
+		}
+	}
+	headerCode = relativizeCIncludes(headerCode, filepath.Join(outputDir, "main.h"))
+	if err := os.WriteFile(filepath.Join(outputDir, "main.h"), []byte(headerCode), 0644); err != nil {
+		fmt.Printf("Error writing header file: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Format time as milliseconds with 1 decimal
 	formatTime := func(d time.Duration) string {
 		ms := float64(d.Nanoseconds()) / 1e6
@@ -1661,8 +1746,37 @@ func main() {
 			os.Exit(1)
 		}
 
-		// Build compilation arguments
-		compileArgs := append(baseArgs, "-o", executable, outputFile)
+		// Build compilation arguments. For tcc (debug), combine all TUs
+		// into one file for single-pass speed; otherwise pass them all.
+		cSources := []string{outputFile}
+		for fname := range files {
+			if fname != "main.c" && strings.HasSuffix(fname, ".c") {
+				cSources = append(cSources, filepath.Join(outputDir, fname))
+			}
+		}
+		isTCC := strings.EqualFold(filepath.Base(compiler), "tcc") || strings.EqualFold(filepath.Base(compiler), "tcc.exe")
+		if isTCC && len(cSources) > 1 {
+			combined := filepath.Join(outputDir, baseName+"_unity.c")
+			var buf strings.Builder
+			seenInc := make(map[string]bool)
+			for _, cf := range cSources {
+				data, _ := os.ReadFile(cf)
+				for _, line := range strings.Split(string(data), "\n") {
+					tl := strings.TrimSpace(line)
+					if strings.HasPrefix(tl, "#include") {
+						if seenInc[tl] { continue }
+						seenInc[tl] = true
+					}
+					buf.WriteString(line)
+					buf.WriteString("\n")
+				}
+				buf.WriteString("\n")
+			}
+			os.WriteFile(combined, []byte(buf.String()), 0644)
+			cSources = []string{combined}
+		}
+		compileArgs := append(baseArgs, "-o", executable)
+		compileArgs = append(compileArgs, cSources...)
 
 		// Add raylib include and linking flags if needed (already determined above)
 		if hasRaylib {
@@ -1758,6 +1872,12 @@ func main() {
 
 		fmt.Println("\nBuilding release builds...")
 		sourceDir := filepath.Dir(sourceFile)
+		tuFiles := []string{outputFile}
+		for fname := range files {
+			if fname != "main.c" && strings.HasSuffix(fname, ".c") {
+				tuFiles = append(tuFiles, filepath.Join(outputDir, fname))
+			}
+		}
 
 		buildFailed := false
 		for _, targetName := range targets {
@@ -1768,7 +1888,7 @@ func main() {
 				continue
 			}
 
-			if err := buildForTarget(target, outputFile, baseName, sourceDir, hasRaylib, raylibPath, hasSDL, sdlRoot, hasBox2D, box2dRoot, hasBox3D, box3dRoot); err != nil {
+			if err := buildForTarget(target, tuFiles, baseName, sourceDir, hasRaylib, raylibPath, hasSDL, sdlRoot, hasBox2D, box2dRoot, hasBox3D, box3dRoot); err != nil {
 				fmt.Printf("✗ %s: %v\n", targetName, err)
 				buildFailed = true
 			}
@@ -2747,8 +2867,9 @@ func compileAndRunCold(sourceFile string, isInitial bool) {
 	ast := MergeWithImports(pkg, imports)
 
 	// Generate C code
-	cCode := generateC(ast, sourceFile)
-	if cCode == "" {
+	headerCode, files := generateC(ast, sourceFile)
+	cCode, ok := files["main.c"]
+	if !ok || cCode == "" {
 		fmt.Println("❌ Code generation failed")
 		return
 	}
@@ -2762,11 +2883,21 @@ func compileAndRunCold(sourceFile string, isInitial bool) {
 	outputFile := filepath.Join(outputDir, baseName+".c")
 	executable := filepath.Join(outputDir, baseName)
 
-	cCode = relativizeCIncludes(cCode, outputFile)
-
-	err = os.WriteFile(outputFile, []byte(cCode), 0644)
-	if err != nil {
-		fmt.Printf("❌ Error writing C file: %v\n", err)
+	// Write every generated TU.
+	for fname, content := range files {
+		path := filepath.Join(outputDir, fname)
+		written := content
+		if fname != "main.h" {
+			written = relativizeCIncludes(content, path)
+		}
+		if err := os.WriteFile(path, []byte(written), 0644); err != nil {
+			fmt.Printf("❌ Error writing %s: %v\n", fname, err)
+			return
+		}
+	}
+	headerCode = relativizeCIncludes(headerCode, filepath.Join(outputDir, "main.h"))
+	if err := os.WriteFile(filepath.Join(outputDir, "main.h"), []byte(headerCode), 0644); err != nil {
+		fmt.Printf("❌ Error writing header file: %v\n", err)
 		return
 	}
 
