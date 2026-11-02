@@ -51,7 +51,7 @@ func findCompiler(releaseMode bool, debugMode bool, executablePath string) (stri
 		// Try to find gcc or clang for optimized builds
 		gccPath, err := exec.LookPath("gcc")
 		if err == nil {
-			args := []string{"-O3"}
+			args := []string{"-O3", "-Wno-parentheses-equality", "-Wno-unused-function", "-Wno-unused-variable", "-Wno-incompatible-pointer-types-discards-qualifiers", "-Wno-unused-but-set-variable"}
 			if debugMode {
 				// Release mode with debug: use address sanitizer
 				args = []string{"-g", "-fsanitize=address"}
@@ -61,7 +61,7 @@ func findCompiler(releaseMode bool, debugMode bool, executablePath string) (stri
 
 		clangPath, err := exec.LookPath("clang")
 		if err == nil {
-			args := []string{"-O3"}
+			args := []string{"-O3", "-Wno-parentheses-equality", "-Wno-unused-function", "-Wno-unused-variable", "-Wno-incompatible-pointer-types-discards-qualifiers", "-Wno-unused-but-set-variable"}
 			if debugMode {
 				// Release mode with debug: use address sanitizer
 				args = []string{"-g", "-fsanitize=address"}
@@ -186,7 +186,7 @@ func findCrossCompiler(target string, ahoyDir string) (*CrossCompileTarget, erro
 			Name:      "linux",
 			OutputDir: "build/linux",
 			Compiler:  zigPath,
-			Args:      []string{"cc", "-target", "x86_64-linux-gnu", "-O3", "-Wno-int-conversion", "-Wno-format"},
+			Args:      []string{"cc", "-target", "x86_64-linux-gnu", "-O3", "-Wno-int-conversion", "-Wno-format", "-Wno-parentheses-equality", "-Wno-unused-function", "-Wno-unused-variable", "-Wno-incompatible-pointer-types-discards-qualifiers", "-Wno-unused-but-set-variable"},
 			Extension: "",
 		}, nil
 
@@ -214,7 +214,7 @@ func findCrossCompiler(target string, ahoyDir string) (*CrossCompileTarget, erro
 			Name:      "windows",
 			OutputDir: "build/windows",
 			Compiler:  zigPath,
-			Args:      []string{"cc", "-target", "x86_64-windows-gnu", "-O3", "-Wno-int-conversion", "-Wno-format"},
+			Args:      []string{"cc", "-target", "x86_64-windows-gnu", "-O3", "-Wno-int-conversion", "-Wno-format", "-Wno-parentheses-equality", "-Wno-unused-function", "-Wno-unused-variable", "-Wno-incompatible-pointer-types-discards-qualifiers", "-Wno-unused-but-set-variable"},
 			Extension: ".exe",
 		}, nil
 
@@ -242,7 +242,7 @@ func findCrossCompiler(target string, ahoyDir string) (*CrossCompileTarget, erro
 			Name:      "macos",
 			OutputDir: "build/macos",
 			Compiler:  zigPath,
-			Args:      []string{"cc", "-target", "x86_64-macos", "-O3", "-Wno-int-conversion", "-Wno-format"},
+			Args:      []string{"cc", "-target", "x86_64-macos", "-O3", "-Wno-int-conversion", "-Wno-format", "-Wno-parentheses-equality", "-Wno-unused-function", "-Wno-unused-variable", "-Wno-incompatible-pointer-types-discards-qualifiers", "-Wno-unused-but-set-variable"},
 			Extension: "",
 		}, nil
 
@@ -261,7 +261,7 @@ func findCrossCompiler(target string, ahoyDir string) (*CrossCompileTarget, erro
 			Name:      "web",
 			OutputDir: "build/web",
 			Compiler:  emccPath,
-			Args:      []string{"-O3", "-s", "WASM=1", "-Wno-int-conversion", "-Wno-format"},
+			Args:      []string{"-O3", "-s", "WASM=1", "-Wno-int-conversion", "-Wno-format", "-Wno-parentheses-equality"},
 			Extension: ".html",
 		}, nil
 
@@ -824,90 +824,149 @@ func buildForTarget(target *CrossCompileTarget, cFile, baseName, sourceDir strin
 
 	executable := filepath.Join(target.OutputDir, baseName+target.Extension)
 
-	// Build compile arguments
-	args := append(target.Args, "-o", executable, cFile)
+	// Build compile/link argument lists separately so ccache can cache the
+	// compile step (the 25s gcc -O3 pass). Compile flags (-O, -W, -I, -D,
+	// zig -target) go to cflags; link-only items (.a archives, -l*, -L*,
+	// -framework, emcc -s/--shell-file/--preload-file) go to ldflags.
+	cflags := append([]string{}, target.Args...)
+	ldflags := []string{}
+	addCompile := func(f ...string) { cflags = append(cflags, f...) }
+	addLink := func(f ...string) { ldflags = append(ldflags, f...) }
+	addBoth := func(f ...string) { cflags = append(cflags, f...); ldflags = append(ldflags, f...) }
 
-	// Add library flags
 	if hasRaylib {
 		raylibFlags, err := getRaylibFlags(target, raylibPath, sourceDir)
 		if err != nil {
 			return err
 		}
-		args = append(args, raylibFlags...)
+		for i := 0; i < len(raylibFlags); i++ {
+			f := raylibFlags[i]
+			switch {
+			case strings.HasPrefix(f, "-I"), strings.HasPrefix(f, "-D"):
+				addCompile(f)
+			case strings.HasPrefix(f, "-L"), strings.HasPrefix(f, "-l"):
+				addLink(f)
+			case f == "-framework":
+				addLink(f)
+				if i+1 < len(raylibFlags) {
+					i++
+					addLink(raylibFlags[i])
+				}
+			case strings.HasPrefix(f, "-s"):
+				addBoth(f)
+				if i+1 < len(raylibFlags) && !strings.HasPrefix(raylibFlags[i+1], "-") {
+					i++
+					addBoth(raylibFlags[i])
+				}
+			case strings.HasPrefix(f, "--"):
+				addLink(f)
+			case strings.HasSuffix(f, ".a"), strings.HasSuffix(f, ".lib"):
+				addLink(f)
+			default:
+				addLink(f)
+			}
+		}
 	} else {
-		args = append(args, "-lm")
+		addLink("-lm")
 	}
-	// SDL3 headers are needed whenever a backend-capable program imports an
-	// SDL3 module header (bell games always do); the native archive links
-	// only on linux targets, where it was built. Windows cross builds link
-	// a windows-built SDL3 archive staged next to the raylib one; web
-	// builds use emscripten's SDL3 port instead.
 	if hasSDL {
 		if target.Name == "linux" {
-			args = append(args, sdlLinkArgs(sdlRoot)...)
+			for _, f := range sdlLinkArgs(sdlRoot) {
+				if strings.HasPrefix(f, "-I") {
+					addCompile(f)
+				} else {
+					addLink(f)
+				}
+			}
 		} else if sdlRoot != "" {
-			args = append(args, "-I"+filepath.Join(sdlRoot, "include"))
+			addCompile("-I" + filepath.Join(sdlRoot, "include"))
 		}
 		if target.Name == "windows" {
 			sdlWin := filepath.Join(sourceDir, "libs", "windows", "libSDL3.a")
 			if _, err := os.Stat(sdlWin); err == nil {
-				args = append(args, sdlWin)
-				// Static SDL3 on Windows pulls the COM/MM/setup APIs.
-				args = append(args, "-lole32", "-loleaut32", "-luuid", "-lsetupapi", "-limm32", "-lversion", "-ladvapi32", "-lshell32")
+				addLink(sdlWin)
+				addLink("-lole32", "-loleaut32", "-luuid", "-lsetupapi", "-limm32", "-lversion", "-ladvapi32", "-lshell32")
 			}
 		}
-		// Emscripten ships SDL3 as a port; bell games always import the
-		// headers, so web builds enable it (the export selects the raylib
-		// backend, but the SDL translation unit still needs its symbols).
 		if target.Name == "web" {
-			args = append(args, "-sUSE_SDL=3")
+			addBoth("-sUSE_SDL=3")
 		}
 	}
-	// Box2D (Task 5): the prebuilt archive exists for linux only; other
-	// targets get the headers so the translation unit still parses, and a
-	// platform archive can be staged later under bell/repos/box2d/lib.
 	if hasBox2D {
 		if target.Name == "linux" {
-			args = append(args, box2dLinkArgs(box2dRoot)...)
+			for _, f := range box2dLinkArgs(box2dRoot) {
+				if strings.HasPrefix(f, "-I") {
+					addCompile(f)
+				} else {
+					addLink(f)
+				}
+			}
 		} else if box2dRoot != "" {
-			args = append(args, "-I"+box2dIncludeDir(box2dRoot))
+			addCompile("-I" + box2dIncludeDir(box2dRoot))
 		}
 	}
-	// box3d (Task 7): same linux-only archive rule as Box2D above; other
-	// targets get the headers so the translation unit still parses, and a
-	// platform archive can be staged later under bell/repos/box3d/lib.
 	if hasBox3D {
 		if target.Name == "linux" {
-			args = append(args, box3dLinkArgs(box3dRoot)...)
+			for _, f := range box3dLinkArgs(box3dRoot) {
+				if strings.HasPrefix(f, "-I") {
+					addCompile(f)
+				} else {
+					addLink(f)
+				}
+			}
 		} else if box3dRoot != "" {
-			args = append(args, "-I"+box3dIncludeDir(box3dRoot))
+			addCompile("-I" + box3dIncludeDir(box3dRoot))
 		}
 	}
-	// Web builds use the project's own shell page when it has one: the
-	// stock emscripten shell carries http links (blocked as mixed content
-	// on itch) and a fullscreen button that throws inside itch's iframe.
-	// bell's export stages tools/web_shell.html next to the game on first
-	// export; projects can edit their copy freely (it is never overwritten).
 	if target.Name == "web" {
 		shellFile := filepath.Join(sourceDir, "web_shell.html")
 		if _, err := os.Stat(shellFile); err == nil {
-			args = append(args, "--shell-file", shellFile)
+			addLink("--shell-file", shellFile)
 		}
-		// The export stages the packed assets next to the game; preload
-		// the pak itself so the web build unpacks exactly like desktop
-		// (loose sourceDir/assets still preload as before, as fallback).
 		pakFile := filepath.Join(sourceDir, "game.pak")
 		if _, err := os.Stat(pakFile); err == nil {
-			args = append(args, "--preload-file", pakFile+"@/game.pak")
+			addLink("--preload-file", pakFile+"@/game.pak")
 		}
 	}
-	args = withDefines(args)
+	for _, d := range buildDefines {
+		addCompile("-D" + d)
+	}
 
-	// Run compiler
-	cmd := exec.Command(target.Compiler, args...)
+	// Compile step
+	objFile := filepath.Join(target.OutputDir, baseName+".o")
+	compileArgs := append([]string{}, cflags...)
+	compileArgs = append(compileArgs, "-c", cFile, "-o", objFile)
+	compiler := target.Compiler
+	if os.Getenv("AHOY_CCACHE") != "0" {
+		if cc, err := exec.LookPath("ccache"); err == nil {
+			base := filepath.Base(compiler)
+			if base == "gcc" || base == "clang" || base == "cc" {
+				compileArgs = append([]string{compiler}, compileArgs...)
+				compiler = cc
+			}
+		}
+	}
+	cmd := exec.Command(compiler, compileArgs...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("compilation failed for %s:\n%s", target.Name, output)
+	}
+
+	// Link step
+	linkArgs := append([]string{objFile}, ldflags...)
+	linkArgs = append(linkArgs, "-o", executable)
+	// zig is invoked as "zig cc ..."; emcc/gcc are single executables.
+	linkCompiler := target.Compiler
+	linkPrefix := []string{}
+	if len(target.Args) > 0 && target.Args[0] == "cc" {
+		linkPrefix = append(linkPrefix, "cc")
+		// carry the target flag (and harmless compile flags) into the link
+		linkPrefix = append(linkPrefix, target.Args[1:]...)
+	}
+	linkCmd := exec.Command(linkCompiler, append(linkPrefix, linkArgs...)...)
+	linkOutput, err := linkCmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("link failed for %s:\n%s", target.Name, linkOutput)
 	}
 
 	// Copy assets
@@ -1700,16 +1759,22 @@ func main() {
 		fmt.Println("\nBuilding release builds...")
 		sourceDir := filepath.Dir(sourceFile)
 
+		buildFailed := false
 		for _, targetName := range targets {
 			target, err := findCrossCompiler(targetName, ahoyDir)
 			if err != nil {
 				fmt.Printf("✗ %s: %v\n", targetName, err)
+				buildFailed = true
 				continue
 			}
 
 			if err := buildForTarget(target, outputFile, baseName, sourceDir, hasRaylib, raylibPath, hasSDL, sdlRoot, hasBox2D, box2dRoot, hasBox3D, box3dRoot); err != nil {
 				fmt.Printf("✗ %s: %v\n", targetName, err)
+				buildFailed = true
 			}
+		}
+		if buildFailed {
+			os.Exit(1)
 		}
 	}
 }
