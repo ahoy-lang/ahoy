@@ -44,10 +44,10 @@ func TestArrayElementStoreDuplicatesHeapString(t *testing.T) {
 
 func TestArrayElementStoreKeepsSourceAlive(t *testing.T) {
 	out := slotProbeC(t)
-	// The source must not be freed at block exit: the slot aliases it
-	// until the duplicate takes over (transfer, then the dup owns it).
-	if strings.Contains(out, "free(s)") {
-		t.Errorf("stored heap string must not be freed at scope exit (slot would dangle)")
+	// Duplicated at the boundary: the slot owns its copy, and the source
+	// is still freed at scope exit (no leak). The strdup is the contract.
+	if !strings.Contains(out, "strdup(s)") {
+		t.Errorf("expected strdup promotion for array element store")
 	}
 }
 
@@ -55,9 +55,6 @@ func TestDictEntryStoreDuplicatesHeapString(t *testing.T) {
 	out := slotProbeC(t)
 	if !strings.Contains(out, "strdup(v)") {
 		t.Errorf("dict entry store of a block-local heap string must strdup it")
-	}
-	if strings.Contains(out, "free(v)") {
-		t.Errorf("stored heap string must not be freed at scope exit (entry would dangle)")
 	}
 }
 

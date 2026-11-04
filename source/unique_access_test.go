@@ -86,7 +86,8 @@ func TestUniqueAccessGeneratesCall(t *testing.T) {
 	src := "program p\n@ node_unique |nodes:array, name:string| int:\n\treturn 0\n$\n@ main |nodes:array|:\n\tprint|%player|\n$\n"
 	tokens := ahoy.Tokenize(formatSource(src))
 	ast := ahoy.Parse(tokens)
-	_, c := generateC(ast, "test.ahoy")
+	_, files := generateC(ast, "test.ahoy")
+	c := files["main.c"]
 	if !strings.Contains(c, `node_unique(nodes, "player")`) {
 		t.Errorf("expected generated C to call node_unique(nodes, \"player\"), got:\n%s", c)
 	}

@@ -1,11 +1,16 @@
 package main
 
 import (
-	"fmt"
 	"strings"
 
 	"ahoy"
 )
+
+// escapeFmtLiteral escapes literal text for use as a printf format segment.
+// Every '%' in a literal is a format specifier to printf, so double it.
+func escapeFmtLiteral(s string) string {
+	return strings.ReplaceAll(s, "%", "%%")
+}
 
 // fstringSpecFor maps a pre-parsed interpolation to its printf spec and,
 // for dict loop values, a ready-made runtime-typed expression. It mirrors
@@ -45,7 +50,7 @@ func (gen *CodeGenerator) generateFStringFromChildren(node *ahoy.ASTNode) {
 	var args []farg
 	for _, child := range node.Children {
 		if child.Type == ahoy.NODE_STRING {
-			formatStr.WriteString(child.Value)
+			formatStr.WriteString(escapeFmtLiteral(child.Value))
 			continue
 		}
 		spec, dictExpr := gen.fstringSpecFor(child)
@@ -58,18 +63,22 @@ func (gen *CodeGenerator) generateFStringFromChildren(node *ahoy.ASTNode) {
 		gen.output.WriteString("\"")
 		return
 	}
-	bufferVar := fmt.Sprintf("__fstr_buf_%d", gen.varCounter)
-	gen.varCounter++
-	gen.output.WriteString("({\n")
-	gen.indent++
-	gen.writeIndent()
-	gen.output.WriteString("static char ")
-	gen.output.WriteString(bufferVar)
-	gen.output.WriteString("[256];\n")
-	gen.writeIndent()
-	gen.output.WriteString("sprintf(")
-	gen.output.WriteString(bufferVar)
-	gen.output.WriteString(", \"")
+
+	// Choose the allocator. Arena by default (freed at scope end via the
+	// watermark). Owned for values that must outlive the current scope:
+	// return expressions, retaining literals, foreign-call args, or when
+	// the legacy static-buffer path is requested.
+	helper := "ahoy_arena_sprintf"
+	if fstringLegacy || gen.inReturnExpr || gen.inRetainingLiteral || gen.inForeignCall || gen.returnTypeCanHoldString() {
+		helper = "ahoy_owned_sprintf"
+	}
+
+	gen.output.WriteString(helper)
+	gen.output.WriteString("(")
+	if helper == "ahoy_arena_sprintf" {
+		gen.output.WriteString("__ahoy_frame_arena, ")
+	}
+	gen.output.WriteString("\"")
 	gen.output.WriteString(formatStr.String())
 	gen.output.WriteString("\"")
 	for _, a := range args {
@@ -86,9 +95,5 @@ func (gen *CodeGenerator) generateFStringFromChildren(node *ahoy.ASTNode) {
 		}
 		gen.generateNode(a.expr)
 	}
-	gen.output.WriteString(");\n")
-	gen.writeIndent()
-	gen.output.WriteString(bufferVar)
-	gen.indent--
-	gen.output.WriteString("; })")
+	gen.output.WriteString(")")
 }

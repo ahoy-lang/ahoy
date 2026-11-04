@@ -32,8 +32,9 @@ mkdir -p "$WORK"
 echo "== build compiler =="
 (cd "$AHOY/source" && go build -o "$COMPILER" .) || exit 1
 echo "== generate game C =="
-(cd "$WORK" && "$COMPILER" -f "$BELL/games/balls/main.ahoy" -D BACKEND_RAYLIB -D DEMO_SHOT) || exit 1
+(cd "$WORK" && "$COMPILER" -single-tu -f "$BELL/games/balls/main.ahoy" -D BACKEND_RAYLIB -D DEMO_SHOT) || exit 1
 mv "$WORK/output/main.c" "$GAME_C" 2>/dev/null || cp "$WORK/output/main.c" "$GAME_C" || exit 1
+cp "$WORK/output/main.h" "$WORK/main.h" 2>/dev/null || true
 echo "== build ASan game =="
 gcc -g -fsanitize=address -o "$GAME_BIN" "$GAME_C" \
   -I"$RL" -I"$SDL/include" -I"$B2" -I"$B3" -I"$BELL/engine" \

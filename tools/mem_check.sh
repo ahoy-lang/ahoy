@@ -38,16 +38,31 @@ for prog in "$TESTDIR"/input/leak_*.ahoy; do
     cfile="$OUT/$base.c"
     exe="$MEMTMP/memcheck_$base"
     echo "== $base =="
-    "$BIN" -f "$prog" >/dev/null 2>&1 || { echo "  ahoy compile FAILED"; fail=1; continue; }
+    "$BIN" -single-tu -f "$prog" >/dev/null 2>&1 || { echo "  ahoy compile FAILED"; fail=1; continue; }
     if [ ! -f "$cfile" ]; then echo "  missing $cfile"; fail=1; continue; fi
     rm -f "$exe"
     gcc -O1 -g "$cfile" -o "$exe" -lm 2>&1 | head -5
     if [ ! -x "$exe" ]; then echo "  gcc FAILED (no binary produced)"; fail=1; continue; fi
     out="$("$exe")" || { echo "  run FAILED"; fail=1; continue; }
     echo "  output tail: $(echo "$out" | tail -1)"
-    report="$(valgrind --leak-check=full --errors-for-leaks=yes "$exe" 2>&1 | tail -20)"
-    echo "$report" | grep -E "total heap usage|in use at exit|definitely lost|indirectly lost|ERROR SUMMARY"
-    if echo "$report" | grep -qE "definitely lost: [1-9]|indirectly lost: [1-9]"; then
+    # Note: the leak-kind option is --errors-for-leak-kinds, not
+    # --errors-for-leaks. The old spelling made valgrind exit before the
+    # run ("Unknown option"), and the empty report was scored as clean.
+    # Keep the explicit verdict grep as a second line of defence.
+    report="$(valgrind --leak-check=full --show-leak-kinds=definite,indirect \
+        --errors-for-leak-kinds=definite,indirect --error-exitcode=99 \
+        "$exe" 2>&1)"
+    vg_status=$?
+    echo "$report" | tail -20 | grep -E "total heap usage|in use at exit|definitely lost|indirectly lost|ERROR SUMMARY"
+    if [ "$vg_status" -eq 99 ]; then
+        echo "  LEAK DETECTED"
+        fail=1
+    elif [ "$vg_status" -ne 0 ]; then
+        # A valgrind invocation failure must never look like a pass.
+        echo "  valgrind FAILED (status $vg_status)"
+        echo "$report" | tail -5
+        fail=1
+    elif echo "$report" | grep -qE "definitely lost: [1-9]|indirectly lost: [1-9]"; then
         echo "  LEAK DETECTED"
         fail=1
     else

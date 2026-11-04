@@ -1,0 +1,18 @@
+program leak_mixed_class_array
+
+? Mixed-class array store: an owned string pushed into a primitive
+? (arena) array is promoted to the arena and reclaimed on rewind.
+
+@ main ||:
+	expected: []
+
+	arr: [1, 2]
+	owned: "hello_" + "world"
+	arr.push|owned|
+	print|arr.length|
+	print|arr[2]|
+	expected.push|"3"|
+	expected.push|"hello_world"|
+
+	print|expected|
+$

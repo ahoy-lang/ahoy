@@ -112,6 +112,7 @@ func init() {
 		"join",
 		"type",        // value.type property
 		"dump_struct", // debug helper
+		"ahoy_scene_arena_swap", // runtime: double-buffer scene arena swap
 	} {
 		builtinCallNames[name] = true
 		builtinMethodNames[name] = true

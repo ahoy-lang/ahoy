@@ -20,30 +20,42 @@ import (
 // findCompiler finds the appropriate C compiler based on mode and OS
 // Returns: compiler path, args, isOptimized, error
 func findCompiler(releaseMode bool, debugMode bool, executablePath string) (string, []string, bool, error) {
-	// Try embedded TCC first
-	tccPath, tccArgs, err := GetEmbeddedTCCPath()
-	if err != nil {
-		// Fall back to looking for TCC next to the binary
-		ahoyDir, err := os.Executable()
+	// Prefer a system tcc when one is installed. The vendored tcc on some
+	// Linux systems ships a libtcc1.a that lacks __va_start, while the
+	// generated arena/f-string helpers are variadic: every `-r` build then
+	// fails at link with "undefined symbol '__va_start'" (this is what
+	// broke `bell/run.sh editor`). A system tcc is also usually newer. The
+	// embedded copy stays as the fallback for machines without one.
+	var tccPath string
+	var tccArgs []string
+	if systemTCC, lookErr := exec.LookPath("tcc"); lookErr == nil {
+		tccPath = systemTCC
+	} else {
+		var err error
+		tccPath, tccArgs, err = GetEmbeddedTCCPath()
 		if err != nil {
-			ahoyDir = "."
-		} else {
-			ahoyDir = filepath.Dir(ahoyDir)
-		}
-
-		switch runtime.GOOS {
-		case "linux":
-			tccPath = filepath.Join(ahoyDir, "tcc", "linux", "tcc")
-			tccArgs = []string{"-B" + filepath.Join(ahoyDir, "tcc", "linux")}
-		case "windows":
-			if runtime.GOARCH == "386" {
-				tccPath = filepath.Join(ahoyDir, "tcc", "windows", "i386-win32-tcc.exe")
+			// Fall back to looking for TCC next to the binary
+			ahoyDir, err := os.Executable()
+			if err != nil {
+				ahoyDir = "."
 			} else {
-				tccPath = filepath.Join(ahoyDir, "tcc", "windows", "tcc.exe")
+				ahoyDir = filepath.Dir(ahoyDir)
 			}
-			tccArgs = []string{"-B" + filepath.Join(ahoyDir, "tcc", "windows")}
-		default:
-			tccPath = ""
+
+			switch runtime.GOOS {
+			case "linux":
+				tccPath = filepath.Join(ahoyDir, "tcc", "linux", "tcc")
+				tccArgs = []string{"-B" + filepath.Join(ahoyDir, "tcc", "linux")}
+			case "windows":
+				if runtime.GOARCH == "386" {
+					tccPath = filepath.Join(ahoyDir, "tcc", "windows", "i386-win32-tcc.exe")
+				} else {
+					tccPath = filepath.Join(ahoyDir, "tcc", "windows", "tcc.exe")
+				}
+				tccArgs = []string{"-B" + filepath.Join(ahoyDir, "tcc", "windows")}
+			default:
+				tccPath = ""
+			}
 		}
 	}
 
@@ -1156,6 +1168,9 @@ func main() {
 	hotReloadFlag := flag.Bool("hotreload", false, "Enable hot code reloading (keeps window open, reloads on file changes) - development only")
 	coldReloadFlag := flag.Bool("coldreload", false, "Enable cold reload (auto-recompile and restart on file changes) - development only")
 	singleTUFlag := flag.Bool("single-tu", false, "Force single-translation-unit codegen (legacy fallback)")
+	arenaRoutingFlag := flag.String("arena-routing", "off", "Arena routing level: off|temps|locals|all")
+	arenaMarksFlag := flag.Bool("arena-marks", true, "Emit watermark marks/rewinds")
+	fstringLegacyFlag := flag.Bool("fstring-legacy", false, "Use legacy static f-string buffers")
 	noSemanticsFlag := flag.Bool("no_semantics", false, "Skip semantic validation (type errors, undeclared names, duplicate definitions)")
 	strictFlag := flag.Bool("strict", true, "Extra dev-time warnings for bug classes that segfault (array-type contradictions, literal division by zero)")
 	fastFlag := flag.Bool("fast", false, "Disable runtime array bounds checks (opt-in: only for programs proven in-bounds; violations become silent memory bugs)")
@@ -1187,6 +1202,9 @@ func main() {
 
 	buildDefines = defines
 	singleTU = *singleTUFlag
+	arenaRoutingLevel = *arenaRoutingFlag
+	arenaMarksEnabled = *arenaMarksFlag
+	fstringLegacy = *fstringLegacyFlag
 
 	// Check for conflicting flags
 	if *hotReloadFlag && *releaseFlag {

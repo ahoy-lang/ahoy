@@ -23,7 +23,7 @@ var ArrayMethods = map[string]StdlibFunc{
 	"push": {
 		Name: "ahoy_array_push", Category: "array", MethodName: "push", ReturnType: "array",
 		Params: "arr:array, value:any", Doc: "Adds an element to the end of the array",
-		Code: "AhoyArray* ahoy_array_push(AhoyArray* arr, intptr_t value, AhoyValueType type) {\n    if (arr->length >= arr->capacity) {\n        arr->capacity = arr->capacity == 0 ? 4 : arr->capacity * 2;\n        arr->data = realloc(arr->data, arr->capacity * sizeof(intptr_t));\n        arr->types = realloc(arr->types, arr->capacity * sizeof(AhoyValueType));\n    }\n    arr->data[arr->length] = value;\n    arr->types[arr->length] = type;\n    arr->length++;\n    return arr;\n}\n",
+		Code: "AhoyArray* ahoy_array_push(AhoyArray* arr, intptr_t value, AhoyValueType type) {\n    if (arr == NULL) return NULL;\n    AhoyArena* __aa = ahoy_arena_array_arena(arr);\n    if (arr->length >= arr->capacity) {\n        int __oldcap = arr->capacity;\n        arr->capacity = arr->capacity == 0 ? 4 : arr->capacity * 2;\n        if (__aa) {\n            arr->data = ahoy_arena_realloc(__aa, arr->data, __oldcap * sizeof(intptr_t), arr->capacity * sizeof(intptr_t));\n            arr->types = ahoy_arena_realloc(__aa, arr->types, __oldcap * sizeof(AhoyValueType), arr->capacity * sizeof(AhoyValueType));\n        } else {\n            arr->data = realloc(arr->data, arr->capacity * sizeof(intptr_t));\n            arr->types = realloc(arr->types, arr->capacity * sizeof(AhoyValueType));\n        }\n    }\n    arr->data[arr->length] = value;\n    arr->types[arr->length] = type;\n    arr->length++;\n    return arr;\n}\n",
 	},
 	"pop": {
 		Name: "ahoy_array_pop", Category: "array", MethodName: "pop", ReturnType: "any",

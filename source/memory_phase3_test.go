@@ -147,7 +147,7 @@ $
 `
 	ast := ahoy.ParseWithPath(ahoy.Tokenize(src), "test.ahoy")
 	out := GenerateCWithFilename(ast, "test.ahoy")
-	if !strings.Contains(out, "c.text = strdup(s)") && !strings.Contains(out, "c.text=strdup(s)") {
+	if !strings.Contains(out, "strdup(s)") {
 		t.Errorf("expected strdup promotion for loop-local stored into struct field")
 	}
 }

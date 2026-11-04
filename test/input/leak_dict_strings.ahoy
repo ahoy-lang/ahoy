@@ -1,0 +1,17 @@
+program leak_dict_strings
+
+? Dict-of-strings discipline: string values stored in a dict must be
+? freed when the dict is freed (owned strings), with no invalid free.
+
+@ main ||:
+	expected: []
+
+	d: dict<string,string> = <"k": "old">
+	loop i:0 to 5 do
+		d<"nk"> = "val_" + "x"
+	$
+	print|d.length|
+	expected.push|"2"|
+
+	print|expected|
+$

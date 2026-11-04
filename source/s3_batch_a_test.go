@@ -14,7 +14,8 @@ func generateForTest(t *testing.T, src string) string {
 	t.Helper()
 	tokens := ahoy.Tokenize(formatSource(src))
 	ast := ahoy.Parse(tokens)
-	_, c := generateC(ast, "test.ahoy")
+	_, files := generateC(ast, "test.ahoy")
+	c := files["main.c"]
 	return c
 }
 
