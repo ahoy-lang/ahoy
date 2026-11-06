@@ -1,0 +1,32 @@
+program leak_struct_array_deep
+
+? Deep struct teardown: an array of structs holding strings must free
+? every string field when the array dies each iteration. Previously only
+? the shells were freed and the interiors leaked.
+
+struct Card2:
+	name: string = ""
+	text: string = ""
+$
+
+@ make_card |n:string, t:string| Card2:
+	c: Card2{name: n.dup||, text: t.dup||}
+	return c
+$
+
+@ main ||:
+	expected: []
+
+	total: 0
+	loop i:0 to 500 do
+		nodes: array[Card2] = []
+		lbl: f"v-{i}"
+		c: make_card|"n", lbl|
+		nodes.push|c|
+		total = total + nodes.length
+	$
+	print|total|
+	expected.push|"500"|
+
+	print|expected|
+$

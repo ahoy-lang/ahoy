@@ -739,3 +739,163 @@ Observed: 11,780 bytes / 2,000 blocks lost.
 ## 11. Bottom line
 
 The watermark runtime is working and high-water is flat. The steady RSS growth is not the arena; it is heap ownership gaps that the plan warned would be the hard part. The most impactful fixes are caller tracking for user-function string returns, reassignment tracking, container element ownership, float element freeing, and the editor’s live-sync throttle. Those five should remove most of the observed growth. Phases 4–6 should be treated as partial, not substantially done, and `-arena-routing=all` should not be enabled until the side-table/push/fill issues are fixed.
+
+---
+
+## 13. Supplement (2026-11-07): what §12 and `MEMORY_HANDOFF.md` missed
+
+`MEMORY_HANDOFF.md` (2026-11-06) is the newer document: it records what
+actually landed in `ahoy@bc420a6` / `bell@47402a5` and the two-crash
+invariants. This section back-ports what this review never covered (or
+left stale), so a reader of this file alone does not work from obsolete
+guidance. All line numbers below are post-`bc420a6` unless noted.
+
+### 13.1 Landed work this review does not describe
+
+- **Return-ownership predicate** (`methods.go:63-180`): `freshStringBuiltin`
+  (12 audited C helpers), `funcReturnsOwnedString` (mirrors return-site
+  promotion per expression shape — owned: literals, identifiers,
+  container accesses, concats, slices, owned f-strings, known-fresh
+  calls; borrowed: C/foreign calls, ternaries, switch-expressions),
+  `stringReturnYieldsOwned` (`:147`), wired into `valueAllocatesString`
+  and `isOwnedStringReturningCall`. This is stricter than the §5 fix
+  sketch ("include user calls in registration conditions") — wrappers
+  like `loc_tr` (borrowed `ahoy_loc_tr`) and static switch-returns like
+  `kind_icon_name` are deliberately untracked. Treating every
+  string-returning call as owned would reintroduce the arena-game UAF.
+- **Reassignment dominance rule** (`codegen.go:4277-4345`): a conditional
+  fresh reassignment over a *borrowed* binding skips scope-exit
+  registration (bounded leak, never UAF); straight-line and
+  already-tracked cases still register. **Dup-on-tracked-static**
+  (same branch): conditional `x = "lit"` over an *owned* binding emits
+  `strdup` and stays tracked (fixed the 3,080-object `eye_name` /
+  `coll_label` per-frame leak). §5 item 2 ("free the old, track the
+  new") predates both rules and would double-free / free statics if
+  applied literally today — follow the handoff §2 invariants instead.
+- **Explicit disposal** (`free|s|` in `generateCall`): emits
+  `if (s) { free(s); s = 0; }` + untracks + prunes; struct-pool and
+  untracked-pointer behavior unchanged. This review has no section for
+  explicit free; the handoff §1 does.
+- **Struct own-by-construction** (`fieldStoreNeedsDup` at `:6937` via
+  `slotStoreNeedsDup` at `:7291`, so element and dict sites come along):
+  string literals into struct fields are now dup'd; all struct string
+  fields are heap-or-null. The §5 item-6 sketch ("use emitStringCopy")
+  landed in this form.
+- **Bell fixes absent from §5:** `node_strings_free` (23 frees) +
+  deep `scene_free` (`core.ahoy:2401/2429`), `free|live_text|` live-sync
+  disposal (`editor/main.ahoy:18753`) with the 15-frame `play_tick`
+  throttle restored, pose-memo owns-its-path (`glue.h: puts strdup on
+  put, frees on overwrite` — was retaining Ahoy temporaries), and
+  `read_file_owned` (`core.ahoy:5803`, 9 `LoadFileText` sites converted,
+  ~12 KB/open raylib leak each). The §5 item-5 sketch is done; the LSan
+  stacks that drove it (`tree_panel:3162`, 3,080 objects) are in the
+  handoff, not here.
+- **`-o NAME` flag** (`main.go:1171/1681-1705`): overrides the output
+  executable name (exe + primary C rename; TU files stay `main_*`).
+  `run.sh` passes `-o bell` / `-o <game>`; play-launches pass
+  `-o <scene-stem>` / `-o <game>`; `bell-sea` forwards `-o` (implemented
+  but uncommitted — see handoff §G). This review never mentions `-o`;
+  the review's build commands (`output/main`) are stale for Bell runs.
+- **Invariants (§2 of the handoff) have no counterpart here** and
+  override several §5 sketches: (1) tracking must match the runtime
+  binding on every path — lean to leak; (2) never gate the eager
+  `autoFreedVars` mark on runtime conditions (a same-day double-free
+  regression was reverted); (3) scope-exit cleanups never clear
+  `heapAllocatedVars/Types/Scopes`; (4) the predicate is the truth, not
+  the return contract — every new return shape updates BOTH promotion
+  and `stringReturnYieldsOwned`; (5) callees that retain must own
+  (`strdup` internally or `FFI_RETAIN_LIST.md` + call-site promotion);
+  (6) exit-time totals ≠ per-frame slope (massif/LSan, not valgrind
+  summaries). Read these before touching ownership.
+
+### 13.2 Still true, still missing: write-only `arrayElemClass`
+
+§4 P0-3 noted "`arrayElemClass` written but never read". Post-`bc420a6`
+it is still write-only (8 writes at `codegen.go:3297/4180/4635/4645/
+4719/6914/6921/7456`, zero reads; the live signal is
+`heapArrayOwnsStrings`). The handoff continuation (§5.3) recommends
+deleting it or wiring it as part of deep-teardown work — do not add a
+second map alongside it.
+
+### 13.3 Newly found gaps (neither this review nor the handoff covered)
+
+Found by grepping every `scene_serialize` caller in `bell/editor/main.ahoy`
+against its matching `free|` (handoff audited only the live-sync and
+open paths). All follow the owned-return shape with no `free|`:
+
+- `history_panel :696-701` — `live_text` + `top_text` +
+  `live_name` per frame the panel draws (same ~12 KB magnitude as the
+  fixed live-sync drip; fires through the panel family that topped LSan
+  before). Per-frame; fix first.
+- Play-start one-shots `:13690-13691` / `:13777-13778` —
+  `play_last_tmp` / `gplay_last_tmp` stored into owning `play_last`
+  (store dups; original never freed). One serialize per play press.
+- Undo/redo/goto `:597-598` / `:616-620` / `:636-637` plus
+  `editor_snapshot :548-559` — `current`/`snap` (serialize) and
+  `cur_entry`/`entry` (`history_entry_make` concat at `:302-305`)
+  duplicated into history arrays by `push`, originals never freed. Per
+  user action; fix with `free|current|` + `free|cur_entry|` after each
+  push.
+- History rename `:553-556` — `old_text`/`act`/renamed entry, same class.
+
+Recipe gap: load/open/close-only valgrind runs never top these; extend
+the interactive recipe (§D of the handoff) with edit → undo → redo →
+goto-history-row → start/stop play before reading LSan.
+
+### 13.4 Stale in this review after `bc420a6`
+
+- §12 "Deferred" subsection (bell_mem_check still errors-only, `scene_free`
+  shallow, per-open leaks bounded): partially landed — `scene_free` is
+  now deep, live-sync is throttled + disposed, 9 file-read sites are
+  owned. `BELL_MEM_STRICT=1` is still red (exit-time teardown §C of the
+  handoff), but the listed reasons are out of date.
+- §8 verification commands: single-TU tcc probes and `output/main`
+  paths predate `-o` renaming (`bell/output/<name>`) and multi-TU gcc
+  ASan (`-release -show_leaks` + `ahoy_arena_high_water`, which fixed
+  the old `->highWater` multi-TU break at P1-6). Use the handoff §4
+  playbook instead.
+- Appendix B line numbers drifted: `slotStoreNeedsDup` → `:7291`,
+  `pushNeedsStrdup` → `:7392`, `lexicalDeclDepth` → `:7538`,
+  `generateFreeCodeForVar` → `:8012` (struct branch `:8100-8110`,
+  owning-string branch `:8111-8119`, float-shell branch `:8120-8129`),
+  `fieldStoreNeedsDup` → `:6937`, `-o` → `main.go:1171/1681-1705`.
+- Handoff correction (propagated here): the "three identical binaries"
+  hash line is wrong — `ahoy/ahoy-bin` (`55cf5471…`, the copy
+  `run.sh` uses) differs from `ahoy/test/ahoy-bin` and
+  `~/.local/bin/ahoy-bin` (`3c5528a9…`). Rebuild + re-hash per handoff
+  §5.1 before trusting binary state.
+- `MEMORY_BASELINE.md` "no site scales with frame count" remains
+  disproved (valgrind stacks in §1); like `FFI_RETAIN_LIST.md`'s old
+  "C args promoted" claim (now corrected to borrowed-default), treat
+  baseline prose as historical, not current.
+
+---
+
+## 14. Updated verification (what to run now)
+
+Supersedes §8 for Bell runs; compiler-unit rows are unchanged
+(`go test` → only the 3 pre-existing formatter failures).
+
+```bash
+# leak suite (strict+poison, must PASS)
+cd ahoy && bash tools/mem_check.sh 2>&1 | tail -n 3
+
+# rebuild + sync all three binaries (always after touching ahoy/source)
+cd ahoy/source && go build -o ../ahoy-bin . \
+  && cp ../ahoy-bin ../test/ahoy-bin \
+  && cp ../ahoy-bin /home/lee/.local/bin/ahoy-bin
+
+# headless functional runs (must close cleanly, no crash report)
+cd bell && timeout 120 ./run.sh shot editor 2>&1 | tail -n 3
+cd bell && timeout 120 ./run.sh shot games/arena 2>&1 | tail -n 3
+
+# sanitizer run with stacks (multi-TU gcc; binary lands in bell/output/bell)
+cd bell && ../ahoy/ahoy-bin -f editor/main.ahoy -r -release -show_leaks \
+  -D BACKEND_RAYLIB -D DEMO_SHOT > /tmp/opencode/asan.log 2>&1
+grep -E "ERROR|SUMMARY|closed after" /tmp/opencode/asan.log
+```
+
+Debts rule (from the handoff, repeated because it bit twice): a
+privately-passing `go test` is not sufficient — the eye/gate regressions
+passed unit tests and died only in shots/ASan. Re-run the full playbook
+before ANY ownership change.

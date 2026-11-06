@@ -237,7 +237,6 @@ type CodeGenerator struct {
 	heapVarScopes                 map[string]int                          // Track scope depth where each heap var was allocated
 	heapVarTypes                  map[string]string                       // Track type of each heap-allocated variable for proper freeing
 	heapArrayOwnsStrings          map[string]bool                         // array var -> true when elements are owned heap strings (split pieces); shell+pieces freed together. Literals borrow static strings: never freed.
-	arrayElemClass                map[string]AllocationClass              // side-table (phase 5): array var -> element allocation class. Owned strings == AllocOwned; arena elements == AllocArena. Defaults to AllocOwned when unknown.
 	ownedStructDecls              map[string]map[string]bool              // function-local struct-literal var -> string fields assigned anywhere in the body (pre-pass)
 	ownedStructVars               map[string]bool                         // local struct value whose listed string fields are heap-owned
 	ownedStructFields             map[string][]string                     // local struct value -> owned string field names
@@ -3223,7 +3222,6 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 	gen.deferredStatements = []deferredStmt{}
 	gen.heapAllocatedVars = make(map[string]bool)
 	gen.heapArrayOwnsStrings = make(map[string]bool)
-	gen.arrayElemClass = make(map[string]AllocationClass)
 	gen.heapVarScopes = make(map[string]int)
 	gen.heapVarTypes = make(map[string]string)
 	gen.scopeDepth = 0
@@ -3294,7 +3292,6 @@ func (gen *CodeGenerator) generateFunction(node *ahoy.ASTNode) {
 		if param.DataType != "" {
 			if elem, ok := gen.stringArrayElem(param.Value); ok && isStringLikeType(elem) {
 				gen.heapArrayOwnsStrings[param.Value] = true
-				gen.arrayElemClass[param.Value] = AllocOwned
 			}
 		}
 	}
@@ -4084,6 +4081,10 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 		// (`y: x`) would dangle. Skipping leaks the old value instead, which
 		// is always the safe direction.
 		varName := node.Value
+		// Eager free of the overwritten binding. Computed first, emitted
+		// either before RHS evaluation (legacy order) or after it (temp
+		// order, see below) — never both.
+		eagerCode := ""
 		if gen.currentFunction != "" && !gen.isStaticVar(varName) && gen.heapAllocatedVars[varName] && !gen.functionParameters[varName] && !gen.escapingVars[varName] && len(gen.aliasEdges[varName]) == 0 {
 			// Get the variable type
 			varType := gen.heapVarTypes[varName]
@@ -4095,19 +4096,46 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 
 			// Generate free code before reassignment
 			if varType != "" {
-				freeCode := gen.generateFreeCodeForVar(varName, varType)
-				if freeCode != "" {
-					gen.writeIndent()
-					gen.output.WriteString(freeCode)
-					// Mark as already freed so later cleanups don't free
-					// again. Unconditional: a conditional reassignment
-					// that aliases (`s = t`) leaves the new binding shared
-					// with its owner, so later cleanups must skip it on
-					// taken paths; paths that keep the old binding are
-					// covered by tracking updates in the branches below.
-					gen.autoFreedVars[varName] = true
+				if freeCode := gen.generateFreeCodeForVar(varName, varType); freeCode != "" {
+					eagerCode = freeCode
 				}
 			}
+		}
+		// Self-referential RHS (`rebuilt = rebuilt + piece`): the eager
+		// free must run AFTER RHS evaluation, or it destroys the memory
+		// the RHS is about to read (heap-use-after-free). Evaluate into
+		// a fresh temp with the old binding still alive, free old, then
+		// take over. (Pre-marking era this was masked: self-operands
+		// were escape-marked so the eager free was skipped — and leaked.)
+		// Switch-expression RHS keeps its marking (not a fresh copy), so
+		// it stays on the legacy path.
+		reassignTemp := ""
+		if eagerCode != "" && valueNode.Type != ahoy.NODE_SWITCH_STATEMENT && gen.rhsMentionsVar(varName, valueNode) {
+			if ct := gen.mapType(gen.heapVarTypes[varName]); ct != "" {
+				reassignTemp = fmt.Sprintf("__reassign_%d", gen.varCounter)
+				gen.varCounter++
+				gen.writeIndent()
+				gen.output.WriteString(ct)
+				gen.output.WriteString(" ")
+				gen.output.WriteString(reassignTemp)
+				gen.output.WriteString(";\n")
+			}
+		}
+		if eagerCode != "" && reassignTemp == "" {
+			gen.writeIndent()
+			gen.output.WriteString(eagerCode)
+			// Mark as already freed so later cleanups don't free
+			// again. Unconditional: a conditional reassignment
+			// that aliases (`s = t`) leaves the new binding shared
+			// with its owner, so later cleanups must skip it on
+			// taken paths; paths that keep the old binding are
+			// covered by tracking updates in the branches below.
+			gen.autoFreedVars[varName] = true
+		}
+		// Assignment target below: the temp when reordering, else the var.
+		assignTarget := node.Value
+		if reassignTemp != "" {
+			assignTarget = reassignTemp
 		}
 		// The old struct value (and its owned fields) is gone; the new
 		// value's fields belong to whoever produced it.
@@ -4115,17 +4143,17 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 
 		if valueNode.Type == ahoy.NODE_SWITCH_STATEMENT {
 			// Generate switch as expression (assign in each case)
-			gen.generateSwitchExpression(valueNode, node.Value)
+			gen.generateSwitchExpression(valueNode, assignTarget)
 		} else if valueNode.Type == ahoy.NODE_F_STRING && gen.currentFunction != "" {
 			// Bound f-string: the variable owns its copy. emitStringCopy
 			// frees an ephemeral owned temp after copying (see above).
-			gen.output.WriteString(node.Value)
+			gen.output.WriteString(assignTarget)
 			gen.output.WriteString(" = ")
 			gen.emitStringCopy(node.Children[0])
 			gen.output.WriteString(";\n")
 		} else if gen.charTarget(node.Value) {
 			// Storing into a char slot: a 1-character literal becomes 'x'.
-			gen.output.WriteString(node.Value)
+			gen.output.WriteString(assignTarget)
 			gen.output.WriteString(" = ")
 			gen.generateCharSlot(node.Children[0])
 			gen.output.WriteString(";\n")
@@ -4135,12 +4163,12 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			// variable stays owned, so duplicate (the tracking block below
 			// keeps scope-exit cleanup armed for taken and not-taken paths
 			// alike). Over a borrowed binding the literal stays raw.
-			gen.output.WriteString(node.Value)
+			gen.output.WriteString(assignTarget)
 			gen.output.WriteString(" = strdup(")
 			gen.generateNode(node.Children[0])
 			gen.output.WriteString(");\n")
 		} else {
-			gen.output.WriteString(node.Value)
+			gen.output.WriteString(assignTarget)
 			gen.output.WriteString(" = ")
 			if gen.ownedReadNeedsDup(valueNode) && gen.targetCanHoldString(node.Value) {
 				// Owned-read element stored into a variable: duplicate so
@@ -4155,6 +4183,20 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				gen.generateNode(node.Children[0])
 			}
 			gen.output.WriteString(";\n")
+		}
+		if reassignTemp != "" {
+			// Temp-first order: RHS already evaluated into the temp with
+			// the old binding alive. Now release the old binding and take
+			// over the temp. Same bookkeeping as the legacy order: later
+			// cleanups must skip the freed old binding.
+			gen.writeIndent()
+			gen.output.WriteString(eagerCode)
+			gen.writeIndent()
+			gen.output.WriteString(node.Value)
+			gen.output.WriteString(" = ")
+			gen.output.WriteString(reassignTemp)
+			gen.output.WriteString(";\n")
+			gen.autoFreedVars[varName] = true
 		}
 
 		// Ownership at the boundary: assigning an array literal with string
@@ -4177,7 +4219,6 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			}
 			if hasLitStrings {
 				gen.heapArrayOwnsStrings[node.Value] = true
-				gen.arrayElemClass[node.Value] = AllocOwned
 				gen.promoteOwnedStringArrayLiteral(node.Value, valueNode)
 			}
 		}
@@ -4622,27 +4663,6 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 			// tracked as Arena so scope exit skips free (rewind reclaims).
 			if valueNode.Type == ahoy.NODE_ARRAY_LITERAL && gen.lastArrayLiteralArena {
 				gen.varAllocClass[node.Value] = AllocArena
-				// Element class: Arena if any element is arena, else Value.
-				ec := AllocValue
-				for _, el := range valueNode.Children {
-					t := gen.inferType(el)
-					if t == "string" || t == "char*" {
-						if el.Type == ahoy.NODE_F_STRING || (el.Type == ahoy.NODE_IDENTIFIER && gen.varAllocClass[el.Value] == AllocArena) {
-							ec = AllocArena
-						}
-					}
-				}
-				gen.arrayElemClass[node.Value] = ec
-			} else if valueNode.Type == ahoy.NODE_ARRAY_LITERAL {
-				// Owned array: element class owned for strings, value otherwise.
-				ec := AllocValue
-				for _, el := range valueNode.Children {
-					t := gen.inferType(el)
-					if t == "string" || t == "char*" {
-						ec = AllocOwned
-					}
-				}
-				gen.arrayElemClass[node.Value] = ec
 			}
 
 			// Track if this variable came from dict access
@@ -4716,7 +4736,6 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				}
 				if hasStrings {
 					gen.heapArrayOwnsStrings[node.Value] = true
-					gen.arrayElemClass[node.Value] = AllocOwned
 					gen.promoteOwnedStringArrayLiteral(node.Value, valueNode)
 				}
 			}
@@ -6795,9 +6814,9 @@ func (gen *CodeGenerator) generateReturnStatement(node *ahoy.ASTNode) {
 			gen.generateCharSlot(node.Children[0])
 		} else if len(node.Children) == 1 && gen.returnTypeCanHoldString() &&
 			(node.Children[0].Type == ahoy.NODE_ARRAY_ACCESS ||
-			 node.Children[0].Type == ahoy.NODE_MEMBER_ACCESS ||
-			 node.Children[0].Type == ahoy.NODE_DICT_ACCESS ||
-			 node.Children[0].Type == ahoy.NODE_OBJECT_ACCESS) {
+				node.Children[0].Type == ahoy.NODE_MEMBER_ACCESS ||
+				node.Children[0].Type == ahoy.NODE_DICT_ACCESS ||
+				node.Children[0].Type == ahoy.NODE_OBJECT_ACCESS) {
 			// v1 return contract: returned strings are Owned. Accesses borrow
 			// their container's storage, so promote to a fresh copy.
 			gen.output.WriteString("strdup(")
@@ -6911,25 +6930,23 @@ func (gen *CodeGenerator) assignmentTargetCanRetainHeap(target string) bool {
 func (gen *CodeGenerator) setArrayStringOwnership(varName string, valueNode *ahoy.ASTNode) {
 	if valueNode != nil && valueNode.Type == ahoy.NODE_METHOD_CALL && valueNode.Value == "split" {
 		gen.heapArrayOwnsStrings[varName] = true
-		gen.arrayElemClass[varName] = AllocOwned
 		return
 	}
 	// fs_list returns a fresh array of fresh name strings: same ownership
 	// as split pieces, so scope exit frees the pieces with the shell.
 	if valueNode != nil && valueNode.Type == ahoy.NODE_CALL && valueNode.Value == "fs_list" {
 		gen.heapArrayOwnsStrings[varName] = true
-		gen.arrayElemClass[varName] = AllocOwned
 		return
 	}
 	delete(gen.heapArrayOwnsStrings, varName)
-	delete(gen.arrayElemClass, varName)
 }
 
 // fieldStoreNeedsDup reports whether a struct-field store must duplicate
 // its source: bare identifiers (including parameters) and borrowed
 // container reads may die before the struct does, while the struct takes
 // no ownership. String literals are duplicated too: struct string fields
-// are heap-owned by construction (see node_strings_free), so a raw static
+// are heap-owned by construction (deep struct-array teardown frees them,
+// skipping static "" defaults via the non-empty guard), so a raw static
 // would be freed as heap at teardown. Fresh values (concatenations,
 // string methods — including dup itself — and owned reads, handled
 // elsewhere) are immortal or already duplicated and stay raw. Sources
@@ -7113,6 +7130,39 @@ func (gen *CodeGenerator) structFieldIsString(typeName, fieldName string) bool {
 		}
 	}
 	return false
+}
+
+// ownPushedStructLiteralFields marks every explicitly-set string field of a
+// struct literal pushed into an array as owned, returning the previous
+// pending set for the caller to restore after emission. Array teardown
+// deep-frees struct string fields unconditionally ("Bell discipline":
+// non-empty fields are heap), so borrowed sources (literals, parameters,
+// borrowed reads, C calls) must be duplicated here. emitStringCopy is safe
+// for every source class: ephemeral owned temps are freed after copying,
+// owned locals keep their owner, borrowed values are copied. Without this,
+// pushing e.g. Signal{name: "spawn"} or CardData{name: "Goblin"} frees a
+// static literal at scope exit (munmap_chunk invalid pointer after the
+// window closes). Only push positions use this: transient struct literals
+// (call arguments) must stay raw or the copy would leak.
+func (gen *CodeGenerator) ownPushedStructLiteralFields(arg *ahoy.ASTNode) map[string]bool {
+	saved := gen.pendingOwnedLiteralFields
+	if arg == nil || arg.Type != ahoy.NODE_OBJECT_LITERAL || arg.Value == "" {
+		return saved
+	}
+	owned := make(map[string]bool)
+	for _, prop := range arg.Children {
+		if prop == nil || prop.Type != ahoy.NODE_OBJECT_PROPERTY || len(prop.Children) == 0 {
+			continue
+		}
+		if gen.structFieldIsString(arg.Value, prop.Value) {
+			owned[prop.Value] = true
+		}
+	}
+	if len(owned) == 0 {
+		return saved
+	}
+	gen.pendingOwnedLiteralFields = owned
+	return saved
 }
 
 // prepareOwnedStructLocals pre-scans a function body for local variables
@@ -7453,7 +7503,6 @@ func (gen *CodeGenerator) promoteArrayStringOwnershipForPush(object, arg *ahoy.A
 		return
 	}
 	gen.heapArrayOwnsStrings[name] = true
-	gen.arrayElemClass[name] = AllocOwned
 	gen.writeIndent()
 	fmt.Fprintf(&gen.output,
 		"{ for (int __i=0; __i<%s->length; __i++) if (%s->types && %s->types[__i]==AHOY_TYPE_STRING && %s->data[__i]) %s->data[__i]=(intptr_t)strdup((char*)(intptr_t)%s->data[__i]); }\n",
@@ -7492,10 +7541,75 @@ func (gen *CodeGenerator) markEscapingVariables(node *ahoy.ASTNode) {
 		gen.markLambdaCapturesOf(varName)
 	}
 
+	// Fresh copies own their storage; their operands are transient reads
+	// that must NOT be escape-marked. Marking them suppresses their
+	// scope-exit frees while the copy itself is still freed — a pure
+	// per-frame leak with no soundness benefit (status line, inspector
+	// concats, path helpers). Alias shapes (identifiers, container
+	// accesses, ternaries, switches, unknown/aliasing calls) still
+	// recurse: the target may genuinely retain them.
+	if gen.freshCopyExpr(node) {
+		return
+	}
+
 	// Recursively check children
 	for _, child := range node.Children {
 		gen.markEscapingVariables(child)
 	}
+}
+
+// freshCopyExpr reports whether node materializes a brand-new heap string
+// whose operands are only read (concatenation, any f-string, string slice,
+// fresh-string method, owned-returning call). The result never aliases an
+// operand, so escape-marking operands of such a node only leaks them.
+func (gen *CodeGenerator) freshCopyExpr(node *ahoy.ASTNode) bool {
+	if node == nil {
+		return false
+	}
+	switch node.Type {
+	case ahoy.NODE_F_STRING, ahoy.NODE_STRING_SLICE:
+		return true
+	case ahoy.NODE_BINARY_OP:
+		return node.Value == "+" && gen.valueAllocatesString(node)
+	case ahoy.NODE_CALL, ahoy.NODE_METHOD_CALL:
+		return gen.isOwnedStringReturningCall(node)
+	}
+	return false
+}
+
+// rhsMentionsVar reports whether valueNode reads varName, including
+// through legacy textual f-strings (whose identifiers live in the raw
+// text, not in Children) and container bases (`xs[0]` carries `xs` in
+// Value). Used to order the eager free after RHS evaluation: freeing
+// the old binding first would destroy the very memory a self-referential
+// RHS (`rebuilt = rebuilt + piece`) is about to read.
+func (gen *CodeGenerator) rhsMentionsVar(varName string, valueNode *ahoy.ASTNode) bool {
+	if varName == "" || valueNode == nil {
+		return false
+	}
+	mentioned := map[string]bool{}
+	collectDeferredIdents(valueNode, mentioned)
+	if mentioned[varName] {
+		return true
+	}
+	var scanFstrings func(n *ahoy.ASTNode)
+	scanFstrings = func(n *ahoy.ASTNode) {
+		if n == nil {
+			return
+		}
+		if n.Type == ahoy.NODE_F_STRING && len(n.Children) == 0 {
+			for _, id := range fstringLeadingIdentifiers(n.Value) {
+				if id == varName {
+					mentioned[varName] = true
+				}
+			}
+		}
+		for _, c := range n.Children {
+			scanFstrings(c)
+		}
+	}
+	scanFstrings(valueNode)
+	return mentioned[varName]
 }
 
 // markStoredVariables records heap-allocated names stored as whole values
@@ -8008,6 +8122,87 @@ func (gen *CodeGenerator) structPoolNames(t string) (alloc, release string) {
 	return "AhoyAlloc" + suffix, "AhoyRelease" + suffix
 }
 
+// resolveStructInfo finds the StructInfo for an Ahoy struct name, trying
+// the exact spelling plus the lower/capitalized variants the parser
+// registers (see the dual gen.structs entries at declaration).
+func (gen *CodeGenerator) resolveStructInfo(name string) *StructInfo {
+	if info := gen.structs[name]; info != nil {
+		return info
+	}
+	if info := gen.structs[strings.ToLower(name)]; info != nil {
+		return info
+	}
+	if info := gen.structs[capitalizeFirst(name)]; info != nil {
+		return info
+	}
+	if mapped := gen.mapType(name); mapped != name {
+		if info := gen.structs[mapped]; info != nil {
+			return info
+		}
+	}
+	return nil
+}
+
+// structDirectStringFields returns the field names of an Ahoy struct that
+// hold heap-owned strings (string/char* flavors). Sound because struct
+// string fields are heap-or-null by construction (field stores dup,
+// including literals).
+func (gen *CodeGenerator) structDirectStringFields(info *StructInfo) []string {
+	if info == nil {
+		return nil
+	}
+	var out []string
+	for _, f := range info.Fields {
+		if isStringLikeType(f.AhoyType) || isStringLikeType(f.Type) {
+			out = append(out, f.Name)
+		}
+	}
+	return out
+}
+
+// structPtrField is one pointer-to-Ahoy-struct field (e.g. Node.vis).
+type structPtrField struct {
+	field     string // field name on the parent (e.g. "vis")
+	target    string // Ahoy type name of the target (e.g. "NodeVis")
+	targetC   string // C type name for the target (e.g. "NodeVis")
+	release   string // pool Release fn, or "" for plain free
+	strFields []string
+}
+
+// structPtrStructFields returns the fields of info that point to other
+// Ahoy structs. Callers free each target's string fields before
+// releasing the pointer itself (the Node components pattern).
+func (gen *CodeGenerator) structPtrStructFields(info *StructInfo) []structPtrField {
+	if info == nil {
+		return nil
+	}
+	var out []structPtrField
+	for _, f := range info.Fields {
+		t := strings.TrimSpace(f.AhoyType)
+		if t == "" {
+			t = strings.TrimSpace(f.Type)
+		}
+		if !strings.HasSuffix(t, "*") {
+			continue
+		}
+		base := strings.TrimSpace(strings.TrimSuffix(t, "*"))
+		base = strings.TrimPrefix(base, "struct:")
+		target := gen.resolveStructInfo(base)
+		if target == nil {
+			continue
+		}
+		_, rel := gen.structPoolNames(base)
+		out = append(out, structPtrField{
+			field:     f.Name,
+			target:    base,
+			targetC:   gen.mapType(base),
+			release:   rel,
+			strFields: gen.structDirectStringFields(target),
+		})
+	}
+	return out
+}
+
 // generateFreeCodeForVar generates the appropriate free() code for a variable based on its type
 func (gen *CodeGenerator) generateFreeCodeForVar(varName string, varType string) string {
 	// A tracked local struct value owns only its listed string fields; the
@@ -8102,6 +8297,59 @@ func (gen *CodeGenerator) generateFreeCodeForVar(varName string, varType string)
 			// Pooled Ahoy structs recycle; C structs free. (Push-wrapper
 			// mallocs entering a pool are safe: Release accepts any block
 			// of at least the struct size.)
+			//
+			// Deep teardown (Item A): when the element is an Ahoy struct,
+			// free every heap-owned string field before releasing the
+			// shell, and recurse one level into pointer-to-struct fields
+			// (the Node components pattern: Node holds NodeVis*/NodeUi*/
+			// NodeTile*/NodeSlot*/NodeSwarm* plus direct strings; the
+			// components hold the remaining strings). Empty-string guard
+			// skips static "" defaults (alloc fn) safely: non-empty fields
+			// are heap by Bell discipline (node_make dups, stores dup,
+			// splits are heap). Empty heap strings leak one byte — bounded,
+			// documented, safe (lean to leak per §2.1). Arrays and
+			// buffers nested inside components are intentionally left
+			// alone (same as node_components_free today): bounded leak,
+			// never a dangling free.
+			if info := gen.resolveStructInfo(elemType); info != nil {
+				direct := gen.structDirectStringFields(info)
+				nested := gen.structPtrStructFields(info)
+				if len(direct) > 0 || len(nested) > 0 {
+					var b strings.Builder
+					b.WriteString(fmt.Sprintf("    if (%s) { for(int __i=0; __i<%s->length; __i++) { %s* __el = (%s*)%s->data[__i]; if(!__el) continue;",
+						varName, varName, gen.mapType(elemType), gen.mapType(elemType), varName))
+					// Empty-string guard: struct defaults are static ""
+					// (alloc fn) while live values are heap (stores dup).
+					// Freeing static "" aborts (munmap_chunk), so only free
+					// non-empty strings. Empty heap strings (strdup(""))
+					// leak one byte each — bounded, documented, safe.
+					// Non-empty fields are heap by Bell discipline
+					// (node_make dups, stores dup, splits are heap).
+					for _, f := range direct {
+						fmt.Fprintf(&b, " if(__el->%s && (__el->%s[0])) free(__el->%s);", f, f, f)
+					}
+					for _, n := range nested {
+						fmt.Fprintf(&b, " if(__el->%s) {", n.field)
+						for _, sf := range n.strFields {
+							fmt.Fprintf(&b, " if(__el->%s->%s && (__el->%s->%s[0])) free(__el->%s->%s);", n.field, sf, n.field, sf, n.field, sf)
+						}
+						if n.release != "" {
+							fmt.Fprintf(&b, " %s(__el->%s);", n.release, n.field)
+						} else {
+							fmt.Fprintf(&b, " free((void*)__el->%s);", n.field)
+						}
+						b.WriteString(" }")
+					}
+					_, rel := gen.structPoolNames(elemType)
+					if rel != "" {
+						fmt.Fprintf(&b, " %s((void*)__el);", rel)
+					} else {
+						b.WriteString(" free((void*)__el);")
+					}
+					fmt.Fprintf(&b, " } free(%s->data); free(%s->types); free(%s); }\n", varName, varName, varName)
+					return b.String()
+				}
+			}
 			if _, rel := gen.structPoolNames(elemType); rel != "" {
 				return fmt.Sprintf("    if (%s) { for(int __i=0; __i<%s->length; __i++) { if(%s->data[__i]) %s((void*)%s->data[__i]); } free(%s->data); free(%s->types); free(%s); }\n",
 					varName, varName, varName, rel, varName, varName, varName, varName)
@@ -10242,24 +10490,87 @@ func (gen *CodeGenerator) generateBinaryOp(node *ahoy.ASTNode) {
 	case "+":
 		if len(node.Children) >= 2 {
 			left, right := node.Children[0], node.Children[1]
+			// A nested string concat is always a fresh heap value (every
+			// string-typed "+" shape allocates), even when inference cannot
+			// see through the operand to prove it via valueAllocatesString.
+			// Without this the outer concat copies the middle temp and
+			// nobody frees it (per-iteration leak in accumulator loops).
+			isFreshOperand := func(n *ahoy.ASTNode) bool {
+				if gen.valueAllocatesString(n) {
+					return true
+				}
+				return n.Type == ahoy.NODE_BINARY_OP && n.Value == "+" && gen.isStringExpr(n)
+			}
 			if gen.isCharExpr(left) != gen.isCharExpr(right) &&
 				(gen.isStringExpr(left) || gen.isStringExpr(right)) {
 				// string + char (either order): lift the char to a
 				// 1-character string. char + char stays arithmetic.
 				gen.stringMethods["concat"] = true
-				gen.output.WriteString("ahoy_string_concat(")
-				if gen.isStringExpr(left) {
-					gen.generateNode(left)
-				} else {
-					gen.generateCharString(left)
+				// Render one side into text, honoring the char lift.
+				renderConcatSide := func(n *ahoy.ASTNode, isStr bool) string {
+					savedOutput := gen.output
+					savedIndent := gen.indent
+					gen.output = strings.Builder{}
+					gen.indent = 0
+					if isStr {
+						gen.generateNode(n)
+					} else {
+						gen.generateCharString(n)
+					}
+					text := gen.output.String()
+					gen.output = savedOutput
+					gen.indent = savedIndent
+					return text
 				}
+				leftIsStr, rightIsStr := gen.isStringExpr(left), gen.isStringExpr(right)
+				if !isFreshOperand(left) && !isFreshOperand(right) {
+					gen.output.WriteString("ahoy_string_concat(")
+					gen.output.WriteString(renderConcatSide(left, leftIsStr))
+					gen.output.WriteString(", ")
+					gen.output.WriteString(renderConcatSide(right, rightIsStr))
+					gen.output.WriteString(")")
+					return
+				}
+				// A fresh string operand would leak: the outer concat
+				// copies it and nobody frees it. Stash, concat, free.
+				leftText := renderConcatSide(left, leftIsStr)
+				rightText := renderConcatSide(right, rightIsStr)
+				leftUse, rightUse := leftText, rightText
+				gen.output.WriteString("({ ")
+				if isFreshOperand(left) {
+					leftUse = fmt.Sprintf("_ct_%d", gen.varCounter)
+					gen.varCounter++
+					gen.output.WriteString("char* ")
+					gen.output.WriteString(leftUse)
+					gen.output.WriteString(" = ")
+					gen.output.WriteString(leftText)
+					gen.output.WriteString("; ")
+				}
+				if isFreshOperand(right) {
+					rightUse = fmt.Sprintf("_ct_%d", gen.varCounter)
+					gen.varCounter++
+					gen.output.WriteString("char* ")
+					gen.output.WriteString(rightUse)
+					gen.output.WriteString(" = ")
+					gen.output.WriteString(rightText)
+					gen.output.WriteString("; ")
+				}
+				gen.output.WriteString("char* _cr = ahoy_string_concat(")
+				gen.output.WriteString(leftUse)
 				gen.output.WriteString(", ")
-				if gen.isStringExpr(right) {
-					gen.generateNode(right)
-				} else {
-					gen.generateCharString(right)
+				gen.output.WriteString(rightUse)
+				gen.output.WriteString("); ")
+				if isFreshOperand(left) {
+					gen.output.WriteString("free(")
+					gen.output.WriteString(leftUse)
+					gen.output.WriteString("); ")
 				}
-				gen.output.WriteString(")")
+				if isFreshOperand(right) {
+					gen.output.WriteString("free(")
+					gen.output.WriteString(rightUse)
+					gen.output.WriteString("); ")
+				}
+				gen.output.WriteString("_cr; })")
 				return
 			}
 		}
@@ -10267,7 +10578,20 @@ func (gen *CodeGenerator) generateBinaryOp(node *ahoy.ASTNode) {
 			// String concatenation: + on two strings builds a new string.
 			gen.stringMethods["concat"] = true
 			left, right := node.Children[0], node.Children[1]
-			if !gen.valueAllocatesString(left) && !gen.valueAllocatesString(right) {
+			// A nested string concat is always a fresh heap value (every
+			// string-typed "+" shape allocates), even when inference cannot
+			// see through the operand to prove it via valueAllocatesString.
+			// Without this the outer concat copies the middle temp and
+			// nobody frees it (per-iteration leak in accumulator loops).
+			// (isFreshOperand is also defined for the char-mix branch
+			// above; this is a separate scope for this branch.)
+			isFreshOperand := func(n *ahoy.ASTNode) bool {
+				if gen.valueAllocatesString(n) {
+					return true
+				}
+				return n.Type == ahoy.NODE_BINARY_OP && n.Value == "+" && gen.isStringExpr(n)
+			}
+			if !isFreshOperand(left) && !isFreshOperand(right) {
 				gen.output.WriteString("ahoy_string_concat(")
 				gen.generateNode(left)
 				gen.output.WriteString(", ")
@@ -10283,7 +10607,7 @@ func (gen *CodeGenerator) generateBinaryOp(node *ahoy.ASTNode) {
 			rightText := gen.bufferedNode(right)
 			leftUse, rightUse := leftText, rightText
 			gen.output.WriteString("({ ")
-			if gen.valueAllocatesString(left) {
+			if isFreshOperand(left) {
 				leftUse = fmt.Sprintf("_ct_%d", gen.varCounter)
 				gen.varCounter++
 				gen.output.WriteString("char* ")
@@ -10292,7 +10616,7 @@ func (gen *CodeGenerator) generateBinaryOp(node *ahoy.ASTNode) {
 				gen.output.WriteString(leftText)
 				gen.output.WriteString("; ")
 			}
-			if gen.valueAllocatesString(right) {
+			if isFreshOperand(right) {
 				rightUse = fmt.Sprintf("_ct_%d", gen.varCounter)
 				gen.varCounter++
 				gen.output.WriteString("char* ")
@@ -10306,12 +10630,12 @@ func (gen *CodeGenerator) generateBinaryOp(node *ahoy.ASTNode) {
 			gen.output.WriteString(", ")
 			gen.output.WriteString(rightUse)
 			gen.output.WriteString("); ")
-			if gen.valueAllocatesString(left) {
+			if isFreshOperand(left) {
 				gen.output.WriteString("free(")
 				gen.output.WriteString(leftUse)
 				gen.output.WriteString("); ")
 			}
-			if gen.valueAllocatesString(right) {
+			if isFreshOperand(right) {
 				gen.output.WriteString("free(")
 				gen.output.WriteString(rightUse)
 				gen.output.WriteString("); ")
@@ -11201,7 +11525,9 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 					gen.output.WriteString("* __tmp = malloc(sizeof(")
 					gen.output.WriteString(structType)
 					gen.output.WriteString(")); *__tmp = ")
+					savedOwned := gen.ownPushedStructLiteralFields(arg)
 					gen.generateNodeInternal(arg, false)
+					gen.pendingOwnedLiteralFields = savedOwned
 					gen.output.WriteString("; __tmp; })")
 				} else if gen.pushNeedsStrdup(object, arg) {
 					// Borrowed static into an owned-strings array: duplicate
@@ -11332,7 +11658,9 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 								gen.output.WriteString("* __tmp = malloc(sizeof(")
 								gen.output.WriteString(structType)
 								gen.output.WriteString(")); *__tmp = ")
+								savedOwned := gen.ownPushedStructLiteralFields(arg)
 								gen.generateNodeInternal(arg, false)
+								gen.pendingOwnedLiteralFields = savedOwned
 								gen.output.WriteString("; __tmp; })")
 							} else if methodName == "push" && object != nil && object.Type == ahoy.NODE_IDENTIFIER &&
 								gen.varAllocClass[object.Value] == AllocArena && isStringLikeType(gen.inferType(arg)) && gen.isOwnedStringExpr(arg) {
@@ -12797,7 +13125,9 @@ func (gen *CodeGenerator) generateChainedArrayAssignment(node *ahoy.ASTNode) {
 			gen.output.WriteString("* __tmp = malloc(sizeof(")
 			gen.output.WriteString(structType)
 			gen.output.WriteString(")); *__tmp = ")
+			savedOwned := gen.ownPushedStructLiteralFields(valueNode)
 			gen.generateNode(valueNode)
+			gen.pendingOwnedLiteralFields = savedOwned
 			gen.output.WriteString("; __tmp; });\n")
 			return
 		}

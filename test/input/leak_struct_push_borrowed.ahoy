@@ -1,0 +1,31 @@
+program leak_struct_push_borrowed
+
+? Push-position struct literals: string fields from borrowed sources
+? (literals, parameters) are duplicated into heap on push, because array
+? teardown deep-frees struct string fields. Previously pushing
+? Card{name: "Goblin"} freed the static literal at scope exit
+? (munmap_chunk invalid pointer after main returned).
+
+struct Card:
+	name: string
+	attack: int
+$
+
+@ add_card |db:array[Card], n:string, a:int| void:
+	db.push|Card{name: n, attack: a}|
+$
+
+@ main ||:
+	expected: []
+
+	db: array[Card] = []
+	loop i:0 to 100 do
+		db.push|Card{name: "Goblin", attack: 3}|
+	$
+	add_card|db, "Skeleton", 2|
+	total: db.length
+	print|total|
+	expected.push|"101"|
+
+	print|expected|
+$
