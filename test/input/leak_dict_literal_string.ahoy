@@ -1,0 +1,19 @@
+program leak_dict_literal_string
+
+? Dict-literal discipline: owned f-string values transfer into the dict
+? without a second copy (emitStringCopy frees the ephemeral temp after
+? duplicating). Previously the temporary leaked once per iteration.
+
+@ main ||:
+	expected: []
+
+	total: 0
+	loop i:0 to 500 do
+		d: dict = <"k": f"v-{i}">
+		total = total + d.size||
+	$
+	print|total|
+	expected.push|"500"|
+
+	print|expected|
+$

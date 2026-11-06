@@ -38,7 +38,11 @@ for prog in "$TESTDIR"/input/leak_*.ahoy; do
     cfile="$OUT/$base.c"
     exe="$MEMTMP/memcheck_$base"
     echo "== $base =="
-    "$BIN" -single-tu -f "$prog" >/dev/null 2>&1 || { echo "  ahoy compile FAILED"; fail=1; continue; }
+    # -show_leaks enables AHOY_ARENA_STRICT (abort on NULL-arena alloc and
+    # stale-mark rewind) plus poison-on-rewind in the generated C, so the
+    # harness exercises the failure modes the plan describes instead of
+    # the permissive defaults.
+    "$BIN" -single-tu -show_leaks -f "$prog" >/dev/null 2>&1 || { echo "  ahoy compile FAILED"; fail=1; continue; }
     if [ ! -f "$cfile" ]; then echo "  missing $cfile"; fail=1; continue; fi
     rm -f "$exe"
     gcc -O1 -g "$cfile" -o "$exe" -lm 2>&1 | head -5

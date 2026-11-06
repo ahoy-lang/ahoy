@@ -1,0 +1,20 @@
+program leak_float_array
+
+? Float-box discipline: float/double array elements are heap-boxed
+? doubles, so array teardown must free AHOY_TYPE_FLOAT slots — not just
+? string slots in owning arrays. Previously plain array[float] freed only
+? the shell and leaked every box.
+
+@ main ||:
+	expected: []
+
+	total: float = 0.0
+	loop i:0 to 1000 do
+		a: array[float] = [1.5, 2.5, 3.5]
+		total = total + a[0]
+	$
+	print|total|
+	expected.push|"1500"|
+
+	print|expected|
+$

@@ -1,0 +1,26 @@
+program leak_reassign_string
+
+? Reassignment discipline: every fresh string reassigned in a loop must
+? free the previous binding (eager free) and track the new one, so only
+? the latest binding survives to scope exit. Previously the reassignment
+? path deleted tracking unconditionally and leaked every iteration.
+
+@ main ||:
+	expected: []
+
+	s: string = "x"
+	loop i:0 to 1000 do
+		s = "a" + "b"
+	$
+	print|s|
+	expected.push|"ab"|
+
+	t: string = "y"
+	loop j:0 to 1000 do
+		t = f"v-{j}"
+	$
+	print|t|
+	expected.push|"v-999"|
+
+	print|expected|
+$

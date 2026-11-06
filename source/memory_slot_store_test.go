@@ -58,8 +58,10 @@ func TestDictEntryStoreDuplicatesHeapString(t *testing.T) {
 	}
 }
 
-// Storing a static literal stays raw: nothing owns it, nothing frees it,
-// so no duplicate is needed (and no leak is introduced).
+// String arrays own every string slot by construction (literal statics are
+// duplicated into heap copies at creation), so storing even a static literal
+// must duplicate: the raw static would otherwise be freed as heap at scope
+// exit. Scope exit deep-frees all AHOY_TYPE_STRING slots.
 func TestArrayElementStoreOfLiteralStaysRaw(t *testing.T) {
 	src := `program p
 @ main ||:
@@ -70,7 +72,7 @@ $
 `
 	ast := ahoy.ParseWithPath(ahoy.Tokenize(src), "test.ahoy")
 	out := GenerateCWithFilename(ast, "test.ahoy")
-	if strings.Contains(out, "strdup(\"static\")") {
-		t.Errorf("storing a static literal must stay raw (no duplicate needed)")
+	if !strings.Contains(out, "strdup(\"static\")") {
+		t.Errorf("storing a static literal into an owning string array must strdup it")
 	}
 }

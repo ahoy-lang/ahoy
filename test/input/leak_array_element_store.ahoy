@@ -1,0 +1,23 @@
+program leak_array_element_store
+
+? Element-store discipline: typed string arrays own every slot, so
+? overwriting a slot frees the old string first. Previously stores never
+? freed the overwritten element and literal arrays never owned theirs.
+
+@ main ||:
+	expected: []
+
+	arr: array[string] = [""]
+	loop i:0 to 1000 do
+		s: "v" + "w"
+		arr[0] = s
+	$
+	print|arr[0]|
+	expected.push|"vw"|
+
+	arr[0] = "static"
+	print|arr[0]|
+	expected.push|"static"|
+
+	print|expected|
+$

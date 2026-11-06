@@ -1168,6 +1168,7 @@ func main() {
 	hotReloadFlag := flag.Bool("hotreload", false, "Enable hot code reloading (keeps window open, reloads on file changes) - development only")
 	coldReloadFlag := flag.Bool("coldreload", false, "Enable cold reload (auto-recompile and restart on file changes) - development only")
 	singleTUFlag := flag.Bool("single-tu", false, "Force single-translation-unit codegen (legacy fallback)")
+	outputNameFlag := flag.String("o", "", "Override output executable name (default: input file basename)")
 	arenaRoutingFlag := flag.String("arena-routing", "off", "Arena routing level: off|temps|locals|all")
 	arenaMarksFlag := flag.Bool("arena-marks", true, "Emit watermark marks/rewinds")
 	fstringLegacyFlag := flag.Bool("fstring-legacy", false, "Use legacy static f-string buffers")
@@ -1676,6 +1677,13 @@ func main() {
 	// Determine output file name
 	baseName := filepath.Base(sourceFile)
 	baseName = strings.TrimSuffix(baseName, filepath.Ext(baseName))
+	if *outputNameFlag != "" {
+		// Explicit executable name (bell/run.sh passes -o bell for the
+		// editor and -o <game> for games so the process lists under a
+		// recognizable name instead of output/main). TU files keep their
+		// main_* names; only the executable (and primary C file) rename.
+		baseName = filepath.Base(*outputNameFlag)
+	}
 
 	// Determine output directory based on source file location
 	outputDir := "output"
@@ -2342,6 +2350,7 @@ func showHelp() {
 	fmt.Println("  -gen_stdlib_docs   Generate stdlib API reference as .ahoy file")
 	fmt.Println("  -cache        Enable incremental builds (cache parsed files)")
 	fmt.Println("  -D NAME       Define NAME for `when NAME then` blocks (repeatable, comma-separated)")
+	fmt.Println("  -o NAME       Override output executable name (default: input file basename)")
 	fmt.Println("  -hotreload    Enable hot code reloading (development only, keeps window open)")
 	fmt.Println("  -coldreload   Enable cold reload (development only, auto-recompile and restart)")
 	fmt.Println("  -h            Show this help message")

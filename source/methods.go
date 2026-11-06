@@ -46,6 +46,139 @@ func (gen *CodeGenerator) resolveUserMethod(call *ahoy.ASTNode) (string, bool, b
 	return "", false, false
 }
 
+// freshStringBuiltin reports whether a free-function call by this name
+// always returns caller-owned heap (the sprintf family, fresh-string
+// stdlib builtins, and fresh-returning C helpers). Shared with
+// valueAllocatesString and the funcReturnsOwnedString predicate below.
+//
+// Every name here was audited to malloc/strdup on ALL paths: a borrowed or
+// static return on any path would turn the caller's scope-exit free into a
+// use-after-free. Deliberately ABSENT (borrowed or mixed, never tracked):
+// ahoy_sb_text (builder memory), ahoy_loc_tr / ahoy_fs_name /
+// ahoy_read_text / ahoy_text_copy / ahoy_loc_lang_name / ahoy_anim_name /
+// ahoy_audio_key / ahoy_shader_error / ahoy_vram_row_name /
+// ahoy_vram_row_kind / ahoy_shader_uniform_name /
+// ahoy_shader_uniform_default (statics or interior pointers), and
+// ahoy_model_convert / ahoy_text_alloc (static on some paths).
+func freshStringBuiltin(name string) bool {
+	switch name {
+	case "sprintf", "format", "from_code", "errno_str", "time_format",
+		"path_join", "path_parent", "path_name",
+		"fs_read_text",
+		"clock_string", "cwd", "exe_dir",
+		"ahoy_text_prefix", "ahoy_text_from",
+		"ahoy_str_append_char", "ahoy_str_backspace",
+		"ahoy_fs_path", "ahoy_path_join",
+		"ahoy_lint_capture", "ahoy_strip_comments",
+		"ahoy_rename_entry", "ahoy_rename_varying",
+		"ahoy_strndup", "ahoy_model_bone_name":
+		return true
+	}
+	return false
+}
+
+// funcReturnsOwnedString reports whether every string value returned by the
+// free function fn is caller-owned heap, so callers must free the result.
+// This mirrors the return-site promotion in generateReturnStatement:
+// literals, identifiers, container accesses, concats, slices, owned
+// f-strings, and known-fresh calls are promoted or fresh; C/foreign calls,
+// ternaries, and switch-expression returns are borrowed (or static) and
+// must NOT be freed by the caller.
+//
+// In particular a wrapper like `loc_tr` (`return ahoy_loc_tr|text|`, where
+// the C helper returns its key or a table cell) is BORROWED: tracking and
+// freeing its result corrupts the owner (arena game heap-use-after-free,
+// Nov 2026). Likewise switch-returners like `kind_icon_name` hand out
+// static literals. Unknown shapes are conservatively borrowed (bounded
+// leak, never use-after-free).
+func (gen *CodeGenerator) funcReturnsOwnedString(fn string) bool {
+	if gen.funcOwnedStringCache == nil {
+		gen.funcOwnedStringCache = map[string]bool{}
+	}
+	if gen.funcOwnedStringBusy == nil {
+		gen.funcOwnedStringBusy = map[string]bool{}
+	}
+	if v, ok := gen.funcOwnedStringCache[fn]; ok {
+		return v
+	}
+	if gen.funcOwnedStringBusy[fn] {
+		return false
+	}
+	gen.funcOwnedStringBusy[fn] = true
+	owned := gen.computeFuncReturnsOwnedString(fn)
+	delete(gen.funcOwnedStringBusy, fn)
+	gen.funcOwnedStringCache[fn] = owned
+	return owned
+}
+
+func (gen *CodeGenerator) computeFuncReturnsOwnedString(fn string) bool {
+	body, ok := gen.funcBodies[fn]
+	if !ok || len(body.Children) < 2 {
+		return false
+	}
+	returns := 0
+	owned := true
+	var walk func(n *ahoy.ASTNode, depth int)
+	walk = func(n *ahoy.ASTNode, depth int) {
+		if n == nil || depth > 16 || !owned {
+			return
+		}
+		if n.Type == ahoy.NODE_RETURN_STATEMENT {
+			returns++
+			// Bare or multi-value returns are not single owned strings.
+			if len(n.Children) != 1 || !gen.stringReturnYieldsOwned(n.Children[0], depth+1) {
+				owned = false
+			}
+			return
+		}
+		for _, c := range n.Children {
+			walk(c, depth)
+		}
+	}
+	walk(body.Children[1], 0)
+	return returns > 0 && owned
+}
+
+// stringReturnYieldsOwned reports whether a returned expression evaluates
+// to caller-owned heap under the v1 return contract (see
+// funcReturnsOwnedString). Direct identifier returns are included: the
+// return site duplicates borrowed/static names (or transfers an already
+// owned local, whose callee-side free is suppressed by escape marking).
+func (gen *CodeGenerator) stringReturnYieldsOwned(n *ahoy.ASTNode, depth int) bool {
+	if n == nil || depth > 16 {
+		return false
+	}
+	switch n.Type {
+	case ahoy.NODE_STRING, ahoy.NODE_RAW_STRING,
+		ahoy.NODE_IDENTIFIER,
+		ahoy.NODE_MEMBER_ACCESS, ahoy.NODE_DICT_ACCESS,
+		ahoy.NODE_OBJECT_ACCESS, ahoy.NODE_ARRAY_ACCESS,
+		ahoy.NODE_STRING_SLICE:
+		return true
+	case ahoy.NODE_BINARY_OP:
+		return n.Value == "+" && isStringLikeType(gen.inferType(n))
+	case ahoy.NODE_F_STRING:
+		// Return position forces the owned helper (inReturnExpr), so a
+		// returned f-string is always a heap copy in string functions.
+		return true
+	case ahoy.NODE_METHOD_CALL:
+		return ahoy.FreshStringMethods[n.Value]
+	case ahoy.NODE_CALL:
+		if freshStringBuiltin(n.Value) {
+			return true
+		}
+		if gen.userFunctions[n.Value] {
+			return gen.funcReturnsOwnedString(n.Value)
+		}
+		// C/foreign/unknown calls may hand out borrowed storage.
+		return false
+	default:
+		// Ternaries, switch expressions, and unknown shapes: borrowed-or-
+		// unknown, never reported owned.
+		return false
+	}
+}
+
 // valueAllocatesString reports whether evaluating this expression produces a
 // freshly heap-allocated string the owner must free: string concatenation
 // (string operands, including the string + char form), sprintf, and
@@ -78,11 +211,23 @@ func (gen *CodeGenerator) valueAllocatesString(node *ahoy.ASTNode) bool {
 		// the result is tracked and freed at scope exit like any other
 		// fresh string. Predicates and int/float builtins are absent:
 		// they allocate nothing.
-		switch node.Value {
-		case "sprintf", "format", "from_code", "errno_str", "time_format",
-			"path_join", "path_parent", "path_name",
-			"fs_read_text",
-			"clock_string", "cwd", "exe_dir":
+		if freshStringBuiltin(node.Value) {
+			return true
+		}
+		// User functions: ownership follows the return-site promotion,
+		// modeled by funcReturnsOwnedString (emission-consistent). Wrappers
+		// around C calls, ternaries, and switch-expression returns are
+		// borrowed even though they return strings. Unknown callees fall
+		// back to the alias verdict below (borrowed => not tracked).
+		if _, known := gen.funcBodies[node.Value]; known {
+			return gen.funcReturnsOwnedString(node.Value)
+		}
+		// Alias/passthrough callees borrow their argument or a global:
+		// the caller must NOT free the result (see callAliasKind).
+		if gen.callAliasKind(node.Value).isAlias {
+			return false
+		}
+		if gen.isOwnedStringReturningCall(node) {
 			return true
 		}
 		return false

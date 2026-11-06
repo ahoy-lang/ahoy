@@ -13,6 +13,10 @@
 #
 # Usage: run from the ahoy repo:
 #   bash tools/bell_mem_check.sh
+#   BELL_MEM_STRICT=1 bash tools/bell_mem_check.sh   # also fail on definite
+#   exit-time leaks (currently red: per-frame string/float element leaks and
+#   shallow scene teardown are still being closed out; default stays green
+#   on errors-only until they land).
 
 set -u
 AHOY="$(cd "$(dirname "$0")/.." && pwd)"
@@ -52,4 +56,12 @@ if grep -q "heap-use-after-free\|double-free\|heap-buffer-overflow\|SEGV\|Addres
   exit 1
 fi
 grep -a "closed after\|SUMMARY" "$RUNLOG" | head -3
+if [ "${BELL_MEM_STRICT:-0}" = "1" ]; then
+  if grep -q "definitely lost: [1-9]\|indirectly lost: [1-9]" "$RUNLOG"; then
+    echo "bell_mem_check: FAIL (strict: exit-time leaks present)"
+    exit 1
+  fi
+  echo "bell_mem_check: PASS (no memory errors, no exit-time leaks)"
+  exit 0
+fi
 echo "bell_mem_check: PASS (no memory errors)"

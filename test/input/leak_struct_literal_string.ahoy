@@ -1,0 +1,27 @@
+program leak_struct_literal_string
+
+? Struct-literal discipline: string fields initialized with owned values
+? are tracked from the literal itself (not only from later stores), and
+? ephemeral sources transfer without a second copy. Previously
+? Card{text: f".."} leaked both the helper allocation and the strdup.
+
+struct Card:
+	text: string = ""
+$
+
+@ main ||:
+	expected: []
+
+	total: 0
+	loop i:0 to 500 do
+		c: Card{text: f"v-{i}"}
+		total = total + 1
+		if c.text.byte_len|| < 3 then
+			total = total + 1000000
+		$
+	$
+	print|total|
+	expected.push|"500"|
+
+	print|expected|
+$
