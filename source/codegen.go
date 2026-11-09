@@ -3443,6 +3443,14 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 		// Special handling for array assignment
 		if node.Children[0].Type == ahoy.NODE_ARRAY_ACCESS {
 			arrayName := node.Children[0].Value
+			// Unified `[]`: an array-shaped access on a dict-typed base (or
+			// with a string key) is really a dict store. Route to the dict
+			// putter so `d[var] = v` and `d["k"] = v` work in codegen mode.
+			if gen.isDictIndexAccess(node.Children[0]) {
+				dictName := gen.nameExpr(arrayName)
+				gen.generateDictPutTyped(dictName, node.Children[0].Children[0], node.Children[1])
+				return
+			}
 			indexNode := node.Children[0].Children[0]
 			valueNode := node.Children[1]
 
@@ -9059,7 +9067,12 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 							formatSpec = "%s"
 						}
 					} else if arg.Type == ahoy.NODE_DICT_ACCESS {
-						// Direct dict access like dict<key> - will use format_dict_value
+						// Direct dict access like dict["k"] - will use format_dict_value
+						isHashMapAccess = true
+						formatSpec = "%s"
+					} else if arg.Type == ahoy.NODE_ARRAY_ACCESS && gen.isDictIndexAccess(arg) {
+						// Unified `[]`: `d[var]` / `d["k"]` may parse as array
+						// access in codegen mode. Still a dict read for printing.
 						isHashMapAccess = true
 						formatSpec = "%s"
 					}
@@ -9251,28 +9264,38 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 						gen.output.WriteString(")")
 					} else {
 						// Check if this is dict access (returns double but may be string)
-						if arg.Type == ahoy.NODE_DICT_ACCESS {
+						if arg.Type == ahoy.NODE_DICT_ACCESS || gen.isDictIndexAccess(arg) {
 							// Dict access returns double, but could be string - use format_dict_value
-							gen.output.WriteString("format_dict_value(")
-							// Cast dict to HashMap* if needed
-							dictType := gen.inferType(arg)
-							if dictType == "float" {
-								// Check if the dict itself is generic
-								dictName := arg.Value
-								varType := ""
-								if vt, exists := gen.variables[dictName]; exists {
-									varType = vt
-								} else if vt, exists := gen.functionVars[dictName]; exists {
-									varType = vt
+							dictName := arg.Value
+							if arg.Type == ahoy.NODE_ARRAY_ACCESS {
+								// Unified `[]` parsed as array in codegen mode;
+								// emit through the dict reader.
+								gen.output.WriteString("format_dict_value(")
+								gen.output.WriteString(gen.nameExpr(dictName))
+								gen.output.WriteString(", ")
+								gen.generateNode(arg.Children[0])
+								gen.output.WriteString(")")
+							} else {
+								gen.output.WriteString("format_dict_value(")
+								// Cast dict to HashMap* if needed
+								dictType := gen.inferType(arg)
+								if dictType == "float" {
+									// Check if the dict itself is generic
+									varType := ""
+									if vt, exists := gen.variables[dictName]; exists {
+										varType = vt
+									} else if vt, exists := gen.functionVars[dictName]; exists {
+										varType = vt
+									}
+									if varType == "generic" || varType == "any" {
+										gen.output.WriteString("(HashMap*)")
+									}
 								}
-								if varType == "generic" || varType == "any" {
-									gen.output.WriteString("(HashMap*)")
-								}
+								gen.output.WriteString(dictName)
+								gen.output.WriteString(", ")
+								gen.generateNode(arg.Children[0])
+								gen.output.WriteString(")")
 							}
-							gen.output.WriteString(arg.Value)
-							gen.output.WriteString(", ")
-							gen.generateNode(arg.Children[0])
-							gen.output.WriteString(")")
 						} else if arg.Type == ahoy.NODE_IDENTIFIER {
 							// Check if this variable came from dict access
 							if dictName, isDictSourced := gen.dictSourcedVars[arg.Value]; isDictSourced {
@@ -12720,6 +12743,13 @@ func (gen *CodeGenerator) generateArrayAccess(node *ahoy.ASTNode) {
 	}
 
 	arrayName := node.Value
+	// Unified `[]`: a dict-typed base with `[]` is a dict access even if the
+	// parser routed it as an array (unknown type at parse time). String keys
+	// are always dicts. Delegate.
+	if gen.isDictIndexAccess(node) {
+		gen.generateDictAccess(&ahoy.ASTNode{Type: ahoy.NODE_DICT_ACCESS, Value: arrayName, Children: node.Children, Line: node.Line})
+		return
+	}
 	objExpr := gen.nameExpr(arrayName)
 
 	// C-pointer indexing (Tier-3 Feature 3): `pp[i]` where pp is char** or
@@ -13169,6 +13199,52 @@ func (gen *CodeGenerator) dictValueType(dictName string) string {
 		return ""
 	}
 	return strings.TrimSpace(parts[1])
+}
+
+// isDictVarName reports whether a variable is dict-typed (typed or untyped).
+// Used for unified `[]` routing when the parser saw an array shape in codegen
+// mode (no lint types).
+func (gen *CodeGenerator) isDictVarName(name string) bool {
+	if vt, ok := gen.variables[name]; ok {
+		if vt == "dict" || vt == "HashMap*" || vt == "generic" || vt == "any" {
+			return true
+		}
+		if strings.HasPrefix(vt, "dict<") || strings.HasPrefix(vt, "dict[") {
+			return true
+		}
+	}
+	if vt, ok := gen.functionVars[name]; ok {
+		if vt == "dict" || vt == "HashMap*" || vt == "generic" || vt == "any" {
+			// `generic`/`any` params could be arrays too; only treat as dict
+			// when the index is string-like (checked by the caller via
+			// isDictIndexAccess). Here we are conservative: generic alone
+			// is not enough to claim dict.
+			if vt == "generic" || vt == "any" {
+				return false
+			}
+			return true
+		}
+		if strings.HasPrefix(vt, "dict<") || strings.HasPrefix(vt, "dict[") {
+			return true
+		}
+	}
+	return false
+}
+
+// isDictIndexAccess reports whether node is a dict read written with `[]`
+// but parsed as an array access (codegen mode has no lint types). String
+// keys are always dicts; otherwise the base must be dict-typed.
+func (gen *CodeGenerator) isDictIndexAccess(node *ahoy.ASTNode) bool {
+	if node == nil || node.Type != ahoy.NODE_ARRAY_ACCESS || node.Value == "" {
+		return false
+	}
+	if len(node.Children) == 0 {
+		return false
+	}
+	if node.Children[0].Type == ahoy.NODE_STRING {
+		return true
+	}
+	return gen.isDictVarName(node.Value)
 }
 
 func (gen *CodeGenerator) generateDictAccess(node *ahoy.ASTNode) {

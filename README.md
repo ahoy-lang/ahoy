@@ -48,7 +48,7 @@ A modern, expressive programming language with clean syntax and powerful feature
 - **Pipe Syntax**: Function calls with `|args|`
 - **Arrays**: Built-in with `[]` syntax
 - **Objects/Structs**: C-style with `{}` syntax
-- **Dictionaries**: Hash maps with `<>` syntax
+- **Dictionaries**: Hash maps with `<>` literals, `[]` access
 - **F-Strings**: String interpolation with `f"...{var}..."`
 - **LSP Support**: Real-time linting and validation
 - **Single-Line Statements**: Use `;` to combine statements
@@ -628,7 +628,7 @@ red: color{r: 255, g: 0, b: 0, a: 255}
 
 ### Dictionaries
 
-**NEW SYNTAX**: Dictionaries now use `<>` angle brackets!
+Dict literals use `<>`, access uses `[]` (unified index operator).
 
 ```ahoy
 ? Untyped dictionary (inferred)
@@ -637,11 +637,14 @@ settings: <"theme": "dark", "lang": "en">
 ? Typed dictionary (explicit key/value types)
 scores:dict<string,int> = <"Alice": 100, "Bob": 95>
 
-? Access with angle brackets
-theme: settings<"theme">
+? Access with brackets — string, variable or expression keys
+theme: settings["theme"]
+key: "lang"
+lang: settings[key]
 
-? Update values
-settings<"lang">: "es"
+? Declare a new key with `:`, update an existing key with `=`
+settings["port"]: "8080"   ? new key
+settings["lang"] = "es"    ? update (`=` on a never-seen key warns)
 
 ? Type annotation with dict keyword
 config:dict = <"host": "localhost", "port": 8080>
@@ -654,6 +657,9 @@ $
 ? Methods
 has_theme: settings.has|"theme"|  ? Returns 1 or 0
 ```
+
+`d<"k">` still parses but warns — use `d["k"]`. Casts are `int(x)`,
+not `int|x|` (pipe form warns).
 
 ### Enums
 

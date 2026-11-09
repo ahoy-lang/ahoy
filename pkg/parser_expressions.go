@@ -111,6 +111,8 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 	}
 
 	// Check for dict property assignment: dict<key>: value or dict<key> = value
+	// Deprecated `<>` form — warns, use `dict["key"]` instead. Kept for
+	// back-compat during migration.
 	if p.pos+2 < len(p.tokens) && p.tokens[p.pos+1].Type == TOKEN_LANGLE {
 		// Check if this is dict<key>: pattern
 		savedPos := p.pos
@@ -134,17 +136,24 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 		// The separator can be a colon (d<"k">: v) or an equals sign
 		// (d<"k"> = v): both mean "store into this entry".
 		isAssignment := p.current().Type == TOKEN_ASSIGN || p.current().Type == TOKEN_EQUALS
+		isColon := p.current().Type == TOKEN_ASSIGN
 		p.pos = savedPos // restore position
 
 		if isAssignment {
 			// Parse as dict property assignment
-			target := p.parsePrimaryExpression() // This will parse dict<key>
+			dictNameTok := p.tokens[savedPos]
+			target := p.parsePrimaryExpression() // This will parse dict<key> (warns inside)
 			if p.current().Type == TOKEN_EQUALS {
 				p.advance() // consume the '='
 			} else {
 				p.expect(TOKEN_ASSIGN)
 			}
 			value := p.parseExpression()
+
+			// `:` declares a new key, `=` updates an existing one.
+			if p.LintMode && target.Type == NODE_DICT_ACCESS && len(target.Children) == 1 {
+				p.checkDictKeyAssign(dictNameTok.Value, target.Children[0], isColon, target.Line)
+			}
 
 			// Convert to assignment node
 			return &ASTNode{
@@ -244,13 +253,16 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 				}
 			}
 		}
-		// If no dot found, check for simple array assignment
+		// If no dot found, check for simple array/dict assignment
+		// `arr[i]: v` / `arr[i] = v` and `d["k"]: v` / `d["k"] = v` share
+		// `[]` now; dict `:` declares a new key, `=` updates.
 		isAssignment := p.current().Type == TOKEN_ASSIGN || p.current().Type == TOKEN_EQUALS
 		isCompoundAssignment := p.isCompoundAssignOp(p.current().Type)
 		p.pos = savedPos // restore position
 
 		if isAssignment || isCompoundAssignment {
-			target := p.parsePrimaryExpression() // This will parse arr[index]
+			dictNameTok := p.tokens[savedPos]
+			target := p.parsePrimaryExpression() // This will parse arr[index] or d["key"]
 
 			if isCompoundAssignment {
 				// Handle +=, -=, *=, /=, %=
@@ -277,12 +289,18 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 					Line:     target.Line,
 				}
 			} else {
+				isColon := p.current().Type == TOKEN_ASSIGN
 				if p.current().Type == TOKEN_ASSIGN || p.current().Type == TOKEN_EQUALS {
 					p.advance()
 				} else {
 					p.expect(TOKEN_ASSIGN)
 				}
 				value := p.parseExpression()
+
+				// `d["k"]: v` declares a new key, `d["k"] = v` updates.
+				if p.LintMode && target.Type == NODE_DICT_ACCESS && len(target.Children) == 1 {
+					p.checkDictKeyAssign(dictNameTok.Value, target.Children[0], isColon, target.Line)
+				}
 
 				return &ASTNode{
 					Type:     NODE_ASSIGNMENT,
@@ -1103,6 +1121,11 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			}
 		}
 
+		// Track dict keys for `: vs =` lint (d["k"]: new, d["k"] = update).
+		if p.LintMode && value.Type == NODE_DICT_LITERAL {
+			p.trackDictKeys(name.Value, value)
+		}
+
 		// Record the name in every mode; see nameIsKnownVariable. This is the main
 		// declaration path (`name: value` and `name:type= value`), and it builds
 		// its node through nodeType rather than a literal, so it is easy to miss.
@@ -1815,7 +1838,8 @@ func (p *Parser) parseRelationalExpression() *ASTNode {
 			}
 
 			if isDictAccess {
-				// Parse as dict access, not comparison
+				// Parse as dict access, not comparison — deprecated `<>` form.
+				p.recordWarningAtLine(fmt.Sprintf("dict access with <> is deprecated, use %s[\"key\"] instead of %s<\"key\">", left.Value, left.Value), left.Line, 1)
 				p.advance() // consume <
 
 				// Parse dict access: dict<key>

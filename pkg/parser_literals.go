@@ -202,7 +202,11 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 		token := p.current()
 		p.advance()
 
-		// Check for array access identifier[index]
+		// Check for array/dict access identifier[index] — `[]` is the unified
+		// index operator. Arrays (`arr[i]`) and dicts (`d["k"]`, `d[var]`,
+		// `d[expr]`) share it; the node type is routed by key shape and by
+		// the base variable's known type. `<>` access is deprecated (warning)
+		// but still parses; see the TOKEN_LANGLE branch below.
 		if p.current().Type == TOKEN_LBRACKET {
 			p.advance()
 			identNode := &ASTNode{Type: NODE_IDENTIFIER, Value: token.Value, Line: token.Line}
@@ -214,31 +218,56 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 				index := p.parseExpression()
 				p.expect(TOKEN_RBRACKET)
 
-				// Validate access syntax in lint mode
-				if p.LintMode {
-					if varType, ok := p.variableTypes[token.Value]; ok {
-						if varType == "dict" {
-							errMsg := fmt.Sprintf("Invalid dict access syntax, use dict{} instead of array[]")
-							p.recordError(errMsg)
-						} else if varType == "object" {
-							errMsg := fmt.Sprintf("Invalid object access syntax, use object<> instead of array[]")
-							p.recordError(errMsg)
-						}
+				// Route `x[...]` to dict access when the base is known dict,
+				// or (unknown base) when the key is string-like. A known
+				// array with a string key is an error — arrays take ints.
+				isDict := false
+				if p.isDictVar(token.Value) {
+					isDict = true
+				} else if p.isArrayVar(token.Value) {
+					if p.LintMode && (index.Type == NODE_STRING || index.Type == NODE_F_STRING || index.Type == NODE_RAW_STRING) {
+						p.recordErrorAtLine(fmt.Sprintf("array '%s' takes an int index, use a dict for string keys", token.Value), token.Line)
+					}
+					isDict = false
+				} else if index.Type == NODE_STRING || index.Type == NODE_F_STRING || index.Type == NODE_RAW_STRING || index.Type == NODE_CHAR {
+					isDict = true
+				}
+				// Unknown base + string key prefers dict so `d["k"]` works
+				// even when the dict's type hasn't been recorded yet
+				// (function params, forward refs). The codegen delegates
+				// array-typed `[]` with dict bases to the dict path too.
+
+				if isDict {
+					node = &ASTNode{
+						Type:     NODE_DICT_ACCESS,
+						Value:    token.Value,
+						Children: []*ASTNode{index},
+						Line:     token.Line,
+					}
+				} else {
+					node = &ASTNode{
+						Type:     NODE_ARRAY_ACCESS,
+						Value:    token.Value,
+						Children: []*ASTNode{index},
+						Line:     token.Line,
+					}
+
+					// Validate array bounds in lint mode
+					if p.LintMode {
+						identNode := &ASTNode{Type: NODE_IDENTIFIER, Value: token.Value}
+						p.validateArrayAccess(identNode, index, token.Line)
 					}
 				}
+			}
 
-				node = &ASTNode{
-					Type:     NODE_ARRAY_ACCESS,
-					Value:    token.Value,
-					Children: []*ASTNode{index},
-					Line:     token.Line,
+			// Dict access does not chain with `[]` (dict of arrays is read
+			// via a temp). Array chaining stays here for grid[r][c].
+			if node.Type == NODE_DICT_ACCESS {
+				// Check for member access after dict access
+				if p.current().Type == TOKEN_DOT {
+					return p.parseMemberAccessChain(node)
 				}
-
-				// Validate array bounds in lint mode
-				if p.LintMode {
-					identNode := &ASTNode{Type: NODE_IDENTIFIER, Value: token.Value}
-					p.validateArrayAccess(identNode, index, token.Line)
-				}
+				return node
 			}
 
 			// Check for chained array access (2D arrays): grid[r][c].
@@ -409,9 +438,12 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			// Otherwise, proceed with dict access
 			p.advance()
 
-			// It's dict access: dict<key>
+			// It's dict access: dict<key> — deprecated in favor of dict["key"].
+			// Still parses, but lint warns so `<>` can stay for literals only.
 			accessor := p.parseCallArgument()
 			p.expect(TOKEN_RANGLE)
+
+			p.recordWarningAtLine(fmt.Sprintf("dict access with <> is deprecated, use %s[\"key\"] instead of %s<\"key\">", token.Value, token.Value), token.Line, token.Column)
 
 			node := &ASTNode{
 				Type:     NODE_DICT_ACCESS,
@@ -702,6 +734,9 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 
 		// Check if this is a cast (followed by parenthesis or pipe)
 		if p.current().Type == TOKEN_PIPE {
+			// Pipe casts (`int|x|`) are deprecated in favor of `int(x)`.
+			// Still parses, but lint warns.
+			p.recordWarningAtLine(fmt.Sprintf("cast with |...| is deprecated, use %s(x) instead of %s|x|", token.Value, token.Value), token.Line, token.Column)
 			// vector2|x,y| syntax
 			p.advance() // consume |
 
@@ -1100,6 +1135,17 @@ func (p *Parser) parseDictLiteral() *ASTNode {
 
 	p.inDictLiteral = false
 	p.expect(endToken)
+
+	// Record every string key globally so `=` on a never-seen key can warn
+	// even when the dict comes from `return <...>` (no varName at this site).
+	if p.globalDictKeys == nil {
+		p.globalDictKeys = make(map[string]bool)
+	}
+	for i := 0; i+1 < len(dict.Children); i += 2 {
+		if k := dict.Children[i]; k.Type == NODE_STRING {
+			p.globalDictKeys[k.Value] = true
+		}
+	}
 
 	// Check for member access after dict literal
 	if p.current().Type == TOKEN_DOT {

@@ -31,6 +31,8 @@ func newParser(tokens []Token, sourceFilePath string, lintMode bool) *Parser {
 		distinctTypes:       make(map[string]string),
 		unionTypes:          make(map[string][]string),
 		objectLiterals:      make(map[string]map[string]bool),
+		dictKeys:            make(map[string]map[string]bool),
+		globalDictKeys:      make(map[string]bool),
 		currentFunctionRet:  "",
 		currentFunctionName: "",
 		functionScope:       make(map[string]string),

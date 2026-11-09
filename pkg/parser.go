@@ -229,6 +229,8 @@ type Parser struct {
 	distinctTypes       map[string]string             // Distinct newtypes: name -> base type
 	unionTypes          map[string][]string           // Track union types
 	objectLiterals      map[string]map[string]bool    // Track object literal properties by variable name
+	dictKeys          map[string]map[string]bool    // Track known dict keys by variable name (var -> key -> true)
+	globalDictKeys    map[string]bool               // Union of all string keys seen in any dict literal
 	currentFunctionRet  string                        // Track current function return type
 	currentFunctionName string                        // Track current function being defined (for recursion detection)
 	functionScope       map[string]string             // Track function-local variables
@@ -316,6 +318,166 @@ func (p *Parser) recordWarningAtLine(message string, line int, column int) {
 		Column:   column,
 		Severity: "warning",
 	})
+}
+
+// isDictVar reports whether name is known to be a dict (variableTypes or
+// functionScope or loop scopes). Used to route `x[...]` to dict access.
+func (p *Parser) isDictVar(name string) bool {
+	for i := len(p.loopVarScopes) - 1; i >= 0; i-- {
+		if t, ok := p.loopVarScopes[i][name]; ok {
+			if t == "dict" || strings.HasPrefix(t, "dict<") || strings.HasPrefix(t, "dict[") {
+				return true
+			}
+			return false
+		}
+	}
+	if p.functionScope != nil {
+		if t, ok := p.functionScope[name]; ok {
+			if t == "dict" || strings.HasPrefix(t, "dict<") || strings.HasPrefix(t, "dict[") {
+				return true
+			}
+			// Known non-dict type.
+			if t != "" && t != "unknown" && t != "any" && t != "generic" {
+				return false
+			}
+		}
+	}
+	if t, ok := p.variableTypes[name]; ok {
+		if t == "dict" || strings.HasPrefix(t, "dict<") || strings.HasPrefix(t, "dict[") {
+			return true
+		}
+		if t != "" && t != "unknown" && t != "any" && t != "generic" {
+			return false
+		}
+	}
+	return false
+}
+
+// isArrayVar reports whether name is known to be an array/buffer (not a dict).
+func (p *Parser) isArrayVar(name string) bool {
+	check := func(t string) (bool, bool) {
+		if t == "array" || strings.HasPrefix(t, "array[") || strings.HasPrefix(t, "buffer[") {
+			return true, true
+		}
+		if t == "dict" || strings.HasPrefix(t, "dict<") || strings.HasPrefix(t, "dict[") {
+			return false, true
+		}
+		if t != "" && t != "unknown" && t != "any" && t != "generic" {
+			// Known scalar/struct/string — not an array, but caller only
+			// cares about array-ness.
+			return false, true
+		}
+		return false, false
+	}
+	for i := len(p.loopVarScopes) - 1; i >= 0; i-- {
+		if t, ok := p.loopVarScopes[i][name]; ok {
+			if isArr, known := check(t); known {
+				return isArr
+			}
+			return false
+		}
+	}
+	if p.functionScope != nil {
+		if t, ok := p.functionScope[name]; ok {
+			if isArr, known := check(t); known {
+				return isArr
+			}
+		}
+	}
+	if t, ok := p.variableTypes[name]; ok {
+		if isArr, known := check(t); known {
+			return isArr
+		}
+	}
+	return false
+}
+
+// trackDictKeys records string-literal keys from a dict literal assigned to varName.
+func (p *Parser) trackDictKeys(varName string, dictNode *ASTNode) {
+	if dictNode == nil || dictNode.Type != NODE_DICT_LITERAL {
+		return
+	}
+	if p.dictKeys == nil {
+		p.dictKeys = make(map[string]map[string]bool)
+	}
+	if p.globalDictKeys == nil {
+		p.globalDictKeys = make(map[string]bool)
+	}
+	m, ok := p.dictKeys[varName]
+	if !ok {
+		m = make(map[string]bool)
+		p.dictKeys[varName] = m
+	}
+	for i := 0; i+1 < len(dictNode.Children); i += 2 {
+		k := dictNode.Children[i]
+		if k.Type == NODE_STRING {
+			m[k.Value] = true
+			p.globalDictKeys[k.Value] = true
+		}
+	}
+}
+
+// dictKeyKnown reports whether varName is known to have string key.
+func (p *Parser) dictKeyKnown(varName, key string) bool {
+	if m, ok := p.dictKeys[varName]; ok {
+		return m[key]
+	}
+	return false
+}
+
+// recordDictKey marks key as known for varName (on `:` declare).
+func (p *Parser) recordDictKey(varName, key string) {
+	if p.dictKeys == nil {
+		p.dictKeys = make(map[string]map[string]bool)
+	}
+	m, ok := p.dictKeys[varName]
+	if !ok {
+		m = make(map[string]bool)
+		p.dictKeys[varName] = m
+	}
+	m[key] = true
+	if p.globalDictKeys == nil {
+		p.globalDictKeys = make(map[string]bool)
+	}
+	p.globalDictKeys[key] = true
+}
+
+// checkDictKeyAssign enforces `:` declares vs `=` updates for dict entries.
+// `:` on a known key warns (use `=`); `=` on a never-seen key warns (use `:`).
+// Non-string keys are skipped (can't be checked). Unknown dicts (params with
+// no tracked keys) only warn on `:` when the key is known globally — that
+// catches `d["existing"]: v` typos without false positives on fresh dicts.
+func (p *Parser) checkDictKeyAssign(varName string, keyNode *ASTNode, isColon bool, line int) {
+	if keyNode == nil || keyNode.Type != NODE_STRING {
+		return
+	}
+	key := keyNode.Value
+	if isColon {
+		if p.dictKeyKnown(varName, key) {
+			p.recordWarningAtLine(fmt.Sprintf("dict key \"%s\" already exists on '%s', use '=' to update instead of ':'", key, varName), line, 1)
+			return
+		}
+		if p.globalDictKeys != nil && p.globalDictKeys[key] {
+			p.recordWarningAtLine(fmt.Sprintf("dict key \"%s\" already exists, use '=' to update instead of ':'", key), line, 1)
+		}
+		p.recordDictKey(varName, key)
+	} else {
+		// `=` update: warn only when the key was never seen anywhere.
+		if p.dictKeyKnown(varName, key) {
+			return
+		}
+		if p.globalDictKeys != nil && p.globalDictKeys[key] {
+			return
+		}
+		// If this dict already has tracked keys, an unknown key is likely a typo.
+		// If the dict is untracked (e.g. function param), only warn when the
+		// key is globally unknown — fresh keys on params are still allowed.
+		if m, ok := p.dictKeys[varName]; ok && len(m) > 0 {
+			p.recordWarningAtLine(fmt.Sprintf("updating non-existent dict key \"%s\" on '%s', use ':' to declare a new key", key, varName), line, 1)
+		} else {
+			p.recordWarningAtLine(fmt.Sprintf("updating non-existent dict key \"%s\", use ':' to declare a new key", key), line, 1)
+		}
+	}
 }
 
 // sourceLineIndent returns the indentation width (spaces, tabs count as 2 to

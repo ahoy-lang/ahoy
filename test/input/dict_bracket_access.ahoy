@@ -1,0 +1,48 @@
+program dict_bracket_access
+
+? New `[]` dict access: string, variable and expression keys.
+? `:` declares a new key, `=` updates. Old `<>` access still works (warns).
+
+@ main ||:
+	expected: []
+
+	d: dict<string,string> = <"k": "old">
+	n: dict<string,int> = <"n": 1>
+
+	? string literal read
+	s1: string = d["k"]
+	print|s1|
+	expected.push|"old"|
+
+	? variable key read
+	key: string = "k"
+	s2: string = d[key]
+	print|s2|
+	expected.push|"old"|
+
+	? update with =
+	d["k"] = "new"
+	s3: string = d["k"]
+	print|s3|
+	expected.push|"new"|
+
+	? declare new key with :
+	d["fresh"]: "hi"
+	print|d["fresh"]|
+	expected.push|"hi"|
+
+	? int dict with expression key
+	k2: string = "n"
+	n[k2] = 42
+	i1: int = n["n"]
+	print|i1|
+	expected.push|"42"|
+
+	? condition without parens around access
+	if d["k"] is "new" then
+		print|"cond ok"|
+		expected.push|"cond ok"|
+	$
+
+	print|expected|
+$
