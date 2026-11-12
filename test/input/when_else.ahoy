@@ -16,15 +16,15 @@ $
 @ main ||:
 	expected: []
 	when NEVER_DEFINED_XYZ then
-		print|"defined path"|
-		expected.push|"defined path"|
+		print("defined path")
+		expected.push("defined path")
 	$
 	else
-		print|"fallback path"|
-		expected.push|"fallback path"|
+		print("fallback path")
+		expected.push("fallback path")
 	$
-	v: pick||
-	print|v|
-	expected.push|"2"|
-	print|expected|
+	v: pick()
+	print(v)
+	expected.push("2")
+	print(expected)
 $

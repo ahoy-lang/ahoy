@@ -11,19 +11,19 @@ program dict_loop_value
 
 	numbers: {"x": 10}
 	loop k, v in numbers do
-		print|f"{k}={v}"|
+		print(f"{k}={v}")
 	$
 
 	words: {"a": "hello"}
 	loop k, v in words do
-		print|f"{k}={v}"|
+		print(f"{k}={v}")
 	$
 
 	decimals: {"f": 1.5}
 	loop k, v in decimals do
-		print|f"{k}={v}"|
+		print(f"{k}={v}")
 	$
 
-	expected.push|"x=10", "a=hello", "f=1.5"|
-	print|expected|
+	expected.push("x=10", "a=hello", "f=1.5")
+	print(expected)
 $

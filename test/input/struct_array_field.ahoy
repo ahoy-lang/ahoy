@@ -19,40 +19,40 @@ $
 
 @ fill |h:Holder| void:
 	t: Thing = Thing{name: "ada", value: 7}
-	h.items.push|t|
-	h.nums.push|42|
+	h.items.push(t)
+	h.nums.push(42)
 $
 
 @ main ||:
 	expected: []
 
 	h: Holder = Holder{label: "box", items: []}
-	fill|h|
-	print|h.items.length|
-	expected.push|"1"|
+	fill(h)
+	print(h.items.length)
+	expected.push("1")
 
 	got: Thing = h.items[0]
-	print|got.name, got.value|
-	expected.push|"ada 7"|
+	print(got.name, got.value)
+	expected.push("ada 7")
 
 	? a second push keeps the order
 	t2: Thing = Thing{name: "bob", value: 9}
-	h.items.push|t2|
-	print|h.items.length|
-	expected.push|"2"|
+	h.items.push(t2)
+	print(h.items.length)
+	expected.push("2")
 
 	g2: Thing = h.items[1]
-	print|g2.name, g2.value|
-	expected.push|"bob 9"|
+	print(g2.name, g2.value)
+	expected.push("bob 9")
 
 	? the field is shared with a copy of the struct (the array is a
 	? pointer), so a copy sees the same items
 	h2: Holder = h
-	print|h2.items.length|
-	expected.push|"2"|
+	print(h2.items.length)
+	expected.push("2")
 
-	print|h.nums[0]|
-	expected.push|"42"|
+	print(h.nums[0])
+	expected.push("42")
 
-	print|expected|
+	print(expected)
 $

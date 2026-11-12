@@ -7,7 +7,7 @@ import "fmt"
 // parser; the only differences are the effective (mangled) global name, an
 // optional prepended receiver parameter, and the AST method marker.
 
-// Parse a Go-style method definition: @ (recv Type) name |params| rettype:
+// Parse a Go-style method definition: @ (recv Type) name |params( rettype:
 // The receiver becomes parameter zero, so inside the body it behaves exactly
 // like any other parameter (including its type registration for lint).
 func (p *Parser) parseMethodDeclaration() *ASTNode {
@@ -47,8 +47,8 @@ func (p *Parser) parseMethodDeclaration() *ASTNode {
 		&MethodInfo{Receiver: recvNorm, Name: methodName.Value})
 }
 
-// Parse an associated function definition: @ Type.name |params| rettype:
-// There is no receiver; the function is called as Type.name|args|. Whether
+// Parse an associated function definition: @ Type.name )params( rettype:
+// There is no receiver; the function is called as Type.name)args|. Whether
 // Type names a struct or enum is validated by the checker (the definition may
 // precede the type declaration in the file).
 func (p *Parser) parseAssociatedDeclaration(typeName Token) *ASTNode {

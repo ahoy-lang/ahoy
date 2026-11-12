@@ -12,15 +12,15 @@ program leak_reassign_string
 	loop i:0 to 1000 do
 		s = "a" + "b"
 	$
-	print|s|
-	expected.push|"ab"|
+	print(s)
+	expected.push("ab")
 
 	t: string = "y"
 	loop j:0 to 1000 do
 		t = f"v-{j}"
 	$
-	print|t|
-	expected.push|"v-999"|
+	print(t)
+	expected.push("v-999")
 
-	print|expected|
+	print(expected)
 $

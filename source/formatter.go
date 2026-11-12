@@ -9,7 +9,7 @@ import "strings"
 //   - Indentation is two spaces per level. The `$` that closes a block sits at
 //     the indentation of the line that opened it.
 //   - A block whose body is a single simple statement is written on one line
-//     ("if x > 0 then print|x| $") when that line fits within formatterMaxWidth.
+//     ("if x > 0 then print(x) $") when that line fits within formatterMaxWidth.
 //     If it does not fit, the body moves onto its own indented line. Loops
 //     may be collapsed onto one line when they fit, like any other block.
 //   - A switch arm (`on ...:` / `_:`) with a single simple body joins onto one
@@ -741,7 +741,7 @@ func canCollapse(header string) bool {
 	if strings.HasPrefix(trimmed, "@") {
 		return isConcreteReturnType(functionReturnType(trimmed))
 	}
-	for _, keyword := range []string{"struct ", "enum ", "type ", "switch ", "on ", "when "} {
+	for _, keyword := range []string{"struct ", "enum ", "type ", "switch ", "on ", "when ", "loop ", "while ", "until "} {
 		if strings.HasPrefix(trimmed, keyword) {
 			return false
 		}

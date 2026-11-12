@@ -39,7 +39,7 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 		} else if p.current().Type == TOKEN_ANY_TYPE {
 			// 'any' is the type keyword, so `x.any` does not read as a member
 			// access. It is also the name of the predicate builtin, and
-			// `xs.any|predicate|` is how you ask an array a question, so the
+			// `xs.any(predicate)` is how you ask an array a question, so the
 			// name has to be usable here. Nothing else can follow a dot and
 			// be the any-type: a declaration is `a: any`, not `a.any`.
 			member = Token{
@@ -63,87 +63,64 @@ func (p *Parser) parseMemberAccessChain(object *ASTNode) *ASTNode {
 			continue // Don't process as method call
 		}
 
-		// Check if this is a method call
-		// Allow method calls even inside function calls, but need to look ahead
-		// to ensure we have a matching closing pipe
-		if p.current().Type == TOKEN_PIPE {
-			// Look ahead to see if there's a closing pipe (for method call)
-			// or if this pipe is the closing pipe of the outer call
-			savedPos := p.pos
-			p.advance() // consume opening pipe
+		// Check if this is a method call: obj.name(args)
+		// Calls use parens now; definitions keep |...|. A bare `.name`
+		// with no `(` is member access.
+		if p.current().Type == TOKEN_LPAREN {
+			p.advance() // consume opening (
 
-			// If immediately followed by another pipe, it's an empty method call.
-			// Otherwise the pipe opens a method call only when the token after it
-			// can start an argument; a `$`, `then` or operator means this pipe
-			// closes the enclosing call instead (`if cond then print|a.length| $`).
-			isMethodCall := false
-			if p.current().Type == TOKEN_PIPE {
-				isMethodCall = true
-			} else if canStartExpression(p.current().Type) {
-				isMethodCall = true
+			// Increment depth for nested call handling (keeps zero-arg
+			// auto-call from firing on bare names inside args)
+			p.inFunctionCall++
+
+			// Parse arguments (allow newlines for multiline calls)
+			args := &ASTNode{Type: NODE_BLOCK}
+			for p.current().Type == TOKEN_NEWLINE {
+				p.advance()
 			}
-
-			// Reset position
-			p.pos = savedPos
-
-			if isMethodCall {
-				p.advance() // consume opening pipe
-
-				// Increment depth for nested call handling
-				p.inFunctionCall++
-
-				// Parse arguments
-				args := &ASTNode{Type: NODE_BLOCK}
-				if p.current().Type != TOKEN_PIPE {
-					// Check if this is a lambda (param: expression)
-					if p.isLambda() {
-						lambda := p.parseLambda()
-						args.Children = append(args.Children, lambda)
-					} else {
-						for {
-							oldPos := p.pos
-							arg := p.parseCallArgument()
-							args.Children = append(args.Children, arg)
-
-							if p.current().Type == TOKEN_COMMA {
-								p.advance()
-							} else {
-								break
-							}
-
-							// Safety check
-							if p.pos == oldPos {
-								break
-							}
+			if p.current().Type != TOKEN_RPAREN {
+				// Check if this is a lambda (param: expression)
+				if p.isLambda() {
+					lambda := p.parseLambda()
+					args.Children = append(args.Children, lambda)
+				} else {
+					for {
+						for p.current().Type == TOKEN_NEWLINE {
+							p.advance()
 						}
+						if p.current().Type == TOKEN_RPAREN || p.current().Type == TOKEN_EOF {
+							break
+						}
+						arg := p.parseCallArgument()
+						args.Children = append(args.Children, arg)
+
+						for p.current().Type == TOKEN_NEWLINE {
+							p.advance()
+						}
+						if p.current().Type == TOKEN_COMMA {
+							p.advance()
+							continue
+						}
+						break
 					}
 				}
-				p.expect(TOKEN_PIPE)
+			}
+			for p.current().Type == TOKEN_NEWLINE {
+				p.advance()
+			}
+			p.expect(TOKEN_RPAREN)
 
-				// Decrement depth
-				p.inFunctionCall--
+			// Decrement depth
+			p.inFunctionCall--
 
-				object = &ASTNode{
-					Type:     NODE_METHOD_CALL,
-					Value:    member.Value,
-					Line:     member.Line,
-					Children: []*ASTNode{object, args},
-					// Record the receiver type now: parse-time scopes are
-					// accurate, while check/generate-time maps have been reset.
-					RecvType: p.methodReceiverType(object),
-				}
-			} else {
-				// Simple member access - validate in lint mode
-				if p.LintMode {
-					p.validateMemberAccess(object, member.Value, member.Line)
-				}
-
-				object = &ASTNode{
-					Type:     NODE_MEMBER_ACCESS,
-					Value:    member.Value,
-					Line:     member.Line,
-					Children: []*ASTNode{object},
-				}
+			object = &ASTNode{
+				Type:     NODE_METHOD_CALL,
+				Value:    member.Value,
+				Line:     member.Line,
+				Children: []*ASTNode{object, args},
+				// Record the receiver type now: parse-time scopes are
+				// accurate, while check/generate-time maps have been reset.
+				RecvType: p.methodReceiverType(object),
 			}
 		} else {
 			// Check if this is the special .type property
@@ -553,10 +530,33 @@ func (p *Parser) looksLikeLambda() bool {
 			if !p.isTypeToken(p.current().Type) {
 				return false
 			}
-			// Skip a possibly complex type, including fn(...) -> ret
+			// Skip a possibly complex type, including fn|...| -> ret
+			// (and legacy fn|...| -> ret). Pipes inside fn|...| must not
+			// end the skip, and commas inside them must not split params.
 			depth := 0
+			inFnPipe := false
 			for p.current().Type != TOKEN_EOF {
 				t := p.current().Type
+				if t == TOKEN_FN {
+					p.advance()
+					if p.current().Type == TOKEN_PIPE {
+						inFnPipe = true
+						p.advance()
+						continue
+					} else if p.current().Type == TOKEN_LPAREN {
+						depth++
+						p.advance()
+						continue
+					}
+					continue
+				}
+				if inFnPipe {
+					if t == TOKEN_PIPE {
+						inFnPipe = false
+					}
+					p.advance()
+					continue
+				}
 				if t == TOKEN_RPAREN && depth == 0 {
 					break
 				}
@@ -1154,14 +1154,45 @@ func (p *Parser) isTypeToken(tokenType TokenType) bool {
 		tokenType == TOKEN_FN
 }
 
-// parseFunctionTypeString parses `fn(int, string) -> int` and returns the
-// canonical type string `fn(int,string)->int`. The current token is 'fn'.
+// parseFunctionTypeString parses `fn|int, string| -> int` and returns the
+// canonical type string `fn|int,string|->int`. The current token is 'fn'.
+// Legacy `fn|int|->int` is still accepted for back-compat and normalises to
+// the pipe form.
 func (p *Parser) parseFunctionTypeString() string {
 	p.expect(TOKEN_FN)
-	p.expect(TOKEN_LPAREN)
+	// Legacy paren form: fn|int,string|->ret
+	if p.current().Type == TOKEN_LPAREN {
+		p.advance() // consume (
+		params := []string{}
+		for p.current().Type != TOKEN_RPAREN && p.current().Type != TOKEN_EOF {
+			if !p.isTypeToken(p.current().Type) {
+				break
+			}
+			params = append(params, p.parseComplexReturnType())
+			if p.current().Type == TOKEN_COMMA {
+				p.advance()
+				continue
+			}
+			break
+		}
+		p.expect(TOKEN_RPAREN)
+		ret := "void"
+		if p.current().Type == TOKEN_MINUS &&
+			(p.peek(1).Type == TOKEN_GREATER || p.peek(1).Type == TOKEN_RANGLE) {
+			p.advance() // -
+			p.advance() // >
+			if p.current().Type == TOKEN_VOID {
+				p.advance()
+			} else if p.isTypeToken(p.current().Type) {
+				ret = p.parseComplexReturnType()
+			}
+		}
+		return FormatFunctionType(params, ret)
+	}
+	p.expect(TOKEN_PIPE)
 
 	params := []string{}
-	for p.current().Type != TOKEN_RPAREN && p.current().Type != TOKEN_EOF {
+	for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
 		if !p.isTypeToken(p.current().Type) {
 			break
 		}
@@ -1172,7 +1203,7 @@ func (p *Parser) parseFunctionTypeString() string {
 		}
 		break
 	}
-	p.expect(TOKEN_RPAREN)
+	p.expect(TOKEN_PIPE)
 
 	ret := "void"
 	// '>' is TOKEN_RANGLE: the tokenizer uses the bracket token for both
@@ -1193,7 +1224,7 @@ func (p *Parser) parseFunctionTypeString() string {
 
 // parseComplexReturnType parses a return type that may include complex types like array[int] or dict<string,int>
 func (p *Parser) parseComplexReturnType() string {
-	// Function types: fn(int,string)->void
+	// Function types: fn|int,string|->void
 	if p.current().Type == TOKEN_FN {
 		return p.parseFunctionTypeString()
 	}

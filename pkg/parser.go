@@ -973,7 +973,7 @@ func (p *Parser) collectionTypeMatches(expectedType, actualType string) bool {
 }
 
 // trackStatementArrayMutation records that a bare method-call statement such as
-// `xs.push|1|` or `xs.pop||` changes an array's length. The length is then no
+// `xs.push(1)` or `xs.pop()` changes an array's length. The length is then no
 // longer known: a pop and a conditional or repeated push cannot be bounded
 // statically, and pretending otherwise made every literal index read after a
 // push look out of bounds. Bounds checking still covers arrays that are only

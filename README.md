@@ -45,7 +45,9 @@ A modern, expressive programming language with clean syntax and powerful feature
 - **Type System**: Optional type annotations with inference
 - **Default Arguments**: Flexible function parameters
 - **Assert & Defer**: Runtime validation and guaranteed cleanup
-- **Pipe Syntax**: Function calls with `|args|`
+- **Call Syntax**: Function and method calls use `(args)` — `print(name)`, `r.clear(0, 0, 0)`
+- **Definitions Keep Pipes**: Function headers still use `|params|` — `@ render_frame :: |r:Renderer|:`
+- **Function Types Use Pipes**: A function value type is `fn|params|->ret` — `set_config: fn|int| -> void`
 - **Arrays**: Built-in with `[]` syntax
 - **Objects/Structs**: C-style with `{}` syntax
 - **Dictionaries**: Hash maps with `<>` literals, `[]` access
@@ -130,7 +132,7 @@ name = "Bob"
 ? - Smart operator that declares OR assigns
 ? - Useful for tuple unpacking and multiple returns
 ? - Automatically handles function returns with multiple values
-a, b := function_returning_two_values||
+a, b := function_returning_two_values()
 x, y := 10, 20
 
 ? Examples showing the difference
@@ -139,7 +141,7 @@ counter = counter + 1    ? Reassignment
 counter = 10      ? Reassignment
 
 ? Multiple assignment with walrus
-result, error := parse_int|"42"|
+result, error := parse_int("42")
 x, y, z := 1, 2, 3
 ```
 
@@ -153,17 +155,17 @@ x, y, z := 1, 2, 3
 
 ```ahoy
 ? Using ahoy keyword (shorthand)
-ahoy |"Hello, World!"|
+ahoy ("Hello, World!")
 
 ? F-strings with interpolation (NEW!)
 name: "Alice"
 age: 30
-ahoy |f"Hello {name}, you are {age} years old!"|
+ahoy (f"Hello {name}, you are {age} years old!")
 
 ? Format expressions in f-strings
 x: 10
 y: 20
-ahoy |f"The sum of {x} and {y} is {x + y}"|
+ahoy (f"The sum of {x} and {y} is {x + y}")
 ```
 
 ### Operators
@@ -231,15 +233,15 @@ result: this or that
 ```ahoy
 ? If statements
 if condition then
-    action||
+    action()
 else
-    other_action||
+    other_action()
 $
 
 ? If/elif (else-if) statements
-if   condition then action||
-elif other_condition then another_action||
-else no_action||
+if   condition then action()
+elif other_condition then another_action()
+else no_action()
 $
 
 ? Guard clauses: C must hold, otherwise the else arm diverges
@@ -250,7 +252,7 @@ guard v is not "" else return "none" $
 ? rejects a falling-through `else`. A conditional value wants plain `if`:
 if v < 8.0 then v = 8.0 $
 ? Conditions test names; they never bind them:
-? `guard (u := f|...|) ...` is an error — bind first, then test.
+? `guard (u := f(...) ...) ...` is an error — bind first, then test.
 ```
 
 
@@ -302,9 +304,9 @@ $
 $
 
 ? Call with different argument counts
-msg1: greet|"Alice"|                    ? Uses defaults
-msg2: greet|"Bob", "Hi"|                ? Partial override
-msg3: greet|"Charlie", "Hey", "!!!"|   ? All explicit
+msg1: greet("Alice")                    ? Uses defaults
+msg2: greet("Bob", "Hi")                ? Partial override
+msg3: greet("Charlie", "Hey", "!!!")   ? All explicit
 
 ? Return type keywords
 @ calculate :: |x:int, y:int| int,int:  ? Explicit types; comma-separate multiple returns
@@ -312,20 +314,20 @@ msg3: greet|"Charlie", "Hey", "!!!"|   ? All explicit
 $
 
 @ log :: |message:string| void:          ? No return value
-    ahoy |message|
+    ahoy (message)
 $
 
 @ log2 :: |message:string|:              ? Implicit void
-    ahoy |message|
+    ahoy (message)
 $
 
 ? A call is not allowed as an argument to another call: name the result first
-count: len|items|
-ahoy |f"items: {count}"|
+count: len(items)
+ahoy (f"items: {count}")
 
 ? Inequality is written 'is not'. 'not is' is rejected.
 if name is not "" then
-    ahoy |"has a name"|
+    ahoy ("has a name")
 $
 ```
 
@@ -341,22 +343,22 @@ keep a value alive after the function that made it returns.
 $
 
 ? A function value is a parameter like any other
-@ apply :: |f:fn(int)->int, v:int| int:
-    return f|v|
+@ apply :: |f:fn|int|->int, v:int| int:
+    return f(v)
 $
 
-f: fn(int)->int = &double_it        ? reference to a named function
-g: fn(int)->int = (x:int): x + 1    ? stored lambda
+f: fn|int|->int = &double_it        ? reference to a named function
+g: fn|int|->int = (x:int): x + 1    ? stored lambda
 
 base: 10
-add_base: fn(int)->int = (x:int): x + base   ? captures base
+add_base: fn|int|->int = (x:int): x + base   ? captures base
 
-r1: apply|f, 3|      ? 6
-r2: g|41|            ? 42
-r3: add_base|5|      ? 15
+r1: apply(f, 3)      ? 6
+r2: g(41)            ? 42
+r3: add_base(5)      ? 15
 ```
 
-`fn(params)->ret` names a function value. A reference to a named function (or a
+`fn|params|->ret` names a function value. A reference to a named function (or a
 lambda that captures nothing) is a plain C function pointer; a capturing lambda
 carries a small environment with it, so it is only callable from Ahoy. Function
 values must return a single value and named functions used as values need typed
@@ -369,11 +371,11 @@ directly:
 import "/path/to/raylib.h"
 
 @ my_log :: |level:int, text:string| void:
-    ahoy |f"log: {text}"|
+    ahoy (f"log: {text}")
 $
 
 ? raylib.h declares: typedef void (*TraceLogCallback)(int, const char*, va_list);
-set_trace_log_callback|&my_log|
+set_trace_log_callback(&my_log)
 ```
 
 A C callback typedef can also be a variable's type. The value is a raw C
@@ -387,7 +389,7 @@ $
 
 loader: LoadFileTextCallback = &my_load
 text: loader|"file.txt"|              ? a direct call through the pointer
-set_load_file_text_callback|loader|    ? or hand the value to a C API
+set_load_file_text_callback(loader)    ? or hand the value to a C API
 ```
 
 ### Callback Tables (backend contracts)
@@ -398,8 +400,8 @@ passing a different value:
 
 ```ahoy
 struct Renderer:
-    clear: fn(int,int,int)->int
-    draw:  fn(int,int)->int
+    clear: fn|int,int,int|->int
+    draw:  fn|int,int|->int
     name:  string
 $
 
@@ -412,13 +414,13 @@ $
 $
 
 @ render_frame :: |r:Renderer|:
-    print|r.name|
-    r.clear|0, 0, 0|
-    r.draw|10, 20|
+    print(r.name)
+    r.clear(0, 0, 0)
+    r.draw(10, 20)
 $
 ```
 
-`r.clear|...|` dispatches through the stored function value, so `render_frame`
+`r.clear(...)` dispatches through the stored function value, so `render_frame`
 never mentions raylib, SDL or Vulkan: swapping the backend is passing a
 different `Renderer`. Backends are selected at build time (they are different C
 libraries): put each behind a compile-time branch and choose it with `-D`.
@@ -426,10 +428,10 @@ libraries): put each behind a compile-time branch and choose it with `-D`.
 ```ahoy
 ? ahoy -f game.ahoy -r -D BACKEND_RAYLIB
 when BACKEND_RAYLIB then
-    use_raylib_backend||
+    use_raylib_backend()
 $
 when BACKEND_VULKAN then
-    use_vulkan_backend||
+    use_vulkan_backend()
 $
 ```
 
@@ -437,14 +439,14 @@ $
 
 ### Jobs (worker pool)
 
-`jobs|n|` starts a pool of `n` worker threads. `pool.submit|fn, arg|` queues a
-task and returns a job; `pool.wait|job|` blocks until it finishes and returns
+`jobs(n)` starts a pool of `n` worker threads. `pool.submit(fn, arg)` queues a
+task and returns a job; `pool.wait(job)` blocks until it finishes and returns
 its result. A task is a function value taking one argument (pass `0` when it
 needs none). Arguments and results travel as `intptr_t`: ints, strings,
 arrays and pointers pass by value, and `float`/`double`/`f32` travel as
 their bit pattern through a generated marshal thunk (exact for
 representable values). Arity is checked: `submit` takes the function and
-at most one argument, and `p.run|fn, a0..a3|` (up to four arguments, with
+at most one argument, and `p.run(fn, a0..a3)` (up to four arguments, with
 `p.result_int/float/ptr` readers) must match the task's parameter count —
 anything else is a compile error, not a crash.
 
@@ -453,12 +455,12 @@ anything else is a compile error, not a crash.
     return n * n
 $
 
-pool: pool = jobs|4|
-j1: job = pool.submit|&square, 12|
-j2: job = pool.submit|&square, 13|
-r1: pool.wait|j1|        ? 144
-r2: pool.wait|j2|        ? 169
-pool.stop||
+pool: pool = jobs(4)
+j1: job = pool.submit(&square, 12)
+j2: job = pool.submit(&square, 13)
+r1: pool.wait(j1)        ? 144
+r2: pool.wait(j2)        ? 169
+pool.stop()
 ```
 
 This is the asset-loading pattern: workers read and decode files, and the main
@@ -466,21 +468,21 @@ thread calls `wait` and then uploads the result to the GPU. Workers must not
 call raylib/OpenGL — the graphics context belongs to the main thread. A pool is
 stopped when its variable leaves scope.
 
-For a game loop, draining finished jobs is nicer than blocking. `j.done||`
-polls without consuming, `j.result||` reads a finished result, and
-`pool.drain|handler, context|` hands every job that finished since the last
+For a game loop, draining finished jobs is nicer than blocking. `j.done()`
+polls without consuming, `j.result()` reads a finished result, and
+`pool.drain(handler, context)` hands every job that finished since the last
 drain to `handler(job, context)` on the calling thread, then consumes them:
 
 ```ahoy
 @ collect :: |j:job, acc:array| void:
-    r: j.result||
-    acc.push|r|
+    r: j.result()
+    acc.push(r)
 $
 
 acc: []
 got: 0
 loop while got is not 5 do
-    got = got + pool.drain|&collect, acc|
+    got = got + pool.drain(&collect, acc)
 $
 ? (You can also write `loop until got is 5 do ... $` instead of
 ? `loop while got is not 5 do ... $`.)
@@ -509,9 +511,9 @@ $
 @ validate_user :: |user:dict|:
     assert "name" in user
     assert "email" in user
-    assert len|user["name"]| > 0
+    assert len(user["name"]) > 0
     assert "@" in user["email"]
-    ahoy |"User valid!"|
+    ahoy ("User valid!")
 $
 ```
 
@@ -520,31 +522,31 @@ $
 ```ahoy
 ? Basic defer (executes at function exit)
 @ greet :: |name:string|:
-    defer ahoy |"Goodbye!"|
-    ahoy |f"Hello, {name}!"|
-    ahoy |"Nice to meet you"|
+    defer ahoy ("Goodbye!")
+    ahoy (f"Hello, {name}!")
+    ahoy ("Nice to meet you")
 ? Output: Hello, Alice! / Nice to meet you / Goodbye!
 $
 
 ? Resource cleanup
 @ process_file :: |filename:string|:
-    ahoy |f"Opening {filename}"|
-    defer ahoy |f"Closing {filename}"|
+    ahoy (f"Opening {filename}")
+    defer ahoy (f"Closing {filename}")
     ? ... file operations ...
     ? File automatically "closed" when function exits
 $
 
 ? Multiple defers (LIFO - Last In First Out)
 @ demo :: ||:
-    defer ahoy |"Third (executes first)"|
-    defer ahoy |"Second"|
-    defer ahoy |"First (executes last)"|
-    ahoy |"Main function"|
+    defer ahoy ("Third (executes first)")
+    defer ahoy ("Second")
+    defer ahoy ("First (executes last)")
+    ahoy ("Main function")
 $
 
 ? Defer with return values
 @ calculate :: |x:int, y:int| int:
-    defer ahoy |"Calculation completed"|
+    defer ahoy ("Calculation completed")
     result: x * y
     return result
 $
@@ -566,7 +568,7 @@ items:array= [1, 2, 3, 4, 5]
 
 ? Iteration
 loop num in numbers do
-    ahoy |f"Number: {num}"|
+    ahoy (f"Number: {num}")
 $
 ```
 
@@ -601,7 +603,7 @@ point: Point{x: 10.5, y: 20.3}
 
 ? Access nested properties
 point.x: 15.0
-print|point.x|
+print(point.x)
 
 ? Built-in structs (Raylib compatible)
 struct vector2:
@@ -651,15 +653,15 @@ config:dict = <"host": "localhost", "port": 8080>
 
 ? Iteration
 loop key, value in settings do
-    print|f"{key}: {value}"|
+    print(f"{key}: {value}")
 $
 
 ? Methods
-has_theme: settings.has|"theme"|  ? Returns 1 or 0
+has_theme: settings.has("theme")  ? Returns 1 or 0
 ```
 
 `d<"k">` still parses but warns — use `d["k"]`. Casts are `int(x)`,
-not `int|x|` (pipe form warns).
+use `int(x)` (pipe-call form was removed).
 
 ### Enums
 
@@ -684,9 +686,9 @@ state: Status.ACTIVE
 ### Methods
 
 Go-style receivers. A method is a function whose first parameter is the
-receiver; `recv.m|args|` calls the mangled `Type_m` with the receiver
+receiver; `recv.m(args)` calls the mangled `Type_m` with the receiver
 prepended. Associated functions (`@ T.name`, no receiver) are called as
-`Type.name|args|`:
+`Type.name(args)`:
 
 ```ahoy
 struct Point:
@@ -704,8 +706,8 @@ $
     return p
 $
 
-p: Point.make|1.0, 2.0|
-q: p.move|3.0, 4.0|
+p: Point.make(1.0, 2.0)
+q: p.move(3.0, 4.0)
 ```
 
 Rules: the receiver type must be a struct, enum, builtin or compound
@@ -734,8 +736,8 @@ TIMEOUT::float= 30.0
     assert retries > 0
     
     ? Setup with guaranteed cleanup
-    ahoy |f"Processing data with timeout={timeout}, retries={retries}"|
-    defer ahoy |"Processing completed"|
+    ahoy (f"Processing data with timeout={timeout}, retries={retries}")
+    defer ahoy ("Processing completed")
     
     ? Type-annotated variables
     attempt:int= 0
@@ -743,10 +745,10 @@ TIMEOUT::float= 30.0
     
     ? Processing loop
     loop i:1 to retries do
-        defer ahoy |f"Attempt {i} finished"|
+        defer ahoy (f"Attempt {i} finished")
         
         attempt: attempt + 1
-        result: try_process|data, timeout|
+        result: try_process(data, timeout)
         
         if result is true:
             success: true
@@ -769,24 +771,24 @@ config:dict= <
 >
 
 ? Call with defaults
-result: process_data|config|
-ahoy |f"Result: {result}"|
+result: process_data(config)
+ahoy (f"Result: {result}")
 
 ? Call with custom timeout
-result2: process_data|config, 45.0|
-ahoy |f"Result2: {result2}"|
+result2: process_data(config, 45.0)
+ahoy (f"Result2: {result2}")
 
 ? Array operations
 numbers:array= [1, 2, 3, 4, 5]
 loop num in numbers do
     square: num * num
-    ahoy |f"{num}² = {square}"|
+    ahoy (f"{num}² = {square}")
 $
 
 ? Ternary operator
 max_retries: 5
 mode: max_retries > 3 ?? "aggressive" : "normal"
-ahoy |f"Mode: {mode}"|
+ahoy (f"Mode: {mode}")
 ```
 
 ## Advanced Features
@@ -868,7 +870,7 @@ program my_game
 @ main ||:
     ? Entry point - global vars must be declared here, not in global scope
     player_score: 0
-    game_loop||
+    game_loop()
 $
 ```
 
@@ -878,7 +880,7 @@ program my_game
 
 @ game_loop ||:
     ? This function is available to main.ahoy because same program name
-    ahoy |"Game running!"|
+    ahoy ("Game running!")
 $
 ```
 
@@ -897,7 +899,7 @@ You can import C header files directly to use C functions and types:
 import "/home/user/Documents/raylib/src/raylib.h"
 
 ? Now you can use raylib functions (converted to snake_case)
-init_window|800, 600, "My Game"|
+init_window(800, 600, "My Game")
 ```
 
 The compiler automatically:
@@ -1083,7 +1085,7 @@ narrowing), `err_convention.ahoy` (the `(value, err)` convention),
 ? Good: Type-safe with defaults
 @ process :: |data:dict, timeout:float=30.0| bool:
     assert data is not null
-    defer cleanup||
+    defer cleanup()
     ? ... implementation ...
     return true
 $
@@ -1112,8 +1114,8 @@ $
 ? Defer for cleanup
 
 @ process_file :: |filename:string|:
-    file: open|filename|
-    defer close|file|
+    file: open(filename)
+    defer close(file)
     ? ... safe file operations ...
 $
 ```

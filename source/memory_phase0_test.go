@@ -13,7 +13,7 @@ import (
 func TestGeneratedCDoesNotDisableFree(t *testing.T) {
 	src := `program p
 @ main ||:
-	print|"hi"|
+	print("hi")
 $
 `
 	toks := ahoy.Tokenize(src)

@@ -22,7 +22,7 @@ func findUniqueNodes(node *ahoy.ASTNode, out *[]*ahoy.ASTNode) {
 }
 
 func TestUniqueAccessParsesName(t *testing.T) {
-	ast, _ := lintMessages(t, "program p\n@ main ||:\n\tprint|%player|\n$\n")
+	ast, _ := lintMessages(t, "program p\n@ main ||:\n\tprint(%player)\n$\n")
 	var found []*ahoy.ASTNode
 	findUniqueNodes(ast, &found)
 	if len(found) != 1 {
@@ -54,7 +54,7 @@ func TestModuloStillParses(t *testing.T) {
 func TestUniqueAccessNeedsNodesInScope(t *testing.T) {
 	msgs := diagnosticsFor(`program p
 @ main ||:
-	print|%player|
+	print(%player)
 $
 `)
 	wantError(t, msgs, "Variable 'nodes' is not declared")
@@ -63,7 +63,7 @@ $
 func TestUniqueAccessNeedsNodeUnique(t *testing.T) {
 	msgs := diagnosticsFor(`program p
 @ main |nodes:array|:
-	print|%player|
+	print(%player)
 $
 `)
 	wantError(t, msgs, "Unique-name access needs 'node_unique'")
@@ -75,7 +75,7 @@ func TestUniqueAccessCleanWithNodesAndHelper(t *testing.T) {
 	return 0
 $
 @ main |nodes:array|:
-	print|%player|
+	print(%player)
 $
 `)
 	wantNoError(t, msgs, "not declared")
@@ -83,7 +83,7 @@ $
 }
 
 func TestUniqueAccessGeneratesCall(t *testing.T) {
-	src := "program p\n@ node_unique |nodes:array, name:string| int:\n\treturn 0\n$\n@ main |nodes:array|:\n\tprint|%player|\n$\n"
+	src := "program p\n@ node_unique |nodes:array, name:string| int:\n\treturn 0\n$\n@ main |nodes:array|:\n\tprint(%player)\n$\n"
 	tokens := ahoy.Tokenize(formatSource(src))
 	ast := ahoy.Parse(tokens)
 	_, files := generateC(ast, "test.ahoy")

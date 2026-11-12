@@ -13,8 +13,8 @@ program leak_float_array
 		a: array[float] = [1.5, 2.5, 3.5]
 		total = total + a[0]
 	$
-	print|total|
-	expected.push|"1500"|
+	print(total)
+	expected.push("1500")
 
-	print|expected|
+	print(expected)
 $

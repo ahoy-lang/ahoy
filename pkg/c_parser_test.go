@@ -89,7 +89,7 @@ func TestContinuationFragmentWithCloseParenIsSkipped(t *testing.T) {
 	dir := t.TempDir()
 	header := "static int ok_fn(void);\n" +
 		"static void frag_user(int slot) {\n" +
-		"    if (!table[slot].pos || !table[slot].nrm ||\n" +
+		"    if (!table[slot].pos () !table[slot].nrm ()\n" +
 		"        !table[slot].tex) return commit(slot, data);\n" +
 		"}\n"
 	path := filepath.Join(dir, "frag.h")

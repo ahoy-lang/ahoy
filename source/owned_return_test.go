@@ -16,7 +16,7 @@ import (
 func TestBorrowedVsOwnedCallShapes(t *testing.T) {
 	src := `program p
 @ wrap |text:string| string:
-    return somecall|text|
+    return somecall(text)
 $
 @ kind_icon_name |kind:int| string:
     return switch kind:
@@ -31,14 +31,14 @@ $
 @ main ||:
     names: array[string] = ["alpha", "beta"]
     loop i:0 to 2 do
-        w: wrap|names[0]|
-        print|w|
-        k: kind_icon_name|1|
-        print|k|
-        m: model_name|names, 1|
-        print|m|
+        w: wrap(names[0])
+        print(w)
+        k: kind_icon_name(1)
+        print(k)
+        m: model_name(names, 1)
+        print(m)
     $
-    print|"done"|
+    print("done")
 $
 `
 	ast := ahoy.ParseWithPath(ahoy.Tokenize(src), "test.ahoy")

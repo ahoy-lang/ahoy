@@ -14,19 +14,19 @@ $
 	a: Pt = Pt{x: 0.7, y: 2.0}
 	b: Pt = Pt{x: 3.0, y: 4.0}
 	v: a.x * b.y
-	print|v|
-	expected.push|"2.8"|
+	print(v)
+	expected.push("2.8")
 	s: a.x + b.y
-	print|s|
-	expected.push|"4.7"|
+	print(s)
+	expected.push("4.7")
 	arr: array[float] = [a.x * b.y]
-	print|arr[0]|
-	expected.push|"2.8"|
+	print(arr[0])
+	expected.push("2.8")
 	m: a.x * 2
-	print|m|
-	expected.push|"1.4"|
+	print(m)
+	expected.push("1.4")
 	i: 3 * 4
-	print|i|
-	expected.push|"12"|
-	print|expected|
+	print(i)
+	expected.push("12")
+	print(expected)
 $

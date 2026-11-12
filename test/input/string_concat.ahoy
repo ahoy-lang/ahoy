@@ -9,21 +9,21 @@ program string_concat
 	a: "foo"
 	b: "bar"
 	joined: a + b
-	print|joined|
-	expected.push|"foobar"|
+	print(joined)
+	expected.push("foobar")
 
 	chained: a + b + a
-	print|chained|
-	expected.push|"foobarfoo"|
+	print(chained)
+	expected.push("foobarfoo")
 
 	lits: "n=" + "5"
-	print|lits|
-	expected.push|"n=5"|
+	print(lits)
+	expected.push("n=5")
 
 	accum: "count: "
 	accum = accum + "42"
-	print|accum|
-	expected.push|"count: 42"|
+	print(accum)
+	expected.push("count: 42")
 
-	print|expected|
+	print(expected)
 $

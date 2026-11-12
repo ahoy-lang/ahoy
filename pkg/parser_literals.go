@@ -10,7 +10,7 @@ import (
 // castTypeNames are the identifier-spelled cast types. `int`, `float`, `char`
 // and `string` are real keywords (handled by the type-token cast path); these
 // ride the identifier path and are recognised in parsePrimaryExpression when
-// followed by `(`. They are types too, so `x: i64 = ...` and `|x:u32|` work.
+// followed by `(`. They are types too, so `x: i64 = ...` and `|x:u32(` work.
 var castTypeNames = map[string]bool{
 	"f32": true,
 	"i8":  true, "u8": true,
@@ -333,7 +333,7 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 				if obj.Type == NODE_OBJECT_LITERAL {
 					obj.Value = token.Value // Set the type name
 					// A method or field chain on a struct literal:
-					// V{...}.twice||, V{...}.x — chained after stamping
+					// V{...}.twice(), V{...}.x — chained after stamping
 					// so the receiver carries the struct type.
 					if p.current().Type == TOKEN_DOT {
 						return p.parseMemberAccessChain(obj)
@@ -502,88 +502,93 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			}
 		}
 
-		// Check for function call with pipes
-		// We need to be careful: identifier| could be:
-		// 1. A function call: func|| or func|args|
-		// 2. An identifier inside a call: print|x| where x is followed by closing |
-		// Only parse as function call if we're NOT inside another call OR if there's actual content
-		if p.current().Type == TOKEN_PIPE {
-			// If we're inside a function call, don't treat trailing | as function call start
-			// This prevents print|x| from parsing x as a function call
-			if p.inFunctionCall == 0 {
-				// Top-level: always parse as function call
+		// Function calls use parens: name(args), name(). Definitions keep
+		// |...|. A bare `name(` always opens a call; there is no ambiguity
+		// with grouping because grouping starts with `(`, not an identifier.
+		if p.current().Type == TOKEN_LPAREN {
+			// Distinct-type conversions ride the same shape: NodeId(7).
+			// Cast-type names (f32, i64, ...) are handled above but produce
+			// the same node; general identifiers fall through here.
+			p.advance() // consume (
+
+			// Validate no recursion
+			p.validateFunctionCall(token.Value, token.Line, token.Column)
+
+			call := &ASTNode{
+				Type:   NODE_CALL,
+				Value:  token.Value,
+				Line:   token.Line,
+				Column: token.Column,
+			}
+
+			// Increment depth so bare zero-arg names inside args stay variables
+			p.inFunctionCall++
+
+			// Parse arguments until closing paren (allow newlines for multiline calls)
+			for p.current().Type == TOKEN_NEWLINE {
 				p.advance()
-
-				// Validate no recursion
-				p.validateFunctionCall(token.Value, token.Line, token.Column)
-
-				call := &ASTNode{
-					Type:   NODE_CALL,
-					Value:  token.Value,
-					Line:   token.Line,
-					Column: token.Column,
-				}
-
-				// Increment depth to allow nested function calls
-				p.inFunctionCall++
-
-				// Parse arguments until closing pipe (allow newlines for multiline calls)
-				for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
-					// Skip newlines between arguments
+			}
+			if p.current().Type != TOKEN_RPAREN && p.current().Type != TOKEN_EOF {
+				for {
 					for p.current().Type == TOKEN_NEWLINE {
 						p.advance()
 					}
-
-					if p.current().Type == TOKEN_PIPE || p.current().Type == TOKEN_EOF {
+					if p.current().Type == TOKEN_RPAREN || p.current().Type == TOKEN_EOF {
 						break
 					}
-
 					arg := p.parseCallArgument()
-
 					call.Children = append(call.Children, arg)
 
+					for p.current().Type == TOKEN_NEWLINE {
+						p.advance()
+					}
 					if p.current().Type == TOKEN_COMMA {
 						p.advance()
-						// Skip newlines after comma
-						for p.current().Type == TOKEN_NEWLINE {
-							p.advance()
-						}
-					} else {
-						// Skip trailing newlines before closing pipe
-						for p.current().Type == TOKEN_NEWLINE {
-							p.advance()
-						}
-						if p.current().Type != TOKEN_PIPE {
-							break
-						}
+						continue
+					}
+					break
+				}
+			}
+			for p.current().Type == TOKEN_NEWLINE {
+				p.advance()
+			}
+
+			// Consume closing paren
+			if p.current().Type == TOKEN_RPAREN {
+				p.advance()
+			} else if p.LintMode {
+				p.recordError(fmt.Sprintf("Expected ')' to close call '%s(' at line %d", token.Value, token.Line))
+			}
+
+			p.inFunctionCall--
+			// A chain on the call result: foo(a).bar(b), foo(a)[0].
+			if p.current().Type == TOKEN_DOT {
+				return p.parseMemberAccessChain(call)
+			}
+			if p.current().Type == TOKEN_LBRACKET {
+				// Indexing into a call result shares the chained shape.
+				node := call
+				for p.current().Type == TOKEN_LBRACKET {
+					p.advance()
+					if slice, ok := p.tryParseStringSlice(node, token.Line); ok {
+						node = slice
+						continue
+					}
+					idx := p.parseExpression()
+					p.expect(TOKEN_RBRACKET)
+					node = &ASTNode{
+						Type:     NODE_ARRAY_ACCESS,
+						Value:    "",
+						Children: []*ASTNode{node, idx},
+						Line:     token.Line,
 					}
 				}
-
-				// Consume closing pipe
-				if p.current().Type == TOKEN_PIPE {
-					p.advance()
+				if p.current().Type == TOKEN_DOT {
+					return p.parseMemberAccessChain(node)
 				}
-
-				p.inFunctionCall--
-				return call
+				return node
 			}
-			// If we're inside a function call, fall through to return identifier
-			// UNLESS we detect this is actually a nested call (identifier||)
-			nextToken := p.peek(1)
-			if nextToken.Type == TOKEN_PIPE && !p.nameIsKnownVariable(token.Value) {
-				// This is identifier|| - definitely a nested zero-arg function call
-				// Nested calls are allowed; parseCallArgument handles the ones that
-				// carry arguments, this handles a bare identifier||.
-				p.advance() // consume first |
-				p.advance() // consume second |
-				return &ASTNode{
-					Type:     NODE_CALL,
-					Value:    token.Value,
-					Line:     token.Line,
-					Column:   token.Column,
-					Children: []*ASTNode{},
-				}
-			}
+			return call
 		}
 
 		// Check for member access (property or method)
@@ -596,11 +601,11 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			return p.parseMemberAccessChain(node)
 		}
 
-		// Check if this is a zero-arg function that can be called without ||
+		// Check if this is a zero-arg function that can be called without ()
 		// Only do this at top-level (not inside another function call, and not
 		// under & where the name itself is the function value). A declared
-		// variable shadows the C function (same rule as the identifier||
-		// guard above): without this, every libc zero-arg function the
+		// variable shadows the C function (same rule as the call guard
+		// above): without this, every libc zero-arg function the
 		// header follower registers (clock, system, ...) hijacks same-named
 		// locals, emitting clock() for a char* variable.
 		if p.inFunctionCall == 0 && !p.inFunctionReference && p.zeroArgFunctions[token.Value] && !p.nameIsKnownVariable(token.Value) {
@@ -641,7 +646,7 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 		p.advance() // consume '('
 		expr := p.parseExpression()
 		p.expect(TOKEN_RPAREN)
-		// A chain on the parenthesized value: (V{...}).twice||, (a+b).x.
+		// A chain on the parenthesized value: (V{...}).twice(), (a+b).x.
 		if p.current().Type == TOKEN_DOT {
 			return p.parseMemberAccessChain(expr)
 		}
@@ -732,60 +737,27 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 			}
 		}
 
-		// Check if this is a cast (followed by parenthesis or pipe)
+		// Check if this is a cast (followed by parens): int(x), float(x), etc.
+		// Pipe casts (`int(x)`) were removed; calls and casts both use `()`.
 		if p.current().Type == TOKEN_PIPE {
-			// Pipe casts (`int|x|`) are deprecated in favor of `int(x)`.
-			// Still parses, but lint warns.
-			p.recordWarningAtLine(fmt.Sprintf("cast with |...| is deprecated, use %s(x) instead of %s|x|", token.Value, token.Value), token.Line, token.Column)
-			// vector2|x,y| syntax
-			p.advance() // consume |
-
-			// Count this as being inside a call while the arguments are parsed.
-			// Otherwise the rule that an identifier followed by a pipe starts a
-			// call fires on a bare argument and swallows the cast's own closing
-			// pipe: string|x| parsed as string( x() ) and then fell apart, while
-			// string|42| worked because a number cannot start a call.
-			p.inFunctionCall++
+			p.recordError(fmt.Sprintf("cast with |...| was removed, use %s(x) instead of %s(x) (line %d)", token.Value, token.Value, token.Line))
+			p.advance() // consume | to recover
 			args := []*ASTNode{}
-			for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
-				if p.current().Type == TOKEN_IDENTIFIER && p.peek(1).Type == TOKEN_PIPE {
-					// A call cannot appear inside a cast's pipe form
-					// (int|helper|x||): speculate exactly like argument
-					// lists do, so a plain variable in the same spot
-					// (int|b|) is left alone. On a real nested call,
-					// name the fix, rewind, consume the inner call
-					// through its closing pipe, then break so the
-					// expect below takes the cast's own close.
-					savedPos := p.pos
-					savedErrors := len(p.Errors)
-					if nested := p.tryParseNestedCall(p.current()); nested != nil {
-						p.pos = savedPos
-						p.Errors = p.Errors[:savedErrors]
-						p.reportCallInCast(p.current())
-						p.advance()
-						p.advance()
-						for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF && p.current().Type != TOKEN_NEWLINE {
-							p.advance()
-						}
-						if p.current().Type == TOKEN_PIPE {
-							p.advance()
-						}
-						args = append(args, &ASTNode{Type: NODE_IDENTIFIER, Value: "error"})
-						break
-					}
-				}
+			for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF && p.current().Type != TOKEN_NEWLINE {
 				arg := p.parseCallArgumentExpression()
 				args = append(args, arg)
-
 				if p.current().Type == TOKEN_COMMA {
 					p.advance()
-				} else if p.current().Type != TOKEN_PIPE {
+				} else {
 					break
 				}
 			}
-			p.inFunctionCall--
-			p.expect(TOKEN_PIPE)
-
+			if p.current().Type == TOKEN_PIPE {
+				p.advance()
+			}
+			if len(args) == 0 {
+				args = append(args, &ASTNode{Type: NODE_IDENTIFIER, Value: "error"})
+			}
 			return &ASTNode{
 				Type:     NODE_CALL,
 				Value:    token.Value,
@@ -809,37 +781,6 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 
 		// It's a cast - parse the argument in parentheses
 		p.advance() // consume opening (
-
-		if p.current().Type == TOKEN_IDENTIFIER && p.peek(1).Type == TOKEN_PIPE {
-			// A call cannot appear inside a cast's paren form either
-			// (n: int(helper||)): same speculation gate so plain
-			// variables and member access pass through untouched.
-			savedPos := p.pos
-			savedErrors := len(p.Errors)
-			if nested := p.tryParseNestedCall(p.current()); nested != nil {
-				p.pos = savedPos
-				p.Errors = p.Errors[:savedErrors]
-				// Name the fix, then skip to the matching close paren
-				// so the declaration still parses and no cascade follows.
-				p.reportCallInCast(p.current())
-				depth := 1
-				for depth > 0 && p.current().Type != TOKEN_EOF && p.current().Type != TOKEN_NEWLINE {
-					if p.current().Type == TOKEN_LPAREN {
-						depth++
-					}
-					if p.current().Type == TOKEN_RPAREN {
-						depth--
-					}
-					p.advance()
-				}
-				return &ASTNode{
-					Type:     NODE_CALL,
-					Value:    token.Value,
-					Children: []*ASTNode{{Type: NODE_IDENTIFIER, Value: "error"}},
-					Line:     token.Line,
-				}
-			}
-		}
 
 		arg := p.parseExpression()
 
@@ -871,11 +812,11 @@ func (p *Parser) parsePrimaryExpression() *ASTNode {
 }
 
 // reportCallInCast names the fix when a pipe-call is used where only plain
-// values parse — inside a cast's pipe form (int|helper|x||) or paren form
-// (n: int(helper||)|). Calls are not supported there; the fix is always a
-// temp variable. Lint records and continues, parse raises for the caller.
+// values parse — inside a cast's paren form (n: int(helper())). Calls are now
+// `name(...)`; a stale `name(...)` there is always a temp-variable fix.
+// Lint records and continues, parse raises for the caller.
 func (p *Parser) reportCallInCast(name Token) {
-	errMsg := fmt.Sprintf("function call '%s|...|' cannot be used inside a cast (line %d:%d): assign the result to a variable first, then cast the variable", name.Value, name.Line, name.Column)
+	errMsg := fmt.Sprintf("function call '%s(...)' cannot be used inside a cast (line %d:%d): assign the result to a variable first, then cast the variable", name.Value, name.Line, name.Column)
 	if p.LintMode {
 		p.recordError(errMsg)
 	} else {

@@ -9,12 +9,12 @@ program block_scope_redeclare
 	expected: []
 	if true then
 		a: 1
-		print|a|
+		print(a)
 	$
 	if true then
 		a: 2
-		print|a|
+		print(a)
 	$
-	expected.push|"1", "2"|
-	print|expected|
+	expected.push("1", "2")
+	print(expected)
 $

@@ -14,7 +14,7 @@ program field_call_vs_method
 $
 
 struct Handler:
-	cb: fn(int)->int
+	cb: fn|int|->int
 	name: string
 $
 
@@ -28,28 +28,28 @@ $
 	h: Handler = Handler{cb: &twice, name: "h"}
 
 	? the method: the ordinary path
-	s: string = h.shout|"hi"|
-	print|s|
-	expected.push|s|
+	s: string = h.shout("hi")
+	print(s)
+	expected.push(s)
 
 	? the field: a call through a function-valued field
-	v: int = h.cb|21|
-	print|v|
-	expected.push|v|
+	v: int = h.cb(21)
+	print(v)
+	expected.push(v)
 
 	? and once more, to show the field is still a field
-	w: int = h.cb|v|
-	print|w|
-	expected.push|w|
+	w: int = h.cb(v)
+	print(w)
+	expected.push(w)
 
 	? the same, out of an array: the element is bound to a name first,
 	? because the generator reads the callback out of a named struct
 	hs: array[Handler] = []
-	hs.push|h|
+	hs.push(h)
 	one: hs[0]
-	v2: int = one.cb|5|
-	print|v2|
-	expected.push|v2|
+	v2: int = one.cb(5)
+	print(v2)
+	expected.push(v2)
 
-	print|expected|
+	print(expected)
 $

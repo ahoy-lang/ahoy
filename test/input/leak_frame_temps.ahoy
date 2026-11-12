@@ -11,9 +11,9 @@ program leak_frame_temps
 	total: 0
 	loop i:0 to n do
 		s: "entity-" + "x"
-		parts: s.split|"-"|
+		parts: s.split("-")
 		arr: [i, i + 1, i + 2]
-		arr.push|i|
+		arr.push(i)
 		total = total + arr.length + parts.length
 	$
 	return total
@@ -21,8 +21,8 @@ $
 
 @ main ||:
 	expected: []
-	r: frame_work|200|
-	print|r|
-	expected.push|"1200"|
-	print|expected|
+	r: frame_work(200)
+	print(r)
+	expected.push("1200")
+	print(expected)
 $

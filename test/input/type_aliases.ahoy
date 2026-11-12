@@ -4,8 +4,8 @@ expected: []
 ? Test 1: Basic type alias for int
 alias my_int: int
 x: my_int = 42
-print|x,x.type|
-expected.push|"42 my_int"|
+print(x,x.type)
+expected.push("42 my_int")
 
 ? Test 2: Alias in function signature
 alias distance: float
@@ -15,9 +15,9 @@ alias distance: float
     return dx * dx + dy * dy
 $
 
-result: calculate_distance|0.0, 0.0, 3.0, 4.0|
-print|result|
-expected.push|"25"|
+result: calculate_distance(0.0, 0.0, 3.0, 4.0)
+print(result)
+expected.push("25")
 
 ? Test 3: Multiple int aliases
 alias score: int
@@ -27,8 +27,8 @@ player_score: score = 100
 player_level: level = 5
 
 total: player_score + player_level
-print|total|
-expected.push|"105"|
+print(total)
+expected.push("105")
 
 ? Print expected values for test validation
-print|expected|
+print(expected)

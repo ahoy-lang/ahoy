@@ -61,9 +61,9 @@ func TestDictFormattingHasNoStaticBuffer(t *testing.T) {
 @ main ||:
 	a: {"x": 10}
 	b: {"y": 20}
-	print|a<"x">, b<"y">|
+	print(a<"x">, b<"y">)
 	loop k, v in a do
-		print|f"{k}={v}"|
+		print(f"{k}={v}")
 	$
 $
 `

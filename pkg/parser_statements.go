@@ -206,11 +206,11 @@ func (p *Parser) parseFunction() *ASTNode {
 		Line:  name.Line,
 	}
 
-	// Check for pipe-based syntax |params| or space-separated params
+	// Check for pipe-based syntax |params( or space-separated params
 	params := &ASTNode{Type: NODE_BLOCK}
 
 	if p.current().Type == TOKEN_PIPE {
-		// Old syntax: func name |param1 type1, param2 type2| then
+		// Old syntax: func name )param1 type1, param2 type2( then
 		p.advance()
 
 		// Skip any newlines after opening pipe
@@ -689,7 +689,7 @@ func (p *Parser) parseIfStatement() *ASTNode {
 // condDeclAttempt scans the rest of the line for declaration/assignment
 // tokens that can never appear in a condition: `:=` anywhere, or `=` /
 // `:` outside pipe spans and brackets. Slices (`s[1:2]`), dict literals,
-// lambdas and named arguments (`f|x=1|`) all live inside those spans; a
+// lambdas and named arguments (`f(x=1)`) all live inside those spans; a
 // bare ternary `:` with no `=` after it is left alone. It returns the
 // offending spelling for the diagnostic, or "" when the line is clean.
 // Single-line only: a condition split across lines skips the check and
@@ -721,7 +721,7 @@ func (p *Parser) condDeclAttempt() string {
 			pipes++
 		case TOKEN_EQUALS:
 			// `=` never appears in an expression outside named
-			// arguments (`f|x=1|`), which live inside pipes.
+			// arguments (`f(x=1)`), which live inside pipes.
 			// (`==` does not exist; equality is `is`.)
 			if depth == 0 && pipes%2 == 0 {
 				return "`=`"
@@ -1072,7 +1072,7 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 			// Report the fix here (the parser would otherwise bail with a
 			// confusing "expected '$'" message), then recover by treating
 			// the token as the label so the rest of the switch still parses.
-			p.recordError("Use 'on' instead of 'case' in a switch (e.g. 'on 1: print|\"one\"|')")
+			p.recordError("Use 'on' instead of 'case' in a switch (e.g. 'on 1: print(\"one\")')")
 			p.advance() // consume 'case'
 		} else {
 			// No more cases to parse
@@ -2315,227 +2315,69 @@ func (p *Parser) parseWhenStatement() *ASTNode {
 
 func (p *Parser) parseAhoyStatement() *ASTNode {
 	p.expect(TOKEN_AHOY)
-
-	// ahoy is just a shorthand for print
-	p.expect(TOKEN_PIPE)
-
-	call := &ASTNode{
-		Type:  NODE_CALL,
-		Value: "print", // Translate ahoy to print
-		Line:  p.current().Line,
-	}
-
-	// Increment depth to allow nested function calls
-	p.inFunctionCall++
-
-	// Parse arguments until closing pipe (allow newlines for multiline calls)
-	for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
-		// Skip newlines between arguments
-		for p.current().Type == TOKEN_NEWLINE {
-			p.advance()
-		}
-
-		if p.current().Type == TOKEN_PIPE || p.current().Type == TOKEN_EOF {
-			break
-		}
-
-		arg := p.parseCallArgument()
-
-		call.Children = append(call.Children, arg)
-
-		if p.current().Type == TOKEN_COMMA {
-			p.advance()
-			// Skip newlines after comma
-			for p.current().Type == TOKEN_NEWLINE {
-				p.advance()
-			}
-		} else {
-			// Skip trailing newlines before closing pipe
-			for p.current().Type == TOKEN_NEWLINE {
-				p.advance()
-			}
-			if p.current().Type != TOKEN_PIPE {
-				break
-			}
-		}
-	}
-
-	// Consume closing pipe
-	if p.current().Type == TOKEN_PIPE {
-		p.advance()
-	}
-
-	p.inFunctionCall--
-	return call
+	return p.parsePrintLikeCall("print")
 }
 
 func (p *Parser) parsePrintStatement() *ASTNode {
 	p.expect(TOKEN_PRINT)
-
-	// print is similar to ahoy
-	p.expect(TOKEN_PIPE)
-
-	call := &ASTNode{
-		Type:  NODE_CALL,
-		Value: "print",
-		Line:  p.current().Line,
-	}
-
-	// Increment depth to allow nested function calls
-	p.inFunctionCall++
-
-	// Parse arguments until closing pipe (allow newlines for multiline calls)
-	for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
-		// Skip newlines between arguments
-		for p.current().Type == TOKEN_NEWLINE {
-			p.advance()
-		}
-
-		if p.current().Type == TOKEN_PIPE || p.current().Type == TOKEN_EOF {
-			break
-		}
-
-		arg := p.parseCallArgument()
-
-		call.Children = append(call.Children, arg)
-
-		if p.current().Type == TOKEN_COMMA {
-			p.advance()
-			// Skip newlines after comma
-			for p.current().Type == TOKEN_NEWLINE {
-				p.advance()
-			}
-		} else {
-			// Skip trailing newlines before closing pipe
-			for p.current().Type == TOKEN_NEWLINE {
-				p.advance()
-			}
-			if p.current().Type != TOKEN_PIPE {
-				break
-			}
-		}
-	}
-
-	// Consume closing pipe
-	if p.current().Type == TOKEN_PIPE {
-		p.advance()
-	}
-
-	p.inFunctionCall--
-	return call
+	return p.parsePrintLikeCall("print")
 }
 
 func (p *Parser) parseLogStatement() *ASTNode {
 	p.expect(TOKEN_LOG)
-
-	// log takes two arguments: message and file_path
-	p.expect(TOKEN_PIPE)
-
-	call := &ASTNode{
-		Type:  NODE_CALL,
-		Value: "log",
-		Line:  p.current().Line,
-	}
-
-	// Increment depth to allow nested function calls
-	p.inFunctionCall++
-
-	// Parse arguments until closing pipe (allow newlines for multiline calls)
-	for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
-		// Skip newlines between arguments
-		for p.current().Type == TOKEN_NEWLINE {
-			p.advance()
-		}
-
-		if p.current().Type == TOKEN_PIPE || p.current().Type == TOKEN_EOF {
-			break
-		}
-
-		arg := p.parseCallArgument()
-
-		call.Children = append(call.Children, arg)
-
-		if p.current().Type == TOKEN_COMMA {
-			p.advance()
-			// Skip newlines after comma
-			for p.current().Type == TOKEN_NEWLINE {
-				p.advance()
-			}
-		} else {
-			// Skip trailing newlines before closing pipe
-			for p.current().Type == TOKEN_NEWLINE {
-				p.advance()
-			}
-			if p.current().Type != TOKEN_PIPE {
-				break
-			}
-		}
-	}
-
-	// Consume closing pipe
-	if p.current().Type == TOKEN_PIPE {
-		p.advance()
-	}
-
-	p.inFunctionCall--
-	return call
+	return p.parsePrintLikeCall("log")
 }
 
 func (p *Parser) parsePanicStatement() *ASTNode {
 	p.expect(TOKEN_PANIC)
-
-	// panic is similar to print - takes any number of arguments
-	p.expect(TOKEN_PIPE)
+	return p.parsePrintLikeCall("panic")
+}
+func (p *Parser) parsePrintLikeCall(name string) *ASTNode {
+	// print/ahoy/log/panic all use call parens now: print(x, y).
+	line := p.current().Line
+	p.expect(TOKEN_LPAREN)
 
 	call := &ASTNode{
 		Type:  NODE_CALL,
-		Value: "panic",
-		Line:  p.current().Line,
+		Value: name,
+		Line:  line,
 	}
 
-	// Increment depth to allow nested function calls
 	p.inFunctionCall++
 
-	// Parse arguments until closing pipe (allow newlines for multiline calls)
-	for p.current().Type != TOKEN_PIPE && p.current().Type != TOKEN_EOF {
-		// Skip newlines between arguments
+	for p.current().Type == TOKEN_NEWLINE {
+		p.advance()
+	}
+	for p.current().Type != TOKEN_RPAREN && p.current().Type != TOKEN_EOF {
 		for p.current().Type == TOKEN_NEWLINE {
 			p.advance()
 		}
-
-		if p.current().Type == TOKEN_PIPE || p.current().Type == TOKEN_EOF {
+		if p.current().Type == TOKEN_RPAREN || p.current().Type == TOKEN_EOF {
 			break
 		}
-
 		arg := p.parseCallArgument()
-
 		call.Children = append(call.Children, arg)
-
+		for p.current().Type == TOKEN_NEWLINE {
+			p.advance()
+		}
 		if p.current().Type == TOKEN_COMMA {
 			p.advance()
-			// Skip newlines after comma
-			for p.current().Type == TOKEN_NEWLINE {
-				p.advance()
-			}
-		} else {
-			// Skip trailing newlines before closing pipe
-			for p.current().Type == TOKEN_NEWLINE {
-				p.advance()
-			}
-			if p.current().Type != TOKEN_PIPE {
-				break
-			}
+			continue
 		}
+		break
 	}
-
-	// Consume closing pipe
-	if p.current().Type == TOKEN_PIPE {
+	for p.current().Type == TOKEN_NEWLINE {
+		p.advance()
+	}
+	if p.current().Type == TOKEN_RPAREN {
 		p.advance()
 	}
 
 	p.inFunctionCall--
 	return call
 }
+
+
 
 func (p *Parser) parseReturnStatement() *ASTNode {
 	returnToken := p.expect(TOKEN_RETURN)

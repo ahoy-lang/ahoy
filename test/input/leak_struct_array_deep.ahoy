@@ -10,7 +10,7 @@ struct Card2:
 $
 
 @ make_card |n:string, t:string| Card2:
-	c: Card2{name: n.dup||, text: t.dup||}
+	c: Card2{name: n.dup(), text: t.dup()}
 	return c
 $
 
@@ -21,12 +21,12 @@ $
 	loop i:0 to 500 do
 		nodes: array[Card2] = []
 		lbl: f"v-{i}"
-		c: make_card|"n", lbl|
-		nodes.push|c|
+		c: make_card("n", lbl)
+		nodes.push(c)
 		total = total + nodes.length
 	$
-	print|total|
-	expected.push|"500"|
+	print(total)
+	expected.push("500")
 
-	print|expected|
+	print(expected)
 $

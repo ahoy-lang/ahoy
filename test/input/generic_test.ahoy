@@ -6,13 +6,13 @@ expected: []
 return name, phone,location,postcode
 $
 
-name, phone,location,postcode : test_generics|"Alice", 1234567890,"madrid",9220|
-print|name.type,phone.type,location.type,postcode.type|
-expected.push|"string int string int"|
+name, phone,location,postcode : test_generics("Alice", 1234567890,"madrid",9220)
+print(name.type,phone.type,location.type,postcode.type)
+expected.push("string int string int")
 
 ? Test values
-print|name, phone, location, postcode|
-expected.push|"Alice 1234567890 madrid 9220"|
+print(name, phone, location, postcode)
+expected.push("Alice 1234567890 madrid 9220")
 
 ? Print expected
-print|expected|
+print(expected)

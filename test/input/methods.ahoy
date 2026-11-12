@@ -43,28 +43,28 @@ $
 @ main ||:
 	expected: []
 
-	p: Point.make|1.0, 2.0|
-	print|p.x|
-	expected.push|"1"|
+	p: Point.make(1.0, 2.0)
+	print(p.x)
+	expected.push("1")
 
-	q: p.move|3.0, 4.0|
-	print|q.x|
-	expected.push|"4"|
-	print|q.y|
-	expected.push|"6"|
+	q: p.move(3.0, 4.0)
+	print(q.x)
+	expected.push("4")
+	print(q.y)
+	expected.push("6")
 
-	s: q.sum||
-	print|s|
-	expected.push|"10"|
+	s: q.sum()
+	print(s)
+	expected.push("10")
 
 	boxes:array[Box]= [Box{w: 2.0, h: 3.0}, Box{w: 4.0, h: 5.0}]
-	n: boxes.count||
-	print|n|
-	expected.push|"2"|
+	n: boxes.count()
+	print(n)
+	expected.push("2")
 
-	area: boxes.total_area||
-	print|area|
-	expected.push|"26"|
+	area: boxes.total_area()
+	print(area)
+	expected.push("26")
 
-	print|expected|
+	print(expected)
 $

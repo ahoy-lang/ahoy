@@ -754,7 +754,7 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 		var explicitType string
 		isDeclaration := true
 
-		// A function type annotation: f: fn(int)->int = (x:int): x * 2
+		// A function type annotation: f: fn|int|->int = (x:int): x * 2
 		if p.current().Type == TOKEN_FN {
 			explicitType = p.parseFunctionTypeString()
 			if p.current().Type == TOKEN_EQUALS {
@@ -766,14 +766,13 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 			p.current().Type == TOKEN_ARRAY_TYPE ||
 			p.current().Type == TOKEN_IDENTIFIER {
 
-			// A cast opens with a pipe: int|5|, string|n|. Parentheses are also
-			// accepted. Without this the type keyword was taken as an annotation and
-			// the pipe that followed was left dangling, so `s: string|x|` failed to
-			// parse even though `s: string|42|` happened to work.
+			// A cast opens with parens: int(5), string(n). Without this the
+			// type keyword was taken as an annotation and the paren that
+			// followed was left dangling.
 			if (p.current().Type == TOKEN_INT_TYPE || p.current().Type == TOKEN_FLOAT_TYPE ||
 				p.current().Type == TOKEN_CHAR_TYPE || p.current().Type == TOKEN_STRING_TYPE ||
 				p.current().Type == TOKEN_BOOL_TYPE) &&
-				(p.peek(1).Type == TOKEN_PIPE || p.peek(1).Type == TOKEN_LPAREN) {
+				(p.peek(1).Type == TOKEN_LPAREN) {
 				// This is a cast, not a type annotation - treat as a declaration whose
 				// type is inferred from the cast expression. isDeclaration is already
 				// true, so just fall through.
@@ -1153,15 +1152,15 @@ func (p *Parser) parseAssignmentOrExpression() *ASTNode {
 	return p.parseExpression()
 }
 
-// Bitwise operators must work inside call arguments (print|a band b|) and cast
+// Bitwise operators must work inside call arguments (print(a band b)) and cast
 // arguments, but the argument grammar deliberately stops short of comparisons
 // so a `>` cannot be eaten. These words cannot be mistaken for the comma or the
-// closing pipe, so the three bitwise levels and shifts are safe to include.
+// closing paren, so the three bitwise levels and shifts are safe to include.
 // parseCallArgumentExpression parses one argument of a call.
 //
 // It used to be a second copy of the expression chain that stopped at the
 // bitwise operators, so a comparison or a logical operator inside an
-// argument list was a parse error: `print|x > 2|` did not parse, and so no
+// argument list was a parse error: `print(x > 2)` did not parse, and so no
 // lambda with a comparison in it parsed either. The main chain already
 // handles every operator, so the argument uses it.
 func (p *Parser) parseCallArgumentExpression() *ASTNode {
@@ -1225,19 +1224,10 @@ func (p *Parser) parseCallArgument() *ASTNode {
 		}
 	}
 
-	// A call used as an argument: print|len|items||
-	//
-	// Inside an argument list a pipe is ambiguous - it may open a nested call,
-	// or it may be the enclosing call's closing pipe (print|x|). tryParseNestedCall
-	// resolves it and rolls back when the pipe belonged to the enclosing call.
-	if p.inFunctionCall > 0 && p.current().Type == TOKEN_IDENTIFIER &&
-		p.peek(1).Type == TOKEN_PIPE {
-		if nested := p.tryParseNestedCall(p.current()); nested != nil {
-			return nested
-		}
-	}
+	// Calls nest with parens now: print(len(items)). No speculation is
+	// needed — `name(` always opens a call, `)` always closes one.
 
-	// Parse an expression but stop at comma, pipe, or comparison operators
+	// Parse an expression but stop at comma, paren, or comparison operators
 	// Use parseCallArgumentExpression to avoid treating <> as comparisons; it
 	// still accepts the word bitwise operators and shifts.
 	arg := p.parseCallArgumentExpression()
@@ -1278,13 +1268,13 @@ func canStartExpression(t TokenType) bool {
 	return false
 }
 
-// tryParseNestedCall parses `name|args|` as a call while the parser is inside
-// another call's argument list, so that print|len|items|| works.
+// tryParseNestedCall parses `name(args)` as a call while the parser is inside
+// another call's argument list, so that print(len(items)) works.
 //
 // A nested call is accepted only when its own closing pipe is immediately
 // followed by another pipe, which can then only be the enclosing call's closing
 // pipe. Anything else is rolled back - position and any diagnostics recorded
-// while trying - so `print|x|` still parses as a plain identifier argument.
+// while trying - so `print(x)` still parses as a plain identifier argument.
 func (p *Parser) tryParseNestedCall(name Token) (result *ASTNode) {
 	savedPos := p.pos
 	savedErrors := len(p.Errors)
@@ -1293,7 +1283,7 @@ func (p *Parser) tryParseNestedCall(name Token) (result *ASTNode) {
 	// it may close the enclosing one. Whatever happens below has to be undone
 	// when the guess is wrong - including a panic, which is how the
 	// code-generation parser reports a token that cannot start an argument
-	// (`if foo|bar| then`, `foo|bar| + 1`). Without the recover those inputs
+	// (`if foo(bar) then`, `foo(bar) + 1`). Without the recover those inputs
 	// aborted the whole parse instead of rolling back to `bar` being a plain
 	// identifier argument.
 	savedInFunctionCall := p.inFunctionCall
@@ -1334,8 +1324,8 @@ func (p *Parser) tryParseNestedCall(name Token) (result *ASTNode) {
 
 	// An opening pipe is followed by an argument, or by the nested call's own
 	// closing pipe. When the token after it cannot start an expression, the
-	// pipe belonged to the enclosing call - `if foo|bar| then`, `foo|bar| + 1`,
-	// `print|arr.length| $` - and this is not a nested call after all.
+	// pipe belonged to the enclosing call - `if foo(bar) then`, `foo(bar) + 1`,
+	// `print(arr.length) $` - and this is not a nested call after all.
 	if p.current().Type != TOKEN_PIPE && !canStartExpression(p.current().Type) {
 		p.pos = savedPos
 		p.Errors = p.Errors[:savedErrors]
@@ -1360,8 +1350,8 @@ func (p *Parser) tryParseNestedCall(name Token) (result *ASTNode) {
 
 	// With arguments the shape is unambiguous: the nested call's closing pipe
 	// must be followed either by the enclosing call's closing pipe
-	// (print|len|items||) or by a comma, when it is one of several arguments
-	// (print|greet|name|, count|).
+	// (print(len(items))) or by a comma, when it is one of several arguments
+	// (print(greet)name(, count)).
 	if len(call.Children) > 0 {
 		if p.current().Type == TOKEN_PIPE &&
 			(p.peek(1).Type == TOKEN_PIPE || p.peek(1).Type == TOKEN_COMMA) {
@@ -1369,10 +1359,10 @@ func (p *Parser) tryParseNestedCall(name Token) (result *ASTNode) {
 			return call
 		}
 	} else if p.current().Type == TOKEN_PIPE && !p.nameIsKnownVariable(name.Value) {
-		// Zero arguments: `name||` has exactly the same token shape as a plain
+		// Zero arguments: `name()` has exactly the same token shape as a plain
 		// identifier argument followed by the enclosing call's closing pipe
-		// (print|x|), so the name has to decide. A variable wins - in
-		// print|len|items|| the two pipes belong to len and print, not to
+		// (print(x)), so the name has to decide. A variable wins - in
+		// print(len(items)) the two pipes belong to len and print, not to
 		// items() - while anything that is not a variable is the call.
 		p.advance()
 		return call

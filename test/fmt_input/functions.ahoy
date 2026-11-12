@@ -3,18 +3,18 @@
   return x + y, x
 $
 x_input : 10; y_input : 20
-_ , _ = add|x_input, y_input|
+_ , _ = add(x_input, y_input)
 
 world : "World"
 name : "Alice"
 @ greet :: |name:string, world:string| string:
   return f"Hello {name}"
 $
-greeted : greet|world,name|
+greeted : greet(world,name)
 
 
 @ duplicate_params |line:string| void:
-  print|"no return"|
+  print("no return")
 $
 
 ? because it has no return and takes no parameters we can call it like this:

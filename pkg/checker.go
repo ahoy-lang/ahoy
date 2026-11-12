@@ -35,7 +35,7 @@ type checker struct {
 	// scopes is the stack of open blocks; scopes[0] is the global scope.
 	scopes []map[string]bool
 	// scopeTypes mirrors scopes with the declared type of each name, so a
-	// function-typed local (f: fn(int)->int) is known to be callable.
+	// function-typed local (f: fn|int|->int) is known to be callable.
 	scopeTypes []map[string]string
 	// programNames holds names declared elsewhere in the same program, so a
 	// multi-file program resolves names across its files.
@@ -49,7 +49,7 @@ type checker struct {
 	// funcParams holds the current function's parameter names (nil outside
 	// functions). Push/store warnings skip parameters: the caller owns them.
 	funcParams map[string]bool
-	// freedNames holds locals explicitly freed with free|x| (not deferred).
+	// freedNames holds locals explicitly freed with free(x) (not deferred).
 	// Any later use warns (use-after-free); rebinding clears the entry.
 	freedNames map[string]bool
 	// inLoop counts enclosing loop bodies under check: a pass-through check whose
@@ -63,7 +63,7 @@ type checker struct {
 	// membership always means definitely-not-null here. Fresh per
 	// function, like freedNames.
 	nonNull map[string]bool
-	// inDefer counts enclosing defer statements: free|x| inside one runs at
+	// inDefer counts enclosing defer statements: free(x) inside one runs at
 	// scope end, so later uses before then are fine and not recorded.
 	inDefer int
 
@@ -233,7 +233,7 @@ func (c *checker) warnPartialCallResult(node *ASTNode, value *ASTNode, captured 
 		return
 	}
 	if captured < returned {
-		c.warningAt(node, "Function '%s' returns %d values but only %d is captured; assign them to %d variables (a, b : %s|...|)",
+		c.warningAt(node, "Function '%s' returns %d values but only %d is captured; assign them to %d variables (a, b : %s(...))",
 			value.Value, returned, captured, returned, value.Value)
 	} else {
 		c.warningAt(node, "Function '%s' returns %d values but %d targets are given",
@@ -438,7 +438,7 @@ func (c *checker) isCallable(name string) bool {
 }
 
 // isFunctionTypedVariable reports whether a local or global variable holds a
-// function value, e.g. `f: fn(int)->int = &double_it`.
+// function value, e.g. `f: fn|int|->int = &double_it`.
 func (c *checker) isFunctionTypedVariable(name string) bool {
 	if IsFunctionType(c.lookupType(name)) {
 		return true
@@ -1095,7 +1095,7 @@ func (c *checker) checkStatement(node *ASTNode) {
 		c.declareTyped(node.Value, declType)
 		// Buffer lanes: validate the spelling, then agree the value's
 		// lane with the declaration's. Constructors carry their lane
-		// (buffer|n| is f32, buffer_int|n| int), so a bare buffer|n|
+		// (buffer(n) is f32, buffer_int(n) int), so a bare buffer(n)
 		// into a buffer[int] declaration is an error here — not a
 		// silent float store downstream.
 		if strings.HasPrefix(declType, "buffer[") {
@@ -1116,7 +1116,7 @@ func (c *checker) checkStatement(node *ASTNode) {
 		// clear plus the append/erase aliases) return the SAME array they
 		// mutated. Binding that to a second name makes two scope-owned owners
 		// of one allocation, which scope exit frees twice (SIGSEGV). Use the
-		// call as a statement, or rebind the same name: xs.push|4|.
+		// call as a statement, or rebind the same name: xs.push(4).
 		if rhs := childAt(node, 0); rhs != nil && rhs.Type == NODE_METHOD_CALL && len(rhs.Children) > 0 {
 			if recv := rhs.Children[0]; recv != nil && recv.Type == NODE_IDENTIFIER && recv.Value != node.Value {
 				if recvT := c.lookupType(recv.Value); recvT == "array" || strings.HasPrefix(recvT, "array[") {
@@ -1355,7 +1355,7 @@ func (c *checker) checkStatement(node *ASTNode) {
 		}
 
 	case NODE_DEFER_STATEMENT:
-		// free|x| inside a defer runs at scope end: later uses before then
+		// free(x) inside a defer runs at scope end: later uses before then
 		// are fine, so deferred frees are not recorded (see checkCall).
 		c.inDefer++
 		for _, child := range node.Children {
@@ -1763,7 +1763,7 @@ func (c *checker) checkExpr(node *ASTNode) {
 		c.checkExpr(childAt(node, 0))
 		// A field read on a buffer or string dies as "struct or union
 		// expected" in C. Buffers expose length only (elements via buf[i]);
-		// strings expose length/count (methods use call syntax: s.strip||).
+		// strings expose length/count (methods use call syntax: s.strip()).
 		// Arrays, dicts (key lookup), structs and enums keep their routing.
 		if node.Type == NODE_MEMBER_ACCESS {
 			if obj := childAt(node, 0); obj != nil && obj.Type == NODE_IDENTIFIER {
@@ -1775,7 +1775,7 @@ func (c *checker) checkExpr(node *ASTNode) {
 						}
 					} else if t == "string" || t == "char*" || t == "const char*" || t == "char *" || t == "const char *" {
 						if node.Value != "length" && node.Value != "count" {
-							c.errorAt(node, "Type 'string' has no field '%s' (string methods use call syntax: s.%s||)", node.Value, node.Value)
+							c.errorAt(node, "Type 'string' has no field '%s' (string methods use call syntax: s.%s())", node.Value, node.Value)
 						}
 					}
 				}
@@ -1883,7 +1883,7 @@ func (c *checker) checkNameUse(node *ASTNode, name string) {
 		return
 	}
 	if c.freedNames[name] {
-		c.warningAt(node, "Using '%s' after it was freed with free|%s|", name, name)
+		c.warningAt(node, "Using '%s' after it was freed with free(%s)", name, name)
 	}
 	if c.isDefined(name) {
 		return
@@ -1927,20 +1927,20 @@ func (c *checker) checkCall(node *ASTNode) {
 		}
 		return
 	}
-	// grow|buf, n| needs a buffer source; the result keeps its type.
+	// grow(buf, n) needs a buffer source; the result keeps its type.
 	if name == "grow" {
 		if len(node.Children) != 2 {
-			c.errorAt(node, "grow takes exactly two arguments: grow|buf, n|")
+			c.errorAt(node, "grow takes exactly two arguments: grow(buf, n)")
 			return
 		}
 		if actual := c.argActualType(node.Children[0]); actual != "" && actual != "unknown" && actual != "any" && actual != "generic" && !strings.HasPrefix(actual, "buffer[") {
 			c.errorAt(node.Children[0], "grow needs a buffer source, not %s", actual)
 		}
 	}
-	// to_bytes|buf| needs a buffer source; from_bytes*|bytes| need an array.
+	// to_bytes(buf) needs a buffer source; from_bytes*|bytes( need an array.
 	if name == "to_bytes" {
 		if len(node.Children) != 1 {
-			c.errorAt(node, "to_bytes takes exactly one argument: to_bytes|buf|")
+			c.errorAt(node, "to_bytes takes exactly one argument: to_bytes)buf(")
 			return
 		}
 		if actual := c.argActualType(node.Children[0]); actual != "" && actual != "unknown" && actual != "any" && actual != "generic" && !strings.HasPrefix(actual, "buffer[") {
@@ -1949,7 +1949,7 @@ func (c *checker) checkCall(node *ASTNode) {
 	}
 	if name == "from_bytes" || name == "from_bytes_int" || name == "from_bytes_ok" {
 		if len(node.Children) != 1 {
-			c.errorAt(node, "%s takes exactly one argument: %s|bytes|", name, name)
+			c.errorAt(node, "%s takes exactly one argument: %s(bytes)", name, name)
 			return
 		}
 		if actual := c.argActualType(node.Children[0]); actual != "" && actual != "unknown" && actual != "any" && actual != "generic" && actual != "array" && !strings.HasPrefix(actual, "array[") {
@@ -1957,7 +1957,7 @@ func (c *checker) checkCall(node *ASTNode) {
 		}
 	}
 	c.checkArguments(node, name, node.Children)
-	// free|x| frees immediately (recorded after the arguments are checked so
+	// free(x) frees immediately (recorded after the arguments are checked so
 	// the call itself doesn't warn): any later use of x in this function
 	// dangles. Deferred frees run at scope end and are excluded via inDefer.
 	if name == "free" && c.inDefer == 0 && len(node.Children) == 1 &&
@@ -1969,11 +1969,11 @@ func (c *checker) checkCall(node *ASTNode) {
 }
 
 // rejectNestedCall reports a call used as another call's argument. The parser
-// can make sense of `print|len|items||`, but the nested pipes are easy to
-// misread, so the result has to be named first: tmp: len|items| then print|tmp|.
+// can make sense of `print(len(items))`, but the nested pipes are easy to
+// misread, so the result has to be named first: tmp: len(items) then print(tmp).
 //
 // A cast is not a call: int(x), float(x), char(x) and string(x) are type
-// conversions. They stay readable inline, so `draw_rectangle|..., int(w * p), ...|`
+// conversions. They stay readable inline, so `draw_rectangle(..., int(w * p), ...)`
 // is legal; only a call to a function is rejected.
 func (c *checker) rejectNestedCall(arg *ASTNode, outer string) {
 	if arg == nil {
@@ -2161,7 +2161,7 @@ func (c *checker) argActualType(arg *ASTNode) string {
 }
 
 // isTypeName reports whether name denotes a user type (struct or enum) in
-// this file's tables. Associated calls (Type.m|...|) resolve against these
+// this file's tables. Associated calls (Type.m(...)) resolve against these
 // before falling back to legacy behavior.
 func (c *checker) isTypeName(name string) bool {
 	if _, ok := c.p.structs[name]; ok {
@@ -2566,7 +2566,7 @@ func (c *checker) checkMethodDeclaration(node *ASTNode) {
 	c.errorAt(node, "Unknown type '%s' in %s '%s.%s'; methods attach to structs, enums and builtin types", t, what, t, node.Method.Name)
 }
 
-// resolveMethodCall maps recv.m|args| onto the method table. It returns the
+// resolveMethodCall maps recv.m(args) onto the method table. It returns the
 // mangled global name and whether the receiver is passed as the first
 // argument (false for associated calls, which pass none). The receiver type
 // prefers the parse-time record on the call node (scopes are accurate during
@@ -2634,7 +2634,7 @@ func (c *checker) checkMethodCall(node *ASTNode) {
 	object := node.Children[0]
 	method := node.Value
 
-	// `namespace.func|..|` - the object is an imported C namespace, not a value.
+	// `namespace.func(..)` - the object is an imported C namespace, not a value.
 	if object != nil && object.Type == NODE_IDENTIFIER {
 		if _, isNamespace := c.p.cHeaders[object.Value]; isNamespace {
 			c.checkNamespacedCall(node, object.Value)
@@ -2643,12 +2643,12 @@ func (c *checker) checkMethodCall(node *ASTNode) {
 	}
 
 	// A field that holds a function value is called through the field:
-	// `cur.ready|nodes, idx|` calls the Node's `ready` field. A struct that
+	// `cur.ready(nodes, idx)` calls the Node's `ready` field. A struct that
 	// has methods must not shadow its own function-valued fields, or every
 	// such call is reported as a missing method.
 	//
 	// The receiver has to be a name: the code generator reads the callback
-	// out of a named struct, so `nodes[i].ready|...|` is not a call the
+	// out of a named struct, so `nodes[i].ready(...)` is not a call the
 	// generator can make (it would read the field off the array, not off
 	// the element). Bind the element to a local first.
 	fieldRecvType := node.RecvType
@@ -2665,7 +2665,7 @@ func (c *checker) checkMethodCall(node *ASTNode) {
 		return
 	}
 
-	// A callback field reached through an expression (`nodes[i].ready|...|`)
+	// A callback field reached through an expression (`nodes[i].ready(...)`)
 	// is a call the generator cannot make: it reads the callback out of a
 	// named struct. Say so, instead of calling it a missing method.
 	if object.Type != NODE_IDENTIFIER {
@@ -2674,7 +2674,7 @@ func (c *checker) checkMethodCall(node *ASTNode) {
 			fieldRecvType = NormalizeReceiverType(c.p.inferType(object))
 		}
 		if c.structFieldIsFunction(fieldRecvType, method) {
-			c.errorAt(node, "'%s' is a callback field: bind the value to a name first (ready: fn(...) = nodes[i].ready; ready|...|)", method)
+			c.errorAt(node, "'%s' is a callback field: bind the value to a name first (ready: fn|...|->... = nodes[i].ready; ready(...))", method)
 			return
 		}
 	}
@@ -2792,7 +2792,7 @@ func fnRefName(node *ASTNode) (string, bool) {
 }
 
 // checkFnRef validates a &name value flowing into an fn-typed slot
-// (slotFnType like `fn(int,int)->int`, slotDesc like `field 'draw'`).
+// (slotFnType like `fn|int,int|->int`, slotDesc like `field 'draw'`).
 // Unknown references stay silent here; undefined names are reported where
 // the reference itself is checked.
 func (c *checker) checkFnRef(node *ASTNode, refName, slotFnType, slotDesc string) {
@@ -2841,7 +2841,7 @@ func (c *checker) checkObjectLiteral(node *ASTNode) {
 		}
 		value, ok := present[field.Name]
 		if !ok {
-			// A field with a default (on_tick: fn()->int = &tick) is filled
+			// A field with a default (on_tick: fn||->int = &tick) is filled
 			// from that default, so omitting it is not a null call.
 			if field.DefaultValue != nil {
 				continue
@@ -2856,7 +2856,7 @@ func (c *checker) checkObjectLiteral(node *ASTNode) {
 	}
 }
 
-// checkNamespacedCall validates `namespace.func|..|` against the imported
+// checkNamespacedCall validates `namespace.func(..)` against the imported
 // header's functions.
 func (c *checker) checkNamespacedCall(node *ASTNode, namespace string) {
 	header := c.p.cHeaders[namespace]

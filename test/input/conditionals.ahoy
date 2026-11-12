@@ -4,11 +4,11 @@ expected: []
 ? Basic if
 x:int= 10
 
-if x is 10 then print|"ten"| expected.push|"ten"| $
+if x is 10 then print("ten") expected.push("ten") $
 ? If-else
 y: int = 5
-if y > 10 then print|"big"|; expected.push|"big"|;
-else print|"small"| expected.push|"small"|
+if y > 10 then print("big"); expected.push("big");
+else print("small") expected.push("small")
 $
 
 ? Switch statement
@@ -19,8 +19,8 @@ result :string= switch day:
     on 3: "Wed"
     _: "Other"
 $
-print|result|
-expected.push|"Tue"|
+print(result)
+expected.push("Tue")
 
 ? Switch with multiple values
 grade: 'B'
@@ -29,8 +29,8 @@ quality :string= switch grade:
     on 'C': "OK"
     _: "Poor"
 $
-print|quality|
-expected.push|"Good"|
+print(quality)
+expected.push("Good")
 
 
 ? Switch with multiple return values
@@ -41,14 +41,14 @@ quality, quality_grade := (string, int) = switch grade:
   on 'C': "OK",2
   _: "Poor",3
 $
-print|quality,quality_grade| ?"excellant",1
-expected.push|"EXCELLENT 1"|
+print(quality,quality_grade) ?"excellant",1
+expected.push("EXCELLENT 1")
 
 ? testing if else if chain with anif
 grade= 'B'
-if grade is 'A' then print|"You did great!"| expected.push|"You did great!"|
-elif grade is 'B' then print|"You did good!"| expected.push|"You did good!"|
-else print|"Keep trying!"| expected.push|"Keep trying!"|
+if grade is 'A' then print("You did great!") expected.push("You did great!")
+elif grade is 'B' then print("You did good!") expected.push("You did good!")
+else print("Keep trying!") expected.push("Keep trying!")
 $
 
 ? test dfault case
@@ -58,16 +58,16 @@ quality = switch grade:
     on 'C': "OK"
     _: "Poor"
 $
-print|quality|
-expected.push|"Poor"|
+print(quality)
+expected.push("Poor")
 
 
 ? test calling print
 grade= 'F'
 switch grade:
-  on 'A', 'B': print|"Good"| expected.push|"Good"|
-  on 'C': print|"OK"| expected.push|"OK"|
-  _: print|"Poor"| expected.push|"Poor"|
+  on 'A', 'B': print("Good") expected.push("Good")
+  on 'C': print("OK") expected.push("OK")
+  _: print("Poor") expected.push("Poor")
 $
 
 
@@ -82,24 +82,24 @@ KEY_RIGHT::true
 ball_position : vector2{x:0,y:0};
 if KEY_RIGHT then ball_position.x += 2.0 $
 if KEY_RIGHT then ball_position.y -= 2.0 $
-print|ball_position.x|
-print|ball_position.y|
-expected.push|"2"|
-expected.push|"-2"|
+print(ball_position.x)
+print(ball_position.y)
+expected.push("2")
+expected.push("-2")
 
 ? test *= /= %= in conditionals
 value:10
 if value is 10 then value *= 3 $
-print|value|
-expected.push|"30"|
+print(value)
+expected.push("30")
 
 if value is 30 then value /= 2 $
-print|value|
-expected.push|"15"|
+print(value)
+expected.push("15")
 
 if value is 15 then value %= 7 $
-print|value|
-expected.push|"1"|
+print(value)
+expected.push("1")
 
 ? test compound operators in switch
 num:5
@@ -107,66 +107,66 @@ switch num:
 	on 5: num += 10;
 	_: num= 0;
 $
-print|num|
-expected.push|"15"|
+print(num)
+expected.push("15")
 ? Print expected values for test validation
 
 i:10
 if i is not 11 then ? this is the preferred syntax of checking if some
-		print|"Not selected"|
+		print("Not selected")
 $
-expected.push|"Not selected"|
+expected.push("Not selected")
 
 if i is not 11 then ? fixed: not i is -> is not
-		print|"Not selected"|
+		print("Not selected")
 $
-expected.push|"Not selected"|
+expected.push("Not selected")
 
 if not false then ? this should be valid
-		print|"true"|
+		print("true")
 $
-expected.push|"true"|
+expected.push("true")
 
 if i is not 11 then ? fixed: not is -> is not
-		print|"Not selected"|
+		print("Not selected")
 $
-expected.push|"Not selected"|
+expected.push("Not selected")
 
 if i is not 11 then ? fixed: is i not -> is not
-		print|"Not selected"|
+		print("Not selected")
 $
-expected.push|"Not selected"|
+expected.push("Not selected")
 
-if i is 99 then print|"Not selected"|;
-else print|"else_bare"|; ? else opens its block directly: else then / else: is an error.
+if i is 99 then print("Not selected");
+else print("else_bare"); ? else opens its block directly: else then / else: is an error.
 $
-expected.push|"else_bare"|;
+expected.push("else_bare");
 
 
 
 rotation: 3
 switch rotation:
-		on direction.UP: print|"UP"|
-		on direction.RIGHT: print|"RIGHT"|
-		on direction.DOWN: print|"DOWN"|
-		on direction.LEFT: print|"LEFT"| ? we should prefix with enum name because there is a clash with enum_with_same_member.LEFT
-		_:print|"NONE"
+		on direction.UP: print("UP")
+		on direction.RIGHT: print("RIGHT")
+		on direction.DOWN: print("DOWN")
+		on direction.LEFT: print("LEFT") ? we should prefix with enum name because there is a clash with enum_with_same_member.LEFT
+		_:print("NONE")
 $
-expected.push|"LEFT"|
+expected.push("LEFT")
 
 rotation= 2
 switch rotation:
-		on direction.UP: print|"UP"|;
-		on direction.RIGHT: print|"RIGHT"|;
-		on direction.DOWN: print|"DOWN"|;
-		on direction.LEFT: print|"LEFT"|;
-		_:print|"NONE"
+		on direction.UP: print("UP");
+		on direction.RIGHT: print("RIGHT");
+		on direction.DOWN: print("DOWN");
+		on direction.LEFT: print("LEFT");
+		_:print("NONE")
 $
-expected.push|"DOWN"|;
+expected.push("DOWN");
 
-print|BIG|
+print(BIG)
 BIG:"big"
-expected.push|"big"|
+expected.push("big")
 
 
 
@@ -178,23 +178,23 @@ enum direction:
 $
 
 switch rotation:
-		on .UP: print|"UP"|;
-		on .RIGHT: print|"RIGHT"|;
-		on .DOWN: print|"DOWN"|;
-		on .LEFT: print|"LEFT"|;
-		_:print|"NONE"|;
+		on .UP: print("UP");
+		on .RIGHT: print("RIGHT");
+		on .DOWN: print("DOWN");
+		on .LEFT: print("LEFT");
+		_:print("NONE");
 $
-expected.push|"DOWN"|;
+expected.push("DOWN");
 
 rotation= 3;
 switch rotation:
-		on .UP: print|"UP"|;
-		on .RIGHT: print|"RIGHT"|;
-		on .DOWN: print|"DOWN"|;
-		on .LEFT: print|"LEFT"|; ? we should prefix with enum name because there is a clash with enum_with_same_member.LEFT
-		_:print|"NONE"|;
+		on .UP: print("UP");
+		on .RIGHT: print("RIGHT");
+		on .DOWN: print("DOWN");
+		on .LEFT: print("LEFT"); ? we should prefix with enum name because there is a clash with enum_with_same_member.LEFT
+		_:print("NONE");
 $
-expected.push|"LEFT"|;
+expected.push("LEFT");
 
 enum enum_with_same_member:
 	0 FORWARD
@@ -207,8 +207,8 @@ $
 ? inline switch test
 grade='C'
 test_in_line_switch :string= switch grade: on 'A', 'B': "Good"; on 'C': "OK"; _: "Poor"; $
-print|test_in_line_switch|
-expected.push|"OK"|
+print(test_in_line_switch)
+expected.push("OK")
 
 ? TODO: Add proper goto/label test with conditional exit
 ? label my_label:
@@ -217,4 +217,4 @@ expected.push|"OK"|
 ? 
 ? goto my_label
 
-print|expected|
+print(expected)

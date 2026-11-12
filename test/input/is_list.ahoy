@@ -21,60 +21,60 @@ $
 	name: "bob"
 
 	if k is 1, 2, 3 then
-		print|"any-int"|
-		expected.push|"any-int"|
+		print("any-int")
+		expected.push("any-int")
 	$
 
 	if k is not 4, 5, 6 then
-		print|"none-int"|
-		expected.push|"none-int"|
+		print("none-int")
+		expected.push("none-int")
 	$
 
 	if name is "alice", "bob" then
-		print|"any-str"|
-		expected.push|"any-str"|
+		print("any-str")
+		expected.push("any-str")
 	$
 
 	if name is not "carol", "dave" then
-		print|"none-str"|
-		expected.push|"none-str"|
+		print("none-str")
+		expected.push("none-str")
 	$
 
 	? a call subject must be evaluated only once (see generated C)
-	if pick|| is 4, 5 then
-		print|"call-subject"|
-		expected.push|"call-subject"|
+	if pick() is 4, 5 then
+		print("call-subject")
+		expected.push("call-subject")
 	$
 
-	box: bool = has_box|Kind.RECT|
-	print|box|
-	expected.push|"1"|
+	box: bool = has_box(Kind.RECT)
+	print(box)
+	expected.push("1")
 
-	not_box: bool = has_box|Kind.LABEL|
-	print|not_box|
-	expected.push|"0"|
+	not_box: bool = has_box(Kind.LABEL)
+	print(not_box)
+	expected.push("0")
 
 	? inside array literals commas still separate elements
 	vals:array[bool]= [k is 1, k is 2]
-	print|vals.length|
-	expected.push|"2"|
+	print(vals.length)
+	expected.push("2")
 
 	? the sugar composes with and/or and normal precedence
 	if k is 1, 2 and name is "bob", "carol" then
-		print|"compose"|
-		expected.push|"compose"|
+		print("compose")
+		expected.push("compose")
 	$
 
 	ok: bool = k is 9, 10
-	print|ok|
-	expected.push|"0"|
+	print(ok)
+	expected.push("0")
 
 	i: 0
 	loop while i is not 2, 3 do
 		i = i + 1
 	$
-	print|i|
-	expected.push|"2"|
+	print(i)
+	expected.push("2")
 
-	print|expected|
+	print(expected)
 $

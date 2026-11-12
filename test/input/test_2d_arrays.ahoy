@@ -34,30 +34,30 @@ card_row2: [cardQ, cardK, cardA]
 grid= [row0, row1, row2]
 
 ? Test initial values are 0
-print|grid[0][0]|
-expected.push|"0"|
-print|grid[1][1]|
-expected.push|"0"|
-print|grid[2][2]|
-expected.push|"0"|
+print(grid[0][0])
+expected.push("0")
+print(grid[1][1])
+expected.push("0")
+print(grid[2][2])
+expected.push("0")
 
 
 ? test values are cards
 zero:0
 one:1
 card_grid: [card_row0, card_row1, card_row2]
-print|card_grid[zero][zero].suit|
-expected.push|"Diamonds"|
-print|card_grid[one][one].rank|
-expected.push|"9"|
-print|card_grid[2][2].rank|
-expected.push|"Ace"|
+print(card_grid[zero][zero].suit)
+expected.push("Diamonds")
+print(card_grid[one][one].rank)
+expected.push("9")
+print(card_grid[2][2].rank)
+expected.push("Ace")
 
-print|card_grid[0][1].suit|
-expected.push|"Clubs"|
+print(card_grid[0][1].suit)
+expected.push("Clubs")
 card_grid[0][1].suit : "Hearts"
-print|card_grid[0][1].suit|
-expected.push|"Hearts"|
+print(card_grid[0][1].suit)
+expected.push("Hearts")
 
 ? Set some values (1 = X, 2 = O)
 grid[0][0]: 1  ? X in corner
@@ -66,33 +66,33 @@ grid[2][2]: 1  ? X in opposite corner
 grid[0][2]: 2  ? O blocks
 
 ? Verify the values
-print|grid[0][0]|
-expected.push|"1"|
-print|grid[1][1]|
-expected.push|"2"|
-print|grid[2][2]|
-expected.push|"1"|
-print|grid[0][2]|
-expected.push|"2"|
+print(grid[0][0])
+expected.push("1")
+print(grid[1][1])
+expected.push("2")
+print(grid[2][2])
+expected.push("1")
+print(grid[0][2])
+expected.push("2")
 
 ? Check unchanged values
-print|grid[0][1]|
-expected.push|"0"|
-print|grid[2][0]|
-expected.push|"0"|
+print(grid[0][1])
+expected.push("0")
+print(grid[2][0])
+expected.push("0")
 
 ? Calculate row sum (simple check)
 row_sum: grid[0][0] + grid[0][1] + grid[0][2]
-print|row_sum|
-expected.push|"3"|  ? 1 + 0 + 2
+print(row_sum)
+expected.push("3")  ? 1 + 0 + 2
 
 ? Test 2D array access with variables
 row_idx: 1
 col_idx: 2
 grid[row_idx][col_idx]: 7
 var_val: grid[row_idx][col_idx]
-print|var_val|
-expected.push|"7"|
+print(var_val)
+expected.push("7")
 
 ? Print expected values for test validation
-print|expected|
+print(expected)

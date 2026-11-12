@@ -12,7 +12,7 @@ struct Card:
 $
 
 @ add_card |db:array[Card], n:string, a:int| void:
-	db.push|Card{name: n, attack: a}|
+	db.push(Card{name: n, attack: a})
 $
 
 @ main ||:
@@ -20,12 +20,12 @@ $
 
 	db: array[Card] = []
 	loop i:0 to 100 do
-		db.push|Card{name: "Goblin", attack: 3}|
+		db.push(Card{name: "Goblin", attack: 3})
 	$
-	add_card|db, "Skeleton", 2|
+	add_card(db, "Skeleton", 2)
 	total: db.length
-	print|total|
-	expected.push|"101"|
+	print(total)
+	expected.push("101")
 
-	print|expected|
+	print(expected)
 $

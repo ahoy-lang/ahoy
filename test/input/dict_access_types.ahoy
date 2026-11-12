@@ -26,30 +26,30 @@ $
 	ratios: dict<string,float> = <"f": 0.5>
 
 	? a string entry reads back as a string
-	s: string = read_str|d|
-	print|s|
-	expected.push|"world"|
+	s: string = read_str(d)
+	print(s)
+	expected.push("world")
 
 	? and so does a direct read
 	direct: string = d<"k">
-	print|direct|
-	expected.push|"world"|
+	print(direct)
+	expected.push("world")
 
 	? an int entry reads back as an int
-	i: int = read_int|nums|
-	print|i|
-	expected.push|"42"|
+	i: int = read_int(nums)
+	print(i)
+	expected.push("42")
 
 	? a float entry reads back as a float
-	f: float = read_float|ratios|
-	print|f|
-	expected.push|"0.5"|
+	f: float = read_float(ratios)
+	print(f)
+	expected.push("0.5")
 
 	? an f-string formats the entry with its own type
 	key: string = "k"
 	text: string = f"inline={d<key>}"
-	print|text|
-	expected.push|"inline=world"|
+	print(text)
+	expected.push("inline=world")
 
-	print|expected|
+	print(expected)
 $

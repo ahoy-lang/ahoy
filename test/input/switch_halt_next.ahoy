@@ -13,24 +13,24 @@ program switch_halt_next
 				next
 			on 4:
 				tmp: "bye" + "!"
-				print|tmp|
-				expected.push|"bye!"|
+				print(tmp)
+				expected.push("bye!")
 				halt
 			_:
-				print|i|
-				expected.push|i|
+				print(i)
+				expected.push(i)
 		$
 	$
-	expected.push|"loop-done"|
-	print|"loop-done"|
+	expected.push("loop-done")
+	print("loop-done")
 
 	switch 9:
 		on 9:
-			print|"nine"|
-			expected.push|"nine"|
+			print("nine")
+			expected.push("nine")
 			halt
-			print|"unreached"|
-		_: print|"other"|
+			print("unreached")
+		_: print("other")
 	$
-	print|expected|
+	print(expected)
 $

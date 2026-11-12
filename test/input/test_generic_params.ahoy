@@ -15,28 +15,28 @@ $
 	return result
 $
 
-result1: add_ints|10, 20|
-print|result1|
-expected.push|"30"|
+result1: add_ints(10, 20)
+print(result1)
+expected.push("30")
 
-result2: multiply|5, 6|
-print|result2|
-expected.push|"30"|
+result2: multiply(5, 6)
+print(result2)
+expected.push("30")
 
-result3: add_floats|1.5, 2.5|
-print|result3|
-expected.push|"4"|
+result3: add_floats(1.5, 2.5)
+print(result3)
+expected.push("4")
 
-result4: add_floats|5.0, 10.0|
-print|result4|
-expected.push|"15"|
+result4: add_floats(5.0, 10.0)
+print(result4)
+expected.push("15")
 
-result5: add_ints|100, 200|
-print|result5|
-expected.push|"300"|
+result5: add_ints(100, 200)
+print(result5)
+expected.push("300")
 
-result6: multiply|10, 10|
-print|result6|
-expected.push|"100"|
+result6: multiply(10, 10)
+print(result6)
+expected.push("100")
 
-print|expected|
+print(expected)

@@ -11,6 +11,6 @@ program switch_arms
 $
 
 @ main ||:
-  a: pick|0|
-  print|a|
+  a: pick(0)
+  print(a)
 $

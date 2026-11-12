@@ -36,15 +36,15 @@ $
 			total = 42
 		$
 	$
-	print|total|
-	expected.push|"42"|
+	print(total)
+	expected.push("42")
 
 	? `is` on strings was pointer equality
 	name_a: "engine"
 	name_b: "engine"
 	if name_a is name_b then
-		print|"strings equal"|
-		expected.push|"strings equal"|
+		print("strings equal")
+		expected.push("strings equal")
 	$
 	other: "world"
 	names: array[string] = ["hello", other]
@@ -54,26 +54,26 @@ $
 			found = i
 		$
 	$
-	print|found|
-	expected.push|"1"|
+	print(found)
+	expected.push("1")
 
 	? a variable named like an enum member (rect) must win over the member:
 	? the generated code used to write shape_rect.x = ...
 	rect: 7
-	print|rect, shape.circle|
-	expected.push|"7 1"|
+	print(rect, shape.circle)
+	expected.push("7 1")
 
 	? struct type of a parameter
 	items: array[Item] = []
 	one: Item{kind: shape.rect, label: "box", value: 1}
 	two: Item{kind: shape.circle, label: "dot", value: 2}
-	items.push|one|
-	items.push|two|
-	count: bump_all|items, 10|
+	items.push(one)
+	items.push(two)
+	count: bump_all(items, 10)
 	first: items[0]
 	second: items[1]
-	print|count, first.value, second.value|
-	expected.push|"2 11 12"|
+	print(count, first.value, second.value)
+	expected.push("2 11 12")
 
-	print|expected|
+	print(expected)
 $

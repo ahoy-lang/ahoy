@@ -19,29 +19,29 @@ $
 
 	? a pointer field starts as null
 	h: Holder = Holder{name: "x", ext: null}
-	print|h.ext is null|
-	expected.push|"1"|
-	print|h.ext is not null|
-	expected.push|"0"|
+	print(h.ext is null)
+	expected.push("1")
+	print(h.ext is not null)
+	expected.push("0")
 
 	? assigning a live pointer flips both tests
 	e: Ext = Ext{a: 1.5, b: 2}
 	h.ext = &e
-	print|h.ext is null|
-	expected.push|"0"|
-	print|h.ext is not null|
-	expected.push|"1"|
+	print(h.ext is null)
+	expected.push("0")
+	print(h.ext is not null)
+	expected.push("1")
 
 	? pass + null is the early-exit shape (narrowing pins the rest).
 	? check itself is the feature; flow types stay as declared)
 	if h.ext is not null pass else return $
-	print|h.ext.a|
-	expected.push|"1.5"|
+	print(h.ext.a)
+	expected.push("1.5")
 
 	? clearing back to null
 	h.ext = null
-	print|h.ext is null|
-	expected.push|"1"|
+	print(h.ext is null)
+	expected.push("1")
 
-	print|expected|
+	print(expected)
 $

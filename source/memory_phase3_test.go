@@ -17,17 +17,17 @@ func loopProbeC(t *testing.T) string {
 	total: 0
 	loop i:0 to n do
 		s: "entity-" + "x"
-		parts: s.split|"-"|
+		parts: s.split("-")
 		arr: [i, i + 1, i + 2]
-		arr.push|i|
+		arr.push(i)
 		total = total + arr.length + parts.length
 	$
 	return total
 $
 
 @ main ||:
-	r: frame_work|200|
-	print|r|
+	r: frame_work(200)
+	print(r)
 $
 `
 	ast := ahoy.ParseWithPath(ahoy.Tokenize(src), "test.ahoy")
@@ -74,13 +74,13 @@ func TestLiteralIntoOwnedArrayDuplicates(t *testing.T) {
 	expected: []
 	current: array[string] = []
 	p: string = "a,b"
-	current = p.split|","|
+	current = p.split(",")
 	loop i:0 to 3 do
 		current = ["x", "y"]
 	$
-	print|current.length|
-	expected.push|"2"|
-	print|expected|
+	print(current.length)
+	expected.push("2")
+	print(expected)
 $
 `
 	ast := ahoy.ParseWithPath(ahoy.Tokenize(src), "test.ahoy")
@@ -100,19 +100,19 @@ func TestOwnedReadStoredIntoOuterVarDuplicates(t *testing.T) {
 @ main ||:
 	expected: []
 	body: "a#b c#d"
-	qsegs: array[string] = body.split|" "|
+	qsegs: array[string] = body.split(" ")
 	rebuilt: ""
 	loop i:0 to qsegs.length do
 		qpiece: qsegs[i]
 		if i % 2 is 0 then
-			hp: array[string] = qpiece.split|"#"|
+			hp: array[string] = qpiece.split("#")
 			qpiece = hp[0]
 		$
 		rebuilt = rebuilt + qpiece + ";"
 	$
-	print|rebuilt|
-	expected.push|"a;c#d;"|
-	print|expected|
+	print(rebuilt)
+	expected.push("a;c#d;")
+	print(expected)
 $
 `
 	ast := ahoy.ParseWithPath(ahoy.Tokenize(src), "test.ahoy")
@@ -142,7 +142,7 @@ $
 		s: "v" + "w"
 		c.text = s
 	$
-	print|c.text|
+	print(c.text)
 $
 `
 	ast := ahoy.ParseWithPath(ahoy.Tokenize(src), "test.ahoy")
@@ -156,7 +156,7 @@ $
 func TestMainOwnsRegionLifecycle(t *testing.T) {
 	src := `program p
 @ main ||:
-	print|"hi"|
+	print("hi")
 $
 `
 	ast := ahoy.ParseWithPath(ahoy.Tokenize(src), "test.ahoy")

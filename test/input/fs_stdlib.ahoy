@@ -9,159 +9,159 @@ program fs_stdlib
 	expected: []
 
 	? --- paths (pure string shaping) ---
-	j: path_join|"a", "b"|
-	print|j|
-	expected.push|"a/b"|
+	j: path_join("a", "b")
+	print(j)
+	expected.push("a/b")
 
-	jt: path_join|"a/", "b"|
-	print|jt|
-	expected.push|"a/b"|
+	jt: path_join("a/", "b")
+	print(jt)
+	expected.push("a/b")
 
-	pp: path_parent|"a/b/c"|
-	print|pp|
-	expected.push|"a/b"|
+	pp: path_parent("a/b/c")
+	print(pp)
+	expected.push("a/b")
 
-	proot: path_parent|"a"|
-	print|proot|
-	expected.push|"."|
+	proot: path_parent("a")
+	print(proot)
+	expected.push(".")
 
-	pn: path_name|"a/b/c.txt"|
-	print|pn|
-	expected.push|"c.txt"|
+	pn: path_name("a/b/c.txt")
+	print(pn)
+	expected.push("c.txt")
 
-	pnw: path_name|"C:\\x\\y.txt"|
-	print|pnw|
-	expected.push|"y.txt"|
+	pnw: path_name("C:\\x\\y.txt")
+	print(pnw)
+	expected.push("y.txt")
 
-	if path_ends_with|"foo.png", ".png"| then
-		print|"ends"
-		expected.push|"ends"|
+	if path_ends_with("foo.png", ".png") then
+		print("ends")
+		expected.push("ends")
 	$
-	if not path_ends_with|"foo.jpg", ".png"| then
-		print|"notends"
-		expected.push|"notends"|
+	if not path_ends_with("foo.jpg", ".png") then
+		print("notends")
+		expected.push("notends")
 	$
 
 	? --- case-insensitive substring ---
-	if "Hello World".contains_ci|"world"| then
-		print|"ci"
-		expected.push|"ci"|
+	if "Hello World".contains_ci("world") then
+		print("ci")
+		expected.push("ci")
 	$
-	if not "Hello".contains_ci|"zzz"| then
-		print|"cino"
-		expected.push|"cino"|
+	if not "Hello".contains_ci("zzz") then
+		print("cino")
+		expected.push("cino")
 	$
 
 	? --- filesystem, inside one scratch dir ---
-	here: cwd||
-	scrub: path_join|here, "__fixture_fs_stdlib"|
-	deep: path_join|scrub, "sub/deep"|
-	if fs_mkdirp|deep| then
-		print|"mkdirp"
-		expected.push|"mkdirp"|
+	here: cwd()
+	scrub: path_join(here, "__fixture_fs_stdlib")
+	deep: path_join(scrub, "sub/deep")
+	if fs_mkdirp(deep) then
+		print("mkdirp")
+		expected.push("mkdirp")
 	$
-	f1: path_join|deep, "note.txt"|
-	if fs_write|f1, "hello"| then
-		print|"write"
-		expected.push|"write"|
+	f1: path_join(deep, "note.txt")
+	if fs_write(f1, "hello") then
+		print("write")
+		expected.push("write")
 	$
-	body: fs_read_text|f1|
-	print|body|
-	expected.push|"hello"|
+	body: fs_read_text(f1)
+	print(body)
+	expected.push("hello")
 
-	mt: fs_mtime|f1|
+	mt: fs_mtime(f1)
 	if mt > 0 then
-		print|"mtime"
-		expected.push|"mtime"|
+		print("mtime")
+		expected.push("mtime")
 	$
-	if fs_exists|f1| then
-		print|"exists"
-		expected.push|"exists"|
+	if fs_exists(f1) then
+		print("exists")
+		expected.push("exists")
 	$
-	if fs_is_dir|scrub| then
-		print|"isdir"
-		expected.push|"isdir"|
+	if fs_is_dir(scrub) then
+		print("isdir")
+		expected.push("isdir")
 	$
-	if not fs_is_dir|f1| then
-		print|"notdir"
-		expected.push|"notdir"|
+	if not fs_is_dir(f1) then
+		print("notdir")
+		expected.push("notdir")
 	$
-	gone: path_join|scrub, "nope"|
-	if not fs_exists|gone| then
-		print|"missing"
-		expected.push|"missing"|
+	gone: path_join(scrub, "nope")
+	if not fs_exists(gone) then
+		print("missing")
+		expected.push("missing")
 	$
-	subd: path_join|scrub, "sub"|
-	kids: fs_list|subd|
-	if kids.has|"deep"| then
-		print|"hasdeep"
-		expected.push|"hasdeep"|
+	subd: path_join(scrub, "sub")
+	kids: fs_list(subd)
+	if kids.has("deep") then
+		print("hasdeep")
+		expected.push("hasdeep")
 	$
 	first: kids[0]
-	print|first|
-	expected.push|"deep"|
+	print(first)
+	expected.push("deep")
 
-	f2: path_join|scrub, "copy.txt"|
-	if fs_copy|f1, f2| then
-		print|"copy"
-		expected.push|"copy"|
+	f2: path_join(scrub, "copy.txt")
+	if fs_copy(f1, f2) then
+		print("copy")
+		expected.push("copy")
 	$
-	f3: path_join|scrub, "moved.txt"|
-	if fs_rename|f2, f3| then
-		print|"rename"
-		expected.push|"rename"|
+	f3: path_join(scrub, "moved.txt")
+	if fs_rename(f2, f3) then
+		print("rename")
+		expected.push("rename")
 	$
-	if fs_remove|f3| then
-		print|"rm1"
-		expected.push|"rm1"|
+	if fs_remove(f3) then
+		print("rm1")
+		expected.push("rm1")
 	$
-	if fs_remove|f1| then
-		print|"rm2"
-		expected.push|"rm2"|
+	if fs_remove(f1) then
+		print("rm2")
+		expected.push("rm2")
 	$
-	if fs_remove|deep| then
-		print|"rmdir1"
-		expected.push|"rmdir1"|
+	if fs_remove(deep) then
+		print("rmdir1")
+		expected.push("rmdir1")
 	$
-	if fs_remove|subd| then
-		print|"rmdir2"
-		expected.push|"rmdir2"|
+	if fs_remove(subd) then
+		print("rmdir2")
+		expected.push("rmdir2")
 	$
-	if fs_remove|scrub| then
-		print|"rmdir3"
-		expected.push|"rmdir3"|
+	if fs_remove(scrub) then
+		print("rmdir3")
+		expected.push("rmdir3")
 	$
 
 	? --- clock and place (shapes only; values vary by machine) ---
-	cs: clock_string||
-	print|cs.length|
-	expected.push|"8"|
-	ms: clock_ms||
+	cs: clock_string()
+	print(cs.length)
+	expected.push("8")
+	ms: clock_ms()
 	if ms >= 0.0 then
-		print|"ms"
-		expected.push|"ms"|
+		print("ms")
+		expected.push("ms")
 	$
 	if here.length > 0 then
-		print|"cwd"
-		expected.push|"cwd"|
+		print("cwd")
+		expected.push("cwd")
 	$
-	ed: exe_dir||
+	ed: exe_dir()
 	if ed.length >= 0 then
-		print|"exedir"
-		expected.push|"exedir"|
+		print("exedir")
+		expected.push("exedir")
 	$
 
 	? --- process probes (no spawning: non-positive pids only) ---
-	pa: pid_alive|-1|
+	pa: pid_alive(-1)
 	if not pa then
-		print|"noalive"
-		expected.push|"noalive"|
+		print("noalive")
+		expected.push("noalive")
 	$
-	pk: proc_kill|0|
+	pk: proc_kill(0)
 	if not pk then
-		print|"nokill"
-		expected.push|"nokill"|
+		print("nokill")
+		expected.push("nokill")
 	$
 
-	print|expected|
+	print(expected)
 $

@@ -6,45 +6,45 @@ $
 
 ? drain handler: reads the finished result and accumulates it
 @ collect |j:job, acc:array| void:
-	r: j.result||
-	acc.push|r|
+	r: j.result()
+	acc.push(r)
 $
 
 @ main ||:
 	expected: []
 
-	pool: pool = jobs|4|
+	pool: pool = jobs(4)
 
 	? submit five tasks, then drain finished ones without blocking
 	loop i:1 to 6 do
-		j: job = pool.submit|&square, i|
+		j: job = pool.submit(&square, i)
 	$
 	acc: []
 	got: 0
 	loop while got is not 5 do
-		got = got + pool.drain|&collect, acc|
+		got = got + pool.drain(&collect, acc)
 	$
-	total: acc.sum||
-	print|total|
-	expected.push|"55"|
+	total: acc.sum()
+	print(total)
+	expected.push("55")
 
 	? j.done|| polls without consuming; pool.wait consumes the job
-	jw: job = pool.submit|&square, 9|
-	loop while jw.done|| is not 1 do
+	jw: job = pool.submit(&square, 9)
+	loop while jw.done() is not 1 do
 	$
-	finished: jw.done||
-	print|finished|
-	expected.push|"1"|
-	w: pool.wait|jw|
-	print|w|
-	expected.push|"81"|
+	finished: jw.done()
+	print(finished)
+	expected.push("1")
+	w: pool.wait(jw)
+	print(w)
+	expected.push("81")
 
 	? the waited job was consumed, so drain hands out nothing
 	acc2: []
-	n2: pool.drain|&collect, acc2|
-	print|n2|
-	expected.push|"0"|
+	n2: pool.drain(&collect, acc2)
+	print(n2)
+	expected.push("0")
 
-	pool.stop||
-	print|expected|
+	pool.stop()
+	print(expected)
 $

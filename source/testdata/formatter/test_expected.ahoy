@@ -1,7 +1,7 @@
 ? # Test file with no indentation to test formatter
 
 greet :: |name:string|:
-    ahoy|"Hello, " + name|
+    ahoy("Hello, " + name)
 $ ? new end syntax
 
 add :: |a:int, b:int| int:
@@ -11,46 +11,46 @@ $
 
 check_positive :: |num:int|:
     if num > 0 then
-        ahoy|"Positive"|
+        ahoy("Positive")
    $
 $
 
 classify :: |num:int|:
-  if num > 0 then ahoy|"Positive"|
-  elif num < 0 then ahoy|"Negative"|
-  else ahoy|"Zero"|
+  if num > 0 then ahoy("Positive")
+  elif num < 0 then ahoy("Negative")
+  else ahoy("Zero")
   $
 $
 
 count :: |max:int|:
   loop i to max do
-      ahoy|i|
+      ahoy(i)
   $
 $
 
 test_switch :: |value:int|:
   switch value on
-      1: ahoy|"One"|
-      2: ahoy|"Two"|
-      3: ahoy|"Three"|
-      _: ahoy|"Other"|
+      1: ahoy("One")
+      2: ahoy("Two")
+      3: ahoy("Three")
+      _: ahoy("Other")
 	$
 $
 
 nested :: |x:int|:
 	if x > 0:
     loop i to x do
-      ahoy|i|
+      ahoy(i)
     $
   $
 $
 
 quick_check :: |value:int|:
-    if value > 0 then ahoy|"Positive"|
+    if value > 0 then ahoy("Positive")
 end
 
 quick_loop :: |max:int|:
-    loop i to max do ahoy|i|
+    loop i to max do ahoy(i)
 end
 
 enum Color:
@@ -73,9 +73,9 @@ struct Particle:
 end
 
 when DEBUG then
-    ahoy|"Debug mode"|
+    ahoy("Debug mode")
 end
 
-single_if_inline: if x > 0 then ahoy|x|
+single_if_inline: if x > 0 then ahoy(x)
 
-single_loop_inline: loop i to 10 do print|i|
+single_loop_inline: loop i to 10 do print(i)

@@ -6,15 +6,15 @@ program block_dedent_warning
 
 @ main ||:
 	expected: []
-	expected.push|"5"|
+	expected.push("5")
 
 	x: 5
 	if x is 99 then
 		y: x + 1
-		print|y|
+		print(y)
 	x = x + 10
-	print|x|
+	print(x)
 	$
-	print|x|
-	print|expected|
+	print(x)
+	print(expected)
 $

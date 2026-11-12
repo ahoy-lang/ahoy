@@ -2,61 +2,61 @@ expected: []
 ? Dictionaries test
 person: dict<string, string> =<"name": "Alice", "city": "NYC">
 name: person<"name">
-print|name| ? should print: Alice
-expected.push|"Alice"|
+print(name) ? should print: Alice
+expected.push("Alice")
 
 
 city: person<"city">
-print|city| ? should print: NYC
-expected.push|"NYC"|
+print(city) ? should print: NYC
+expected.push("NYC")
 
 
 ? check size of dict
 data: dict<string, string> = <"a": "first", "b": "second", "c": "third">
-size: data.size||
-print|size| ? should print: 3
-expected.push|"3"|
+size: data.size()
+print(size) ? should print: 3
+expected.push("3")
 
 ? the new dict syntax
 config: dict<string,string> = <"theme": "dark">
-has_theme: config.has|"theme"|
-print|has_theme| ? should print: 1 (true)
-expected.push|"1"|
+has_theme: config.has("theme")
+print(has_theme) ? should print: 1 (true)
+expected.push("1")
 
 ? new config variable to test has with different key
 config2: dict<string,string> = <"mode": "dark","tool":"shovel">
-has_mode: config2.has|"mode"|
-print|has_mode| ? should print: 1 (true)
-expected.push|"1"|
+has_mode: config2.has("mode")
+print(has_mode) ? should print: 1 (true)
+expected.push("1")
 
 ? check has key
-has_font: config2.has|"font"|
-print|has_font| ? should print: 0 (false)
-expected.push|"0"|
+has_font: config2.has("font")
+print(has_font) ? should print: 0 (false)
+expected.push("0")
 
 ? check has key using variable
 tool:string="tool"
-has_tool: config2.has|tool| ? should not have linting error tool func not found did you mean ahoy
+has_tool: config2.has(tool) ? should not have linting error tool func not found did you mean ahoy
 config2<"mode"> : "light"
 ? we should also make sure all array/dict functions can take in variables as args if they take args
-print|has_tool| ? should print: 1
-expected.push|"1"|
+print(has_tool) ? should print: 1
+expected.push("1")
 
 ? test adding new key-value pair:
 settings: dict<string, string> = <"mode": "dev">
 settings<"port">: "8080"
 port: settings<"port">
-print|port| ? should print: 8080
-expected.push|"8080"|
+print(port) ? should print: 8080
+expected.push("8080")
 
 ? Test dict iteration
 info: dict<string, string> = <"name": "PyLang", "version": "2">
 loop key, value in info do
-    print|f"Key: {key}, Value: {value}"|
+    print(f"Key: {key}, Value: {value}")
     ? hardcode expected values due to push variable issue
 $
-expected.push|"Key: name, Value: PyLang"|
-expected.push|"Key: version, Value: 2"|
+expected.push("Key: name, Value: PyLang")
+expected.push("Key: version, Value: 2")
 
 ? Print expected values for test validation
-print|expected|
+print(expected)

@@ -12,19 +12,19 @@ $
 
 @ main ||:
 	expected: []
-	expected.push|"5"|
-	expected.push|"5"|
-	expected.push|"7"|
-	expected.push|"10"|
+	expected.push("5")
+	expected.push("5")
+	expected.push("7")
+	expected.push("10")
 
 	a: NodeId = 5
-	print|a|
-	b: take_node|a|
-	print|b|
-	c: NodeId = NodeId|7|
-	print|c|
+	print(a)
+	b: take_node(a)
+	print(b)
+	c: NodeId = NodeId(7)
+	print(c)
 	d: NodeId = 9
-	d = NodeId|10|
-	print|d|
-	print|expected|
+	d = NodeId(10)
+	print(d)
+	print(expected)
 $

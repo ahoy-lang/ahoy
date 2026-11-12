@@ -18,11 +18,11 @@ func TestExplicitFreeDisposesOnce(t *testing.T) {
 	loop i:0 to 2 do
 		s: "a" + "b"
 		if s is not "" then
-			print|s|
+			print(s)
 		$
-		free|s|
+		free(s)
 	$
-	print|"done"|
+	print("done")
 $
 `
 	ast := ahoy.ParseWithPath(ahoy.Tokenize(src), "test.ahoy")
@@ -40,9 +40,9 @@ $
 func TestExplicitFreeUntrackedStaysRaw(t *testing.T) {
 	src := `program p
 @ main ||:
-	p: somecall||
-	free|p|
-	print|"done"|
+	p: somecall()
+	free(p)
+	print("done")
 $
 `
 	ast := ahoy.ParseWithPath(ahoy.Tokenize(src), "test.ahoy")

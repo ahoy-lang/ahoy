@@ -6,29 +6,29 @@ import "/home/lee/Documents/ahoy-lang/ahoy/repos/raylib/src/raylib.h"
 
 @ test ::|n:int| int,string:
 	y, x : 29,"test"
-	print|x,y|
+	print(x,y)
 	return 29,"jkjkl"
 $
 
 @ main :: ||:
-	init_window|480, 320, "Ahoy Hot Reload Demo"|
-	set_target_fps|60|
+	init_window(480, 320, "Ahoy Hot Reload Demo")
+	set_target_fps(60)
 
 	? >>> EDIT ME: background colour <<<
 	bg_color : color{r: 290, g: 60, b: 60, a: 255};
-	print|"BGCOLOR %d %d %d\n", bg_color.r, bg_color.g, bg_color.b|
+	print("BGCOLOR %d %d %d\n", bg_color.r, bg_color.g, bg_color.b)
 
 	frames: 0
 	x:10
-	y,_: test|9|
+	y,_: test(9)
 	loop till not window_should_close do
 		frames = frames + 1
 		begin_drawing
-		clear_background|bg_color|
-		draw_text|f"frames {frames}", 20, 20, 20, color{r: 255, g: 255, b: 255, a: 255}|
-		draw_rectangle|300,12,12,12,BLUE|
+		clear_background(bg_color)
+		draw_text(f"frames {frames}", 20, 20, 20, color{r: 255, g: 255, b: 255, a: 255})
+		draw_rectangle(300,12,12,12,BLUE)
 		if x is 10 then
-			p,_ : test|20|
+			p,_ : test(20)
 		$
 		end_drawing
 	$

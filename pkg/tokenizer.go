@@ -37,7 +37,7 @@ const (
 	TOKEN_WHILE // while (plain while-true loop; same AST as bare loop-while)
 	TOKEN_UNTIL // until (run-until loop; desugars to while-not)
 	TOKEN_FUNC
-	TOKEN_FN // fn (function type, e.g. fn(int)->int)
+ 	TOKEN_FN // fn|function type, e.g. fn|int(->int)
 	TOKEN_RETURN
 	TOKEN_IMPORT
 	TOKEN_PROGRAM       // program (package declaration)

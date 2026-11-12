@@ -32,10 +32,10 @@ $
 		if cur.sub is not "" then
 			label = cur.name + " (" + cur.sub + ")"
 		$
-		n: label.byte_len||
-		print|n|
+		n: label.byte_len()
+		print(n)
 	$
-	print|"done"|
+	print("done")
 $
 `
 	ast := ahoy.ParseWithPath(ahoy.Tokenize(src), "test.ahoy")
@@ -56,7 +56,7 @@ func TestOwnedReassignStillTracked(t *testing.T) {
 	loop i:0 to 5 do
 		s = "a" + "b"
 	$
-	print|s|
+	print(s)
 $
 `
 	ast := ahoy.ParseWithPath(ahoy.Tokenize(src), "test.ahoy")

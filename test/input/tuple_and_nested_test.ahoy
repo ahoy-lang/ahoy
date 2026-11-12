@@ -15,24 +15,24 @@ $
     ? Test 1: Tuple assignment without inline types
     pos: [10, 20]
     x, y: pos[0], pos[1]
-    print|x,y|
-    expected.push|"10 20"|
-    print|x.type,y.type|
-    expected.push|"int int"|
+    print(x,y)
+    expected.push("10 20")
+    print(x.type,y.type)
+    expected.push("int int")
 
 
     ? Test 2: Function call stored in variable (nested calls not allowed)
-    num: get_number||
-    print|num|
-    expected.push|"42"|
+    num: get_number()
+    print(num)
+    expected.push("42")
 
 
     ? Test 3: Multiple tuple assignments
     arr: [1, 2, 3, 4]
     a, b: arr[0], arr[1]
     c, d: arr[2], arr[3]
-    print|a,b,c,d|
-    expected.push|"1 2 3 4"|
+    print(a,b,c,d)
+    expected.push("1 2 3 4")
 
     ? Test 4: Tuple assignment
     grid: <>
@@ -41,13 +41,13 @@ $
 
 		loop key,pos in grid do
 		  pos_x, pos_y: pos[0], pos[1]
-			print|f"{pos_x},{pos_y}"|
+			print(f"{pos_x},{pos_y}")
 		$
-		expected.push|f"5,10"|
-		expected.push|f"15,20"|
+		expected.push(f"5,10")
+		expected.push(f"15,20")
 
 		my_vector : vector2{x:2,y:3}
-    print|my_vector|
-		expected.push|"vector2{x:2, y:3}"|
-		print|expected|
+    print(my_vector)
+		expected.push("vector2{x:2, y:3}")
+		print(expected)
 $

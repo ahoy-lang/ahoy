@@ -21,27 +21,27 @@ $
 	expected: []
 
 	? the allocator hands back a zeroed struct
-	e: Ext* = ahoy_alloc_Ext||
-	print|e.a|
-	expected.push|"0"|
+	e: Ext* = ahoy_alloc_Ext()
+	print(e.a)
+	expected.push("0")
 
 	? writing through the pointer
 	e.a = 1.5
 	e.b = 7
-	print|e.a|
-	expected.push|"1.5"|
-	print|e.b|
-	expected.push|"7"|
+	print(e.a)
+	expected.push("1.5")
+	print(e.b)
+	expected.push("7")
 
 	? a struct field holds the reference, and copies share it
 	h: Holder = Holder{name: "x", ext: e}
-	print|h.ext.b|
-	expected.push|"7"|
+	print(h.ext.b)
+	expected.push("7")
 
 	h2: Holder = h
 	h2.ext.b = 9
-	print|e.b|
-	expected.push|"9"|
+	print(e.b)
+	expected.push("9")
 
-	print|expected|
+	print(expected)
 $

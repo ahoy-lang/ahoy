@@ -28,7 +28,7 @@ func slotProbeC(t *testing.T) string {
 		v: "val_" + "y"
 		d<"nk"> = v
 	$
-	print|arr[0]|
+	print(arr[0])
 $
 `
 	ast := ahoy.ParseWithPath(ahoy.Tokenize(src), "test.ahoy")
@@ -67,7 +67,7 @@ func TestArrayElementStoreOfLiteralStaysRaw(t *testing.T) {
 @ main ||:
 	arr: array[string] = ["", ""]
 	arr[0] = "static"
-	print|arr[0]|
+	print(arr[0])
 $
 `
 	ast := ahoy.ParseWithPath(ahoy.Tokenize(src), "test.ahoy")

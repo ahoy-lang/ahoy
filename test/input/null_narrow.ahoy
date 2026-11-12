@@ -23,21 +23,21 @@ $
 	? checked deref is clean
 	if ep is not null pass else return $
 	v: ^ep
-	print|v.a|
-	expected.push|"1.5"|
+	print(v.a)
+	expected.push("1.5")
 
 	? in-arm narrowing is clean too
 	if ep is not null then
 		w: ^ep
-		print|w.b|
-		expected.push|"2"|
+		print(w.b)
+		expected.push("2")
 	$
 
 	? address-taken is never null, no check needed
 	p: &e
 	u: ^p
-	print|u.a|
-	expected.push|"1.5"|
+	print(u.a)
+	expected.push("1.5")
 
 	? unguarded deref of a maybe-null pointer warns (tolerated here;
 	? the warning is the pin: it must name the holder; the branch
@@ -46,8 +46,8 @@ $
 	do_it: false
 	if do_it then
 		nq: ^q
-		print|nq.a|
+		print(nq.a)
 	$
 
-	print|expected|
+	print(expected)
 $

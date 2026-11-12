@@ -307,7 +307,7 @@ func (p *Parser) parseConstantDeclaration() *ASTNode {
 	}
 }
 
-// Parse function declaration with @ prefix: @ name :: |params| type: body
+// Parse function declaration with @ prefix: @ name :: |params( type: body
 func (p *Parser) parseFunctionDeclaration() *ASTNode {
 	startLine := p.current().Line
 	p.expect(TOKEN_AT) // consume @
@@ -321,14 +321,14 @@ func (p *Parser) parseFunctionDeclaration() *ASTNode {
 	p.functionDepth++                    // Entering function definition
 	defer func() { p.functionDepth-- }() // Exiting function definition
 
-	// Go-style receiver: @ (recv Type) name |params| rettype:
+	// Go-style receiver: @ (recv Type) name )params( rettype:
 	if p.current().Type == TOKEN_LPAREN {
 		return p.parseMethodDeclaration()
 	}
 
 	name := p.expectDefName("function")
 
-	// Associated function: @ Type.name |params| rettype:
+	// Associated function: @ Type.name )params( rettype:
 	if p.current().Type == TOKEN_DOT {
 		return p.parseAssociatedDeclaration(name)
 	}
@@ -342,7 +342,7 @@ func (p *Parser) parseFunctionDeclaration() *ASTNode {
 	return result
 }
 
-// Parse function with :: syntax: name :: |params| type: body
+// Parse function with :: syntax: name :: )params( type: body
 // recvParam carries a Go-style receiver (@ (recv T) name), which becomes
 // parameter zero; method describes a method/associated definition and is
 // recorded on the AST node.
@@ -750,7 +750,7 @@ func (p *Parser) checkEarlyFunctionClose(funcName string, startLine, closeLine i
 
 // Parse tuple assignment (a, b : c, d) or tuple declaration (a, b = c, d)
 // parseTupleMemberType consumes one member type inside a tuple type list
-// (the :(t1, t2) in `a, b :(t1, t2) = f||`) and returns its full text,
+// (the :(t1, t2) in `a, b :(t1, t2) = f()`) and returns its full text,
 // including an optional balanced [...] group (array[int],
 // dict[string,int], buffer[f32], ...). Commas inside brackets do not split
 // the member list. Every branch advances, so no input can spin here: a
@@ -1965,7 +1965,7 @@ func (p *Parser) parseStructDeclaration() *ASTNode {
 
 					// Parse default value
 					if p.current().Type == TOKEN_AMPERSAND && p.peek(1).Type == TOKEN_IDENTIFIER {
-						// Function-reference default: on_tick: fn()->int = &tick
+						// Function-reference default: on_tick: fn||->int = &tick
 						ampLine := p.current().Line
 						p.advance() // &
 						fnName := p.current().Value
@@ -2368,4 +2368,4 @@ func (p *Parser) getStructFieldType(typeName, fieldName string) string {
 	return ""
 }
 
-// Parse member access chain (obj.prop or obj.method|| or StructType.#static_field)
+// Parse member access chain (obj.prop or obj.method() or StructType.#static_field)

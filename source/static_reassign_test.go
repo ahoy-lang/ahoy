@@ -19,10 +19,10 @@ func TestConditionalStaticOverOwned(t *testing.T) {
 		if i is 1 then
 			eye_name = "icon_eye_off"
 		$
-		n: eye_name.byte_len||
-		print|n|
+		n: eye_name.byte_len()
+		print(n)
 	$
-	print|"done"|
+	print("done")
 $
 `
 	ast := ahoy.ParseWithPath(ahoy.Tokenize(src), "test.ahoy")

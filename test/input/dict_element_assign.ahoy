@@ -14,45 +14,45 @@ program dict_element_assign
 	a: dict<string,string> = <"k": "old">
 	a<"k">: "colon"
 	s1: string = a<"k">
-	print|s1|
-	expected.push|"colon"|
+	print(s1)
+	expected.push("colon")
 
 	? the equals form
 	b: dict<string,string> = <"k": "old">
 	b<"k"> = "equals"
 	s2: string = b<"k">
-	print|s2|
-	expected.push|"equals"|
+	print(s2)
+	expected.push("equals")
 
 	? a variable key
 	c: dict<string,string> = <"k": "old">
 	key: string = "k"
 	c<key> = "byvar"
 	s3: string = c<key>
-	print|s3|
-	expected.push|"byvar"|
+	print(s3)
+	expected.push("byvar")
 
 	? a typed dict
 	n: dict<string,int> = <"n": 1>
 	n<"n"> = 42
 	s4: int = n<"n">
-	print|s4|
-	expected.push|"42"|
+	print(s4)
+	expected.push("42")
 
 	? a key that was not there yet
 	m: dict<string,string> = <"a": "1">
 	m<"b"> = "2"
 	s5: string = m<"b">
-	print|s5|
-	expected.push|"2"|
+	print(s5)
+	expected.push("2")
 
 	? a comparison is not an assignment
 	x: int = 1
 	y: int = 2
 	if x < y then
-		print|"lt ok"|
-		expected.push|"lt ok"|
+		print("lt ok")
+		expected.push("lt ok")
 	$
 
-	print|expected|
+	print(expected)
 $

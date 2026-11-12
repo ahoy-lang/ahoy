@@ -9,17 +9,17 @@ program reassign_array_loop
 	expected: []
 	current: array[string] = []
 	p: string = "a,b;c,d;e,f"
-	pairs: array[string] = p.split|";"|
+	pairs: array[string] = p.split(";")
 	loop i:0 to pairs.length do
-		kv: array[string] = pairs[i].split|"="|
-		current = kv[0].split|","|
+		kv: array[string] = pairs[i].split("=")
+		current = kv[0].split(",")
 	$
-	print|current.length|
-	expected.push|"2"|
+	print(current.length)
+	expected.push("2")
 	loop i:0 to 500 do
 		current = ["x", "y"]
 	$
-	print|current.length|
-	expected.push|"2"|
-	print|expected|
+	print(current.length)
+	expected.push("2")
+	print(expected)
 $

@@ -20,7 +20,7 @@ func generateForTest(t *testing.T, src string) string {
 }
 
 func TestFastFlagDropsBoundsChecks(t *testing.T) {
-	src := "program p\n@ main ||:\n\ta: array[int] = [1, 2]\n\tprint|a[0]|\n$\n"
+	src := "program p\n@ main ||:\n\ta: array[int] = [1, 2]\n\tprint(a[0])\n$\n"
 	base := generateForTest(t, src)
 	if !strings.Contains(base, "bounds violation") {
 		t.Fatalf("expected bounds check in default output")
@@ -38,7 +38,7 @@ func TestDoubleSpellingParses(t *testing.T) {
 	msgs := diagnosticsFor(`program p
 @ main ||:
 	d: double(5)
-	print|d|
+	print(d)
 $
 `)
 	wantNoError(t, msgs, "not declared")

@@ -14,27 +14,27 @@ $
 
 @ main ||:
 	expected: []
-	a: check|5|
-	print|a|
-	expected.push|"10"|
-	b: check|-3|
-	print|b|
-	expected.push|"-1"|
+	a: check(5)
+	print(a)
+	expected.push("10")
+	b: check(-3)
+	print(b)
+	expected.push("-1")
 
 	? null narrowing: a deref after the guard is clean
 	e: Ext = Ext{a: 1.5, b: 2}
 	ep: Ext* = &e
 	guard ep is not null else return $
 	v: ^ep
-	print|v.a|
-	expected.push|"1.5"|
+	print(v.a)
+	expected.push("1.5")
 
 	? empty-string guard picks the title
 	sdl: true
 	guard sdl else return $
 	title: "bell editor (sdl)"
-	print|title|
-	expected.push|"bell editor (sdl)"|
+	print(title)
+	expected.push("bell editor (sdl)")
 
 	? guard inside a loop: skip without nesting
 	total: 0
@@ -42,8 +42,8 @@ $
 		guard i > 1 else next $
 		total = total + i
 	$
-	print|total|
-	expected.push|"5"|
+	print(total)
+	expected.push("5")
 
 	? multi-line form: the else arm can be a block like any other
 	found: -1
@@ -53,8 +53,8 @@ $
 			halt
 		$
 	$
-	print|found|
-	expected.push|"7"|
+	print(found)
+	expected.push("7")
 
-	print|expected|
+	print(expected)
 $

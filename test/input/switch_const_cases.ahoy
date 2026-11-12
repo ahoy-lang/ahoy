@@ -17,17 +17,17 @@ $
 @ main ||:
 	expected: []
 
-	a: color_name|1|
-	print|a|
-	expected.push|"red"|
+	a: color_name(1)
+	print(a)
+	expected.push("red")
 
-	b: color_name|2|
-	print|b|
-	expected.push|"green"|
+	b: color_name(2)
+	print(b)
+	expected.push("green")
 
-	c: color_name|9|
-	print|c|
-	expected.push|"other"|
+	c: color_name(9)
+	print(c)
+	expected.push("other")
 
-	print|expected|
+	print(expected)
 $

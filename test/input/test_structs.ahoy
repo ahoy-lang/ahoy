@@ -42,19 +42,19 @@ player_information3 : player_info{deck_count:20, MAX_HAND:5}
 ? player_information.MAX_HAND : 10 ? COMMENTED: because MAX_HAND is not mutable(screaming snake), this would be a linting error.
 player_information.deck_count : 10 ? should change on this instance object only
 player_info.#hand_size : 7 ? this should change player_information and player_information2 hand_size because #hand_size is static (#) accross instances
-print|player_information|
-expected.push|"player_info{MAX_HAND:5, deck_count:10, selected_idx:-1, dragging:false, hover_row:-1, hover_col:-1, placed_count:0, hand_size:7}"|;
-print|player_information2|
-expected.push|"player_info{MAX_HAND:5, deck_count:15, selected_idx:-1, dragging:false, hover_row:-1, hover_col:-1, placed_count:0, hand_size:7}"|;
-print|player_information3|
-expected.push|"player_info{MAX_HAND:5, deck_count:20, selected_idx:-1, dragging:false, hover_row:-1, hover_col:-1, placed_count:0, hand_size:7}"|;
+print(player_information)
+expected.push("player_info{MAX_HAND:5, deck_count:10, selected_idx:-1, dragging:false, hover_row:-1, hover_col:-1, placed_count:0, hand_size:7}");
+print(player_information2)
+expected.push("player_info{MAX_HAND:5, deck_count:15, selected_idx:-1, dragging:false, hover_row:-1, hover_col:-1, placed_count:0, hand_size:7}");
+print(player_information3)
+expected.push("player_info{MAX_HAND:5, deck_count:20, selected_idx:-1, dragging:false, hover_row:-1, hover_col:-1, placed_count:0, hand_size:7}");
 
 new_card: Card{ id: 3, row: 1, col: 0, rotation: 45, owner: 0, image_idx: 0, health: 0, attack: 5 }
-print|new_card|
-expected.push|"Card{id:3, row:1, col:0, rotation:45, owner:0, image_idx:0, health:0, attack:5}"|
+print(new_card)
+expected.push("Card{id:3, row:1, col:0, rotation:45, owner:0, image_idx:0, health:0, attack:5}")
 
 assassin_card: Assassin{}
-print|assassin_card|
-expected.push|"Assassin{row:0, col:0, rotation:0, owner:0, id:1, image_idx:0, health:2, attack:2, image_path:\"my_image.png\", can_move:true}"|
+print(assassin_card)
+expected.push("Assassin{row:0, col:0, rotation:0, owner:0, id:1, image_idx:0, health:2, attack:2, image_path:\"my_image.png\", can_move:true}")
 
-print|expected|
+print(expected)

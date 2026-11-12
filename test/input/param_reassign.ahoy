@@ -11,12 +11,12 @@ $
 
 @ main ||:
 	expected: []
-	expected.push|"5"|
-	expected.push|"6"|
+	expected.push("5")
+	expected.push("6")
 
 	x: 5
-	y: bump|x|
-	print|x|
-	print|y|
-	print|expected|
+	y: bump(x)
+	print(x)
+	print(y)
+	print(expected)
 $

@@ -8,11 +8,11 @@ program leak_mixed_class_array
 
 	arr: [1, 2]
 	owned: "hello_" + "world"
-	arr.push|owned|
-	print|arr.length|
-	print|arr[2]|
-	expected.push|"3"|
-	expected.push|"hello_world"|
+	arr.push(owned)
+	print(arr.length)
+	print(arr[2])
+	expected.push("3")
+	expected.push("hello_world")
 
-	print|expected|
+	print(expected)
 $

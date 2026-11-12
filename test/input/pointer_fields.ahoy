@@ -24,23 +24,23 @@ $
 	h: Holder = Holder{name: "x", ext: &e}
 
 	? reading through the pointer
-	print|h.ext.a|
-	expected.push|"1.5"|
-	print|h.ext.b|
-	expected.push|"2"|
+	print(h.ext.a)
+	expected.push("1.5")
+	print(h.ext.b)
+	expected.push("2")
 
 	? a write through the pointer is shared
 	h.ext.a = 9.0
-	print|h.ext.a|
-	expected.push|"9"|
-	print|e.a|
-	expected.push|"9"|
+	print(h.ext.a)
+	expected.push("9")
+	print(e.a)
+	expected.push("9")
 
 	? copying the holder copies the reference, not the target
 	h2: Holder = h
 	h2.ext.b = 7
-	print|e.b|
-	expected.push|"7"|
+	print(e.b)
+	expected.push("7")
 
-	print|expected|
+	print(expected)
 $

@@ -6,11 +6,11 @@ program string_dup
 @ main ||:
 	expected: []
 	s: "hello"
-	t: s.dup||
-	print|t|
-	expected.push|"hello"|
+	t: s.dup()
+	print(t)
+	expected.push("hello")
 	u: t + "!"
-	print|u|
-	expected.push|"hello!"|
-	print|expected|
+	print(u)
+	expected.push("hello!")
+	print(expected)
 $

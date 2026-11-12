@@ -23,17 +23,17 @@ $
 @ main ||:
 	expected: []
 
-	a: pick|"a"|
-	print|a|
-	expected.push|"first-a"|
+	a: pick("a")
+	print(a)
+	expected.push("first-a")
 
-	b: check|3|
-	print|b|
-	expected.push|"Small"|
+	b: check(3)
+	print(b)
+	expected.push("Small")
 
-	c: check|9|
-	print|c|
-	expected.push|"Other"|
+	c: check(9)
+	print(c)
+	expected.push("Other")
 
-	print|expected|
+	print(expected)
 $

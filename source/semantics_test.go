@@ -79,7 +79,7 @@ $
 func TestUndefinedFunctionIsReported(t *testing.T) {
 	msgs := diagnosticsFor(`program p
 @ main ||:
-	undefined_func|1, 2|
+	undefined_func(1, 2)
 $
 `)
 	wantError(t, msgs, "Function 'undefined_func' is not defined")
@@ -88,8 +88,8 @@ $
 func TestFunctionDeclaredLaterIsNotReported(t *testing.T) {
 	msgs := diagnosticsFor(`program p
 @ main ||:
-	r: helper|1|
-	print|r|
+	r: helper(1)
+	print(r)
 $
 @ helper ::|a:int| int:
 	return a
@@ -99,18 +99,18 @@ $
 }
 
 func TestBuiltinsAndCastsAreNotReported(t *testing.T) {
-	// Note: a `string|..|` cast immediately after `name:` is ambiguous with a
+	// Note: a `string(..)` cast immediately after `name:` is ambiguous with a
 	// typed declaration (`name: string`), so it is not used here.
 	msgs := diagnosticsFor(`program p
 @ main ||:
 	items: [1, 2, 3]
-	ahoy |"hi"|
-	n: len|items|
-	i: int|"5"|
-	f: float|"1.5"|
-	items.push|4|
-	items.map|x: x * 2|
-	print|n, i, f|
+	ahoy ("hi")
+	n: len(items)
+	i: int("5")
+	f: float("1.5")
+	items.push(4)
+	items.map(x: x * 2)
+	print(n, i, f)
 $
 `)
 	wantNoError(t, msgs, "is not defined")
@@ -122,7 +122,7 @@ func TestArgumentCountIsReported(t *testing.T) {
 	return a + b
 $
 @ main ||:
-	r: add|1|
+	r: add(1)
 $
 `)
 	wantError(t, msgs, "Function 'add' expects 2 argument(s) but 1 given")
@@ -131,29 +131,29 @@ $
 func TestArgumentCountHonoursDefaults(t *testing.T) {
 	const prog = `program p
 @ greet ::|name:string, greeting:string="Hi"| void:
-	print|name|
+	print(name)
 $
 @ main ||:
 %s
 $
 `
-	ok := diagnosticsFor(strings.Replace(prog, "%s", `	greet|"a"|`, 1))
+	ok := diagnosticsFor(strings.Replace(prog, "%s", `	greet("a")`, 1))
 	wantNoError(t, ok, "expects")
 
-	ok2 := diagnosticsFor(strings.Replace(prog, "%s", `	greet|"a", "b"|`, 1))
+	ok2 := diagnosticsFor(strings.Replace(prog, "%s", `	greet("a", "b")`, 1))
 	wantNoError(t, ok2, "expects")
 
-	bad := diagnosticsFor(strings.Replace(prog, "%s", `	greet|"a", "b", "c"|`, 1))
+	bad := diagnosticsFor(strings.Replace(prog, "%s", `	greet("a", "b", "c")`, 1))
 	wantError(t, bad, "Function 'greet' expects 1 to 2 argument(s) but 3 given")
 }
 
 func TestUnknownNamedArgumentIsReported(t *testing.T) {
 	msgs := diagnosticsFor(`program p
 @ greet ::|name:string| void:
-	print|name|
+	print(name)
 $
 @ main ||:
-	greet|nope: "x"|
+	greet(nope: "x")
 $
 `)
 	wantError(t, msgs, "has no parameter named 'nope'")
@@ -162,10 +162,10 @@ $
 func TestKnownNamedArgumentIsNotReported(t *testing.T) {
 	msgs := diagnosticsFor(`program p
 @ greet ::|name:string, greeting:string="Hi"| void:
-	print|name|
+	print(name)
 $
 @ main ||:
-	greet|greeting: "yo"|
+	greet(greeting: "yo")
 $
 `)
 	wantNoError(t, msgs, "has no parameter named")
@@ -174,7 +174,7 @@ $
 func TestUndefinedVariableIsReported(t *testing.T) {
 	msgs := diagnosticsFor(`program p
 @ main ||:
-	print|nope|
+	print(nope)
 $
 `)
 	wantError(t, msgs, "Variable 'nope' is not declared")
@@ -193,9 +193,9 @@ $
 		total = total + n
 	$
 	loop i:0 to LIMIT do
-		total = total + helper|i|
+		total = total + helper(i)
 	$
-	print|total|
+	print(total)
 $
 `)
 	wantNoError(t, msgs, "is not declared")
@@ -207,7 +207,7 @@ func TestBlockScopedVariableIsReportedAfterBlock(t *testing.T) {
 	if true then
 		inner: 5
 	$
-	print|inner|
+	print(inner)
 $
 `)
 	wantError(t, msgs, "Variable 'inner' is not declared")
@@ -218,9 +218,9 @@ func TestLoopVariableIsReportedAfterLoop(t *testing.T) {
 @ main ||:
 	items: [1, 2]
 	loop n in items do
-		print|n|
+		print(n)
 	$
-	print|n|
+	print(n)
 $
 `)
 	wantError(t, msgs, "Variable 'n' is not declared")
@@ -235,7 +235,7 @@ func TestStringArithmeticIsReported(t *testing.T) {
 		`	a: [1] + [2]`,
 	}
 	for _, stmt := range cases {
-		msgs := diagnosticsFor("program p\n@ main ||:\n" + stmt + "\n\tprint|a|\n$\n")
+		msgs := diagnosticsFor("program p\n@ main ||:\n" + stmt + "\n\tprint(a)\n$\n")
 		wantError(t, msgs, "cannot be applied to")
 	}
 }
@@ -250,7 +250,7 @@ func TestNumericArithmeticIsNotReported(t *testing.T) {
 		`	a: 7 % 2`,
 	}
 	for _, stmt := range cases {
-		msgs := diagnosticsFor("program p\n@ main ||:\n" + stmt + "\n\tprint|a|\n$\n")
+		msgs := diagnosticsFor("program p\n@ main ||:\n" + stmt + "\n\tprint(a)\n$\n")
 		wantNoError(t, msgs, "cannot be applied to")
 	}
 }
@@ -260,8 +260,8 @@ func TestNumericArithmeticIsNotReported(t *testing.T) {
 func TestProgramNamesResolveAcrossFiles(t *testing.T) {
 	const mainSrc = `program p
 @ main ||:
-	r: helper|1|
-	print|r|
+	r: helper(1)
+	print(r)
 $
 `
 	// Without the program's names, the call looks undefined.
@@ -284,7 +284,7 @@ func TestIsNotIsAccepted(t *testing.T) {
 @ main ||:
 	x: 1
 	y: 2
-	if x is not y then print|"ne"| $
+	if x is not y then print("ne") $
 $
 `)
 	if len(msgs) != 0 {
@@ -297,7 +297,7 @@ func TestNotIsIsReported(t *testing.T) {
 @ main ||:
 	x: 1
 	y: 2
-	if x not is y then print|"ne"| $
+	if x not is y then print("ne") $
 $
 `)
 	wantError(t, msgs, "use 'is not' instead of 'not is'")
@@ -318,8 +318,8 @@ func TestNestedCallArgumentIsReported(t *testing.T) {
 	return n
 $
 @ main ||:
-	a: g|g|1||
-	print|a|
+	a: g(g(1))
+	print(a)
 $
 `)
 	wantError(t, msgs, "is not allowed as an argument")
@@ -330,12 +330,12 @@ $
 func TestCastArgumentIsNotReported(t *testing.T) {
 	msgs := diagnosticsFor(`program p
 @ take ::|n:int| void:
-	print|n|
+	print(n)
 $
 @ main ||:
 	v: 3
 	pct: 0.5
-	take|int(float(v) * pct)|
+	take(int(float(v) * pct))
 $
 `)
 	wantNoError(t, msgs, "is not allowed as an argument")
@@ -351,7 +351,7 @@ func TestMainConstantIsVisibleInFunctions(t *testing.T) {
 $
 @ main ||:
 	OFFSET: int = 4
-	print|helper||
+	print|helper()
 $
 `)
 	wantNoError(t, msgs, "is not declared")
@@ -359,7 +359,7 @@ $
 
 // ParseWithPath is the code-generation parser. A call with a bare identifier
 // argument used inside a larger expression used to panic there while linting
-// accepted it (`if g|v| then`, `g|v| + 1`).
+// accepted it (`if g|v| then`, `g(v) + 1`).
 func TestCallInExpressionParsesWithoutPanic(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -372,8 +372,8 @@ func TestCallInExpressionParsesWithoutPanic(t *testing.T) {
 $
 @ main ||:
 	v: 3
-	a: g|v| + 1
-	if g|v| > 2 then print|a| $
+	a: g(v) + 1
+	if g(v) > 2 then print(a) $
 $
 `), "test.ahoy")
 	if ast == nil {
@@ -387,8 +387,8 @@ func TestPartialMultiReturnIsWarned(t *testing.T) {
 	return n, "s"
 $
 @ main ||:
-	a: pair|1|
-	print|a|
+	a: pair(1)
+	print(a)
 $
 `)
 	warned := false
@@ -410,8 +410,8 @@ func TestFullMultiReturnIsNotWarned(t *testing.T) {
 	return n, "s"
 $
 @ main ||:
-	a, b : pair|1|
-	print|a, b|
+	a, b : pair(1)
+	print(a, b)
 $
 `)
 	for _, e := range errs {
@@ -427,7 +427,7 @@ func TestLoopVariableIsInScopeInCondition(t *testing.T) {
 	msgs := diagnosticsFor(`program p
 @ main ||:
 	loop i:0 while i < 5 do
-		print|i|
+		print(i)
 	$
 $
 `)
@@ -444,7 +444,7 @@ func TestBitwiseOnIntegersIsNotReported(t *testing.T) {
 		`	a: 16 shr 2`,
 	}
 	for _, stmt := range cases {
-		msgs := diagnosticsFor("program p\n@ main ||:\n" + stmt + "\n\tprint|a|\n$\n")
+		msgs := diagnosticsFor("program p\n@ main ||:\n" + stmt + "\n\tprint(a)\n$\n")
 		wantNoError(t, msgs, "requires integers")
 	}
 }
@@ -456,7 +456,7 @@ func TestBitwiseOnNonIntegerIsReported(t *testing.T) {
 		`	a: bnot 1.5`,
 	}
 	for _, stmt := range cases {
-		msgs := diagnosticsFor("program p\n@ main ||:\n" + stmt + "\n\tprint|a|\n$\n")
+		msgs := diagnosticsFor("program p\n@ main ||:\n" + stmt + "\n\tprint(a)\n$\n")
 		wantError(t, msgs, "requires")
 	}
 }
@@ -467,9 +467,9 @@ func TestFunctionTypedVariableIsCallable(t *testing.T) {
 	return x * 2
 $
 @ main ||:
-	f: fn(int)->int = &double_it
-	r: f|3|
-	print|r|
+	f: fn|int|->int = &double_it
+	r: f(3)
+	print(r)
 $
 `)
 	wantNoError(t, msgs, "is not defined")
@@ -480,12 +480,12 @@ func TestFunctionValueParameterIsCallable(t *testing.T) {
 @ double_it |x:int| int:
 	return x * 2
 $
-@ apply |f:fn(int)->int, v:int| int:
-	return f|v|
+@ apply |f:fn|int|->int, v:int| int:
+	return f(v)
 $
 @ main ||:
-	r: apply|&double_it, 3|
-	print|r|
+	r: apply(&double_it, 3)
+	print(r)
 $
 `)
 	wantNoError(t, msgs, "is not defined")
@@ -495,9 +495,9 @@ func TestLambdaCaptureIsResolved(t *testing.T) {
 	msgs := diagnosticsFor(`program p
 @ main ||:
 	base: 10
-	f: fn(int)->int = (x:int): x + base
-	r: f|1|
-	print|r|
+	f: fn|int|->int = (x:int): x + base
+	r: f(1)
+	print(r)
 $
 `)
 	wantNoError(t, msgs, "is not declared")
@@ -517,7 +517,7 @@ func TestLintSeesDirectoryImports(t *testing.T) {
 	if err := os.WriteFile(engineDir+"/engine.ahoy", []byte(engineSrc), 0644); err != nil {
 		t.Fatal(err)
 	}
-	mainSrc := "program p\nimport \"./engine\"\n@ main ||:\n\tr: engine_fn|1|\n\tprint|r|\n$\n"
+	mainSrc := "program p\nimport \"./engine\"\n@ main ||:\n\tr: engine_fn(1)\n\tprint(r)\n$\n"
 	mainPath := dir + "/main.ahoy"
 	if err := os.WriteFile(mainPath, []byte(mainSrc), 0644); err != nil {
 		t.Fatal(err)
@@ -576,7 +576,7 @@ func TestLintStillCatchesUndefinedAcrossImports(t *testing.T) {
 	if err := os.WriteFile(engineDir+"/engine.ahoy", []byte(engineSrc), 0644); err != nil {
 		t.Fatal(err)
 	}
-	mainSrc := "program p\nimport \"./engine\"\n@ main ||:\n\tr: missing_fn_xyz|1|\n\tprint|r|\n$\n"
+	mainSrc := "program p\nimport \"./engine\"\n@ main ||:\n\tr: missing_fn_xyz(1)\n\tprint(r)\n$\n"
 	mainPath := dir + "/main.ahoy"
 	if err := os.WriteFile(mainPath, []byte(mainSrc), 0644); err != nil {
 		t.Fatal(err)
@@ -645,10 +645,10 @@ $
 
 func TestUserMethodsValid(t *testing.T) {
 	src := methodsPrelude + `@ main || void:
-	p: Point.make|1.0, 2.0|
-	q: p.move|3.0, 4.0|
-	s: q.sum||
-	print|s|
+	p: Point.make(1.0, 2.0)
+	q: p.move(3.0, 4.0)
+	s: q.sum()
+	print(s)
 $
 `
 	wantNoError(t, diagnosticsFor(src), "method")
@@ -658,8 +658,8 @@ $
 func TestUserMethodsUnknown(t *testing.T) {
 	src := methodsPrelude + `@ main || void:
 	p: Point{x: 1.0, y: 2.0}
-	q: p.nudge|3.0|
-	print|q|
+	q: p.nudge(3.0)
+	print(q)
 $
 `
 	wantError(t, diagnosticsFor(src), "has no method 'nudge'")
@@ -668,8 +668,8 @@ $
 func TestUserMethodsArity(t *testing.T) {
 	src := methodsPrelude + `@ main || void:
 	p: Point{x: 1.0, y: 2.0}
-	q: p.move|3.0|
-	print|q|
+	q: p.move(3.0)
+	print(q)
 $
 `
 	wantError(t, diagnosticsFor(src), "expects 3 argument")
@@ -677,8 +677,8 @@ $
 
 func TestUserMethodsAssociatedUnknown(t *testing.T) {
 	src := methodsPrelude + `@ main || void:
-	p: Point.x|1.0|
-	print|p|
+	p: Point.x(1.0)
+	print(p)
 $
 `
 	wantError(t, diagnosticsFor(src), "has no associated function 'x'")
@@ -690,7 +690,7 @@ func TestUserMethodsDuplicate(t *testing.T) {
 $
 
 @ main || void:
-	print|"hi"|
+	print("hi")
 $
 `
 	wantError(t, diagnosticsFor(src), "Duplicate definition of 'Point.move'")
@@ -706,7 +706,7 @@ $
 $
 
 @ main || void:
-	print|"hi"|
+	print("hi")
 $
 `
 	wantError(t, diagnosticsFor(src), "Unknown type 'Nope'")
@@ -714,12 +714,12 @@ $
 
 func TestUserMethodsDynamicReceiverStaysPermissive(t *testing.T) {
 	src := `@ f |x| int:
-	q: x.nudge|3.0|
+	q: x.nudge(3.0)
 	return 1
 $
 
 @ main || void:
-	print|"hi"|
+	print("hi")
 $
 `
 	wantNoError(t, diagnosticsFor(src), "has no method")
@@ -730,8 +730,8 @@ func TestUserMethodsAcrossFiles(t *testing.T) {
 	mainSrc := `program eng
 @ main || void:
 	p: Point{x: 1.0, y: 2.0}
-	q: p.move|3.0, 4.0|
-	print|q|
+	q: p.move(3.0, 4.0)
+	print(q)
 $
 `
 	engineAST, _ := ahoy.ParseLintWithPath(ahoy.Tokenize(engineSrc), "engine.ahoy")
@@ -744,8 +744,8 @@ $
 	badSrc := `program eng
 @ main || void:
 	p: Point{x: 1.0, y: 2.0}
-	q: p.nudge|3.0|
-	print|q|
+	q: p.nudge(3.0)
+	print(q)
 $
 `
 	_, errs = ahoy.ParseLintWithPathInProgram(ahoy.Tokenize(badSrc), "main.ahoy",
@@ -754,8 +754,8 @@ $
 }
 
 const fnrefPrelude = `struct Renderer:
-	clear: fn(int,int,int)->int
-	draw: fn(int,int)->int
+	clear: fn|int,int,int|->int
+	draw: fn|int,int|->int
 	name: string
 $
 
@@ -771,7 +771,7 @@ $
 func TestFnRefMismatchInLiteral(t *testing.T) {
 	src := fnrefPrelude + `@ main || void:
 	s: Renderer{clear: &raylib_clear, draw: &sdl_draw, name: "sdl"}
-	print|s.name|
+	print(s.name)
 $
 `
 	warned := false
@@ -793,7 +793,7 @@ $
 
 @ main || void:
 	s: Renderer{clear: &raylib_clear, draw: &sdl_draw2, name: "sdl"}
-	print|s.name|
+	print(s.name)
 $
 `
 	wantNoError(t, diagnosticsFor(src), "Function reference")
@@ -802,7 +802,7 @@ $
 func TestFnRefMissingField(t *testing.T) {
 	src := fnrefPrelude + `@ main || void:
 	r: Renderer{clear: &raylib_clear, name: "raylib"}
-	print|r.name|
+	print(r.name)
 $
 `
 	wantError(t, diagnosticsFor(src), "missing function field 'draw'")
@@ -816,16 +816,16 @@ func TestLiteralUnknownFieldInferred(t *testing.T) {
 $
 
 @ main || void:
-	r: make||
-	print|r.name|
+	r: make()
+	print(r.name)
 $
 `
 	wantError(t, diagnosticsFor(src), "'badfield' does not exist in type 'Renderer'")
 }
 
 func TestFnRefArgMismatch(t *testing.T) {
-	src := `@ takes_cb |cb:fn(int,int)->int| int:
-	return cb|1, 2|
+	src := `@ takes_cb |cb:fn|int,int|->int| int:
+	return cb(1, 2)
 $
 
 @ one_arg |x:int| int:
@@ -833,8 +833,8 @@ $
 $
 
 @ main || void:
-	y: takes_cb|&one_arg|
-	print|y|
+	y: takes_cb(&one_arg)
+	print(y)
 $
 `
 	warned := false
@@ -850,13 +850,13 @@ $
 }
 
 func TestFnRefNeedsMoreArgs(t *testing.T) {
-	src := `@ takes_cb |cb:fn(int,int)->int| int:
-	return cb|1, 2|
+	src := `@ takes_cb |cb:fn|int,int|->int| int:
+	return cb(1, 2)
 $
 
 @ main || void:
-	y: takes_cb|&needs_two|
-	print|y|
+	y: takes_cb(&needs_two)
+	print(y)
 $
 
 @ needs_two |a:int, b:int, c:int| int:
@@ -867,17 +867,17 @@ $
 }
 
 func TestFnRefReturnMismatch(t *testing.T) {
-	src := `@ takes_cb |cb:fn(int)->int| int:
-	return cb|1|
+	src := `@ takes_cb |cb:fn|int|->int| int:
+	return cb(1)
 $
 
 @ no_ret |x:int| void:
-	print|x|
+	print(x)
 $
 
 @ main || void:
-	y: takes_cb|&no_ret|
-	print|y|
+	y: takes_cb(&no_ret)
+	print(y)
 $
 `
 	wantError(t, diagnosticsFor(src), "returns void but slot")
@@ -957,10 +957,10 @@ func TestTupleUnpackUsesDeclaredReturnTypes(t *testing.T) {
 $
 
 @ main || void:
-	ok, label := pair||
+	ok, label := pair()
 	if ok then
-		up: label.upper||
-		print|up|
+		up: label.upper()
+		print(up)
 	$
 $
 `
@@ -974,9 +974,9 @@ func TestSwitchCaseKeywordSuggestsOn(t *testing.T) {
 	x: 1
 	switch x:
 		case 1:
-			print|"one"|
+			print("one")
 		_:
-			print|"other"|
+			print("other")
 	$
 $
 `
@@ -990,9 +990,9 @@ func TestSwitchOnKeywordStillParses(t *testing.T) {
 	x: 1
 	switch x:
 		on 1:
-			print|"one"|
+			print("one")
 		_:
-			print|"other"|
+			print("other")
 	$
 $
 `
@@ -1006,9 +1006,9 @@ func TestStoreWarnPushHeap(t *testing.T) {
 	outer: []
 	loop i:0 to 10 do
 		inner: [i]
-		outer.push|inner|
+		outer.push(inner)
 	$
-	print|outer.length|
+	print(outer.length)
 $
 `
 	// Array push intentionally doesn't warn (elements may be static or
@@ -1026,7 +1026,7 @@ func TestStrictArrayElemMismatch(t *testing.T) {
 	src := `@ main || void:
 	strs: ["a", "b"]
 	n: int = strs[0]
-	print|n|
+	print(n)
 $
 `
 	warned := false
@@ -1045,7 +1045,7 @@ func TestStrictArrayElemMatchSilent(t *testing.T) {
 	strs: ["a", "b"]
 	s: string = strs[0]
 	u: strs[1]
-	print|s, u|
+	print(s, u)
 $
 `
 	for _, e := range allDiagnosticsFor(src) {
@@ -1060,7 +1060,7 @@ func TestStrictDivByZero(t *testing.T) {
 	src := `@ main || void:
 	x: 10
 	y: x / 0
-	print|y|
+	print(y)
 $
 `
 	warned := false
@@ -1078,7 +1078,7 @@ func TestStrictDivByZeroFloatSilent(t *testing.T) {
 	src := `@ main || void:
 	x: 10.0
 	y: x / 0.0
-	print|y|
+	print(y)
 $
 `
 	for _, e := range allDiagnosticsFor(src) {
@@ -1092,12 +1092,12 @@ func TestStoreNoWarnPushPrimitives(t *testing.T) {
 	src := `@ main || void:
 	outer: []
 	loop i:0 to 10 do
-		outer.push|i|
+		outer.push(i)
 	$
 	names: []
-	names.push|"hi"|
-	print|outer.length|
-	print|names.length|
+	names.push("hi")
+	print(outer.length)
+	print(names.length)
 $
 `
 	for _, e := range allDiagnosticsFor(src) {
@@ -1116,7 +1116,7 @@ $
 @ main || void:
 	n: Card{text: "", count: 0}
 	n.text = n.text + "!"
-	print|n.text|
+	print(n.text)
 $
 `
 	// Field/dict overwrites intentionally don't warn (autofree frees the
@@ -1139,7 +1139,7 @@ $
 	n: Card{text: "", count: 0}
 	n.text = "hello"
 	n.count = 5
-	print|n.text|
+	print(n.text)
 $
 `
 	for _, e := range allDiagnosticsFor(src) {
@@ -1152,8 +1152,8 @@ $
 func TestGuardGuardMustDiverge(t *testing.T) {
 	msgs := diagnosticsFor(`program p
 @ main ||:
-	guard true else print|"oops"|
-	print|"after"|
+	guard true else print("oops")
+	print("after")
 $
 `)
 	wantError(t, msgs, "must end in `return`, `halt` or `next`")
@@ -1162,8 +1162,8 @@ $
 func TestIfPassGuardMustDiverge(t *testing.T) {
 	msgs := diagnosticsFor(`program p
 @ main ||:
-	if true pass else print|"oops"|
-	print|"after"|
+	if true pass else print("oops")
+	print("after")
 $
 `)
 	wantError(t, msgs, "must end in `return`, `halt` or `next`")
@@ -1182,7 +1182,7 @@ $
 func TestGuardTakesNoThen(t *testing.T) {
 	msgs := diagnosticsFor(`program p
 @ main ||:
-	guard true then print|"x"|
+	guard true then print("x")
 $
 `)
 	wantError(t, msgs, "takes no `then`")
@@ -1191,7 +1191,7 @@ $
 func TestGuardTakesNoElif(t *testing.T) {
 	msgs := diagnosticsFor(`program p
 @ main ||:
-	guard true elif true then print|"x"| else print|"y"| $
+	guard true elif true then print("x") else print("y") $
 $
 `)
 	wantError(t, msgs, "takes no `elif`")
@@ -1212,8 +1212,8 @@ func TestGuardConditionCannotDeclare(t *testing.T) {
 	return v
 $
 @ main ||:
-	guard (user := get_user|1|) is not 0 else return $
-	print|"kept"|
+	guard (user := get_user(1)) is not 0 else return $
+	print("kept")
 $
 `)
 	wantError(t, msgs, "cannot declare or assign")
@@ -1225,8 +1225,8 @@ func TestGuardConditionCannotAssignType(t *testing.T) {
 	return v
 $
 @ main ||:
-	guard user:int = get_user|1| else return $
-	print|"kept"|
+	guard user:int = get_user(1) else return $
+	print("kept")
 $
 `)
 	wantError(t, msgs, "cannot declare or assign")
@@ -1238,7 +1238,7 @@ func TestIfConditionCannotDeclare(t *testing.T) {
 	return v
 $
 @ main ||:
-	if (user := get_user|1|) is not 0 then print|"kept"|
+	if (user := get_user(1)) is not 0 then print("kept")
 	$
 $
 `)
@@ -1248,13 +1248,13 @@ $
 func TestIfConditionSlicesAndCallsAreClean(t *testing.T) {
 	msgs := diagnosticsFor(`program p
 @ greet ::|name:string, greeting:string="Hi"| void:
-	print|name|
+	print(name)
 $
 @ main ||:
 	s: "hello"
-	if s[0:2] is "he" then print|"he"|
+	if s[0:2] is "he" then print("he")
 	$
-	greet|greeting: "yo"|
+	greet(greeting: "yo")
 $
 `)
 	wantNoError(t, msgs, "cannot declare or assign")
@@ -1265,7 +1265,7 @@ func TestGuardAssignInElseBodyIsGuardError(t *testing.T) {
 @ main ||:
 	v: 9.0
 	guard v >= 8.0 else v = 8.0 $
-	print|v|
+	print(v)
 $
 `)
 	wantError(t, msgs, "must end in `return`, `halt` or `next`")

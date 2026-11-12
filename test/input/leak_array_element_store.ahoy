@@ -12,12 +12,12 @@ program leak_array_element_store
 		s: "v" + "w"
 		arr[0] = s
 	$
-	print|arr[0]|
-	expected.push|"vw"|
+	print(arr[0])
+	expected.push("vw")
 
 	arr[0] = "static"
-	print|arr[0]|
-	expected.push|"static"|
+	print(arr[0])
+	expected.push("static")
 
-	print|expected|
+	print(expected)
 $

@@ -8,7 +8,7 @@ import (
 const syntaxOnlySrc = `program p
 
 @ main :: || void:
-	a: undefined_fn|1|
+	a: undefined_fn(1)
 $
 `
 
@@ -64,7 +64,7 @@ func closeErrors(errs []ParseError) []ParseError {
 // A missing inner '$' must report exactly one unclosed-block error naming
 // the innermost opener — not a cascade ending at the function line.
 func TestUnclosedBlockReportsInnermostOpener(t *testing.T) {
-	src := "program p\n\n@ main ||:\n\tloop i:0 to 3 do\n\t\tif i > 1 then\n\t\t\tprint|i|\n\t$\n"
+	src := "program p\n\n@ main ||:\n\tloop i:0 to 3 do\n\t\tif i > 1 then\n\t\t\tprint(i)\n\t$\n"
 	_, errs := ParseLintWithPath(Tokenize(src), "test.ahoy")
 	got := closeErrors(errs)
 	if len(got) != 1 {
@@ -81,7 +81,7 @@ func TestUnclosedBlockReportsInnermostOpener(t *testing.T) {
 // A function whose own '$' is missing (inners balanced) still blames the
 // function itself.
 func TestUnclosedFunctionStillReported(t *testing.T) {
-	src := "program p\n\n@ main ||:\n\tprint|1|\n"
+	src := "program p\n\n@ main ||:\n\tprint(1)\n"
 	_, errs := ParseLintWithPath(Tokenize(src), "test.ahoy")
 	got := closeErrors(errs)
 	if len(got) != 1 {
@@ -94,7 +94,7 @@ func TestUnclosedFunctionStillReported(t *testing.T) {
 
 // Balanced blocks report no unclosed-block errors.
 func TestBalancedBlocksReportNothing(t *testing.T) {
-	src := "program p\n\n@ main ||:\n\tprint|1|\n$\n"
+	src := "program p\n\n@ main ||:\n\tprint(1)\n$\n"
 	_, errs := ParseLintWithPath(Tokenize(src), "test.ahoy")
 	if got := closeErrors(errs); len(got) != 0 {
 		t.Fatalf("want no unclosed-block errors, got %v", got)

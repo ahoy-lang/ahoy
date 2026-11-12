@@ -7,13 +7,13 @@ program over_indent_warning
 
 @ main ||:
 	expected: []
-	expected.push|"15"|
+	expected.push("15")
 
 	x: 5
 	if x is 99 then
 		x = 99
 	$
 		x = x + 10
-	print|x|
-	print|expected|
+	print(x)
+	print(expected)
 $

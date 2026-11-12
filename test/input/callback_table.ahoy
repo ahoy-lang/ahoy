@@ -19,8 +19,8 @@ $
 $
 
 struct Renderer:
-	clear: fn(int,int,int)->int
-	draw:  fn(int,int)->int
+	clear: fn|int,int,int|->int
+	draw:  fn|int,int|->int
 	name:  string
 $
 
@@ -33,27 +33,27 @@ $
 $
 
 @ render_frame |r:Renderer, expected:array| void:
-	print|r.name|
-	expected.push|r.name|
+	print(r.name)
+	expected.push(r.name)
 
-	cleared: r.clear|0, 0, 0|
-	print|cleared|
-	expected.push|cleared|
+	cleared: r.clear(0, 0, 0)
+	print(cleared)
+	expected.push(cleared)
 
-	drawn: r.draw|10, 20|
-	print|drawn|
-	expected.push|drawn|
+	drawn: r.draw(10, 20)
+	print(drawn)
+	expected.push(drawn)
 $
 
 @ main ||:
 	expected: []
 
-	raylib: raylib_backend||
-	sdl: sdl_backend||
+	raylib: raylib_backend()
+	sdl: sdl_backend()
 
 	? the same engine code drives both backends
-	render_frame|raylib, expected|
-	render_frame|sdl, expected|
+	render_frame(raylib, expected)
+	render_frame(sdl, expected)
 
-	print|expected|
+	print(expected)
 $

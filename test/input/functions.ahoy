@@ -3,15 +3,15 @@ expected: []
 x:int= 5
 y: 10
 z: x + y
-print|z| ? should print: 15
-expected.push|"15"|;
+print(z) ? should print: 15
+expected.push("15");
 
 
 
 
-name, phone: multiple|"Alice", 1234567890|
-print|name,phone|
-expected.push|"Alice 1234567890"|
+name, phone: multiple("Alice", 1234567890)
+print(name,phone)
+expected.push("Alice 1234567890")
 
 @ multiple |name:string,phone:int| string,int:
 	return name, phone
@@ -21,51 +21,51 @@ $
 	return name, phone
 $
 
-name1, phone2 : multiple_infer|"Alice", 1234567890|
-print|name1,phone2|
-expected.push|"Alice 1234567890"|
+name1, phone2 : multiple_infer("Alice", 1234567890)
+print(name1,phone2)
+expected.push("Alice 1234567890")
 
 ? test_generics infer
 @ test_generics |name,phone,location:generic,postcode| string,int,string,int:
 	return name, phone,location,postcode
 $
 
-name, phone,location,postcode := test_generics|"Alice", 1234567890,"madrid",9220|
-print|name.type,phone.type,location.type,postcode.type|
-expected.push|"string int string int"|;
+name, phone,location,postcode := test_generics("Alice", 1234567890,"madrid",9220)
+print(name.type,phone.type,location.type,postcode.type)
+expected.push("string int string int");
 
 
 ? test_defer in function
 @ test_defer || void:
-	print|"no-defer1"|
-	defer print|"defer1"|
-	defer print|"defer2"|
-	defer print|"defer3"|
-	print|"no-defer2"|
+	print("no-defer1")
+	defer print("defer1")
+	defer print("defer2")
+	defer print("defer3")
+	print("no-defer2")
 $
-test_defer||
+test_defer()
 
-expected.push|"no-defer1"|
-expected.push|"no-defer2"|
-expected.push|"defer3"|
-expected.push|"defer2"|
-expected.push|"defer1"|
+expected.push("no-defer1")
+expected.push("no-defer2")
+expected.push("defer3")
+expected.push("defer2")
+expected.push("defer1")
 
 
 
 @ return_typed_dict_and_array || array[int],dict<string,int>:
   my_nums:array[int] = [1, 2, 3]
   my_dictionary:dict<string,int> = <"a": 1, "b": 2>
-  print|"Data processed"|
-  print|my_nums|
+  print("Data processed")
+  print(my_nums)
   return my_nums, my_dictionary
 $
 
-my_nums, my_dictionary := return_typed_dict_and_array||
-print|my_nums,my_dictionary|
-expected.push|"Data processed"|
-expected.push|"[1, 2, 3]"|
-expected.push|"[1, 2, 3] {\"a\": 1, \"b\": 2}"|
+my_nums, my_dictionary := return_typed_dict_and_array()
+print(my_nums,my_dictionary)
+expected.push("Data processed")
+expected.push("[1, 2, 3]")
+expected.push("[1, 2, 3] {\"a\": 1, \"b\": 2}")
 
 @ test_dictionary||dict<string,int>,dict<string,int>:
 	test_dict :dict<string,int> = <"a": 1, "b": 2>;
@@ -74,51 +74,51 @@ expected.push|"[1, 2, 3] {\"a\": 1, \"b\": 2}"|
 $
 ? Test typed parameters
 @ test_typed_params |arr:array[string], count:int|dict<string,int>,dict<string,int>:
-	new_dict,new_dict2: test_dictionary||;
+	new_dict,new_dict2: test_dictionary();
 	? defer free|new_dict|
 	? defer free|new_dict2|
 	? print|new_dict,new_dict2|
 	? defer free|new_dict2|
 	? test_dict: dict<string,int> = <"x": 10, "y": 20>
 	? defer free|test_dict|
-  print|arr[0]|
-  print|arr[1]|
-  print|count|
+  print(arr[0])
+  print(arr[1])
+  print(count)
   return new_dict,new_dict2
 $
 
 array_test:array[string]= ["hello", "world"]
-expected.push|"hello"|
-expected.push|"world"|
-expected.push|42|
-testi, testi2: test_typed_params|array_test, 42|
-print|testi,testi2|
-expected.push|"{\"a\": 1, \"b\": 2} {\"c\": 3, \"d\": 4}"|
+expected.push("hello")
+expected.push("world")
+expected.push(42)
+testi, testi2: test_typed_params(array_test, 42)
+print(testi,testi2)
+expected.push("{\"a\": 1, \"b\": 2} {\"c\": 3, \"d\": 4}")
 
 @ example_function |x:int,y:int,z:int| void:
-	print|x,y,z|
+	print(x,y,z)
 $
-expected.push|"10 20 30"|
+expected.push("10 20 30")
 ? multi line call of function should not give linting error
-example_function|
+example_function(
 x:10,
 y:20,
 z:30
-|
+)
 
 screen_height:1080
 screen_width:1920
 ? test param name same and arg name same so should become named argument
 @ implicit_named_args |screen_height:int,screen_width:int,expected| void:
-	print|screen_height, screen_width|
-	expected.push|f"1080 1920"|
+	print(screen_height, screen_width)
+	expected.push(f"1080 1920")
 $
 @ explicit_named_args |screen_height:int,screen_width:int,expected| void:
-	print|screen_height, screen_width|
-	expected.push|f"1080 1920"|
+	print(screen_height, screen_width)
+	expected.push(f"1080 1920")
 $
-explicit_named_args|screen_width:screen_width,expected:expected,screen_height:screen_height|
-implicit_named_args|screen_width,screen_height,expected|
+explicit_named_args(screen_width:screen_width,expected:expected,screen_height:screen_height)
+implicit_named_args(screen_width,screen_height,expected)
 
 ? Print expected values for test validation
-print|expected|
+print(expected)

@@ -28,7 +28,7 @@ func lintMessages(t *testing.T, src string) (*ahoy.ASTNode, []string) {
 }
 
 func TestWhenElseParsesTwoBranches(t *testing.T) {
-	ast, _ := lintMessages(t, "program p\n@ main ||:\n\twhen FOO then\n\t\tprint|\"a\"|\n\t$\n\telse\n\t\tprint|\"b\"|\n\t$\n$\n")
+	ast, _ := lintMessages(t, "program p\n@ main ||:\n\twhen FOO then\n\t\tprint(\"a\")\n\t$\n\telse\n\t\tprint(\"b\")\n\t$\n$\n")
 	var found []*ahoy.ASTNode
 	findWhenNodes(ast, &found)
 	if len(found) != 1 {
@@ -43,7 +43,7 @@ func TestWhenElseParsesTwoBranches(t *testing.T) {
 }
 
 func TestWhenWithoutElseParsesOneBranch(t *testing.T) {
-	ast, _ := lintMessages(t, "program p\n@ main ||:\n\twhen FOO then\n\t\tprint|\"a\"|\n\t$\n$\n")
+	ast, _ := lintMessages(t, "program p\n@ main ||:\n\twhen FOO then\n\t\tprint(\"a\")\n\t$\n$\n")
 	var found []*ahoy.ASTNode
 	findWhenNodes(ast, &found)
 	if len(found) != 1 {
@@ -55,7 +55,7 @@ func TestWhenWithoutElseParsesOneBranch(t *testing.T) {
 }
 
 func TestWhenElseReturnsSatisfyCoverage(t *testing.T) {
-	_, msgs := lintMessages(t, "program p\n@ pick || int:\n\twhen FOO then\n\t\treturn 1\n\t$\n\telse\n\t\treturn 2\n\t$\n$\n@ main ||:\n\tv: pick||\n\tprint|v|\n$\n")
+	_, msgs := lintMessages(t, "program p\n@ pick || int:\n\twhen FOO then\n\t\treturn 1\n\t$\n\telse\n\t\treturn 2\n\t$\n$\n@ main ||:\n\tv: pick()\n\tprint(v)\n$\n")
 	for _, m := range msgs {
 		if strings.Contains(m, "fall off") {
 			t.Errorf("when/else with returns in both branches must satisfy coverage, got: %q", m)
@@ -64,6 +64,6 @@ func TestWhenElseReturnsSatisfyCoverage(t *testing.T) {
 }
 
 func TestWhenWithoutElseStillNeedsTailReturn(t *testing.T) {
-	_, msgs := lintMessages(t, "program p\n@ pick || int:\n\twhen FOO then\n\t\treturn 1\n\t$\n$\n@ main ||:\n\tv: pick||\n\tprint|v|\n$\n")
+	_, msgs := lintMessages(t, "program p\n@ pick || int:\n\twhen FOO then\n\t\treturn 1\n\t$\n$\n@ main ||:\n\tv: pick()\n\tprint(v)\n$\n")
 	wantError(t, msgs, "fall off")
 }

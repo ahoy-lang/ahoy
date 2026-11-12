@@ -11,9 +11,9 @@ $
 	expected: []
 
 	pad: 6
-	total: add3|pad, 1, pad|
-	print|total|
-	expected.push|"13"|
+	total: add3(pad, 1, pad)
+	print(total)
+	expected.push("13")
 
-	print|expected|
+	print(expected)
 $

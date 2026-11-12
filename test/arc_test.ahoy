@@ -18,15 +18,15 @@ $
     team: Team = Team{leader: person, members: []}
     
     ? Print values
-    print|f"Person name: {person.name}, age: {person.age}"|
-    print|f"Leader name: {team.leader.name}"|
+    print(f"Person name: {person.name}, age: {person.age}")
+    print(f"Leader name: {team.leader.name}")
     
     ? When function exits, ARC will automatically call release
     ? on any heap-allocated objects due to auto-defer
 $
 
 @ main || void:
-    print|"Testing ARC with auto-defer"|
-    test_arc||
-    print|"ARC test completed - memory should be freed"|
+    print("Testing ARC with auto-defer")
+    test_arc()
+    print("ARC test completed - memory should be freed")
 $

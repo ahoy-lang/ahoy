@@ -11,14 +11,14 @@ program defer_scopes
 	expected: []
 
 	loop i:0 to 2 do
-		defer print|f"iter {i}"|
+		defer print(f"iter {i}")
 	$
 
 	if true then
 		x: 5
-		defer print|f"x={x}"|
+		defer print(f"x={x}")
 	$
 
-	expected.push|"iter 0", "iter 1", "x=5"|
-	print|expected|
+	expected.push("iter 0", "iter 1", "x=5")
+	print(expected)
 $

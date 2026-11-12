@@ -7,7 +7,7 @@ program switch_case_heap
 	switch k:
 		on 1:
 			colw: array[float] = []
-			colw.push|1.5|
+			colw.push(1.5)
 			return "one"
 		_: return "other"
 	$
@@ -17,7 +17,7 @@ $
 	out: int = switch k:
 		on 1:
 			colw: array[float] = []
-			colw.push|2.5|
+			colw.push(2.5)
 			7
 		_: 0
 	$
@@ -45,37 +45,37 @@ $
 @ main ||:
 	expected: []
 
-	a: stmt_pick|1|
-	print|a|
-	expected.push|"one"|
+	a: stmt_pick(1)
+	print(a)
+	expected.push("one")
 
-	b: stmt_pick|9|
-	print|b|
-	expected.push|"other"|
+	b: stmt_pick(9)
+	print(b)
+	expected.push("other")
 
-	c: expr_pick|1|
-	print|c|
-	expected.push|"7"|
+	c: expr_pick(1)
+	print(c)
+	expected.push("7")
 
-	d: expr_pick|9|
-	print|d|
-	expected.push|"0"|
+	d: expr_pick(9)
+	print(d)
+	expected.push("0")
 
-	e: str_pick|"a"|
-	print|e|
-	expected.push|"xy"|
+	e: str_pick("a")
+	print(e)
+	expected.push("xy")
 
-	f: str_pick|"q"|
-	print|f|
-	expected.push|"z"|
+	f: str_pick("q")
+	print(f)
+	expected.push("z")
 
-	g: range_pick|3|
-	print|g|
-	expected.push|"low!"|
+	g: range_pick(3)
+	print(g)
+	expected.push("low!")
 
-	h: range_pick|9|
-	print|h|
-	expected.push|"high"|
+	h: range_pick(9)
+	print(h)
+	expected.push("high")
 
-	print|expected|
+	print(expected)
 $

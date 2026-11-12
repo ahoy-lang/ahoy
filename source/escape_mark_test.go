@@ -24,18 +24,18 @@ func TestFreshCopyOperandsNotMarkedEscaping(t *testing.T) {
 $
 
 @ main ||:
-	a: string = mk||
-	b: string = mk||
+	a: string = mk()
+	b: string = mk()
 	c: string = "seed"
 	c = a + b
 	d: string = f"v-{a}"
-	e: string = a.dup||
-	f: string = mk||
-	f = mk|| + e
-	print|c|
-	print|d|
-	print|e|
-	print|f|
+	e: string = a.dup()
+	f: string = mk()
+	f = mk() + e
+	print(c)
+	print(d)
+	print(e)
+	print(f)
 $
 `
 	out := compileAhoy(t, src)
@@ -64,11 +64,11 @@ func TestPlainAliasStillMarksEscaping(t *testing.T) {
 $
 
 @ main ||:
-	a: string = mk||
+	a: string = mk()
 	c: string = "seed"
 	c = a
-	print|c|
-	print|a|
+	print(c)
+	print(a)
 $
 `
 	out := compileAhoy(t, src)
@@ -94,7 +94,7 @@ func TestSelfRefReassignEvaluatesBeforeFree(t *testing.T) {
 		qpiece: string = "x"
 		rebuilt = rebuilt + qpiece
 	$
-	print|rebuilt|
+	print(rebuilt)
 $
 `
 	out := compileAhoy(t, src)
@@ -132,7 +132,7 @@ func TestNestedConcatMiddleTempFreed(t *testing.T) {
 	b: string = "x"
 	c: string = "y"
 	d: string = "(" + a + " " + b + c + ")"
-	print|d|
+	print(d)
 $
 `
 	out := compileAhoy(t, src)

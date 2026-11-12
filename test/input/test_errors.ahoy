@@ -2,5 +2,5 @@ program test_errors
 
 ? Valid: declare variable
 z: 10
-print|z|
-print|["10"]|
+print(z)
+print(["10"])

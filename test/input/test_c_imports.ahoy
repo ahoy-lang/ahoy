@@ -3,20 +3,20 @@ import "./example_header.h"
 
 
 @ my_func ||:
-	print|"my_func called"|
+	print("my_func called")
 $
 
 @ main ||:
 	expected: []
 
-	my_func||
-	expected.push|"my_func called"|
+	my_func()
+	expected.push("my_func called")
 	position :Vector2= Vector2{x: 10.0, y: 20.0}
 	my_color :Color= Color{r: 255, g: 0, b: 0, a: 255}
 	x_val :float= position.x
 	y_val :float= position.y
 	r_val :int= my_color.r
-	print|x_val,y_val,r_val|
-	expected.push|"10 20 255"|
-	print|expected|
+	print(x_val,y_val,r_val)
+	expected.push("10 20 255")
+	print(expected)
 $

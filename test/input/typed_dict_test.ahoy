@@ -5,13 +5,13 @@ expected: []
 
 ? Test dict<type,type>= syntax (fixed tokenizer issue)
 person: dict<string, string>= <"name": "Alice", "city": "NYC">
-print|person|
-expected.push|"{\"name\": \"Alice\", \"city\": \"NYC\"}"|
+print(person)
+expected.push("{\"name\": \"Alice\", \"city\": \"NYC\"}")
 
 ? Test typed array (already working)
 names: array[string]= ["hello", "world"]
-print|names|
-expected.push|"[\"hello\", \"world\"]"|
+print(names)
+expected.push("[\"hello\", \"world\"]")
 
 ? Print expected values for test validation
-print|expected|
+print(expected)

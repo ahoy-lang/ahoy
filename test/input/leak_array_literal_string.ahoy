@@ -13,8 +13,8 @@ program leak_array_literal_string
 		a: array[string] = [f"a-{i}", f"b-{i}"]
 		total = total + a.length
 	$
-	print|total|
-	expected.push|"1000"|
+	print(total)
+	expected.push("1000")
 
-	print|expected|
+	print(expected)
 $

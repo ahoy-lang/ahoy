@@ -7,8 +7,8 @@ import "strings"
 //
 // A method function is an ordinary NODE_FUNCTION node whose Value is the
 // mangled global name (MangleMethodName) and whose Method marker describes the
-// method view. Calls use the existing dot-pipe syntax (recv.m|args|) and lower
-// to a plain call with the receiver prepended: Type_m|recv, args|.
+// method view. Calls use the existing dot-pipe syntax (recv.m(args)) and lower
+// to a plain call with the receiver prepended: Type_m(recv, args).
 
 // MethodInfo describes a user-defined method (@ (recv T) name) or an associated
 // function (@ T.name).

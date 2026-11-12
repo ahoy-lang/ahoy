@@ -10,8 +10,8 @@ program leak_dict_strings
 	loop i:0 to 5 do
 		d<"nk"> = "val_" + "x"
 	$
-	print|d.length|
-	expected.push|"2"|
+	print(d.length)
+	expected.push("2")
 
-	print|expected|
+	print(expected)
 $

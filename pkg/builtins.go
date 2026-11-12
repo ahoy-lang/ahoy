@@ -11,10 +11,10 @@ package ahoy
 // really callable costs a missed diagnostic, whereas a name that is missing
 // here turns working code into a build failure.
 
-// builtinCallNames may be used as a bare call: name|args|
+// builtinCallNames may be used as a bare call: name(args)
 var builtinCallNames = map[string]bool{}
 
-// builtinMethodNames may be used with method syntax: value.name|args|
+// builtinMethodNames may be used with method syntax: value.name(args)
 var builtinMethodNames = map[string]bool{}
 
 func init() {
@@ -46,21 +46,21 @@ func init() {
 		"errno", "errno_str",
 		// wall-clock formatting (strftime wrapper; complements clock_string)
 		"time_format",
-		// flat POD buffer constructor: buffer|n| -> buffer[f32]
+		// flat POD buffer constructor: buffer(n) -> buffer[f32]
 		"buffer",
-		// int-lane buffer constructor: buffer_int|n| -> buffer[int]
+		// int-lane buffer constructor: buffer_int(n) -> buffer[int]
 		"buffer_int",
-		// buffer growth (realloc-copy): grow|buf, n| -> same buffer type
+		// buffer growth (realloc-copy): grow(buf, n) -> same buffer type
 		"grow",
-		// verified-load serialization (flat values): to_bytes|buf|,
-		// from_bytes|bytes|, from_bytes_int|bytes|, from_bytes_ok|bytes|
+		// verified-load serialization (flat values): to_bytes(buf),
+		// from_bytes(bytes), from_bytes_int(bytes), from_bytes_ok(bytes)
 		"to_bytes", "from_bytes", "from_bytes_int", "from_bytes_ok",
 	} {
 		builtinCallNames[name] = true
 		builtinMethodNames[name] = true
 	}
 
-	// Job pool methods: p.submit|fn, arg|, p.wait|job|, p.stop||
+	// Job pool methods: p.submit(fn, arg), p.wait(job), p.stop()
 	for _, name := range []string{"submit", "wait", "stop"} {
 		builtinMethodNames[name] = true
 	}

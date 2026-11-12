@@ -15,7 +15,7 @@ $
 		s: "v" + "w"
 		c.text = s
 	$
-	print|c.text|
-	expected.push|"vw"|
-	print|expected|
+	print(c.text)
+	expected.push("vw")
+	print(expected)
 $

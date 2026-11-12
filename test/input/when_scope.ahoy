@@ -11,21 +11,21 @@ program when_scope
 
 	when DEBUG then
 		message: "debug run"
-		print|message|
+		print(message)
 		value: 1 + 1
 		if value is 2 then
-			print|"math still works"|
+			print("math still works")
 		$
 	$
 
 	when NEVER_DEFINED then
 		frame: 0
 		frame = frame + 1
-		print|frame|
+		print(frame)
 	$
 
-	print|"release path"|
-	expected.push|"release path"|
+	print("release path")
+	expected.push("release path")
 
-	print|expected|
+	print(expected)
 $

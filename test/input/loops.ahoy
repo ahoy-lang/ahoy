@@ -2,165 +2,165 @@ expected: []
 ? Loops test
 arr: [1, 2, 3]
 loop item in arr do
-    print|item| ? should print: 1, 2, 3
+    print(item) ? should print: 1, 2, 3
 $
 ? hardcode because of push variable issue
-expected.push|"1"|
-expected.push|"2"|
-expected.push|"3"|
+expected.push("1")
+expected.push("2")
+expected.push("3")
 
 numbers: [10, 20, 30, 40];
 
 loop num in numbers do
-  ahoy|num| ? should print: 10, 20 (then halt)
+  ahoy(num) ? should print: 10, 20 (then halt)
   if num is 20 then
 			halt
   $
 $
 ? print|num| ? num is out of scope here
-expected.push|"10"|
-expected.push|"20"|
+expected.push("10")
+expected.push("20")
 
 values: [1, 2, 3, 4]
 loop val in values do
     if val is 2 then
         next
     $
-    print|val| ? should print: 1, 3, 4 (skips 2)
+    print(val) ? should print: 1, 3, 4 (skips 2)
 $
-expected.push|"1"|
-expected.push|"3"|
-expected.push|"4"|
+expected.push("1")
+expected.push("3")
+expected.push("4")
 
 ? Loop range from 0 to 5
-loop i:0 to 5 do print|f"Count {i}"| $
-expected.push|"Count 0"|
-expected.push|"Count 1"|
-expected.push|"Count 2"|
-expected.push|"Count 3"|
-expected.push|"Count 4"|
+loop i:0 to 5 do print(f"Count {i}") $
+expected.push("Count 0")
+expected.push("Count 1")
+expected.push("Count 2")
+expected.push("Count 3")
+expected.push("Count 4")
 
 ? Loop range from 0 to 5
-loop i:5 to 10+1 do print|f"Count {i}"|$
-expected.push|"Count 5"|
-expected.push|"Count 6"|
-expected.push|"Count 7"|
-expected.push|"Count 8"|
-expected.push|"Count 9"|
-expected.push|"Count 10"|
+loop i:5 to 10+1 do print(f"Count {i}")$
+expected.push("Count 5")
+expected.push("Count 6")
+expected.push("Count 7")
+expected.push("Count 8")
+expected.push("Count 9")
+expected.push("Count 10")
 
 i:3
-if i < 10 then print|"Less than 10"|$
-expected.push|"Less than 10"|;
+if i < 10 then print("Less than 10")$
+expected.push("Less than 10");
 
 ? Loop conditional with word operators
-loop i:0 while i < 5 do print|f"Value: {i}"|$
-expected.push|"Value: 0"|
-expected.push|"Value: 1"|
-expected.push|"Value: 2"|
-expected.push|"Value: 3"|
-expected.push|"Value: 4"|
+loop i:0 while i < 5 do print(f"Value: {i}")$
+expected.push("Value: 0")
+expected.push("Value: 1")
+expected.push("Value: 2")
+expected.push("Value: 3")
+expected.push("Value: 4")
 
 ? Loop conditional with symbol operators
 number:2
 loop while number <= 5 do
-    ahoy|f"Count {number}"|
+    ahoy(f"Count {number}")
     number= number + 1
 $
-expected.push|"Count 2"|
-expected.push|"Count 3"|
-expected.push|"Count 4"|
-expected.push|"Count 5"|
+expected.push("Count 2")
+expected.push("Count 3")
+expected.push("Count 4")
+expected.push("Count 5")
 
 values= [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 loop val:0 to values.length do
-    print|f"Value: {val}"|
+    print(f"Value: {val}")
 $
-expected.push|"Value: 0"|
-expected.push|"Value: 1"|
-expected.push|"Value: 2"|
-expected.push|"Value: 3"|
-expected.push|"Value: 4"|
-expected.push|"Value: 5"|
-expected.push|"Value: 6"|
-expected.push|"Value: 7"|
-expected.push|"Value: 8"|
-expected.push|"Value: 9"|
+expected.push("Value: 0")
+expected.push("Value: 1")
+expected.push("Value: 2")
+expected.push("Value: 3")
+expected.push("Value: 4")
+expected.push("Value: 5")
+expected.push("Value: 6")
+expected.push("Value: 7")
+expected.push("Value: 8")
+expected.push("Value: 9")
 
 ? Loop forever with explicit counter: loop i:0 do (bare loop i: was removed).
 
 ? Alternative syntax (also works)
 loop i:0 while i < 5 do
-    ahoy|f"Count {i}"|
+    ahoy(f"Count {i}")
 $
-expected.push|"Count 0"|
-expected.push|"Count 1"|
-expected.push|"Count 2"|
-expected.push|"Count 3"|
-expected.push|"Count 4"|
+expected.push("Count 0")
+expected.push("Count 1")
+expected.push("Count 2")
+expected.push("Count 3")
+expected.push("Count 4")
 
 ? Alternative syntax (also works)
 loop i:0 while i < 2 do
-  ahoy|f"Count {i}"|
+  ahoy(f"Count {i}")
 $
-expected.push|"Count 0"|
-expected.push|"Count 1"|
+expected.push("Count 0")
+expected.push("Count 1")
 
 ? Array iteration
 values= [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 loop val in values do
-    print|f"Value: {val}"|
+    print(f"Value: {val}")
 $
-expected.push|"Value: 0"|
-expected.push|"Value: 1"|
-expected.push|"Value: 2"|
-expected.push|"Value: 3"|
-expected.push|"Value: 4"|
-expected.push|"Value: 5"|
-expected.push|"Value: 6"|
-expected.push|"Value: 7"|
-expected.push|"Value: 8"|
-expected.push|"Value: 9"|
+expected.push("Value: 0")
+expected.push("Value: 1")
+expected.push("Value: 2")
+expected.push("Value: 3")
+expected.push("Value: 4")
+expected.push("Value: 5")
+expected.push("Value: 6")
+expected.push("Value: 7")
+expected.push("Value: 8")
+expected.push("Value: 9")
 
 ? Dictionary Iteration
 config: {"name":"Ahoy", "version":"1.0", "active":"yes"}
 loop key,val in config do
-  print|f"Key: {key}, Value: {val}"|
+  print(f"Key: {key}, Value: {val}")
 $
-expected.push|"Key: active, Value: yes"|
-expected.push|"Key: name, Value: Ahoy"|
-expected.push|"Key: version, Value: 1.0"|
+expected.push("Key: active, Value: yes")
+expected.push("Key: name, Value: Ahoy")
+expected.push("Key: version, Value: 1.0")
 
 my_numbers: [10, 20, 30]
 loop n:0 to my_numbers.length do
   my_numbers[n] +=1
 $
-print|my_numbers|
-expected.push|"[11, 21, 31]"|
+print(my_numbers)
+expected.push("[11, 21, 31]")
 
 i=0
 loop while i <= 5 do
-    ahoy|f"Count {i}"|
+    ahoy(f"Count {i}")
     i+=1
 $
-expected.push|"Count 0"|
-expected.push|"Count 1"|
-expected.push|"Count 2"|
-expected.push|"Count 3"|
-expected.push|"Count 4"|
-expected.push|"Count 5"|
+expected.push("Count 0")
+expected.push("Count 1")
+expected.push("Count 2")
+expected.push("Count 3")
+expected.push("Count 4")
+expected.push("Count 5")
 
 i=0
 loop while i >= -5 do
-    ahoy|f"Count {i}"|
+    ahoy(f"Count {i}")
     i-=1
 $
-expected.push|"Count 0"|
-expected.push|"Count -1"|
-expected.push|"Count -2"|
-expected.push|"Count -3"|
-expected.push|"Count -4"|
-expected.push|"Count -5"|
+expected.push("Count 0")
+expected.push("Count -1")
+expected.push("Count -2")
+expected.push("Count -3")
+expected.push("Count -4")
+expected.push("Count -5")
 
 ? Print expected values for test validation
-print|expected|
+print(expected)

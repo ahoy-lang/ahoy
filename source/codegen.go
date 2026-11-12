@@ -140,7 +140,7 @@ func toCFuncName(name string) string {
 type StructField struct {
 	Name         string
 	Type         string // C type after mapType
-	AhoyType     string // Ahoy-level type before mapType, e.g. fn(int)->int
+	AhoyType     string // Ahoy-level type before mapType, e.g. fn|int|->int
 	DefaultValue string // C code for default value (if any)
 	IsStatic     bool   // Static field (shared across instances)
 	IsConst      bool   // Const field (SCREAMING_SNAKE_CASE - immutable)
@@ -4806,7 +4806,7 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 // generateTestCondition emits a boolean-test expression. Bool-typed calls
 // in test position go through a bool temporary: some C compilers misread
 // an indirect external _Bool call tested directly (high garbage bits), so
-// `if fn()|` could read true while `t: fn()| then if t` reads correctly.
+// `if fn()` could read true while `t: fn() then if t` reads correctly.
 // The 1-byte store+reload of the temporary narrows to the true low byte.
 // Only bool-typed calls are rewritten (an int condition like `if f()` keeps
 // full-width truthiness); `not`/`and`/`or` recurse so each tested call is
@@ -8645,7 +8645,7 @@ func (gen *CodeGenerator) generateImportStatement(node *ahoy.ASTNode) {
 // temporary variables, and returns the replacement argument list.
 //
 // Print-style formatting reads each argument's inferred type and writes it out
-// as a simple expression. A nested call is not one: print|len|items|| would
+// as a simple expression. A nested call is not one: print(len(items)) would
 // otherwise emit the bare identifier 'len'. Storing the result first means the
 // temporary is an ordinary variable of the call's return type, so every
 // existing type branch - scalars, arrays, dicts, structs - keeps working.
@@ -8716,7 +8716,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 		gen.generateCallbackTypedefCall(node, td)
 		return
 	}
-	// A variable of function type (fn(int)->int) is called indirectly.
+	// A variable of function type (fn|int|->int) is called indirectly.
 	if ft, ok := gen.functionValueType(node.Value); ok {
 		gen.generateIndirectCall(node, ft)
 		return
@@ -8735,7 +8735,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 	// Convert C library functions to their original names
 	funcName := node.Value
 
-	// Pooled structs: free|x| on a known Ahoy struct pointer releases to
+	// Pooled structs: free(x) on a known Ahoy struct pointer releases to
 	// the slab pool instead of malloc-free (same single ownership, memory
 	// recycled). Unknown, C and non-pointer types keep plain free.
 	if funcName == "free" && len(node.Children) == 1 {
@@ -8746,7 +8746,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 			gen.output.WriteString(")")
 			return
 		}
-		// Explicit early disposal: free|s| on a tracked string local frees
+		// Explicit early disposal: free(s) on a tracked string local frees
 		// it now and releases ownership, so scope exit and early returns
 		// must not free it again (Bell live-sync discard path). The slot
 		// is nulled so even map-blind paths skip it. Untracked (C and
@@ -9673,7 +9673,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 		gen.output.WriteString("))")
 
 	case "buffer":
-		// buffer|n| allocates a zeroed buffer[f32] of length n: one
+		// buffer(n) allocates a zeroed buffer[f32] of length n: one
 		// flexible allocation (struct + data), length stored up front.
 		gen.output.WriteString("({ int __n = ")
 		if len(node.Children) > 0 {
@@ -9684,7 +9684,7 @@ func (gen *CodeGenerator) generateCall(node *ahoy.ASTNode) {
 		gen.output.WriteString("; if (__n < 0) __n = 0; AhoyBufferF32* __b = calloc(1, sizeof(AhoyBufferF32) + (size_t)__n * sizeof(float)); __b->length = __n; __b; })")
 
 	case "buffer_int":
-		// buffer_int|n| allocates a zeroed buffer[int] of length n: the
+		// buffer_int(n) allocates a zeroed buffer[int] of length n: the
 		// int lane (int32 storage) for counts, grids and lookup tables.
 		gen.output.WriteString("({ int __n = ")
 		if len(node.Children) > 0 {
@@ -16087,7 +16087,7 @@ func (gen *CodeGenerator) generateDefaultValue(node *ahoy.ASTNode) string {
 
 	switch node.Type {
 	case ahoy.NODE_UNARY_OP:
-		// Function-reference default: on_tick: fn()->int = &tick
+		// Function-reference default: on_tick: fn||->int = &tick
 		if node.Value == "&" && len(node.Children) == 1 && node.Children[0].Type == ahoy.NODE_IDENTIFIER {
 			name := node.Children[0].Value
 			if gen.userFunctions[name] {
@@ -20019,7 +20019,7 @@ func (gen *CodeGenerator) jobResultExpr(callExpr, jobName string) string {
 
 // emitJobRun writes a v2 multi-argument job (S3 7.4):
 //
-//	p.run|fn, a0, a1, a2, a3|        runs fn(env, a0..a3, job) on the pool
+//	p.run(fn, a0, a1, a2, a3)        runs fn(env, a0..a3, job) on the pool
 //
 // The task's own signature is the argument list without the job handle; a
 // generated thunk adapts it to the runtime ABI (intptr_t arguments, result
@@ -20105,7 +20105,7 @@ func (gen *CodeGenerator) taskSignatureMulti(task *ahoy.ASTNode) ([]string, stri
 }
 
 // emitJobRunThunk writes the adapter that turns a task of Ahoy signature
-// fn(T0..Tn) -> R into the runtime's void fn(env, a0..a3, job*) ABI: it
+// fn|T0..Tn|->R into the runtime's void fn(env, a0..a3, job*) ABI: it
 // bit-casts double arguments back, calls the task, and stores the result in
 // the job slot for the runtime to stage.
 func (gen *CodeGenerator) emitJobRunThunk(task *ahoy.ASTNode, argTypes []string, retType string) {

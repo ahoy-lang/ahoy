@@ -29,7 +29,7 @@ func FnRequiredParams(sig *FunctionSignature) int {
 
 // CheckFnRefAgainstSlot validates a &name function reference against the fn
 // type of the slot it flows into. sig describes the referenced function;
-// slotFnType is the expected `fn(...)...->...` string; slotDesc names the
+// slotFnType is the expected `fn|...|...->...` string; slotDesc names the
 // slot for messages ("field 'draw'").
 //
 // It returns ("", "") when compatible, else (severity, message) with severity
