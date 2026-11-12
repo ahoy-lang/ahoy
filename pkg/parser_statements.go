@@ -333,12 +333,17 @@ func (p *Parser) parseFunction() *ASTNode {
 		if p.current().Type == TOKEN_INDENT {
 			p.advance()
 		}
+		entryUnclosedErrors := p.unclosedBlockErrors
 		body = p.parseBlock()
 
 		// Consume 'end' keyword for multi-line functions
 		if p.current().Type == TOKEN_END {
 			p.advance()
+		} else if p.unclosedBlockErrors > entryUnclosedErrors {
+			// An inner block already reported the unclosed region;
+			// stay silent instead of blaming the function line.
 		} else {
+			p.unclosedBlockErrors++
 			errMsg := fmt.Sprintf("Expected '$' to close function at line %d", p.current().Line)
 			if p.LintMode {
 				p.recordError(errMsg)
@@ -988,6 +993,9 @@ func (p *Parser) isEnumMemberName(name string) bool {
 
 func (p *Parser) parseSwitchStatement() *ASTNode {
 	startLine := p.current().Line
+	// If an inner block reports the unclosed region first, the switch
+	// frame stays silent instead of piling on with its own opener.
+	entryUnclosedErrors := p.unclosedBlockErrors
 	p.expect(TOKEN_SWITCH)
 	expr := p.parseExpression()
 
@@ -1451,7 +1459,12 @@ func (p *Parser) parseSwitchStatement() *ASTNode {
 	}
 	if p.current().Type == TOKEN_END {
 		p.advance()
+	} else if p.unclosedBlockErrors > entryUnclosedErrors {
+		// An inner block already reported the unclosed region (its frame
+		// hit EOF first and named its own opener); stay silent instead
+		// of blaming the switch line.
 	} else {
+		p.unclosedBlockErrors++
 		errMsg := fmt.Sprintf("Expected '$' to close switch statement at line %d", startLine)
 		if p.LintMode {
 			p.recordError(errMsg)

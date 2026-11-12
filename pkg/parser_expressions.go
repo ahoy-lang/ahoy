@@ -1411,6 +1411,9 @@ func (p *Parser) parseBlockUntilEnd(constructName string, startLine int) *ASTNod
 
 	// Remember the depth when entering - if it decreases, a nested $#N closed us
 	entryDepth := p.blockDepth
+	// Remember the unclosed-block error count: if it grew by the time we
+	// hit EOF, an inner frame already named the unclosed region.
+	entryUnclosedErrors := p.unclosedBlockErrors
 
 	maxIterations := 10000 // Safety limit to prevent infinite loops
 	iterations := 0
@@ -1561,6 +1564,15 @@ func (p *Parser) parseBlockUntilEnd(constructName string, startLine int) *ASTNod
 			}
 		}
 	} else {
+		// EOF with this block still open. If an inner block already
+		// reported the unclosed region (its frame hit EOF first and
+		// named its own opener), stay silent: every ancestor piling on
+		// with its own opener only buries the true site, which is
+		// always the innermost report.
+		if p.unclosedBlockErrors > entryUnclosedErrors {
+			return block
+		}
+		p.unclosedBlockErrors++
 		errMsg := fmt.Sprintf("Expected '$' to close %s at line %d", constructName, startLine)
 		if p.LintMode {
 			p.recordErrorAtLine(errMsg, startLine)

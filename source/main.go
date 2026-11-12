@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
@@ -158,6 +160,77 @@ func findCompiler(releaseMode bool, debugMode bool, executablePath string) (stri
 	default:
 		return "", nil, false, fmt.Errorf("unsupported OS '%s' - no bundled TCC available and no system compiler found\nInstall gcc or clang for your platform", runtime.GOOS)
 	}
+}
+
+// findSeaCompiler locates (or builds) the ahoy-sea C compiler (ccompiler)
+// for `-sea` builds. Search order:
+//  1. $SEA_BIN env var (explicit override)
+//  2. ccompiler next to this executable
+//  3. ccompiler on PATH
+//  4. Auto-build from the sea source repo (exe-relative, cwd-relative,
+//     or ~/Documents/ahoy-lang/ahoy-sea-compiler) into the user cache dir.
+func findSeaCompiler() (string, error) {
+	if p := os.Getenv("SEA_BIN"); p != "" {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+		return "", fmt.Errorf("SEA_BIN=%s not found", p)
+	}
+	if exe, err := os.Executable(); err == nil {
+		cand := filepath.Join(filepath.Dir(exe), "ccompiler")
+		if _, err := os.Stat(cand); err == nil {
+			return cand, nil
+		}
+	}
+	if p, err := exec.LookPath("ccompiler"); err == nil {
+		return p, nil
+	}
+	// Auto-build from source.
+	goBin, lookErr := exec.LookPath("go")
+	var repoDirs []string
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		repoDirs = append(repoDirs,
+			filepath.Join(dir, "..", "ahoy-sea-compiler"),
+			filepath.Join(dir, "..", "..", "ahoy-sea-compiler"),
+		)
+	}
+	repoDirs = append(repoDirs,
+		".."+string(filepath.Separator)+"ahoy-sea-compiler",
+		".."+string(filepath.Separator)+".."+string(filepath.Separator)+"ahoy-sea-compiler",
+	)
+	if homeDir, err := os.UserHomeDir(); err == nil {
+		repoDirs = append(repoDirs, filepath.Join(homeDir, "Documents", "ahoy-lang", "ahoy-sea-compiler"))
+	}
+	for _, repoDir := range repoDirs {
+		modPath := filepath.Join(repoDir, "go.mod")
+		if _, err := os.Stat(modPath); err != nil {
+			continue
+		}
+		if lookErr != nil {
+			return "", fmt.Errorf("sea compiler source found at %s but `go` is not on PATH to build it", repoDir)
+		}
+		cacheDir, err := os.UserCacheDir()
+		if err != nil {
+			return "", fmt.Errorf("cannot find cache directory for sea compiler build: %w", err)
+		}
+		destDir := filepath.Join(cacheDir, "ahoy", "sea")
+		if err := os.MkdirAll(destDir, 0755); err != nil {
+			return "", err
+		}
+		dest := filepath.Join(destDir, "ccompiler")
+		if _, err := os.Stat(dest); err == nil {
+			return dest, nil
+		}
+		fmt.Printf("Building sea compiler from %s ...\n", repoDir)
+		cmd := exec.Command(goBin, "build", "-o", dest, ".")
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("building sea compiler: %w\n%s", err, out)
+		}
+		return dest, nil
+	}
+	return "", fmt.Errorf("sea compiler (ccompiler) not found.\nBuild it with:\n  (cd ~/Documents/ahoy-lang/ahoy-sea-compiler && go build -o ~/.local/bin/ccompiler .)\nOr set SEA_BIN=/path/to/ccompiler")
 }
 
 // CrossCompileTarget represents a target platform for cross-compilation
@@ -1156,6 +1229,7 @@ func main() {
 	// Define CLI flags
 	fileFlag := flag.String("f", "", "Input .ahoy source file")
 	runFlag := flag.Bool("r", false, "Run the compiled C program after compilation")
+	seaFlag := flag.Bool("sea", false, "Compile the generated C with the ahoy-sea compiler (instead of tcc) for speed comparison")
 	formatFlag := flag.Bool("format", false, "Format the source file")
 	lintFlag := flag.Bool("lint", false, "Run linter to check for errors without compiling")
 	releaseFlag := flag.Bool("release", false, "Use optimizing compiler (gcc/clang) for release build")
@@ -1766,6 +1840,183 @@ func main() {
 		cCompileStart := time.Now()
 
 		// Find the appropriate C compiler
+		if *seaFlag {
+			// Sea path: compile the generated C with the ahoy-sea
+			// compiler (for speed comparison against tcc). Self-contained
+			// so the tcc/gcc path below is untouched. Sea takes one TU,
+			// so unity-build like tcc does.
+			seaBin, serr := findSeaCompiler()
+			if serr != nil {
+				fmt.Printf("Error: %v\n", serr)
+				os.Exit(1)
+			}
+			cSources := []string{outputFile}
+			{
+				extra := []string{}
+				for fname := range files {
+					if fname != "main.c" && strings.HasSuffix(fname, ".c") {
+						extra = append(extra, filepath.Join(outputDir, fname))
+					}
+				}
+				sort.Strings(extra) // deterministic unity order (see below)
+				cSources = append(cSources, extra...)
+			}
+			combined := filepath.Join(outputDir, baseName+"_unity.c")
+			var buf strings.Builder
+			seenInc := make(map[string]bool)
+			for _, cf := range cSources {
+				data, _ := os.ReadFile(cf)
+				for _, line := range strings.Split(string(data), "\n") {
+					tl := strings.TrimSpace(line)
+					if strings.HasPrefix(tl, "#include") {
+						if seenInc[tl] { continue }
+						seenInc[tl] = true
+					}
+					buf.WriteString(line)
+					buf.WriteString("\n")
+				}
+				buf.WriteString("\n")
+			}
+			os.WriteFile(combined, []byte(buf.String()), 0644)
+			// Content-addressed build cache: when the generated input
+			// is byte-identical to a previous run, reuse its executable
+			// (the whole Sea C-compilation step, including its link,
+			// is skipped). Keyed on the unity file plus the chosen
+			// backend, so edits always miss. Off with AHOY_SEA_NOCACHE.
+			cacheKey := ""
+			if cacheready, cerr := os.UserCacheDir(); cerr == nil && os.Getenv("AHOY_SEA_NOCACHE") == "" {
+				if data, rerr := os.ReadFile(combined); rerr == nil {
+					h := sha1.Sum(data)
+					mode := "default"
+					if os.Getenv("AHOY_SEA_SP") != "0" {
+						mode = "spass"
+					}
+					cacheKey = fmt.Sprintf("%s-%s", hex.EncodeToString(h[:8]), mode)
+					_ = cacheready
+				}
+			}
+			if cacheKey != "" {
+				cacheDir, _ := os.UserCacheDir()
+				cachedExe := filepath.Join(cacheDir, "ahoy", "sea", "build-"+cacheKey)
+				if os.Getenv("AHOY_SEA_DEBUG") != "" {
+					fmt.Fprintf(os.Stderr, "sea cache lookup: key=%s file=%s\n", cacheKey, cachedExe)
+				}
+				if fi, err := os.Stat(cachedExe); err == nil && fi.Mode()&0111 != 0 {
+					if cdata, rerr := os.ReadFile(cachedExe); rerr == nil {
+						os.MkdirAll(filepath.Dir(executable), 0755)
+						if werr := os.WriteFile(executable, cdata, 0755); werr == nil {
+							fmt.Printf("✓ Compiled C code to %s (%s %s: %s, total: %s)\n",
+								executable, "sea", "cached", formatTime(time.Since(cCompileStart)), formatTime(time.Since(totalStart)))
+							fmt.Println("Running program:")
+							fmt.Println("==================")
+							runCmd := exec.Command(executable)
+							runCmd.Stdout = os.Stdout
+							runCmd.Stderr = os.Stderr
+							rerr := runCmd.Run()
+							fmt.Println("==================")
+							if rerr != nil {
+								fmt.Printf("Program exited with error: %v\n", rerr)
+								os.Exit(1)
+							}
+							return
+						}
+					}
+				}
+			}
+			// Sea CLI: ccompiler <source> [options]; source must be first.
+			// Fast path first: try the single-pass backend (faster;
+			// passes the Sea test suite and renders Gridstone), retrying
+			// with the default backend when spass refuses unsupported
+			// constructs (loud error, never silent). AHOY_SEA_SP=0 opts
+			// out to the default backend directly.
+			spassFirst := os.Getenv("AHOY_SEA_SP") != "0"
+			seaFallback := false
+			seaArgs := []string{combined, "-o", executable}
+			if spassFirst {
+				seaArgs = append(seaArgs, "-single-pass")
+			}
+			if hasRaylib {
+				if raylibPath != "" {
+					seaArgs = append(seaArgs, "-I"+raylibPath)
+				}
+				raylibArg, needsLibPath := raylibStaticLinkArg(raylibPath)
+				if needsLibPath && raylibPath != "" {
+					seaArgs = append(seaArgs, "-L"+raylibPath)
+				}
+				seaArgs = append(seaArgs, raylibArg, "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
+			} else {
+				seaArgs = append(seaArgs, "-lm")
+				seaArgs = append(seaArgs, pthreadFlags()...)
+			}
+			if hasSDL {
+				seaArgs = append(seaArgs, sdlLinkArgs(sdlRoot)...)
+			}
+			if hasBox2D {
+				seaArgs = append(seaArgs, box2dLinkArgs(box2dRoot)...)
+			}
+			if hasBox3D {
+				seaArgs = append(seaArgs, box3dLinkArgs(box3dRoot)...)
+			}
+			seaArgs = withDefines(seaArgs)
+			cmd := exec.Command(seaBin, seaArgs...)
+			output, err := cmd.CombinedOutput()
+			if spassFirst && err != nil {
+				// Single-pass refused unsupported constructs: retry with
+				// the default backend (remove the -single-pass flag).
+				retryArgs := make([]string, 0, len(seaArgs))
+				for _, a := range seaArgs {
+					if a != "-single-pass" {
+						retryArgs = append(retryArgs, a)
+					}
+				}
+				fmt.Println("(single-pass backend unsupported, retrying with default)")
+				cmd = exec.Command(seaBin, retryArgs...)
+				output, err = cmd.CombinedOutput()
+				if err == nil && cacheKey != "" {
+					// Track which backend actually produced the binary.
+					seaFallback = true
+				}
+			}
+			if err != nil {
+				fmt.Printf("Error compiling C code:\n%s\n", output)
+				os.Exit(1)
+			}
+			// If spass was requested but default produced the binary,
+			// mangle the cache key so we don't serve a default-built
+			// result to a later run that asked for single-pass.
+			if seaFallback && cacheKey != "" {
+				cacheKey = strings.ReplaceAll(cacheKey, "-spass", "-default")
+			}
+			// Store for the next identical run (ignored on error).
+			if cacheKey != "" {
+				if cacheDir, cerr := os.UserCacheDir(); cerr == nil {
+					d := filepath.Join(cacheDir, "ahoy", "sea")
+					if os.MkdirAll(d, 0755) == nil {
+						if data, rerr := os.ReadFile(executable); rerr == nil {
+							os.WriteFile(filepath.Join(d, "build-"+cacheKey), data, 0755)
+						}
+					}
+				}
+			}
+
+			cCompileTime := time.Since(cCompileStart)
+			totalTime := time.Since(totalStart)
+			fmt.Printf("✓ Compiled C code to %s (%s %s: %s, total: %s)\n",
+				executable, "sea", "debug", formatTime(cCompileTime), formatTime(totalTime))
+			fmt.Println("Running program:")
+			fmt.Println("==================")
+
+			runCmd := exec.Command(executable)
+			runCmd.Stdout = os.Stdout
+			runCmd.Stderr = os.Stderr
+			err = runCmd.Run()
+			fmt.Println("==================")
+			if err != nil {
+				fmt.Printf("Program exited with error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 		compiler, baseArgs, isOptimized, err := findCompiler(*releaseFlag, *debugFlag, executable)
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
@@ -2362,6 +2613,9 @@ func showHelp() {
 	fmt.Println()
 	fmt.Println("Compilation modes:")
 	fmt.Println("  Default (debug): Uses TCC for fast compilation (~5ms)")
+	fmt.Println("  -sea (-r): Compile the generated C with the ahoy-sea compiler")
+	fmt.Println("             instead of TCC (fast single-pass path, falls back to")
+	fmt.Println("             the default backend; opt out with AHOY_SEA_SP=0)")
 	fmt.Println("  Release (-release): Uses gcc/clang with -O3 optimization")
 	fmt.Println()
 	fmt.Println("Development modes:")

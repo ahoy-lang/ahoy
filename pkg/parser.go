@@ -241,6 +241,14 @@ type Parser struct {
 	cHeaderGlobal       *CHeaderInfo                  // Global C header imports (no namespace)
 	preParsedHeaders    map[string]*CHeaderInfo       // Pre-parsed C headers (path -> header info) for parallel parsing
 	blockDepth          int                           // Track nesting depth of multi-line blocks
+	// unclosedBlockErrors counts "Expected '$' to close ..." diagnostics
+	// recorded so far. When a block hits EOF with this counter higher
+	// than at its entry, an inner block already reported the unclosed
+	// region (its frame hit EOF first and named its own opener), so the
+	// outer frame stays silent instead of piling on with its own, less
+	// specific opener. Net effect: one error naming the innermost
+	// unclosed block, not a cascade ending at the function line.
+	unclosedBlockErrors int
 	constructIndent     int                           // Indent of the block's own construct (an if/elif/when)
 	loopVarScopes       []map[string]string           // Stack of loop variable scopes
 	functionDepth       int                           // Track nesting depth of function definitions
