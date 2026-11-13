@@ -259,11 +259,11 @@ if v < 8.0 then v = 8.0 $
 ? Switch statements
 switch value:
     on 1:
-        ahoy |"One"|
+        ahoy("One")
     on 2:
-        ahoy |"Two"|
+        ahoy("Two")
     _:
-        ahoy |"Other"|
+        ahoy("Other")
 $
 
 ? Loops (halt = break, next = continue)
@@ -274,24 +274,24 @@ loop i:0 to 10 do
     if i is 8 then
         halt  ? Stop at 8
     $
-    ahoy |f"i = {i}"|
+    ahoy(f"i = {i}")
 $
 
 ? Loops till condition met
 loop i:0 until i is 5 do
-    print|i|
+    print(i)
 $
 
 ? Loop over array
 numbers: [1, 2, 3, 4, 5]
 loop num in numbers do
-    ahoy |f"Number: {num}"|
+    ahoy(f"Number: {num}")
 $
 
 ? Loop over dict
 data: {"x": 10, "y": 20}
 loop key, value in data do
-    ahoy |f"{key} = {value}"|
+    ahoy(f"{key} = {value}")
 $
 ```
 
@@ -911,20 +911,20 @@ The compiler automatically:
 
 | Function | Description | Example |
 |----------|-------------|---------|
-| `print\|...\|` | Print to stdout | `print\|"Hello"\|` |
-| `ahoy\|...\|` | Alias for print | `ahoy\|"World"\|` |
-| `len\|x\|` | Get length of array, dict, or string | `len\|my_array\|` |
-| `length\|x\|` | Alias for len | `length\|my_dict\|` |
-| `int\|x\|` | Convert to integer | `int\|"42"\|` |
-| `float\|x\|` | Convert to float | `float\|"3.14"\|` |
-| `string\|x\|` | Convert to string | `string\|42\|` |
-| `sin\|x\|` `cos\|x\|` `tan\|x\|` | Trig in radians | `sin\|0.5\|` |
-| `asin\|x\|` `acos\|x\|` `atan\|x\|` `atan2\|y, x\|` | Inverse trig (asin/acos clamp to [-1, 1]) | `atan2\|1.0, 1.0\|` |
-| `ln\|x\|` `exp\|x\|` | Natural log (0 when x <= 0), e^x | `ln\|2.71828\|` |
-| `fmod\|x, y\|` | Float remainder (0 when y is 0) | `fmod\|7.5, 2.0\|` |
-| `time_now\|\|` | Seconds since program start | `time_now\|\|` |
-| `rand\|\|` | Random integer (whole libc range) | `rand\|\|` |
-| `rand_range\|lo, hi\|` | Random integer, both ends inclusive | `rand_range\|1, 6\|` |
+| `print(...)` | Print to stdout | `print("Hello")` |
+| `ahoy(...)` | Alias for print | `ahoy("World")` |
+| `len(x)` | Get length of array, dict, or string | `len(my_array)` |
+| `length(x)` | Alias for len | `length(my_dict)` |
+| `int(x)` | Convert to integer | `int("42")` |
+| `float(x)` | Convert to float | `float("3.14")` |
+| `string(x)` | Convert to string | `string(42)` |
+| `sin(x)` `cos(x)` `tan(x)` | Trig in radians | `sin(0.5)` |
+| `asin(x)` `acos(x)` `atan(x)` `atan2(y, x)` | Inverse trig (asin/acos clamp to [-1, 1]) | `atan2(1.0, 1.0)` |
+| `ln(x)` `exp(x)` | Natural log (0 when x <= 0), e^x | `ln(2.71828)` |
+| `fmod(x, y)` | Float remainder (0 when y is 0) | `fmod(7.5, 2.0)` |
+| `time_now()` | Seconds since program start | `time_now()` |
+| `rand()` | Random integer (whole libc range) | `rand()` |
+| `rand_range(lo, hi)` | Random integer, both ends inclusive | `rand_range(1, 6)` |
 
 Fallible builtins (`read_json`, `write_json`) return `(value, error)`
 with `null` for ok — the `(T, err)` convention in `docs/ERROR_HANDLING.md`.
@@ -1004,7 +1004,7 @@ All Ahoy source files use the `.ahoy` extension.
 | F-String | `f"text {expr} text"` | `f"Sum is {x + y}"` |
 | Ternary | `cond ?? true : false` | `max: a > b ?? a : b` |
 | Assert | `assert condition` | `assert x > 0` |
-| Defer | `defer statement` | `defer cleanup\|\|` |
+| Defer | `defer statement` | `defer cleanup()` |
 | Loop | `loop var:start to end do` | `loop i:0 to 10 do` |
 | Loop (array) | `loop item in array do` | `loop x in nums do` |
 | Loop (dict) | `loop key, val in dict do` | `loop k, v in data do` |
@@ -1014,8 +1014,8 @@ All Ahoy source files use the `.ahoy` extension.
 | Switch | `switch x:` + `on` per case + `$` | `switch x:` / `on 1:` / `_: ...` / `$` |
 | Switch range | `on lo to hi:` (inclusive) | `on 1 to 5:` |
 | Match list | `x is A, B` / `x is not A, B` | `if k is 1, 2, 3 then` |
-| Method | `@ (recv T) name \|…\|` + `recv.name\|…\|` | `@ (p Point) move \|dx\| Point:` / `p.move\|1.0\|` |
-| Associated | `@ T.name \|…\|` + `T.name\|…\|` | `@ Point.make \|x, y\| Point:` / `Point.make\|1.0, 2.0\|` |
+| Method | `@ (recv T) name \|…\|` + `recv.name(…)` | `@ (p Point) move \|dx\| Point:` / `p.move(1.0)` |
+| Associated | `@ T.name \|…\|` + `T.name(…)` | `@ Point.make \|x, y\| Point:` / `Point.make(1.0, 2.0)` |
 | Switch value | `out: T = switch x: ...` | `out: string = switch day: on 1: "Mon" _: "?" $` |
 
 ## Project Structure
@@ -1072,7 +1072,7 @@ ahoy-lang/
 
 Test programs live in `test/input/*.ahoy`. Each declares `expected: []`
 inside `@ main`, pushes expected values as it prints them, and ends with
-`print|expected|` so the runner can compare output line by line. Notable
+`print(expected)` so the runner can compare output line by line. Notable
 fixtures: `guard.ahoy` (guard clauses, inline and block), `pass.ahoy`
 (the deprecated `if C pass else` spelling), `null_narrow.ahoy` (null
 narrowing), `err_convention.ahoy` (the `(value, err)` convention),
@@ -1159,7 +1159,7 @@ cd ahoy/test && go test ./...     # Lint + end-to-end: every input/*.ahoy is com
 
 Test programs live in `ahoy/test/input/` (see "Examples in Repository"
 above): each declares `expected: []` inside `@ main`, pushes expected
-values as it prints them, and ends with `print|expected|` so the runner
+values as it prints them, and ends with `print(expected)` so the runner
 can compare output line by line. `test/README.md` documents the
 formatter-test layout (`fmt_input/` / `fmt_output/`).
 
