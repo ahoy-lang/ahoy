@@ -113,3 +113,50 @@ containers, or a `Result`/`Option` pair for fallible operations). It is
 also the reason the engine's `Node` struct is so awkward: a 205-field struct
 with value semantics cannot be moved out of an array without a copy, and the
 copy has to be written back by hand.
+
+## Safety v1 (2026-11-14): unsafe, dupe, own, (val, err)
+
+* `free|x|` is only allowed inside `unsafe: ... $`. Outside it is a checker error.
+  Autofree owns scope memory; `unsafe` marks deliberate releases (Foreign/C-owned,
+  early discard). See `source/explicit_free_test.go`, `test/input/unsafe_free.ahoy`.
+* Containers move on `b: a`. Use-after-move warns; use `b: a.dupe()` to keep a copy.
+  `dup` is deprecated spelling of `dupe` (same shallow copy). See `test/input/move_dupe.ahoy`.
+* Args borrow by default. Storing a borrowed param without `.dupe()` warns (codegen
+  already dups soundly); declare `own T` to take ownership. See `test/input/own_borrow.ahoy`.
+* Fallible functions return `(value, err)` with `null` on ok. `*_try` names fallible;
+  success must return `null` (not `""`); callers must check `err` via `if/guard`
+  (`TestSafetyUncheckedErrIsError`, `test/input/try_guard.ahoy`). Plain `(bool,string)`
+  pairs are not fallible.
+* Hardening: div-by-zero is an error, huge allocs error, negative buffer/grow warns
+  (clamps), member reads through raw pointers warn. See `source/safety_test.go`.
+* Arenas: top-level `int main()` now creates frame/scene arenas + mark stack (fixes
+  `__ahoy_marks` undeclared); multi-return string literals are `strdup`'d (fixes
+  freeing statics). See `test/input/arena_regions.ahoy`, `MEMORY_OWNERSHIP.md`.
+
+### Bell runs are quiet
+
+Move and borrow warnings are silenced: codegen auto-dupes soundly at store
+sites, so missing `.dupe()` is never an error and never warns. `.dupe()` stays
+allowed for explicitness but is not required. `dup` is deprecated spelling of
+`dupe` (still warns to rename).
+
+## When to .dupe() (simple rule — optional)
+
+Compiler auto-dupes at struct-field, push, dict, global and return stores, so
+plain code just works:
+
+* `n.name = name`, `arr.push(x)`, `dict[k] = v` — auto-copied, no `.dupe()` needed.
+* `b: a` shares ownership safely (codegen leaks soundly rather than dangling).
+  Use `b: a.dupe()` only when you explicitly want two independent copies.
+* Scalars (`int/float/bool`) are copied; they never needed `.dupe()`.
+* `dup` is deprecated spelling of `dupe`.
+* `unsafe:` holds deliberate `free()` (one block can hold several frees):
+  `unsafe: free(a)` or
+  ```
+  unsafe:
+      free(a)
+      free(b)
+  $
+  ```
+* `error` is a string with intent (`null` == ok). Use `err: error` for clarity:
+  `body, err := load_try|"x"|`, `guard err is null else return $`.

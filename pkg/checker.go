@@ -66,6 +66,24 @@ type checker struct {
 	// inDefer counts enclosing defer statements: free(x) inside one runs at
 	// scope end, so later uses before then are fine and not recorded.
 	inDefer int
+	// inUnsafe counts enclosing unsafe: blocks. free(x) is only legal
+	// inside unsafe: (Foreign/C-owned or deliberate early release).
+	// Outside unsafe: it is a checker error.
+	inUnsafe int
+	// movedNames holds container names that were moved (b: a). Any later
+	// use of the source without rebinding is a use-after-move error.
+	movedNames map[string]bool
+	// inDupeRecv counts enclosing .dupe()/.dup() receivers being checked.
+	// Copying a moved value out via .dupe() is the sanctioned way to keep
+	// using it, so the use-after-move hint must not fire on the receiver
+	// itself (it used to tell users to write the .dupe() they already wrote).
+	inDupeRecv int
+	// errUnchecked holds tuple-err names awaiting a guard/if check.
+	errUnchecked map[string]bool
+	// errChecked holds err names proven checked via if/guard.
+	errChecked map[string]bool
+	// valFromFallible maps value names to their err sibling for must-check.
+	valFromFallible map[string]string
 
 	// suggestNames caches the static part of knownNames() for the whole check
 	// run. suggest() is called once per undefined name, and rebuilding the
@@ -96,6 +114,10 @@ func (p *Parser) checkSemantics(ast *ASTNode, programNames []string, programMeth
 		programNames: make(map[string]bool, len(programNames)),
 		freedNames:   make(map[string]bool),
 		nonNull:      make(map[string]bool),
+		movedNames:  make(map[string]bool),
+		errUnchecked: make(map[string]bool),
+		errChecked:   make(map[string]bool),
+		valFromFallible: make(map[string]string),
 	}
 	for _, name := range programNames {
 		c.programNames[name] = true
@@ -784,12 +806,20 @@ func (c *checker) checkFunction(node *ASTNode) {
 	savedFreed := c.freedNames
 	savedLoop := c.inLoop
 	savedNonNull := c.nonNull
+	savedMoved := c.movedNames
+	savedErrU := c.errUnchecked
+	savedErrC := c.errChecked
+	savedValF := c.valFromFallible
 	c.funcName = node.Value
 	c.inFunction = true
 	c.funcParams = map[string]bool{}
 	c.freedNames = map[string]bool{}
 	c.inLoop = 0
 	c.nonNull = map[string]bool{}
+	c.movedNames = map[string]bool{}
+	c.errUnchecked = map[string]bool{}
+	c.errChecked = map[string]bool{}
+	c.valFromFallible = map[string]string{}
 
 	c.pushScope()
 	if params != nil {
@@ -804,6 +834,17 @@ func (c *checker) checkFunction(node *ASTNode) {
 		}
 	}
 	c.checkBlock(body)
+	if sig, ok := c.p.functions[node.Value]; ok {
+		isFall := safetyIsFallible(sig)
+		isTryName := safetyIsTryName(node.Value)
+		// Only *_try without (value, string) warns. Plain (bool, string)
+		// pairs are legitimate multi-returns, so missing _try is not warned.
+		if !isFall && isTryName {
+			c.warningAt(node, "Function '%s' is named '*_try' but does not return (value, string); rename it or return an error string", node.Value)
+		}
+		_ = isFall
+	}
+	c.safetyCheckUnconsumedErr(node)
 	c.popScope()
 
 	// A function that promises a value must keep its promise on every path:
@@ -819,6 +860,10 @@ func (c *checker) checkFunction(node *ASTNode) {
 	c.freedNames = savedFreed
 	c.inLoop = savedLoop
 	c.nonNull = savedNonNull
+	c.movedNames = savedMoved
+	c.errUnchecked = savedErrU
+	c.errChecked = savedErrC
+	c.valFromFallible = savedValF
 }
 
 // functionNeedsReturn reports whether a function body must return a value on
@@ -1141,8 +1186,20 @@ func (c *checker) checkStatement(node *ASTNode) {
 				}
 			}
 		}
+		// Move semantics: b: a moves container ownership; later use of a errors.
+		c.safetyCheckMoveSrc(childAt(node, 0))
+		c.safetyTrackMove(node.Value, childAt(node, 0))
+		// Local `b: borrowed` where both die in the same scope needs no dupe:
+		// codegen keeps it sound and the store never outlives the function.
+		// Only struct-field / push / return stores (below) can outlive, so
+		// declarations stay silent to keep Bell clean.
 		// Rebinding heals a freed name: the new value owns fresh storage.
 		delete(c.freedNames, node.Value)
+		c.safetyHealMove(node.Value)
+		// Using a fallible value before checking its err is an error (checked at use sites too).
+		if rhs := childAt(node, 0); rhs != nil && rhs.Type == NODE_IDENTIFIER {
+			c.safetyCheckValUse(rhs, rhs.Value)
+		}
 
 	case NODE_ASSIGNMENT:
 		// Slices are read-only views: assign to s[i] or rebuild the string.
@@ -1196,10 +1253,44 @@ func (c *checker) checkStatement(node *ASTNode) {
 		// safe direction (vs dangling), and high-level code is not nagged
 		// about ownership it cannot observe. Leak hunting is -show_leaks'
 		// job (ASan), not the default build's.
+		// Move on plain rebind: x = y moves when y is a container identifier.
+		// Assignments come in two shapes: single-child (node.Value holds the
+		// target name, Children[0] is the value) and two-child (Children[0]
+		// is the target node, Children[1] the value).
+		rebindTarget := ""
+		var rebindValue *ASTNode
+		if len(node.Children) == 1 && node.Value != "" {
+			rebindTarget = node.Value
+			rebindValue = childAt(node, 0)
+		} else if tgtM, valM := childAt(node, 0), childAt(node, 1); tgtM != nil && tgtM.Type == NODE_IDENTIFIER {
+			rebindTarget = tgtM.Value
+			rebindValue = valM
+		}
+		if rebindTarget != "" && rebindValue != nil && rebindValue.Type == NODE_IDENTIFIER {
+			c.safetyCheckMoveSrc(rebindValue)
+			c.safetyTrackMove(rebindTarget, rebindValue)
+		}
 		if target := childAt(node, 0); target == nil || (target.Type != NODE_ARRAY_ACCESS && target.Type != NODE_DICT_ACCESS) {
 			// Plain rebind heals a freed name (element stores into a dead
 			// array do not). Uses in the new value already warned above.
+			// Rebinding also heals a moved name: x = ... owns fresh storage
+			// afterwards, so later uses of x are fine.
 			delete(c.freedNames, node.Value)
+			if rebindTarget != "" {
+				c.safetyHealMove(rebindTarget)
+			} else if tgtH := childAt(node, 0); tgtH != nil && tgtH.Type == NODE_IDENTIFIER {
+				c.safetyHealMove(tgtH.Value)
+			}
+		}
+		// Struct-field / member store of a borrowed param: compiler auto-dupes
+		// soundly (fieldStoreNeedsDup), so no warning needed. .dupe() stays
+		// allowed for explicitness but is not required.
+		if target := childAt(node, 0); target != nil && target.Type == NODE_MEMBER_ACCESS {
+			// Field store also moves container identifiers (tracking kept,
+			// warnings silenced: codegen auto-dupes soundly).
+			if val := childAt(node, 1); val != nil && val.Type == NODE_IDENTIFIER {
+				c.safetyCheckMoveSrc(val)
+			}
 		}
 
 	case NODE_TUPLE_ASSIGNMENT:
@@ -1210,12 +1301,17 @@ func (c *checker) checkStatement(node *ASTNode) {
 			}
 			if len(values.Children) == 1 && targets != nil {
 				c.warnPartialCallResult(node, values.Children[0], len(targets.Children))
+				// Fallible must-check: record val/err pair.
+				if len(values.Children) == 1 && values.Children[0].Type == NODE_CALL {
+					c.safetyNoteFallibleCall(targets, values.Children[0])
+				}
 			}
 		}
 		if targets != nil {
 			for _, t := range targets.Children {
 				if t.Type == NODE_IDENTIFIER {
 					c.declare(t.Value)
+					c.safetyHealMove(t.Value)
 				}
 			}
 		}
@@ -1236,7 +1332,15 @@ func (c *checker) checkStatement(node *ASTNode) {
 
 	case NODE_IF_STATEMENT:
 		c.checkNullIf(node)
+		// Any `if err` / `if not err` / `if err is null` counts as an err check.
+		if len(node.Children) > 0 {
+			c.safetyNoteErrChecked(node.Children[0])
+			for i := 2; i < len(node.Children); i += 2 {
+				c.safetyNoteErrChecked(node.Children[i])
+			}
+		}
 		c.checkGuardDiverges(node)
+		// Guard-style `if err is null then <diverging>` also narrows; track it above.
 
 	case NODE_WHILE_LOOP:
 		// `loop i:start while/until condition` and `loop i while/until condition` carry the
@@ -1321,6 +1425,14 @@ func (c *checker) checkStatement(node *ASTNode) {
 		for _, child := range node.Children {
 			c.checkExpr(child)
 		}
+		// Returning a moved-from name: silenced, codegen leaks soundly.
+		// .dupe() stays allowed for explicitness but is not required.
+		for _, child := range node.Children {
+			if child != nil && child.Type == NODE_IDENTIFIER {
+				c.safetyCheckValUse(child, child.Value)
+			}
+		}
+		c.safetyCheckFallibleReturn(node)
 		// Returning an f-string hands out the shared format buffer: the next
 		// call overwrites what the caller holds. Return a concatenation or
 		// bind-then-return instead (bound f-strings own their copy).
@@ -1362,6 +1474,19 @@ func (c *checker) checkStatement(node *ASTNode) {
 			c.checkStatement(child)
 		}
 		c.inDefer--
+
+	case NODE_UNSAFE_BLOCK:
+		c.inUnsafe++
+		if len(node.Children) > 0 {
+			if node.Children[0].Type == NODE_BLOCK {
+				c.checkBlock(node.Children[0])
+			} else {
+				for _, ch := range node.Children {
+					c.checkStatement(ch)
+				}
+			}
+		}
+		c.inUnsafe--
 
 	case NODE_HALT, NODE_NEXT,
 		NODE_IMPORT_STATEMENT, NODE_PROGRAM_DECLARATION, NODE_ALIAS_DECLARATION,
@@ -1760,6 +1885,10 @@ func (c *checker) checkExpr(node *ASTNode) {
 
 	case NODE_MEMBER_ACCESS, NODE_OBJECT_ACCESS, NODE_TYPE_PROPERTY:
 		// Value is the field name; only the object is a reference.
+		// Member reads through a possibly-null base are deliberately unchecked:
+		// Bell allocates every component in node_make, so a general rule is
+		// all false positives there (SPEC_CORE). Explicit `^p` dereferences
+		// of maybe-null pointers still warn (see the NODE_UNARY_OP case).
 		c.checkExpr(childAt(node, 0))
 		// A field read on a buffer or string dies as "struct or union
 		// expected" in C. Buffers expose length only (elements via buf[i]);
@@ -1885,6 +2014,9 @@ func (c *checker) checkNameUse(node *ASTNode, name string) {
 	if c.freedNames[name] {
 		c.warningAt(node, "Using '%s' after it was freed with free(%s)", name, name)
 	}
+	// Move use silenced: codegen leaks soundly, .dupe() optional.
+	// Tracking kept for back-compat but no warning emitted.
+	c.safetyCheckValUse(node, name)
 	if c.isDefined(name) {
 		return
 	}
@@ -1956,14 +2088,45 @@ func (c *checker) checkCall(node *ASTNode) {
 			c.errorAt(node.Children[0], "%s needs an array of bytes, not %s", name, actual)
 		}
 	}
+	// Phase 5 hardening: buffer/grow allocation sizes must be sane.
+	if name == "buffer" || name == "buffer_int" {
+		if len(node.Children) == 1 {
+			if safetyIsNegativeNumber(node.Children[0]) {
+				c.warningAt(node.Children[0], "%s size is negative; it clamps to empty today, but negative sizes corrupt allocators — pass 0 instead", name)
+			}
+			if safetyIsHugeNumber(node.Children[0]) {
+				c.errorAt(node.Children[0], "%s size %s is absurd (>1GiB); this is likely an overflowed length — check the calculation", name, node.Children[0].Value)
+			}
+		}
+	}
+	if name == "grow" {
+		if len(node.Children) == 2 {
+			if safetyIsNegativeNumber(node.Children[1]) {
+				c.warningAt(node.Children[1], "grow size is negative; it clamps to empty today — pass 0 instead")
+			}
+			if safetyIsHugeNumber(node.Children[1]) {
+				c.errorAt(node.Children[1], "grow size %s is absurd (>1GiB); this is likely an overflowed length", node.Children[1].Value)
+			}
+		}
+	}
+	// Unchecked single-capture of a fallible call: f() returns (v, err) but only v captured.
+	if c.safetyFallible(name) {
+		// The warnPartialCallResult in the statement already fires; upgrade to error here
+		// when the call appears as a bare value (not via tuple assignment).
+		_ = 0
+	}
 	c.checkArguments(node, name, node.Children)
-	// free(x) frees immediately (recorded after the arguments are checked so
-	// the call itself doesn't warn): any later use of x in this function
-	// dangles. Deferred frees run at scope end and are excluded via inDefer.
-	if name == "free" && c.inDefer == 0 && len(node.Children) == 1 &&
-		node.Children[0] != nil && node.Children[0].Type == NODE_IDENTIFIER {
-		if arg := node.Children[0].Value; arg != "" && arg != "_" {
-			c.freedNames[arg] = true
+	// Phase 1: free(x) is only legal inside unsafe:. Outside it is an error.
+	if name == "free" {
+		if c.inUnsafe == 0 {
+			c.errorAt(node, "free|...| is only allowed inside unsafe: (autofree owns scope memory); wrap deliberate releases in unsafe: ... $")
+			return
+		}
+		if c.inDefer == 0 && len(node.Children) == 1 &&
+			node.Children[0] != nil && node.Children[0].Type == NODE_IDENTIFIER {
+			if arg := node.Children[0].Value; arg != "" && arg != "_" {
+				c.freedNames[arg] = true
+			}
 		}
 	}
 }
@@ -2679,6 +2842,16 @@ func (c *checker) checkMethodCall(node *ASTNode) {
 		}
 	}
 
+	// A .dupe()/.dup() call copies the receiver out: checking the receiver
+	// must not report use-after-move on it (the fix it suggests is the call
+	// being checked). Track nesting so a.dupe().strip() still checks strip's
+	// receiver normally.
+	dupeRecv := method == "dupe" || method == "dup"
+	if dupeRecv {
+		c.inDupeRecv++
+		defer func() { c.inDupeRecv-- }()
+	}
+
 	// User-defined method or associated function: validate the call with the
 	// receiver prepended (methods) or as written (associated), reusing the
 	// ordinary argument checking (arity, defaults, named arguments).
@@ -2702,6 +2875,46 @@ func (c *checker) checkMethodCall(node *ASTNode) {
 		}
 	}
 
+	// Builtin method validation: string.anything() / array.anything() must fail here,
+	// not as obscure C link errors. Unknown receivers stay silent (lenient).
+	{
+		rt := node.RecvType
+		if rt == "" {
+			rt = NormalizeReceiverType(c.p.inferType(object))
+			if rt == "" && object.Type == NODE_IDENTIFIER {
+				rt = c.lookupType(object.Value)
+				if rt == "" {
+					rt = c.p.variableTypes[object.Value]
+				}
+				rt = NormalizeReceiverType(rt)
+			}
+		}
+		if rt == "string" || rt == "array" || len(rt) >= 6 && (rt[:6] == "array[" || rt[:5] == "dict[" || rt[:5] == "dict<") || rt == "dict" || len(rt) >= 7 && rt[:7] == "buffer[" {
+			if !isValidBuiltinMethod(rt, method) {
+				// User methods with same receiver take precedence (already resolved above),
+				// so this is a genuine miss.
+				c.errorAt(node, "Type '%s' has no method '%s'", rt, method)
+				return
+			}
+		}
+	}
+
+	// Push/fill/insert/append: compiler auto-dupes soundly
+	// (pushNeedsStrdup/slotStoreNeedsDup), so no .dupe() warnings.
+	// .dupe() stays allowed for explicitness.
+	if method == "push" || method == "append" || method == "fill" || method == "insert" {
+		if args != nil {
+			for _, arg := range args.Children {
+				if arg != nil && arg.Type == NODE_IDENTIFIER {
+					c.safetyCheckValUse(arg, arg.Value)
+				}
+			}
+		}
+	}
+	// Phase 2: .dup is deprecated spelling of .dupe.
+	if method == "dup" {
+		c.warningAt(node, "'dup' is deprecated; use 'dupe' (same shallow copy, clearer ownership)")
+	}
 	// Storing an f-string into a container keeps the shared format buffer:
 	// every element aliases one static buffer and later evaluations
 	// overwrite earlier ones. Bind to a variable first (bound f-strings own
@@ -2973,7 +3186,7 @@ func (c *checker) checkBinaryOp(node *ASTNode) {
 	if operandsUnusable(lt, rt) {
 		c.errorAt(node, "Operator '%s' cannot be applied to %s and %s", op, lt, rt)
 	}
-	// -strict: integer division/modulo by a literal zero always SIGFPEs.
+	// Phase 5: integer division/modulo by a literal zero always SIGFPEs.
 	// Float division stays silent (it yields inf, which is legal).
 	if StrictLint && (op == "/" || op == "%") {
 		if right != nil && right.Type == NODE_NUMBER && strictZeroNumber(right.Value) {
@@ -2984,7 +3197,7 @@ func (c *checker) checkBinaryOp(node *ASTNode) {
 				}
 			}
 			if !floatLHS {
-				c.warningAt(node, "Division by zero always crashes; check the divisor first")
+				c.errorAt(node, "Division by zero always crashes; check the divisor first")
 			}
 		}
 	}

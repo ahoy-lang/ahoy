@@ -914,13 +914,34 @@ func generateC(ast *ahoy.ASTNode, filename string) (string, map[string]string) {
 		result.WriteString("    return 0;\n")
 		result.WriteString("}\n")
 	} else {
+		// Phase 6: top-level programs (no @ main) run directly in int main().
+		// They need the same region lifecycle as functions: frame/scene arenas
+		// plus the watermark mark stack, otherwise loops/blocks emit
+		// __ahoy_marks rewinds with no array (undeclared identifier) and
+		// arena allocs dereference NULL arenas.
 		result.WriteString("#line 1 \"<ahoy-generated>\"\n")
 		result.WriteString("int main() {\n")
 		result.WriteString("    srand((unsigned)time(NULL));\n")
 		if gen.enableSignalHandler {
 			result.WriteString("    ahoy_setup_signal_handlers();\n")
 		}
+		result.WriteString("    __ahoy_frame_arena = ahoy_arena_new(1 << 16);\n")
+		result.WriteString("    __ahoy_scene_arena = ahoy_arena_new(1 << 20);\n")
+		result.WriteString("    __ahoy_scene_arena_next = ahoy_arena_new(1 << 20);\n")
+		if gen.arenaMarksEnabled {
+			result.WriteString("    AhoyArenaMark __ahoy_marks[64];\n")
+			result.WriteString("    __ahoy_marks[0] = ahoy_arena_mark(__ahoy_frame_arena);\n")
+		}
 		result.WriteString(gen.output.String())
+		if gen.arenaMarksEnabled {
+			result.WriteString("    ahoy_arena_rewind(__ahoy_frame_arena, __ahoy_marks[0]);\n")
+		}
+		if ArenaDebug {
+			result.WriteString("    fprintf(stderr, \"[ahoy-memory] frame high-water: %zu bytes; scene high-water: %zu bytes\\n\", ahoy_arena_high_water(__ahoy_frame_arena), ahoy_arena_high_water(__ahoy_scene_arena));\n")
+		}
+		result.WriteString("    ahoy_arena_destroy(__ahoy_frame_arena); __ahoy_frame_arena = NULL;\n")
+		result.WriteString("    ahoy_arena_destroy(__ahoy_scene_arena); __ahoy_scene_arena = NULL;\n")
+		result.WriteString("    ahoy_arena_destroy(__ahoy_scene_arena_next); __ahoy_scene_arena_next = NULL;\n")
 		result.WriteString("    return 0;\n")
 		result.WriteString("}\n")
 	}
@@ -2635,6 +2656,20 @@ func (gen *CodeGenerator) generateNodeInternal(node *ahoy.ASTNode, isStatement b
 
 	case ahoy.NODE_WHEN_STATEMENT:
 		gen.generateWhenStatement(node)
+
+	case ahoy.NODE_UNSAFE_BLOCK:
+		// unsafe: ... $ is a checker-only gate; codegen emits the body inline.
+		if len(node.Children) > 0 {
+			for _, ch := range node.Children {
+				if ch.Type == ahoy.NODE_BLOCK {
+					for _, stmt := range ch.Children {
+						gen.generateNodeInternal(stmt, true)
+					}
+				} else {
+					gen.generateNodeInternal(ch, true)
+				}
+			}
+		}
 
 	case ahoy.NODE_RETURN_STATEMENT:
 		gen.generateReturnStatement(node)
@@ -4665,12 +4700,6 @@ func (gen *CodeGenerator) generateAssignment(node *ahoy.ASTNode) {
 				gen.output.WriteString(" = ")
 				gen.generateNode(valueNode)
 				gen.output.WriteString(";\n")
-			}
-
-			// Phase 5: primitive array literals routed to the arena are
-			// tracked as Arena so scope exit skips free (rewind reclaims).
-			if valueNode.Type == ahoy.NODE_ARRAY_LITERAL && gen.lastArrayLiteralArena {
-				gen.varAllocClass[node.Value] = AllocArena
 			}
 
 			// Track if this variable came from dict access
@@ -6737,7 +6766,14 @@ func (gen *CodeGenerator) generateReturnStatement(node *ahoy.ASTNode) {
 
 				// Owned-read element returned: duplicate so the caller
 				// owns a copy (the local array frees its piece on exit).
+				// Phase 2 fix: string literals in multi-return must be owned
+				// too (single-return already strdup'd). Without this the caller
+				// frees a static ("", "missing file") -> invalid pointer.
 				if gen.ownedReadNeedsDup(child) {
+					gen.output.WriteString("strdup(")
+					gen.generateNode(child)
+					gen.output.WriteString(")")
+				} else if hasReturnTypes && i < len(returnTypes) && returnTypes[i] == "string" && (child.Type == ahoy.NODE_STRING || child.Type == ahoy.NODE_RAW_STRING) {
 					gen.output.WriteString("strdup(")
 					gen.generateNode(child)
 					gen.output.WriteString(")")
@@ -11346,7 +11382,7 @@ func (gen *CodeGenerator) generateMethodCall(node *ahoy.ASTNode) {
 		"upper", "lower", "replace", "contains", "contains_ci",
 		"camel_case", "snake_case", "pascal_case", "kebab_case",
 		"match", "split", "count", "lpad", "rpad", "pad",
-		"strip", "get_file", "dup",
+		"strip", "get_file", "dup", "dupe",
 		// Byte-level UTF-8-safe editing (Tier-3 Feature 2): snap-down
 		// positions never split a sequence; insert_at encodes a codepoint.
 		"byte_at", "byte_len", "byte_slice", "prefix",
@@ -13427,6 +13463,10 @@ func (gen *CodeGenerator) generateDictLiteral(node *ahoy.ASTNode) {
 }
 
 func (gen *CodeGenerator) mapType(langType string) string {
+	// Phase 3: `own T` is T for codegen (ownership is checker-only).
+	if len(langType) > 4 && langType[:4] == "own " {
+		return gen.mapType(langType[4:])
+	}
 	// Function values are {code pointer, environment} pairs
 	if ahoy.IsFunctionType(langType) {
 		return "AhoyFn"
@@ -13487,7 +13527,7 @@ func (gen *CodeGenerator) mapType(langType string) string {
 		return "int64_t"
 	case "u64":
 		return "uint64_t"
-	case "string", "char*", "char *", "const char*", "const char *":
+	case "string", "error", "char*", "char *", "const char*", "const char *":
 		return "char*"
 	case "char":
 		return "char"
@@ -13796,7 +13836,8 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			return "string"
 		}
 
-		// String methods that return string
+		// String methods that return string (dupe is receiver-sensitive:
+		// string.dupe() -> string, array.dupe() -> array handled below).
 		if node.Value == "upper" || node.Value == "lower" ||
 			node.Value == "replace" || node.Value == "camel_case" ||
 			node.Value == "snake_case" || node.Value == "pascal_case" ||
@@ -13806,6 +13847,13 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			node.Value == "byte_slice" || node.Value == "insert_at" ||
 			node.Value == "delete_range" ||
 			node.Value == "pad" || node.Value == "get_file" {
+			return "string"
+		}
+		// dupe is generic: string.dupe() -> string, array.dupe() -> array.
+		if node.Value == "dupe" {
+			if isArrayLikeType(objectType) {
+				return "array"
+			}
 			return "string"
 		}
 		// String methods that return int
@@ -14204,6 +14252,32 @@ func (gen *CodeGenerator) inferType(node *ahoy.ASTNode) string {
 			}
 		}
 		return "char*"
+	case ahoy.NODE_LAMBDA:
+		// Infer fn|params|->ret so lambdas work without explicit fn annotation.
+		paramCount := 0
+		for _, ch := range node.Value {
+			if ch >= '0' && ch <= '9' {
+				paramCount = paramCount*10 + int(ch-'0')
+			}
+		}
+		if paramCount > len(node.Children) {
+			paramCount = len(node.Children)
+		}
+		var params []string
+		for i := 0; i < paramCount && i < len(node.Children); i++ {
+			pt := node.Children[i].DataType
+			if pt == "" {
+				pt = "int"
+			}
+			params = append(params, pt)
+		}
+		ret := "int"
+		if paramCount < len(node.Children) {
+			if rt := gen.inferType(node.Children[paramCount]); rt != "" && rt != "unknown" {
+				ret = rt
+			}
+		}
+		return ahoy.FormatFunctionType(params, ret)
 	default:
 		return "int"
 	}
@@ -17845,6 +17919,7 @@ func (gen *CodeGenerator) getAhoyTypeEnum(typeName string) string {
 
 // isArrayLikeType reports whether an inferred type is an Ahoy dynamic array.
 func isArrayLikeType(t string) bool {
+	t = stripOwnPrefix(t)
 	return t == "array" || strings.HasPrefix(t, "array[") || t == "AhoyArray*"
 }
 
@@ -17856,7 +17931,7 @@ func isArrayLikeType(t string) bool {
 // dicts, structs), letting the normal routing below run.
 func (gen *CodeGenerator) generateArrayExtendedInline(node *ahoy.ASTNode, object *ahoy.ASTNode, args *ahoy.ASTNode, methodName string) bool {
 	switch methodName {
-	case "slice", "index_of", "reduce", "insert", "join", "clear", "dup":
+	case "slice", "index_of", "reduce", "insert", "join", "clear", "dup", "dupe":
 	default:
 		return false
 	}
@@ -17966,9 +18041,9 @@ func (gen *CodeGenerator) generateArrayExtendedInline(node *ahoy.ASTNode, object
 		gen.output.WriteString("({ AhoyArray* __a = ")
 		gen.generateNodeInternal(object, false)
 		gen.output.WriteString("; __a->length = 0; __a; })")
-	case "dup":
-		// xs.dup||: shallow copy (new buffers, shared slots) — the same
-		// aliasing push already has.
+	case "dup", "dupe":
+		// xs.dupe||: shallow copy (new buffers, shared slots) — the same
+		// aliasing push already has. dup is the deprecated spelling.
 		gen.output.WriteString("({ AhoyArray* __src = ")
 		gen.generateNodeInternal(object, false)
 		gen.output.WriteString("; AhoyArray* __r = malloc(sizeof(AhoyArray)); ")
@@ -18895,7 +18970,27 @@ func (gen *CodeGenerator) writeStringHelperFunctions() {
 	gen.funcDecls.WriteString("    strcpy(dest, src);\n")
 	gen.funcDecls.WriteString("    return dest;\n")
 	gen.funcDecls.WriteString("}\n\n")
+	// dupe is the canonical spelling; dup stays as an alias.
+	gen.funcForwardDecls.WriteString("char* ahoy_string_dupe(const char* src);\n")
+	gen.funcDecls.WriteString("char* ahoy_string_dupe(const char* src) {\n")
+	gen.funcDecls.WriteString("    if (!src) return NULL;\n")
+	gen.funcDecls.WriteString("    char* dest = malloc(strlen(src) + 1);\n")
+	gen.funcDecls.WriteString("    strcpy(dest, src);\n")
+	gen.funcDecls.WriteString("    return dest;\n")
+	gen.funcDecls.WriteString("}\n\n")
 
+	// Phase 5: overflow-checked allocation. Any len*size that wraps returns NULL
+	// so callers fail closed instead of under-allocating (CWE-190 -> CWE-122).
+	gen.funcForwardDecls.WriteString("void* ahoy_checked_calloc(size_t n, size_t size);\n")
+	gen.funcDecls.WriteString("void* ahoy_checked_calloc(size_t n, size_t size) {\n")
+	gen.funcDecls.WriteString("    if (n != 0 && size > ((size_t)-1) / n) return NULL;\n")
+	gen.funcDecls.WriteString("    return calloc(n, size);\n")
+	gen.funcDecls.WriteString("}\n\n")
+	gen.funcForwardDecls.WriteString("void* ahoy_checked_malloc(size_t n);\n")
+	gen.funcDecls.WriteString("void* ahoy_checked_malloc(size_t n) {\n")
+	gen.funcDecls.WriteString("    if (n == (size_t)-1) return NULL;\n")
+	gen.funcDecls.WriteString("    return malloc(n);\n")
+	gen.funcDecls.WriteString("}\n\n")
 	// Concatenation helper (+ on two strings)
 	if gen.stringMethods["concat"] {
 		gen.funcForwardDecls.WriteString("char* ahoy_string_concat(const char* a, const char* b);\n")

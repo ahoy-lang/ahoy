@@ -69,6 +69,7 @@ const (
 	NODE_TERNARY
 	NODE_ASSERT_STATEMENT
 	NODE_DEFER_STATEMENT
+	NODE_UNSAFE_BLOCK
 	NODE_OBJECT_LITERAL
 	NODE_OBJECT_PROPERTY
 	NODE_OBJECT_ACCESS
@@ -801,6 +802,33 @@ func (p *Parser) inferType(node *ASTNode) string {
 		}
 
 		return "unknown"
+	case NODE_LAMBDA:
+		// Infer fn|params|->ret so `f: (x:int): x + 1` needs no annotation.
+		// Params default to int when unannotated; return inferred from body.
+		paramCount := 0
+		for _, ch := range node.Value {
+			if ch >= '0' && ch <= '9' {
+				paramCount = paramCount*10 + int(ch-'0')
+			}
+		}
+		if paramCount > len(node.Children) {
+			paramCount = len(node.Children)
+		}
+		var params []string
+		for i := 0; i < paramCount && i < len(node.Children); i++ {
+			pt := node.Children[i].DataType
+			if pt == "" {
+				pt = "int"
+			}
+			params = append(params, pt)
+		}
+		ret := "int"
+		if paramCount < len(node.Children) {
+			if rt := p.inferType(node.Children[paramCount]); rt != "" && rt != "unknown" {
+				ret = rt
+			}
+		}
+		return FormatFunctionType(params, ret)
 	default:
 		// For expressions, we could recursively infer but for now return unknown
 		return "unknown"
@@ -868,6 +896,16 @@ func (p *Parser) checkTypeCompatibility(expectedType, actualType string, actualN
 		return p.checkTypeCompatibility(aliasedType, actualType)
 	}
 
+	// error is a string with intent (null==ok). It flows with string/char* both ways.
+	if expectedType == "error" || actualType == "error" {
+		normE := func(s string) string {
+			if s == "error" {
+				return "string"
+			}
+			return s
+		}
+		return p.checkTypeCompatibility(normE(expectedType), normE(actualType))
+	}
 	// A C function that returns char* hands back the same thing a string is:
 	// glue headers (bell/engine/glue.h) return char* paths and names, and
 	// assigning one to a string variable is not a type error.
@@ -1152,7 +1190,7 @@ func tokenTypeName(t TokenType) string {
 		TOKEN_ASSERT: "'assert'", TOKEN_DEFER: "'defer'",
 		TOKEN_DOUBLE_COLON: "'::'", TOKEN_WALRUS: "':='", TOKEN_QUESTION: "'?'", TOKEN_TERNARY: "'??'",
 		TOKEN_EQUALS: "'='", TOKEN_INFER: "'infer'", TOKEN_VOID: "'void'",
-		TOKEN_STATIC: "'static'",
+		TOKEN_STATIC: "'static'", TOKEN_UNSAFE: "'unsafe'",
 		TOKEN_AT: "'@'", TOKEN_END: "'$'",
 		TOKEN_PLUS_ASSIGN: "'+='", TOKEN_MINUS_ASSIGN: "'-='",
 		TOKEN_MULTIPLY_ASSIGN: "'*='", TOKEN_DIVIDE_ASSIGN: "'/='", TOKEN_MODULO_ASSIGN: "'%='",
