@@ -6,10 +6,6 @@ A modern, expressive programming language with clean syntax and powerful feature
 
 > TL;DR: Ahoy gives you C-level performance and direct C interop (just `import "raylib.h"`), with no GC pauses, fast `tcc`-speed iteration, and automatic memory management via scope `autofree` + frame/scene arenas. No header hell, no borrow-checker fights, no `Cgo` pain, no 1-based indexing surprises.
 
-### Legend
-
-Scores are `x/5` for game-dev suitability. Colours are conditional: 🟢 good for games, 🟡 okay / trade-offs, 🔴 painful for games. Speed icons: 🚀 fast, 🐢 slow, 💀 very slow / painful, ⚪ informational (no good/bad).
-
 | Language | Memory | Debug compile | C interop | Performance | Types | Tooling | Ecosystem | Paradigm | Cross-platform | Misc |
 |---|---|---|---|---|---|---|---|---|---|---|
 | Ahoy 🏴‍☠️ | 🟢 **4.5/5** 🚀<br>**Auto arena + autofree**<br>No GC, no RC. Scope-owned, freed at scope exit. Frame/scene arenas. Hard escapes **leak soundly** — safe, never dangles, but bounded leak, so not perfect 5/5 yet | 🟢 **4.5/5** 🚀<br>Frontend ~65ms for ~6k lines + `tcc`. About **half the speed of C with `tcc`**. `-cache` incremental | 🟢 **5/5**<br>**`import "raylib.h"` + call**<br>Structs/fns/enums auto-parsed, `PascalCase` → `snake_case`. C callbacks as Ahoy fns | 🟢 **4.5/5** 🚀<br>**Close to C (is C)**<br>Slightly slower from **array bounds checks** (`-release -O3` closes gap) | 🟢 **4.5/5**<br>**Optional static + inference, strong**<br>`x: 42`, `age:int= 29`. Safety without annotation spam | 🟢 **4/5**<br>**Dedicated LSP + Zed + tree-sitter**<br>Single official server, `-lint`, `-format`, `-show_leaks` + ASan. Young but focused | 🟢 **5/5**<br>**Same as C + Bell**<br>Direct header import = every `SDL3`/`raylib`/`Box2D` works with zero binding cost | ⚪ **Procedural + structs**<br>Go-style methods `recv.fn()`, closures, `Renderer` callback tables. No classes / inheritance | 🟢 **5/5**<br>**Is C, goes anywhere C goes**<br>`-target linux/windows/web/macos`, web via `emcc`. PS5/Switch possible where C toolchain exists (untested) | ⚪ `?` comments, `$` closes blocks, `halt`/`next`, `is` / `is not`, 0-based, indent syntax |
