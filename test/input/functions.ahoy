@@ -109,13 +109,15 @@ z:30
 screen_height:1080
 screen_width:1920
 ? test param name same and arg name same so should become named argument
-@ implicit_named_args |screen_height:int,screen_width:int,expected| void:
+@ implicit_named_args |screen_height:int,screen_width:int,expected:array| void:
 	print(screen_height, screen_width)
-	expected.push(f"1080 1920")
+	msg: f"1080 1920"
+	expected.push(msg)
 $
-@ explicit_named_args |screen_height:int,screen_width:int,expected| void:
+@ explicit_named_args |screen_height:int,screen_width:int,expected:array| void:
 	print(screen_height, screen_width)
-	expected.push(f"1080 1920")
+	msg: f"1080 1920"
+	expected.push(msg)
 $
 explicit_named_args(screen_width:screen_width,expected:expected,screen_height:screen_height)
 implicit_named_args(screen_width,screen_height,expected)

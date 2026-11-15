@@ -25,7 +25,7 @@ $
 @ main ||:
 	expected: []
 
-	h: Handler = Handler{cb: &twice, name: "h"}
+	h: Handler = Handler{cb: &twice, name: "h".dupe()}
 
 	? the method: the ordinary path
 	s: string = h.shout("hi")

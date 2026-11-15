@@ -239,9 +239,17 @@ func (gen *CodeGenerator) valueAllocatesString(node *ahoy.ASTNode) bool {
 
 // isStringLikeType reports whether a declared or inferred type string is a
 // string flavor that can hold heap memory.
+func stripOwnPrefix(t string) string {
+	for len(t) > 4 && t[:4] == "own " {
+		t = t[4:]
+	}
+	return t
+}
+
 func isStringLikeType(t string) bool {
+	t = stripOwnPrefix(t)
 	switch t {
-	case "string", "char*", "char *", "const char*", "const char *":
+	case "string", "error", "char*", "char *", "const char*", "const char *":
 		return true
 	}
 	return false

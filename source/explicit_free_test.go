@@ -20,7 +20,9 @@ func TestExplicitFreeDisposesOnce(t *testing.T) {
 		if s is not "" then
 			print(s)
 		$
-		free(s)
+		unsafe:
+			free(s)
+		$
 	$
 	print("done")
 $
@@ -41,7 +43,9 @@ func TestExplicitFreeUntrackedStaysRaw(t *testing.T) {
 	src := `program p
 @ main ||:
 	p: somecall()
-	free(p)
+	unsafe:
+		free(p)
+	$
 	print("done")
 $
 `

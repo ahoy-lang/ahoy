@@ -1147,6 +1147,9 @@ func (d *defineList) Set(value string) error {
 	return nil
 }
 
+// quietWarnings suppresses warning diagnostics (errors still fail).
+var quietWarnings bool
+
 // buildDefines is the resolved -D list, appended to every C compile.
 var buildDefines []string
 
@@ -1248,6 +1251,7 @@ func main() {
 	fstringLegacyFlag := flag.Bool("fstring-legacy", false, "Use legacy static f-string buffers")
 	noSemanticsFlag := flag.Bool("no_semantics", false, "Skip semantic validation (type errors, undeclared names, duplicate definitions)")
 	strictFlag := flag.Bool("strict", true, "Extra dev-time warnings for bug classes that segfault (array-type contradictions, literal division by zero)")
+	quietFlag := flag.Bool("quiet", false, "Suppress warnings (errors still fail); for clean Bell runs")
 	fastFlag := flag.Bool("fast", false, "Disable runtime array bounds checks (opt-in: only for programs proven in-bounds; violations become silent memory bugs)")
 	defines := defineList{}
 	flag.Var(&defines, "D", "Define NAME for `when NAME:` blocks (repeatable, comma-separated)")
@@ -1258,6 +1262,7 @@ func main() {
 	ahoy.StrictLint = *strictFlag
 	noBoundsChecks = *fastFlag
 	ArenaDebug = *debugFlag
+	quietWarnings = *quietFlag
 
 	// `when RELEASE then` lets engine and game code gate release-only work
 	// (e.g. auto-VAT's bake) without needing its own flag. Dev builds simply
@@ -2507,7 +2512,7 @@ func dedupeDiagnostics(diagnostics []ahoy.ParseError) []ahoy.ParseError {
 
 // printDiagnostics writes diagnostics as file:line:column with the offending
 // source line and a caret, and returns how many of them are fatal. Warnings are
-// reported but never fail a build.
+// reported but never fail a build (-quiet suppresses them for clean Bell runs).
 func printDiagnostics(diagnostics []ahoy.ParseError, sources map[string]string) (fatal int) {
 	if len(diagnostics) == 0 {
 		return 0
@@ -2526,6 +2531,9 @@ func printDiagnostics(diagnostics []ahoy.ParseError, sources map[string]string) 
 	})
 
 	for _, d := range sorted {
+		if d.IsWarning() && quietWarnings {
+			continue
+		}
 		severity := "error"
 		if d.IsWarning() {
 			severity = "warning"
@@ -2598,6 +2606,7 @@ func showHelp() {
 	fmt.Println("  -lint         Check for errors without compiling")
 	fmt.Println("  -no_semantics Skip semantic validation (types, undeclared names, duplicates)")
 	fmt.Println("  -strict=false Disable the strict lint tier (array-type contradictions, division by zero)")
+	fmt.Println("  -quiet        Suppress warnings (errors still fail); for clean Bell runs")
 	fmt.Println("  -gen_stdlib_docs   Generate stdlib API reference as .ahoy file")
 	fmt.Println("  -cache        Enable incremental builds (cache parsed files)")
 	fmt.Println("  -D NAME       Define NAME for `when NAME then` blocks (repeatable, comma-separated)")

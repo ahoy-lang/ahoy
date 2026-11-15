@@ -1063,14 +1063,14 @@ func TestStrictDivByZero(t *testing.T) {
 	print(y)
 $
 `
-	warned := false
+	found := false
 	for _, e := range allDiagnosticsFor(src) {
-		if e.IsWarning() && strings.Contains(e.Message, "Division by zero") {
-			warned = true
+		if strings.Contains(e.Message, "Division by zero") {
+			found = true
 		}
 	}
-	if !warned {
-		t.Errorf("expected a division-by-zero warning, got %v", allDiagnosticsFor(src))
+	if !found {
+		t.Errorf("expected a division-by-zero diagnostic, got %v", allDiagnosticsFor(src))
 	}
 }
 

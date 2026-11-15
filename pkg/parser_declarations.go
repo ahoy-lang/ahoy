@@ -396,13 +396,26 @@ func (p *Parser) parseFunctionWithDoubleColon(name Token, recvParam *ASTNode, me
 		if p.current().Type == TOKEN_ASSIGN { // :
 			p.advance()
 
+			// Phase 3: `own` prefix marks taking ownership (caller moves, callee frees).
+			ownPrefix := ""
+			if p.current().Type == TOKEN_IDENTIFIER && p.current().Value == "own" {
+				ownPrefix = "own "
+				p.advance()
+			}
 			// Type is optional - if not present, treat as any
 			if p.isTypeToken(p.current().Type) {
 				// Parse complex types like array[int] or dict<string,int>
 				paramType = p.parseComplexReturnType()
+				if ownPrefix != "" {
+					paramType = ownPrefix + paramType
+				}
 			} else {
 				// No type specified - any (generic) parameter
 				paramType = "any"
+				if ownPrefix != "" {
+					// `own` without a type means own any.
+					paramType = "own any"
+				}
 			}
 		} else {
 			// No colon, no type - any (generic) parameter

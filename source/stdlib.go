@@ -133,6 +133,11 @@ var StringMethods = map[string]StdlibFunc{
 		Params: "s:string", Doc: "Duplicates a string",
 		Code: "char* ahoy_string_dup(const char* src) {\n    if (!src) return NULL;\n    char* dest = malloc(strlen(src) + 1);\n    strcpy(dest, src);\n    return dest;\n}\n",
 	},
+	"dupe": {
+		Name: "ahoy_string_dupe", Category: "string", MethodName: "dupe", ReturnType: "string",
+		Params: "s:string", Doc: "Duplicates a string (canonical spelling; dup is deprecated alias)",
+		Code: "char* ahoy_string_dupe(const char* src) {\n    if (!src) return NULL;\n    char* dest = malloc(strlen(src) + 1);\n    strcpy(dest, src);\n    return dest;\n}\n",
+	},
 	"length": {
 		Name: "ahoy_string_length", Category: "string", MethodName: "length", ReturnType: "int",
 		Params: "s:string", Doc: "Returns string length",

@@ -112,7 +112,7 @@ var FreshStringMethods = map[string]bool{
 	"upper": true, "lower": true, "replace": true, "strip": true,
 	"lpad": true, "rpad": true, "pad": true,
 	"camel_case": true, "snake_case": true, "pascal_case": true, "kebab_case": true,
-	"get_file": true, "dup": true,
+	"get_file": true, "dup": true, "dupe": true,
 	"prefix": true, "byte_slice": true, "insert_at": true, "delete_range": true,
 }
 

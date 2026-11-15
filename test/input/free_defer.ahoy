@@ -5,8 +5,10 @@ expected:[]
   nums: [1, 2, 3]
   test_object: {"a": 1, "b": 2, "c": 3}
   test_dict:dict<string,string> = <"key1": "value1", "key2": "value2">
-  defer free(test_dict)
-  defer free(test_object)
+  unsafe:
+    defer free(test_dict)
+    defer free(test_object)
+  $
   print(test_dict)
   print(nums)
   print(test_object)

@@ -98,3 +98,14 @@ compiler.
 3. Name it `*_try` so call sites read as fallible.
 4. At the call site, unpack with `:=` and check before use —
    `if err then`, `if not err then`, or `guard err is null else`.
+
+## Safety v1 enforcement (2026-11-14)
+
+* Signature-inferred: `(T, string)` is fallible when the call site names the second
+  value `err*` or the function is `*_try`. Plain `(bool,string)` like `ok, label`
+  is not fallible.
+* `*_try` without `(value, string)` warns; `(value, string)` without `_try` does not
+  warn (legitimate multi-returns exist).
+* `*_try` must return `null` (not `""`) on success; `""` is truthy and errors.
+* Unchecked `err` is an error at function end; use-before-check warns. Use
+  `guard err is null else return $` or `if err then ... $`. See `test/input/try_guard.ahoy`.

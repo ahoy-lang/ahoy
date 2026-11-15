@@ -15,13 +15,17 @@ $
 		e: Cell* = ahoy_alloc_Cell()
 		e.a = 1.5
 		e.b = 7
-		free(e)
+		unsafe:
+			free(e)
+		$
 	$
 	fresh: Cell* = ahoy_alloc_Cell()
 	print(fresh.a)
 	expected.push("0")
 	print(fresh.b)
 	expected.push("0")
-	free(fresh)
+	unsafe:
+		free(fresh)
+	$
 	print(expected)
 $

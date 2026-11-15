@@ -70,7 +70,7 @@ func init() {
 	for _, name := range []string{
 		// array
 		"length", "push", "pop", "sum", "has", "sort", "sort_strings", "reverse", "shuffle",
-		"pick", "fill", "remove", "dup", "clear", "size",
+		"pick", "fill", "remove", "dup", "dupe", "clear", "size",
 		"slice", "index_of", "reduce", "insert", "join", "append", "erase",
 		// dict
 		"has_all", "keys", "values", "stable_sort", "merge",

@@ -54,7 +54,7 @@ func NormalizeReceiverType(t string) string {
 	t = strings.Join(strings.Fields(t), "")
 	t = strings.TrimPrefix(t, "struct:")
 	switch t {
-	case "char*", "char *", "const char*", "const char *":
+	case "char*", "char *", "const char*", "const char *", "error":
 		return "string"
 	}
 	return t

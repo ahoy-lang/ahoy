@@ -120,6 +120,7 @@ const (
 	TOKEN_HASH            // # (static property prefix)
 	TOKEN_UNDERSCORE      // _ (discard placeholder in multiple returns)
 	TOKEN_STATIC          // static (function-local persistent storage)
+	TOKEN_UNSAFE          // unsafe (explicit free / FFI escape hatch)
 )
 
 type Token struct {
@@ -196,6 +197,8 @@ var keywords = map[string]TokenType{
 	"void":     TOKEN_VOID,
 	"any":      TOKEN_ANY_TYPE,
 	"static":   TOKEN_STATIC,
+	"unsafe":   TOKEN_UNSAFE,
+	"error":    TOKEN_STRING_TYPE,
 }
 
 // Tokenize converts source code into tokens

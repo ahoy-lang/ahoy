@@ -124,6 +124,8 @@ func (p *Parser) parseStatement() *ASTNode {
 		return p.parseAssertStatement()
 	case TOKEN_DEFER:
 		return p.parseDeferStatement()
+	case TOKEN_UNSAFE:
+		return p.parseUnsafeStatement()
 	case TOKEN_IMPORT:
 		return p.parseImportStatement()
 	case TOKEN_AT:
@@ -2565,6 +2567,44 @@ func (p *Parser) parseDeferStatement() *ASTNode {
 }
 
 // parseCHeadersParallel scans for C header imports and parses them concurrently
+func (p *Parser) parseUnsafeStatement() *ASTNode {
+	startLine := p.current().Line
+	p.expect(TOKEN_UNSAFE)
+	// Optional colon: `unsafe:` or bare `unsafe` both open a block.
+	if p.current().Type == TOKEN_ASSIGN {
+		p.advance()
+	}
+	// Single-line form: `unsafe: free(x)` (no block, no `$`).
+	// Used for one deliberate release; the block form holds several.
+	if p.current().Type != TOKEN_NEWLINE && p.current().Type != TOKEN_INDENT && p.current().Type != TOKEN_DEDENT && p.current().Type != TOKEN_EOF {
+		stmt := p.parseStatement()
+		body := &ASTNode{Type: NODE_BLOCK, Line: startLine, Children: []*ASTNode{}}
+		if stmt != nil {
+			body.Children = append(body.Children, stmt)
+		}
+		// Consume trailing newline/semicolon so the next statement parses cleanly.
+		for p.current().Type == TOKEN_NEWLINE || p.current().Type == TOKEN_SEMICOLON {
+			p.advance()
+		}
+		return &ASTNode{
+			Type:     NODE_UNSAFE_BLOCK,
+			Line:     startLine,
+			Children: []*ASTNode{body},
+		}
+	}
+	for p.current().Type == TOKEN_NEWLINE {
+		p.advance()
+	}
+	p.skipWhitespace()
+	p.blockDepth++
+	body := p.parseBlockUntilEnd("unsafe", startLine)
+	return &ASTNode{
+		Type:     NODE_UNSAFE_BLOCK,
+		Line:     startLine,
+		Children: []*ASTNode{body},
+	}
+}
+
 func (p *Parser) parseCHeadersParallel() {
 	// Save current position
 	savedPos := p.pos
