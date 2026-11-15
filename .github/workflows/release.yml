@@ -1,0 +1,87 @@
+name: Release (dev-*) 
+
+on:
+  push:
+    tags:
+      - "dev-*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            ext: ""
+          - goos: linux
+            goarch: arm64
+            ext: ""
+          - goos: windows
+            goarch: amd64
+            ext: ".exe"
+          - goos: windows
+            goarch: arm64
+            ext: ".exe"
+          - goos: darwin
+            goarch: amd64
+            ext: ""
+          - goos: darwin
+            goarch: arm64
+            ext: ""
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+
+      - name: Build ahoy
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          cd source
+          go build -o ../ahoy-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }} .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ahoy-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+          path: ahoy-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+          retention-days: 7
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            First dev-dated release. Tag scheme: `dev-YYYY-MM` + letter for same-month fixes (`dev-2026-11a`).
+
+            Binaries are named `ahoy` (not `ahoy-bin`). Rename to `ahoy` on PATH:
+            `chmod +x ahoy-* && sudo mv ahoy-linux-amd64 /usr/local/bin/ahoy`, then `ahoy -f hello.ahoy -r`.
+
+            - Linux: embedded tcc 0.9.27 ships inside, system tcc preferred when present. No setup needed.
+            - Windows: embedded `tcc.exe` is NOT bundled yet — needs `tcc`, `gcc` (MinGW) or `clang` in PATH. `gcc -O3` used for `-release`.
+            - macOS: no embedded tcc — needs Xcode tools (`cc`/`clang`). Works with system compiler.
+            - arm64 builds included for all three OSes.
+            - `ahoy-sea` is NOT shipped (still not working).
